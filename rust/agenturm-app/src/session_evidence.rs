@@ -258,17 +258,31 @@ fn recorded_turn_endings<'a>(evidence: &[&'a Observation]) -> TurnEndings<'a> {
 
 fn review_rows(evidence: &[&Observation], turn_endings: &TurnEndings<'_>) -> Vec<MetricRow> {
     let mut work_results = Vec::new();
+    let mut edits = Vec::new();
     let mut checks = Vec::new();
     let mut errors = Vec::new();
     let mut tools = Vec::new();
+    let recorded_edits: BTreeSet<_> = evidence
+        .iter()
+        .filter(|row| matches!(row.kind, ObservationKind::FileEdit(_)))
+        .filter_map(|row| operation_occurrence(row, "succeeded"))
+        .collect();
     for row in evidence {
         let (group, label) = match &row.kind {
             ObservationKind::PullRequestRaised { .. } => (&mut work_results, "Work result"),
+            ObservationKind::FileEdit(_) => (&mut edits, "File edit"),
             ObservationKind::Check { .. } => (&mut checks, "Check"),
             ObservationKind::Diagnostic { severity, .. } if severity == "error" => {
                 (&mut errors, "Error")
             }
             ObservationKind::Lifecycle { state, .. } if state == "failed" => (&mut errors, "Error"),
+            ObservationKind::Tool { category, result }
+                if category == "file"
+                    && operation_occurrence(row, result)
+                        .is_some_and(|operation| recorded_edits.contains(&operation)) =>
+            {
+                continue;
+            }
             ObservationKind::Tool { .. } => (&mut tools, "Tool"),
             _ => continue,
         };
@@ -285,6 +299,7 @@ fn review_rows(evidence: &[&Observation], turn_endings: &TurnEndings<'_>) -> Vec
         }
         group.push(metric(label, with_operation(row, value)));
     }
+    work_results.append(&mut edits);
     work_results.append(&mut checks);
     work_results.append(&mut errors);
     work_results.append(&mut tools);
@@ -298,7 +313,7 @@ fn mcp_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
     let detailed: BTreeSet<_> = evidence
         .iter()
         .filter_map(|row| match &row.kind {
-            ObservationKind::McpCall { result, .. } => mcp_occurrence(row, result),
+            ObservationKind::McpCall { result, .. } => operation_occurrence(row, result),
             _ => None,
         })
         .collect();
@@ -307,7 +322,8 @@ fn mcp_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
         .filter(|row| match &row.kind {
             ObservationKind::McpCall { .. } => true,
             ObservationKind::Tool { category, result } if category == "mcp" => {
-                mcp_occurrence(row, result).is_none_or(|occurrence| !detailed.contains(&occurrence))
+                operation_occurrence(row, result)
+                    .is_none_or(|occurrence| !detailed.contains(&occurrence))
             }
             _ => false,
         })
@@ -315,7 +331,7 @@ fn mcp_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
         .collect()
 }
 
-type McpOccurrence<'a> = (
+type OperationOccurrence<'a> = (
     &'a str,
     Option<&'a str>,
     Option<&'a str>,
@@ -325,7 +341,10 @@ type McpOccurrence<'a> = (
     &'a str,
 );
 
-fn mcp_occurrence<'a>(row: &'a Observation, result: &'a str) -> Option<McpOccurrence<'a>> {
+fn operation_occurrence<'a>(
+    row: &'a Observation,
+    result: &'a str,
+) -> Option<OperationOccurrence<'a>> {
     Some((
         row.harness_id.as_str(),
         row.identity.session_id.as_deref(),
@@ -590,6 +609,20 @@ pub(super) fn describe_observation(kind: &ObservationKind) -> (&'static str, Str
             format!("{} credits", format_credits(*nanocredits)),
         ),
         ObservationKind::Tool { category, result } => ("Tool", format!("{category} · {result}")),
+        ObservationKind::FileEdit(edit) => {
+            let summary = [
+                (edit.added, "added"),
+                (edit.updated, "updated"),
+                (edit.deleted, "deleted"),
+                (edit.moved, "moved"),
+            ]
+            .into_iter()
+            .filter(|(count, _)| *count != 0)
+            .map(|(count, action)| format!("{count} {action}"))
+            .collect::<Vec<_>>()
+            .join(" · ");
+            ("File edit", summary)
+        }
         ObservationKind::McpCall {
             server,
             tool,
@@ -729,6 +762,19 @@ mod tests {
             Some("turn-1"),
         );
         raised.identity.operation_id = Some("pr-call".into());
+        let mut edit = observation(
+            10,
+            ObservationKind::FileEdit(agenturm_kernel::FileEdit {
+                added: 1,
+                updated: 2,
+                deleted: 0,
+                moved: 0,
+            }),
+            Some("turn-2"),
+        );
+        edit.identity.operation_id = Some("edit-call".into());
+        let mut other_edit = edit.clone();
+        other_edit.identity.session_id = Some("session-b".into());
         let mut other_session = lifecycle(7, "turn-1", "completed", Some("other"));
         other_session.identity.session_id = Some("session-b".into());
         let mut other_source = lifecycle(8, "turn-1", "completed", Some("another"));
@@ -752,6 +798,8 @@ mod tests {
                 ),
                 other_source,
                 same_turn_different_worker,
+                edit,
+                other_edit,
                 observation(
                     6,
                     ObservationKind::Diagnostic {
@@ -779,7 +827,8 @@ mod tests {
                 "Check",
                 "Lifecycle",
                 "Diagnostic",
-                "Lifecycle"
+                "Lifecycle",
+                "File edit"
             ]
         );
         assert!(
@@ -793,7 +842,7 @@ mod tests {
                 .iter()
                 .map(|row| row.label.as_str())
                 .collect::<Vec<_>>(),
-            ["Work result", "Check", "Error", "Tool"]
+            ["Work result", "File edit", "Check", "Error", "Tool"]
         );
         for expected in [
             "https://github.com/owner/repo/pull/42",
@@ -802,6 +851,9 @@ mod tests {
             "codex_task_aborted",
         ] {
             assert!(review[0].value.contains(expected));
+        }
+        for expected in ["1 added", "2 updated", "turn-2", "edit-call"] {
+            assert!(review[1].value.contains(expected));
         }
         assert_eq!(
             pane(&snapshot, "overview").rows.last().unwrap().label,

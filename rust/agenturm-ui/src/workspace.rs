@@ -409,6 +409,7 @@ struct Workspace {
 
 struct PromptScreen {
     text: String,
+    title: &'static str,
     scroll: u16,
     acknowledge: Option<mpsc::Sender<()>>,
     active: Arc<Mutex<bool>>,
@@ -428,7 +429,7 @@ impl PromptScreen {
             Paragraph::new(text)
                 .wrap(Wrap { trim: false })
                 .scroll((self.scroll, 0))
-                .block(Block::bordered().title("Granted prompt")),
+                .block(Block::bordered().title(self.title)),
             main,
         );
         frame.render_widget(
@@ -523,7 +524,7 @@ impl Workspace {
             }
             (Change::Work(_), Ok(WorkspaceResponse::Work(WorkResult::Status(status)))) => {
                 self.prompt_receiver = None;
-                self.message = Some(status);
+                self.message = (!status.is_empty()).then_some(status);
             }
             (Change::Work(_), Ok(WorkspaceResponse::Work(WorkResult::Seen(entry)))) => {
                 if let Some(work) = &mut self.work {
@@ -618,6 +619,43 @@ impl Workspace {
             return self.agent_key(sender, key.code);
         }
         let view = self.history.last_mut().expect("history exists");
+        if let Some(picker) = &mut view.page.mcp_picker {
+            match key.code {
+                KeyCode::Char('q') => return true,
+                KeyCode::Esc => {
+                    view.page.mcp_picker = None;
+                    self.discard_work_result = matches!(self.pending, Some(Change::Work(_)));
+                    self.prompt_receiver = None;
+                    self.message = None;
+                }
+                KeyCode::Down | KeyCode::Char('j') if self.pending.is_none() => {
+                    move_selection(picker, view.page.mcp_payloads.len(), true);
+                    self.message = None;
+                }
+                KeyCode::Up | KeyCode::Char('k') if self.pending.is_none() => {
+                    move_selection(picker, view.page.mcp_payloads.len(), false);
+                    self.message = None;
+                }
+                KeyCode::Enter if self.pending.is_none() => {
+                    if let Some(operation) = picker
+                        .selected()
+                        .and_then(|i| view.page.mcp_payloads.get(i))
+                        .cloned()
+                    {
+                        let (delivery, mut receiver) = prompt_channel();
+                        receiver.title = "Granted MCP payload";
+                        self.request(
+                            sender,
+                            WorkspaceRequest::Work(WorkCommand::RevealMcp(operation, delivery)),
+                            Change::Work(None),
+                        );
+                        self.prompt_receiver = Some(receiver);
+                    }
+                }
+                _ => {}
+            }
+            return false;
+        }
         if let Some(picker) = &mut view.page.turn_picker {
             match key.code {
                 KeyCode::Char('q') => return true,
@@ -643,6 +681,10 @@ impl Workspace {
         }
 
         match key.code {
+            KeyCode::Char('m') if !view.page.ui.help && !view.page.mcp_payloads.is_empty() => {
+                view.page.mcp_picker = Some(ListState::default().with_selected(Some(0)));
+                self.message = None;
+            }
             KeyCode::Esc if self.pending.is_none() => {
                 self.history.pop();
                 self.message = None;
@@ -898,13 +940,14 @@ pub fn run_workspace(
                     if let Ok(text) = serde_json::from_slice::<String>(&bytes) {
                         workspace.prompt = Some(PromptScreen {
                             text,
+                            title: receiver.title,
                             scroll: 0,
                             acknowledge: Some(receiver.acknowledgement),
                             active: receiver.active,
                             expires: Instant::now() + Duration::from_secs(25),
                         });
                     } else {
-                        workspace.message = Some("Invalid prompt delivery".into());
+                        workspace.message = Some("Invalid private content delivery".into());
                     }
                     dirty = true;
                 }
@@ -968,7 +1011,7 @@ pub fn run_workspace(
                     if active.is_some() && !gate.as_deref().copied().unwrap_or(false) {
                         workspace.prompt = None;
                         workspace.message =
-                            Some("Prompt authorization expired before display".into());
+                            Some("Content authorization expired before display".into());
                     }
                     terminal.draw(|frame| draw_workspace(frame, &mut workspace))?;
                     if let Some(acknowledge) = workspace.redact_then_acknowledge.take() {
@@ -1013,6 +1056,35 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
     }
     let area = frame.area();
     if let Some(view) = workspace.history.last_mut() {
+        if area.width >= MIN_WIDTH
+            && area.height >= MIN_HEIGHT
+            && let Some(selection) = &mut view.page.mcp_picker
+        {
+            let [body, foot] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
+            let items = view
+                .page
+                .mcp_payloads
+                .iter()
+                .map(|entry| ListItem::new(visible_text(&entry.label)));
+            frame.render_stateful_widget(
+                List::new(items)
+                    .block(Block::bordered().title("MCP operations"))
+                    .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
+                body,
+                selection,
+            );
+            let footer = workspace
+                .message
+                .as_deref()
+                .unwrap_or(if workspace.pending.is_some() {
+                    "Checking payload approval…"
+                } else {
+                    "↑↓ select · Enter reveal · Esc back"
+                });
+            frame.render_widget(Paragraph::new(visible_text(footer)), foot);
+            return;
+        }
         view.page.ui.set_viewport(area.width, area.height);
         draw(
             frame,
@@ -1036,6 +1108,12 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
                 } else {
                     "y mark reviewed · n decisions · 8 traces · Esc back"
                 }
+            } else if !view.page.mcp_payloads.is_empty()
+                && matches!(view.selection, HistorySelection::Session(_, kind) if !matches!(kind, SessionView::Traces))
+            {
+                "m payloads · 8 traces · Esc back · [ ] pages"
+            } else if !view.page.mcp_payloads.is_empty() {
+                "m MCP payloads · Esc back · [ ] history pages"
             } else if matches!(view.selection, HistorySelection::Session(_, kind) if !matches!(kind, SessionView::Traces))
             {
                 "8 session traces · Esc back · [ ] history pages"

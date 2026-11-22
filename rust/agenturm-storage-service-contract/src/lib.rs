@@ -1,15 +1,18 @@
-//! Feature-off local storage-service transport contract.
+//! Local storage-service transport contracts.
 //!
 //! This crate has no listener, database handle, or production caller. V1 is a
 //! one-request-per-connection protocol probe; v2 framing is used only by an
-//! explicitly enabled disposable scratch service. Canonical storage still
-//! requires independent path, policy, recovery, and writer-lifecycle gates.
+//! explicitly enabled disposable scratch service. Native standalone history
+//! uses a separate endpoint and request envelope.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
 /// Typed v2 lifecycle admission contract. Only experimental scratch dispatch
 /// accepts this version; the ordinary v1 probe remains version-isolated.
 pub mod v2;
+
+#[cfg(unix)]
+pub mod native;
 
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -176,10 +179,14 @@ impl ReplayIdentity {
 }
 
 fn read_frame_bytes(reader: &mut impl Read) -> Result<Vec<u8>> {
+    read_frame_bytes_bounded(reader, MAX_FRAME_BYTES)
+}
+
+fn read_frame_bytes_bounded(reader: &mut impl Read, limit: usize) -> Result<Vec<u8>> {
     let mut header = [0_u8; 4];
     reader.read_exact(&mut header)?;
     let length = u32::from_be_bytes(header) as usize;
-    if length == 0 || length > MAX_FRAME_BYTES {
+    if length == 0 || length > limit {
         return Err(ContractError::Invalid("frame length exceeds contract"));
     }
     let mut data = vec![0_u8; length];
@@ -199,7 +206,11 @@ fn read_frame<T: for<'de> Deserialize<'de>>(reader: &mut impl Read) -> Result<T>
 }
 
 fn write_frame_bytes(writer: &mut impl Write, data: &[u8]) -> Result<()> {
-    if data.is_empty() || data.len() > MAX_FRAME_BYTES {
+    write_frame_bytes_bounded(writer, data, MAX_FRAME_BYTES)
+}
+
+fn write_frame_bytes_bounded(writer: &mut impl Write, data: &[u8], limit: usize) -> Result<()> {
+    if data.is_empty() || data.len() > limit {
         return Err(ContractError::Invalid("frame length exceeds contract"));
     }
     writer.write_all(&(data.len() as u32).to_be_bytes())?;
@@ -224,15 +235,15 @@ mod local {
     use std::os::unix::net::UnixStream;
     use std::time::{Duration, Instant};
 
-    const IO_TIMEOUT: Duration = Duration::from_secs(2);
+    pub(super) const IO_TIMEOUT: Duration = Duration::from_secs(2);
 
-    struct DeadlineIo<'a> {
+    pub(super) struct DeadlineIo<'a> {
         stream: &'a mut UnixStream,
         deadline: Instant,
     }
 
     impl<'a> DeadlineIo<'a> {
-        fn new(stream: &'a mut UnixStream, timeout: Duration) -> Self {
+        pub(super) fn new(stream: &'a mut UnixStream, timeout: Duration) -> Self {
             Self {
                 stream,
                 deadline: Instant::now() + timeout,
@@ -339,11 +350,15 @@ mod local {
         }
 
         #[cfg(test)]
-        fn synthetic_for_test(service_uid: u32, client_uid: u32, client_gid: u32) -> Result<Self> {
+        pub(super) fn synthetic_for_test(
+            service_uid: u32,
+            client_uid: u32,
+            client_gid: u32,
+        ) -> Result<Self> {
             Self::from_ids(service_uid, client_uid, client_gid, false)
         }
 
-        fn authorize(self, peer: PeerCredentials) -> Result<PeerCredentials> {
+        pub(super) fn authorize(self, peer: PeerCredentials) -> Result<PeerCredentials> {
             // SAFETY: geteuid takes no pointers or caller-controlled input.
             let actual_service_uid = unsafe { libc::geteuid() };
             if self.verify_service_uid
@@ -407,11 +422,15 @@ mod local {
         }
 
         #[cfg(test)]
-        fn synthetic_for_test(service_uid: u32, service_gid: u32, client_uid: u32) -> Result<Self> {
+        pub(super) fn synthetic_for_test(
+            service_uid: u32,
+            service_gid: u32,
+            client_uid: u32,
+        ) -> Result<Self> {
             Self::from_ids(service_uid, service_gid, client_uid, false)
         }
 
-        fn authorize(self, peer: PeerCredentials) -> Result<()> {
+        pub(super) fn authorize(self, peer: PeerCredentials) -> Result<()> {
             // SAFETY: geteuid takes no pointers or caller-controlled input.
             let actual_client_uid = unsafe { libc::geteuid() };
             if self.verify_client_uid
@@ -435,7 +454,7 @@ mod local {
     }
 
     #[cfg(target_os = "linux")]
-    fn kernel_peer(stream: &UnixStream) -> Result<PeerCredentials> {
+    pub(super) fn kernel_peer(stream: &UnixStream) -> Result<PeerCredentials> {
         use std::mem::{MaybeUninit, size_of};
         use std::os::fd::AsRawFd;
 
@@ -471,7 +490,7 @@ mod local {
     }
 
     #[cfg(not(target_os = "linux"))]
-    fn kernel_peer(_stream: &UnixStream) -> Result<PeerCredentials> {
+    pub(super) fn kernel_peer(_stream: &UnixStream) -> Result<PeerCredentials> {
         Err(ContractError::Denied(
             "kernel peer credentials unavailable on this platform",
         ))

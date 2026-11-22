@@ -1,9 +1,9 @@
 use agenturm_app::{
     AgenturmApp, Command, discover, execute_attention, execute_backup, execute_backup_workspace,
     execute_cockpit_with_extensions, execute_collect, execute_content, execute_ingest,
-    execute_inspect_ui, execute_prune, execute_query, execute_restore_workspace, execute_service,
-    execute_task, execute_trace_import, execute_trace_receiver, execute_trace_run, execute_watch,
-    parse_os_command, render,
+    execute_inspect_ui, execute_prune, execute_query, execute_restore_workspace, execute_review,
+    execute_service, execute_task, execute_trace_import, execute_trace_receiver, execute_trace_run,
+    execute_watch, parse_os_command, render,
 };
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -79,6 +79,17 @@ fn main() -> ExitCode {
             Ok(result) => println!("{result}"),
             Err(message) => {
                 eprintln!("query failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        },
+        Command::Review {
+            query,
+            turn_id,
+            worker_id,
+        } => match execute_review(&query, &turn_id, worker_id.as_deref()) {
+            Ok(result) => println!("{result}"),
+            Err(message) => {
+                eprintln!("review failed: {message}");
                 return ExitCode::FAILURE;
             }
         },

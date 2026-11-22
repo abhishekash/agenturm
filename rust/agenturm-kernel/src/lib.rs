@@ -217,6 +217,7 @@ pub enum ObservationKind {
         category: String,
         result: String,
     },
+    FileEdit(FileEdit),
     McpCall {
         server: Option<String>,
         tool: Option<String>,
@@ -282,13 +283,20 @@ pub fn is_anchored_pull_request(
 }
 
 pub use agenturm_protocol::observation::{
-    McpMethod, NANOCREDITS_PER_CREDIT, RelationshipKind, TraceSpan, TraceStatus,
+    FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, RelationshipKind, TraceSpan, TraceStatus,
     is_github_pull_request, is_valid_mcp_metadata,
 };
 
 pub fn is_mcp_operation(identity: &ObservationIdentity) -> bool {
     identity.scope == ObservationScope::Session
         && identity.session_id.is_some()
+        && identity.operation_id.is_some()
+}
+
+pub fn is_file_edit_operation(identity: &ObservationIdentity) -> bool {
+    identity.scope == ObservationScope::Session
+        && identity.session_id.is_some()
+        && identity.turn_id.is_some()
         && identity.operation_id.is_some()
 }
 
@@ -1351,6 +1359,11 @@ fn validate_raw_observation_slice(
                 ))
         {
             return Err("tool observation is invalid or exceeds limit".into());
+        }
+        if let ObservationKind::FileEdit(edit) = row.kind
+            && (!edit.is_valid() || !is_file_edit_operation(&row.identity))
+        {
+            return Err("file edit counts or operation identity are invalid".into());
         }
         if let ObservationKind::McpCall {
             server,

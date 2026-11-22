@@ -1,22 +1,31 @@
-//! Feature-off Linux storage-service skeleton.
+//! Explicit Linux storage-service endpoints.
 //!
 //! Default mode serves only the v1 protocol probe with an empty private data
 //! root. An explicit experimental mode admits v2 lifecycle requests only to
-//! one pre-existing, marked disposable scratch database under that root.
-//! Neither mode is connected to the production receiver or canonical Store.
+//! marked disposable databases. The separate opt-in native endpoint admits
+//! Rust history for configured sources.
 
 #![forbid(unsafe_op_in_unsafe_fn)]
 
+pub mod native_admission;
+pub mod native_read;
+
 #[cfg(target_os = "linux")]
 mod linux {
+    use crate::native_admission::{self, AdmissionRequest};
+    use agenturm_kernel::ExtensionId;
+    use agenturm_storage_service_contract::native;
     use agenturm_storage_service_contract::{
         PeerPolicy, ProbeTopic, Request, read_authorized_request, read_authorized_v2_request,
         send_probe_reply, send_v2_reply,
     };
+    use agenturm_store::Store;
+    use std::collections::BTreeSet;
     use std::ffi::OsStr;
     use std::fs::{self, File, Metadata, OpenOptions};
     use std::io::{self, ErrorKind};
-    use std::os::fd::AsRawFd;
+    use std::os::fd::{AsRawFd, FromRawFd, OwnedFd};
+    use std::os::unix::ffi::OsStrExt;
     use std::os::unix::fs::{FileTypeExt, MetadataExt, OpenOptionsExt, PermissionsExt};
     use std::os::unix::net::UnixListener;
     use std::path::{Component, Path, PathBuf};
@@ -24,6 +33,8 @@ mod linux {
 
     const SOCKET_NAME: &str = "agenturm-storage-v1.sock";
     const LOCK_NAME: &str = ".agenturm-storage-v1.lock";
+    const NATIVE_LOCK_NAME: &str = ".agenturm-native-storage-v1.lock";
+    const NATIVE_DB: &str = "history.sqlite";
     const SCRATCH_NAME: &str = "scratch.db";
     const CLONE_NAME: &str = "telemetry-clone.db";
     const SCRATCH_FILES: &[&str] = &[
@@ -39,6 +50,13 @@ mod linux {
         "telemetry-clone.db-journal",
         "telemetry-clone.db-wal",
         "telemetry-clone.db-shm",
+    ];
+    const NATIVE_FILES: &[&str] = &[
+        NATIVE_DB,
+        ".history.sqlite.agenturm-writer.lock",
+        "history.sqlite-journal",
+        "history.sqlite-wal",
+        "history.sqlite-shm",
     ];
     static STOP: AtomicBool = AtomicBool::new(false);
 
@@ -61,6 +79,7 @@ mod linux {
         pub max_connections: Option<usize>,
         pub experimental_v2_scratch: bool,
         pub experimental_real_clone_activation: bool,
+        pub native_sources: BTreeSet<ExtensionId>,
     }
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -68,6 +87,7 @@ mod linux {
         DataProbe,
         DataScratch,
         DataClone,
+        DataNative,
         Transport,
     }
 
@@ -77,7 +97,7 @@ mod linux {
         kind: RootKind,
         identity: (u64, u64),
         client_gid: u32,
-        scratch_identity: Option<(u64, u64)>,
+        database_identity: Option<(u64, u64)>,
     }
 
     struct InstanceGuard {
@@ -88,8 +108,8 @@ mod linux {
     }
 
     impl InstanceGuard {
-        fn acquire(transport: RootProof) -> io::Result<Self> {
-            let path = transport.path.join(LOCK_NAME);
+        fn acquire(transport: RootProof, lock_name: &str) -> io::Result<Self> {
+            let path = transport.path.join(lock_name);
             match fs::symlink_metadata(&path) {
                 Ok(metadata) if !metadata.is_file() => {
                     return Err(denied("service instance lock is not a regular file"));
@@ -170,18 +190,31 @@ mod linux {
         Ok(metadata)
     }
 
+    impl RootKind {
+        fn database_files(self) -> &'static [&'static str] {
+            match self {
+                Self::DataScratch => SCRATCH_FILES,
+                Self::DataClone => CLONE_FILES,
+                Self::DataNative => NATIVE_FILES,
+                Self::DataProbe | Self::Transport => &[],
+            }
+        }
+    }
+
     impl RootProof {
         fn capture(path: &Path, kind: RootKind, client_gid: u32) -> io::Result<Self> {
             let metadata = direct_directory(path)?;
             Self::check(&metadata, path, kind, client_gid)?;
-            let scratch_identity = if matches!(kind, RootKind::DataScratch | RootKind::DataClone) {
-                let name = if kind == RootKind::DataClone {
-                    CLONE_NAME
-                } else {
-                    SCRATCH_NAME
-                };
-                let scratch = fs::symlink_metadata(path.join(name))?;
-                Some((scratch.dev(), scratch.ino()))
+            let database_identity = if let Some(name) = kind.database_files().first() {
+                match fs::symlink_metadata(path.join(name)) {
+                    Ok(database) => Some((database.dev(), database.ino())),
+                    Err(error)
+                        if kind == RootKind::DataNative && error.kind() == ErrorKind::NotFound =>
+                    {
+                        None
+                    }
+                    Err(error) => return Err(error),
+                }
             } else {
                 None
             };
@@ -190,7 +223,7 @@ mod linux {
                 kind,
                 identity: (metadata.dev(), metadata.ino()),
                 client_gid,
-                scratch_identity,
+                database_identity,
             })
         }
 
@@ -204,24 +237,24 @@ mod linux {
                 return Err(denied("service root is not owned by service UID"));
             }
             match kind {
-                RootKind::DataProbe | RootKind::DataScratch | RootKind::DataClone => {
+                RootKind::DataProbe
+                | RootKind::DataScratch
+                | RootKind::DataClone
+                | RootKind::DataNative => {
                     if metadata.mode() & 0o7777 != 0o700 {
                         return Err(denied("data root must be private 0700"));
                     }
-                    let mut saw_scratch = false;
+                    let allowed = kind.database_files();
+                    let mut saw_database = false;
+                    let mut saw_files = false;
                     for entry in fs::read_dir(path)? {
                         let entry = entry?;
                         if kind == RootKind::DataProbe {
                             return Err(denied("probe data root must be empty"));
                         }
                         let name = entry.file_name();
-                        let allowed = if kind == RootKind::DataClone {
-                            CLONE_FILES
-                        } else {
-                            SCRATCH_FILES
-                        };
                         if !allowed.iter().any(|allowed| name == OsStr::new(allowed)) {
-                            return Err(denied("scratch data root has an unexpected entry"));
+                            return Err(denied("data root has an unexpected entry"));
                         }
                         let file = fs::symlink_metadata(entry.path())?;
                         if !file.is_file()
@@ -229,17 +262,16 @@ mod linux {
                             || file.uid() != current_uid()
                             || file.mode() & 0o7777 != 0o600
                         {
-                            return Err(denied("scratch file ownership or mode changed"));
+                            return Err(denied("database file ownership or mode changed"));
                         }
-                        saw_scratch |= name
-                            == OsStr::new(if kind == RootKind::DataClone {
-                                CLONE_NAME
-                            } else {
-                                SCRATCH_NAME
-                            });
+                        saw_files = true;
+                        saw_database |= name == OsStr::new(allowed[0]);
                     }
-                    if matches!(kind, RootKind::DataScratch | RootKind::DataClone) && !saw_scratch {
-                        return Err(denied("scratch database is missing"));
+                    if !saw_database
+                        && (saw_files
+                            || matches!(kind, RootKind::DataScratch | RootKind::DataClone))
+                    {
+                        return Err(denied("database is missing"));
                     }
                 }
                 RootKind::Transport => {
@@ -259,15 +291,11 @@ mod linux {
                 return Err(denied("service root identity changed"));
             }
             Self::check(&metadata, &self.path, self.kind, self.client_gid)?;
-            if let Some(expected) = self.scratch_identity {
-                let name = if self.kind == RootKind::DataClone {
-                    CLONE_NAME
-                } else {
-                    SCRATCH_NAME
-                };
+            if let Some(expected) = self.database_identity {
+                let name = self.kind.database_files()[0];
                 let current = fs::symlink_metadata(self.path.join(name))?;
                 if (current.dev(), current.ino()) != expected {
-                    return Err(denied("scratch database identity changed"));
+                    return Err(denied("database identity changed"));
                 }
             }
             Ok(())
@@ -279,16 +307,24 @@ mod linux {
         transport: RootProof,
         identity: (u64, u64),
         client_gid: u32,
+        remove_on_drop: bool,
     }
 
     impl SocketGuard {
         fn capture(path: PathBuf, transport: RootProof, client_gid: u32) -> io::Result<Self> {
+            let mut guard = Self::inspect(path, transport, client_gid)?;
+            guard.remove_on_drop = true;
+            Ok(guard)
+        }
+
+        fn inspect(path: PathBuf, transport: RootProof, client_gid: u32) -> io::Result<Self> {
             let metadata = fs::symlink_metadata(&path)?;
             let guard = Self {
                 path,
                 transport,
                 identity: (metadata.dev(), metadata.ino()),
                 client_gid,
+                remove_on_drop: false,
             };
             guard.verify()?;
             Ok(guard)
@@ -326,12 +362,68 @@ mod linux {
 
     impl Drop for SocketGuard {
         fn drop(&mut self) {
-            // Never unlink an unrelated or replacement pathname. A stale
-            // socket after a crash is left for explicit operator inspection.
-            if self.still_our_pathname() {
+            // Never unlink an unrelated or replacement pathname.
+            if self.remove_on_drop && self.still_our_pathname() {
                 let _ = fs::remove_file(&self.path);
             }
         }
+    }
+
+    fn recover_native_socket(
+        path: &Path,
+        transport: &RootProof,
+        instance: &InstanceGuard,
+        client_gid: u32,
+    ) -> io::Result<()> {
+        instance.verify()?;
+        let previous = match SocketGuard::inspect(path.to_owned(), transport.clone(), client_gid) {
+            Ok(socket) => socket,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(()),
+            Err(error) => return Err(error),
+        };
+        if !socket_refuses_connection(path)? {
+            return Err(denied("native service socket may still be active"));
+        }
+        instance.verify()?;
+        previous.verify()?;
+        fs::remove_file(path)
+    }
+
+    fn socket_refuses_connection(path: &Path) -> io::Result<bool> {
+        // SAFETY: zero is a valid initial value for sockaddr_un. The pathname
+        // bytes below are bounded by its initialized sun_path buffer.
+        let mut address: libc::sockaddr_un = unsafe { std::mem::zeroed() };
+        let name = path.as_os_str().as_bytes();
+        if name.contains(&0) || name.len() >= address.sun_path.len() {
+            return Err(denied("native service socket path is invalid"));
+        }
+        address.sun_family = libc::AF_UNIX as libc::sa_family_t;
+        for (target, byte) in address.sun_path.iter_mut().zip(name) {
+            *target = *byte as libc::c_char;
+        }
+        let length = std::mem::offset_of!(libc::sockaddr_un, sun_path) + name.len() + 1;
+        // SAFETY: socket arguments use the Linux Unix stream protocol. The
+        // successful descriptor is owned by this call and closed by OwnedFd.
+        let fd = unsafe {
+            libc::socket(
+                libc::AF_UNIX,
+                libc::SOCK_STREAM | libc::SOCK_NONBLOCK | libc::SOCK_CLOEXEC,
+                0,
+            )
+        };
+        if fd < 0 {
+            return Err(io::Error::last_os_error());
+        }
+        let fd = unsafe { OwnedFd::from_raw_fd(fd) };
+        // SAFETY: address and length describe the initialized pathname above.
+        let status = unsafe {
+            libc::connect(
+                fd.as_raw_fd(),
+                (&raw const address).cast(),
+                length as libc::socklen_t,
+            )
+        };
+        Ok(status < 0 && io::Error::last_os_error().raw_os_error() == Some(libc::ECONNREFUSED))
     }
 
     struct UmaskGuard(libc::mode_t);
@@ -385,9 +477,13 @@ mod linux {
             ProbeTopic::Protocol,
         )
         .is_ok();
+        let active_modes = usize::from(config.experimental_v2_scratch)
+            + usize::from(config.experimental_real_clone_activation)
+            + usize::from(!config.native_sources.is_empty());
         if !valid_receiver
             || config.max_connections == Some(0)
-            || (config.experimental_v2_scratch && config.experimental_real_clone_activation)
+            || active_modes > 1
+            || config.native_sources.len() > 64
         {
             return Err(denied("invalid service receiver or connection bound"));
         }
@@ -401,6 +497,8 @@ mod linux {
                 RootKind::DataScratch
             } else if config.experimental_real_clone_activation {
                 RootKind::DataClone
+            } else if !config.native_sources.is_empty() {
+                RootKind::DataNative
             } else {
                 RootKind::DataProbe
             },
@@ -419,11 +517,18 @@ mod linux {
 
     pub fn run(config: &ServiceConfig) -> io::Result<()> {
         STOP.store(false, Ordering::Relaxed);
-        let (data, transport, policy) = validate(config)?;
+        let (mut data, transport, policy) = validate(config)?;
+        let is_native = !config.native_sources.is_empty();
         let _private_mask = (config.experimental_v2_scratch
-            || config.experimental_real_clone_activation)
+            || config.experimental_real_clone_activation
+            || is_native)
             .then(UmaskGuard::private_files);
-        let instance = InstanceGuard::acquire(transport.clone())?;
+        let (socket_name, lock_name) = if is_native {
+            (native::SOCKET_NAME, NATIVE_LOCK_NAME)
+        } else {
+            (SOCKET_NAME, LOCK_NAME)
+        };
+        let instance = InstanceGuard::acquire(transport.clone(), lock_name)?;
         if config.experimental_v2_scratch {
             // SQLite may touch a WAL shared-memory sidecar even for a read.
             // Never inspect the marker until this service owns the lock.
@@ -437,12 +542,30 @@ mod linux {
             .map_err(|_| denied("real-schema activation clone marker unavailable"))?;
             data.verify()?;
         }
-        let socket_path = transport.path.join(SOCKET_NAME);
-        match fs::symlink_metadata(&socket_path) {
-            Ok(_) => return Err(denied("service socket path already exists")),
-            Err(error) if error.kind() == ErrorKind::NotFound => {}
-            Err(error) => return Err(error),
+        let socket_path = transport.path.join(socket_name);
+        if is_native {
+            recover_native_socket(&socket_path, &transport, &instance, config.client_gid)?;
+        } else {
+            match fs::symlink_metadata(&socket_path) {
+                Ok(_) => return Err(denied("service socket path already exists")),
+                Err(error) if error.kind() == ErrorKind::NotFound => {}
+                Err(error) => return Err(error),
+            }
         }
+        let mut native_store = if is_native {
+            data.verify()?;
+            let store = Store::open_collector(data.path.join(NATIVE_DB))
+                .map_err(|_| denied("native history is unavailable"))?;
+            if data.database_identity.is_none() {
+                let database = fs::symlink_metadata(data.path.join(NATIVE_DB))?;
+                data.database_identity = Some((database.dev(), database.ino()));
+            }
+            data.verify()?;
+            Some(store)
+        } else {
+            None
+        };
+        instance.verify()?;
         install_shutdown_handlers()?;
         let listener = {
             let _mask = UmaskGuard::socket_mode();
@@ -493,7 +616,22 @@ mod linux {
             data.verify()?;
             instance.verify()?;
             socket.verify()?;
-            if config.experimental_v2_scratch {
+            if let Some(store) = native_store.as_mut() {
+                if let Ok((request, identity)) = native::read_authorized_request::<AdmissionRequest>(
+                    &mut stream,
+                    policy,
+                    &config.receiver_id,
+                ) {
+                    data.verify()?;
+                    instance.verify()?;
+                    socket.verify()?;
+                    let reply = native_admission::dispatch(store, &config.native_sources, request);
+                    data.verify()?;
+                    instance.verify()?;
+                    socket.verify()?;
+                    let _ = native::send_reply(&mut stream, &identity, reply);
+                }
+            } else if config.experimental_v2_scratch {
                 if let Ok(request) =
                     read_authorized_v2_request(&mut stream, policy, &config.receiver_id)
                 {

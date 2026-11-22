@@ -1,5 +1,5 @@
 use agenturm_kernel::{MetricRow, ObservationKind, Snapshot};
-use agenturm_ui::{HistoryPage, RecordedTurn};
+use agenturm_ui::{HistoryPage, McpPayloadEntry, RecordedTurn};
 use std::collections::HashMap;
 
 pub(super) fn overview_page(snapshot: Snapshot) -> HistoryPage {
@@ -40,11 +40,46 @@ pub(super) fn overview_page(snapshot: Snapshot) -> HistoryPage {
         }
     }
     HistoryPage {
+        mcp_payloads: mcp_payloads(&snapshot),
         snapshot,
         turns,
         initial_pane: None,
         review_pane: None,
     }
+}
+
+fn mcp_payloads(snapshot: &Snapshot) -> Vec<McpPayloadEntry> {
+    snapshot
+        .observations
+        .iter()
+        .rev()
+        .filter_map(|row| {
+            let ObservationKind::McpCall { server, tool, .. } = &row.kind else {
+                return None;
+            };
+            if !row.event_id.starts_with("codex:")
+                || row.identity.worker_id.is_some()
+                || row.identity.turn_id.is_none()
+            {
+                return None;
+            }
+            let session = row.identity.session_id.as_ref()?;
+            let operation = row.identity.operation_id.as_ref()?;
+            Some(McpPayloadEntry {
+                source_id: row.harness_id.as_str().to_owned(),
+                session_id: session.clone(),
+                event_id: row.event_id.clone(),
+                revision: row.revision,
+                operation_id: operation.clone(),
+                label: format!(
+                    "{} · {} · {}",
+                    tool.as_deref().unwrap_or("MCP call"),
+                    server.as_deref().unwrap_or("server unavailable"),
+                    operation.chars().take(8).collect::<String>()
+                ),
+            })
+        })
+        .collect()
 }
 
 fn is_turn_end(state: &str) -> bool {
@@ -90,6 +125,7 @@ pub(super) fn turn_page(mut snapshot: Snapshot, turn: &RecordedTurn) -> HistoryP
         rows,
     );
     HistoryPage {
+        mcp_payloads: mcp_payloads(&snapshot),
         snapshot,
         turns: Vec::new(),
         initial_pane: Some(pane_id),

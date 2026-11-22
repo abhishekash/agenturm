@@ -19,7 +19,10 @@ mod session_catalog;
 mod workspace_ledger;
 
 pub use backup::BackupError;
-pub use content_grant::{ContentGrant, ContentGrantScope, ContentKind, UserTextEvidence};
+pub use content_grant::{
+    CodexMcpEvidence, CodexMcpSelection, ContentGrant, ContentGrantScope, ContentKind,
+    UserTextEvidence,
+};
 pub use retention::RetentionOutcome;
 pub use review_ledger::{ReviewDecisionNote, ReviewError, ReviewKey, ReviewLedger, ReviewVersion};
 pub use session_catalog::{
@@ -43,7 +46,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 11;
+const SCHEMA_VERSION: i64 = 12;
 const MAX_BATCH_EVENTS: usize = 2_048;
 const MAX_SOURCE_ID_BYTES: usize = 96;
 const MAX_REQUEST_ID_BYTES: usize = 128;
@@ -52,7 +55,8 @@ const MAX_SESSION_KEY_BYTES: usize = 512;
 const MAX_CATEGORY_BYTES: usize = 64;
 const MAX_CURSOR_BYTES: usize = 800;
 const STORE_MARKER_V10: &str = "agenturm.observation-store.v10";
-const STORE_MARKER: &str = "agenturm.observation-store.v11";
+const STORE_MARKER_V11: &str = "agenturm.observation-store.v11";
+const STORE_MARKER: &str = "agenturm.observation-store.v12";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -74,6 +78,7 @@ pub enum ObservationKind {
         category: String,
         result: String,
     },
+    FileEdit(agenturm_kernel::FileEdit),
     McpCall {
         server: Option<String>,
         tool: Option<String>,
@@ -348,7 +353,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         8 => STORE_MARKER_V8,
         9 => STORE_MARKER_V9,
         10 => STORE_MARKER_V10,
-        11 => STORE_MARKER,
+        11 => STORE_MARKER_V11,
+        12 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -663,7 +669,7 @@ impl Store {
         Self::open(path)
     }
 
-    /// Opens a v8 through v11 store through a read-only connection. This path
+    /// Opens a v8 through v12 store through a read-only connection. This path
     /// never initializes, migrates, changes journal mode, or creates a DB.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -717,7 +723,7 @@ impl Store {
                     value TEXT NOT NULL
                 );
                 INSERT INTO agenturm_store_meta (key, value)
-                    VALUES ('format', 'agenturm.observation-store.v11');
+                    VALUES ('format', 'agenturm.observation-store.v12');
                 CREATE TABLE agenturm_ingest_receipts (
                     request_id TEXT PRIMARY KEY NOT NULL,
                     source_id TEXT NOT NULL,
@@ -756,9 +762,9 @@ impl Store {
                 CREATE INDEX agenturm_observations_by_session
                     ON agenturm_observations
                         (session_id, observed_at_unix_ns, event_id, revision);
-                PRAGMA user_version = 11;",
+                PRAGMA user_version = 12;",
             )?;
-            content_grant::create_schema(&transaction, true)?;
+            content_grant::create_schema(&transaction, SCHEMA_VERSION)?;
             content_grant::create_receipt_proof_schema(&transaction)?;
             retention::create_schema(&transaction)?;
             transaction.commit()?;
@@ -916,7 +922,7 @@ impl Store {
             validate_marked_shape(&connection, 7)?;
         } else if schema_version == 7 {
             validate_marked_shape(&connection, 7)?;
-        } else if matches!(schema_version, 8..=10) {
+        } else if matches!(schema_version, 8..=11) {
             validate_marked_shape(&connection, schema_version)?;
         } else if schema_version != SCHEMA_VERSION {
             return Err(StoreError::UnsupportedSchema(schema_version));
@@ -929,7 +935,7 @@ impl Store {
         if (2..9).contains(&schema_version) {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            content_grant::create_schema(&transaction, false)?;
+            content_grant::create_schema(&transaction, 9)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER_V9],
@@ -950,10 +956,22 @@ impl Store {
             transaction.commit()?;
             validate_marked_shape(&connection, 10)?;
         }
-        if (2..SCHEMA_VERSION).contains(&schema_version) {
+        if (2..11).contains(&schema_version) {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             content_grant::migrate_v10(&transaction)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V11],
+            )?;
+            transaction.pragma_update(None, "user_version", 11)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 11)?;
+        }
+        if (2..SCHEMA_VERSION).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            content_grant::migrate_v11(&transaction)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],
@@ -1097,11 +1115,10 @@ impl Store {
                     .map_err(|_| StoreError::Invalid("event count exceeds SQLite INTEGER"))?,
             ],
         )?;
-        if batch
-            .observations
-            .iter()
-            .any(|row| matches!(&row.kind, ObservationKind::Message { role } if role == "user"))
-        {
+        if batch.observations.iter().any(|row| {
+            matches!(&row.kind, ObservationKind::Message { role } if role == "user")
+                || matches!(&row.kind, ObservationKind::McpCall { .. })
+        }) {
             content_grant::record_receipt_proof(
                 &transaction,
                 &batch.request_id,
@@ -1417,6 +1434,7 @@ impl Store {
                     ObservationKind::Tool { category, result } => {
                         KernelObservationKind::Tool { category, result }
                     }
+                    ObservationKind::FileEdit(edit) => KernelObservationKind::FileEdit(edit),
                     ObservationKind::McpCall {
                         server,
                         tool,
@@ -1558,6 +1576,7 @@ impl ObservationStore for Store {
                         category: category.clone(),
                         result: result.clone(),
                     },
+                    KernelObservationKind::FileEdit(edit) => ObservationKind::FileEdit(*edit),
                     KernelObservationKind::McpCall {
                         server,
                         tool,
@@ -1763,6 +1782,16 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
         {
             return Err(StoreError::Invalid("lifecycle state or reason is invalid"));
         }
+        if let ObservationKind::FileEdit(edit) = observation.kind
+            && (!edit.is_valid()
+                || observation.identity.scope != StoredScope::Session
+                || observation.identity.turn_id.is_none()
+                || observation.identity.operation_id.is_none())
+        {
+            return Err(StoreError::Invalid(
+                "file edit counts or operation identity are invalid",
+            ));
+        }
         if let ObservationKind::Check { category, result } = &observation.kind
             && (!matches!(category.as_str(), "test" | "lint" | "build")
                 || !matches!(result.as_str(), "passed" | "failed" | "unknown"))
@@ -1928,6 +1957,34 @@ mod tests {
                  PRAGMA user_version=9;",
             )
             .unwrap();
+    }
+
+    #[test]
+    fn v11_approval_survives_upgrade_without_authorizing_mcp_payloads() {
+        let db = TempDb::new();
+        let source = agenturm_kernel::ExtensionId::parse("harness.codex").unwrap();
+        let prompt = ContentGrantScope::new(source.clone(), ContentKind::CodexUserText, [1; 32]);
+        let mcp = ContentGrantScope::new(source, ContentKind::CodexMcpPayload, [2; 32]);
+
+        let mut store = Store::open(&db.0).unwrap();
+        let existing = store.grant_content(&prompt).unwrap();
+        let transaction = store.connection.transaction().unwrap();
+        content_grant::migrate_grant_schema(&transaction, 11).unwrap();
+        transaction
+            .execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V11],
+            )
+            .unwrap();
+        transaction.pragma_update(None, "user_version", 11).unwrap();
+        transaction.commit().unwrap();
+        drop(store);
+
+        let mut reopened = Store::open(&db.0).unwrap();
+        reopened.verify_content_grant(&prompt, &existing).unwrap();
+        assert!(reopened.current_content_grant(&mcp).unwrap().is_none());
+        let mcp_grant = reopened.grant_content(&mcp).unwrap();
+        reopened.verify_content_grant(&mcp, &mcp_grant).unwrap();
     }
 
     fn downgrade_fixture_to_v7(connection: &Connection) {

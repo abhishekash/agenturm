@@ -21,6 +21,9 @@ const MAX_STRUCTURAL_TOKENS: usize = 8192;
 const MAX_DATABASE_BYTES: u64 = 1024 * 1024 * 1024;
 const MAX_WAL_BYTES: u64 = 512 * 1024 * 1024;
 const MAX_SOURCE_ROWS: i64 = 50_000;
+// Up to six row proofs fit in the 800-byte host cursor even at the largest
+// supported row IDs. This only limits a page, never the retained history.
+const MAX_PROMPT_PROOFS: usize = 6;
 
 fn invalid(message: &'static str) -> Box<dyn Error> {
     message.into()
@@ -33,6 +36,7 @@ fn digest(raw: impl AsRef<[u8]>) -> String {
 struct Cursor {
     legacy: bool,
     turns: bool,
+    proofs: bool,
     epoch: String,
     signature: String,
     identities: String,
@@ -54,18 +58,16 @@ impl Cursor {
         }
         let parts: Vec<_> = raw.split(':').collect();
         let legacy = parts.first() == Some(&"oc1");
-        if !matches!(parts.first().copied(), Some("oc1" | "oc2" | "oc3"))
-            || parts.len() != if legacy { 12 } else { 13 }
-            || ![parts[1], parts[2]].iter().all(|s| {
-                s.len() == 64
-                    && s.bytes()
-                        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())
+        let has_proofs = parts.first() == Some(&"oc4");
+        if !matches!(parts.first().copied(), Some("oc1" | "oc2" | "oc3" | "oc4"))
+            || (if has_proofs {
+                !(13..=13 + MAX_PROMPT_PROOFS).contains(&parts.len())
+                    || parts[13..].iter().any(|value| !valid_digest(value))
+            } else {
+                parts.len() != if legacy { 12 } else { 13 }
             })
-            || (!legacy
-                && (parts[3].len() != 64
-                    || !parts[3]
-                        .bytes()
-                        .all(|c| c.is_ascii_hexdigit() && !c.is_ascii_uppercase())))
+            || ![parts[1], parts[2]].iter().all(|s| valid_digest(s))
+            || (!legacy && !valid_digest(parts[3]))
             || !matches!(parts[if legacy { 4 } else { 5 }], "m" | "p" | "s" | "d")
         {
             return Err(invalid("invalid OpenCode cursor"));
@@ -92,7 +94,8 @@ impl Cursor {
         }
         Ok(Some(Self {
             legacy,
-            turns: parts[0] == "oc3",
+            turns: matches!(parts[0], "oc3" | "oc4"),
+            proofs: has_proofs,
             epoch: parts[1].to_owned(),
             signature: parts[2].to_owned(),
             identities: if legacy {
@@ -112,9 +115,9 @@ impl Cursor {
         }))
     }
 
-    fn encode(&self) -> String {
-        format!(
-            "oc3:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+    fn encode(&self, prompt_proofs: &[String]) -> String {
+        let mut cursor = format!(
+            "oc4:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
             self.epoch,
             self.signature,
             self.identities,
@@ -127,8 +130,33 @@ impl Cursor {
             self.message_count,
             self.part_count,
             self.session_count
-        )
+        );
+        for proof in prompt_proofs {
+            cursor.push(':');
+            cursor.push_str(proof);
+        }
+        cursor
     }
+}
+
+fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+fn prompt_digest(event: &str, turn: &str, rowid: i64, seq: i64, updated: i64, raw: &str) -> String {
+    let mut hash = Sha256::new();
+    hash.update(b"agenturm.opencode-user-row/1");
+    for value in [rowid, seq, updated] {
+        hash.update(value.to_be_bytes());
+    }
+    for value in [event, turn, raw] {
+        hash.update((value.len() as u64).to_be_bytes());
+        hash.update(value.as_bytes());
+    }
+    format!("{:x}", hash.finalize())
 }
 
 #[cfg(unix)]
@@ -674,7 +702,11 @@ fn check_category(command: &str) -> Option<&'static str> {
         ("cargo" | "go", Some("test")) => "test",
         ("cargo" | "go", Some("build")) => "build",
         ("cargo", Some("clippy")) | ("ruff", Some("check")) => "lint",
-        ("python" | "python3", Some("-m")) if words.next() == Some("pytest") => "test",
+        ("python" | "python3", Some("-m"))
+            if matches!(words.next(), Some("pytest" | "unittest")) =>
+        {
+            "test"
+        }
         _ => return None,
     };
     if command.split_ascii_whitespace().any(|word| {
@@ -911,6 +943,7 @@ pub struct UserPromptEvidence<'a> {
     pub turn_id: &'a str,
     pub revision: u32,
     pub observed_at_unix_ns: u64,
+    pub admitted_proof: Option<&'a str>,
 }
 
 pub fn verify_prompt_checkpoint(path: &Path, raw_cursor: &str) -> Result<()> {
@@ -925,8 +958,8 @@ pub fn verify_prompt_checkpoint(path: &Path, raw_cursor: &str) -> Result<()> {
     Ok(())
 }
 
-/// Reconstructs exact user rows inside the still-current native SQLite sweep.
-/// The caller owns content grants and must recheck before final disclosure.
+/// Reconstructs exact user rows using the current native SQLite snapshot and
+/// each row's admission proof. The caller rechecks grants before disclosure.
 pub fn prove_user_prompts(
     path: &Path,
     raw_cursor: &str,
@@ -952,7 +985,7 @@ pub fn prove_user_prompts(
     check_schema(&db)?;
     let wanted: BTreeMap<_, _> = evidence
         .iter()
-        .filter(|row| row.revision == cursor.revision)
+        .filter(|row| row.admitted_proof.is_some() || row.revision == cursor.revision)
         .map(|row| (row.event_id, row))
         .collect();
     let mut statement = db.prepare(
@@ -963,6 +996,7 @@ pub fn prove_user_prompts(
     )?;
     let mut rows = statement.query(params![session, cursor.message_max, MAX_SOURCE_ROWS + 1])?;
     let mut count = 0;
+    let mut seen = HashSet::new();
     let mut found = BTreeMap::new();
     while let Some(row) = rows.next()? {
         count += 1;
@@ -974,6 +1008,9 @@ pub fn prove_user_prompts(
         let Some(expected) = wanted.get(event_id.as_str()) else {
             continue;
         };
+        if !seen.insert(expected.event_id) {
+            return Err(invalid("OpenCode prompt identity is ambiguous"));
+        }
         let seq: i64 = row.get(2)?;
         let updated: i64 = row.get(3)?;
         let native_stamp = stamp(updated)?.parse::<u64>()?;
@@ -983,20 +1020,31 @@ pub fn prove_user_prompts(
             continue;
         }
         let rowid: i64 = row.get(0)?;
-        let text: Option<String> = db.query_row(
-            "SELECT CASE WHEN length(CAST(data AS BLOB))<=65536 AND json_valid(data)
-                    AND json_type(data,'$.text')='text'
-                    AND length(CAST(json_extract(data,'$.text') AS BLOB)) BETWEEN 1 AND 2048
-                    THEN json_extract(data,'$.text') END
+        let raw: Option<String> = db.query_row(
+            "SELECT CASE WHEN length(CAST(data AS BLOB))<=?2 THEN data END
              FROM session_message WHERE rowid=?1",
-            [rowid],
+            params![rowid, MAX_ROW_BYTES],
             |row| row.get(0),
         )?;
-        if let Some(text) = text
-            && found.insert(event_id, text).is_some()
-        {
-            return Err(invalid("OpenCode prompt identity is ambiguous"));
+        let Some(raw) = raw else { continue };
+        if let Some(proof) = expected.admitted_proof {
+            let hash = prompt_digest(&event_id, expected.turn_id, rowid, seq, updated, &raw);
+            if !proof
+                .strip_prefix("oc4:")
+                .is_some_and(|proofs| proofs.split(':').any(|value| value == hash))
+            {
+                continue;
+            }
         }
+        let payload: Value = serde_json::from_str(&raw)?;
+        let Some(text) = payload
+            .get("text")
+            .and_then(Value::as_str)
+            .filter(|text| (1..=2048).contains(&text.len()))
+        else {
+            continue;
+        };
+        found.insert(event_id, text.to_owned());
     }
     if fingerprint(path).map_err(|_| invalid(SOURCE_CHANGED))? != (epoch, signature) {
         return Err(invalid(SOURCE_CHANGED));
@@ -1029,7 +1077,7 @@ pub fn poll(
     if sweep_finished
         && previous
             .as_ref()
-            .is_some_and(|c| c.signature == signature && !replacement && c.turns)
+            .is_some_and(|c| c.signature == signature && !replacement && c.proofs)
     {
         return Ok(batch(source_id, raw_cursor, &[]));
     }
@@ -1044,7 +1092,7 @@ pub fn poll(
     let start_sweep = previous.is_none()
         || replacement
         || sweep_finished
-        || previous.as_ref().is_some_and(|c| !c.turns);
+        || previous.as_ref().is_some_and(|c| !c.proofs);
     let prior_counts = previous
         .as_ref()
         .map(|c| (c.message_count, c.part_count, c.session_count));
@@ -1092,6 +1140,7 @@ pub fn poll(
         Cursor {
             legacy: false,
             turns: true,
+            proofs: true,
             epoch,
             signature,
             identities,
@@ -1109,6 +1158,7 @@ pub fn poll(
         previous.clone().ok_or("missing OpenCode cursor")?
     };
     let mut records = Vec::new();
+    let mut prompt_proofs = Vec::new();
     let mut scanned = 0;
     let loss = start_sweep
         && (lost_prior_identity
@@ -1127,7 +1177,10 @@ pub fn poll(
             "possible_source_gap",
         ));
     }
-    while scanned < MAX_SCAN_ROWS && records.len() < max_records {
+    while scanned < MAX_SCAN_ROWS
+        && records.len() < max_records
+        && prompt_proofs.len() < MAX_PROMPT_PROOFS
+    {
         let phase = cursor.phase;
         // Measure every variable-length source field before transferring it.
         let next = match phase {
@@ -1159,6 +1212,7 @@ pub fn poll(
         let malformed_identity = !(1..=256).contains(&session_size)
             || !(1..=512).contains(&id_size)
             || !(1..=32).contains(&kind_size);
+        let mut prompt_proof = None;
         let candidates = if malformed_identity || !(0..=MAX_ROW_BYTES).contains(&size) {
             vec![diagnostic(
                 &cursor.epoch,
@@ -1212,7 +1266,22 @@ pub fn poll(
                 data: &data,
             };
             if phase == 'm' {
-                message_facts(&db, &cursor, row)?
+                let facts = message_facts(&db, &cursor, row)?;
+                if kind == "user"
+                    && let Some(fact) = facts.first()
+                    && let Some(event) = fact["event_id"].as_str()
+                    && let Some(turn) = fact["identity"]["turn_id"].as_str()
+                {
+                    prompt_proof = Some(prompt_digest(
+                        event,
+                        turn,
+                        rowid,
+                        seq_or_ordinal,
+                        updated,
+                        &data,
+                    ));
+                }
+                facts
             } else {
                 let turn = if row.kind == "tool" {
                     part_turn(&db, &cursor, row.session, row.id)?
@@ -1234,9 +1303,18 @@ pub fn poll(
         };
         let before = records.len();
         records.extend(candidates);
-        let encoded = serde_json::to_vec(&batch(source_id, &next_cursor.encode(), &records))?;
+        let adds_proof = prompt_proof.is_some();
+        prompt_proofs.extend(prompt_proof);
+        let encoded = serde_json::to_vec(&batch(
+            source_id,
+            &next_cursor.encode(&prompt_proofs),
+            &records,
+        ))?;
         if encoded.len() > max_bytes || structural_tokens(&encoded) > MAX_STRUCTURAL_TOKENS {
             records.truncate(before);
+            if adds_proof {
+                prompt_proofs.pop();
+            }
             if before == 0 {
                 return Err(invalid("OpenCode row exceeds batch budget"));
             }
@@ -1251,7 +1329,7 @@ pub fn poll(
     if fingerprint(path)?.0 != cursor.epoch {
         return Err(invalid("OpenCode database path changed during poll"));
     }
-    let cursor = cursor.encode();
+    let cursor = cursor.encode(&prompt_proofs);
     let response = batch(source_id, &cursor, &records);
     let encoded = serde_json::to_vec(&response)?;
     if encoded.len() > max_bytes || structural_tokens(&encoded) > MAX_STRUCTURAL_TOKENS {
@@ -1411,6 +1489,99 @@ mod tests {
         assert_eq!(facts[0]["payload"]["reason_code"], "opencode_idle_failed");
         let later = verified_turn(&db, &cursor, "s", 9).unwrap().unwrap();
         assert_ne!(later, turn);
+    }
+
+    #[test]
+    fn inline_shell_evidence_uses_the_idle_boundary_without_inventing_a_check() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE session_message(id TEXT, session_id TEXT, type TEXT, seq INTEGER);
+             CREATE TABLE session_part(message_id TEXT, session_id TEXT, type TEXT);
+             INSERT INTO session_message VALUES
+                ('msg_first','s','assistant',1),('msg_idle','s','idle',2),
+                ('msg_later','s','assistant',3),('msg_end','s','idle',4);",
+        )
+        .unwrap();
+        let cursor = Cursor::parse(&format!(
+            "oc3:{}:{}:{}:0:m:0:4:1:1:4:1:1",
+            "a".repeat(64),
+            "b".repeat(64),
+            "c".repeat(64)
+        ))
+        .unwrap()
+        .unwrap();
+        let content = json!({"content":[
+            {"type":"tool","id":"explicit","name":"shell","state":{
+                "status":"completed","input":{"command":"python3 -m unittest tests.test_example"},"metadata":{"exit":1}}},
+            {"type":"tool","id":"unknown","name":"shell","state":{
+                "status":"completed","input":{"command":"python3 -m unittest tests.test_example"}}}
+        ]})
+        .to_string();
+        let first = message_facts(
+            &db,
+            &cursor,
+            SourceRow {
+                session: "s",
+                id: "msg_first",
+                kind: "assistant",
+                order: 1,
+                updated: 15,
+                data: &content,
+            },
+        )
+        .unwrap();
+        assert!(
+            first
+                .iter()
+                .all(|fact| fact["identity"].get("turn_id").is_none())
+        );
+        let later = message_facts(
+            &db,
+            &cursor,
+            SourceRow {
+                session: "s",
+                id: "msg_later",
+                kind: "assistant",
+                order: 3,
+                updated: 18,
+                data: &content,
+            },
+        )
+        .unwrap();
+        let turn = &later[0]["identity"]["turn_id"];
+        assert!(turn.is_string());
+        assert!(
+            later
+                .iter()
+                .all(|fact| fact["identity"]["turn_id"] == *turn)
+        );
+        assert_eq!(
+            later.iter().filter(|fact| fact["kind"] == "tool").count(),
+            2
+        );
+        let checks = later
+            .iter()
+            .filter(|fact| fact["kind"] == "check")
+            .collect::<Vec<_>>();
+        assert_eq!(checks.len(), 1);
+        assert_eq!(
+            checks[0]["payload"],
+            json!({"category":"test","result":"failed"})
+        );
+        let ambiguous = message_facts(
+            &db,
+            &cursor,
+            SourceRow {
+                session: "s",
+                id: "msg_end",
+                kind: "idle",
+                order: 4,
+                updated: 20,
+                data: r#"{"outcome":"unknown"}"#,
+            },
+        )
+        .unwrap();
+        assert!(ambiguous.is_empty());
     }
 
     fn fixture_part(raw: &Value) -> Vec<Value> {

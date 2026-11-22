@@ -9,14 +9,14 @@ fn main() {
 #[cfg(target_os = "linux")]
 fn start() -> std::io::Result<()> {
     use agenturm_storage_service::{ServiceConfig, run};
-    use std::collections::HashMap;
+    use std::collections::{BTreeSet, HashMap};
     use std::io::{self, ErrorKind};
     use std::path::PathBuf;
 
     fn invalid() -> io::Error {
         io::Error::new(
             ErrorKind::InvalidInput,
-            "expected --data-root PATH --transport-dir PATH --receiver-id ID --client-uid UID --client-gid GID [--max-connections N] [--experimental-v2-scratch enabled | --experimental-real-clone-activation enabled]",
+            "expected --data-root PATH --transport-dir PATH --receiver-id ID --client-uid UID --client-gid GID [--max-connections N] [--native-sources ID[,ID] | --experimental-v2-scratch enabled | --experimental-real-clone-activation enabled]",
         )
     }
     let mut args = std::env::args().skip(1);
@@ -38,11 +38,22 @@ fn start() -> std::io::Result<()> {
                 | "--max-connections"
                 | "--experimental-v2-scratch"
                 | "--experimental-real-clone-activation"
+                | "--native-sources"
         )
     }) {
         return Err(invalid());
     }
+    let mut native_sources = BTreeSet::new();
+    if let Some(sources) = values.remove("--native-sources") {
+        for source in sources.split(',') {
+            let id = agenturm_kernel::ExtensionId::parse(source).map_err(|_| invalid())?;
+            if !native_sources.insert(id) || native_sources.len() > 64 {
+                return Err(invalid());
+            }
+        }
+    }
     let config = ServiceConfig {
+        native_sources,
         data_root: PathBuf::from(values.remove("--data-root").ok_or_else(invalid)?),
         transport_dir: PathBuf::from(values.remove("--transport-dir").ok_or_else(invalid)?),
         receiver_id: values.remove("--receiver-id").ok_or_else(invalid)?,

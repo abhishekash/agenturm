@@ -2,6 +2,7 @@
 //! pane extensions. Children receive a privacy-limited projection and run
 //! synchronously under one total invocation deadline.
 
+use crate::connector::ConnectorLaunch;
 use agenturm_kernel::{
     ExtensionId, MetricRow, Observation, ObservationExtension, ObservationExtensionInput,
     ObservationExtensionOutput, ObservationKind, PaneModel,
@@ -102,27 +103,33 @@ pub fn verify_extension_artifact(path: &Path, sha256: &str) -> Result<(), String
 pub(crate) fn invoke_connector(
     executable: &Path,
     sha256: &str,
+    launch: ConnectorLaunch,
     request: &[u8],
 ) -> Result<Vec<u8>, &'static str> {
     #[cfg(unix)]
-    fn run(executable: &Path, sha256: &str, request: &[u8]) -> Result<Vec<u8>, InvocationError> {
-        use std::os::unix::process::CommandExt;
+    fn run(
+        executable: &Path,
+        sha256: &str,
+        launch: ConnectorLaunch,
+        request: &[u8],
+    ) -> Result<Vec<u8>, InvocationError> {
         let deadline = Instant::now() + Duration::from_secs(2);
-        let artifact = open_connector_artifact(executable, sha256, deadline)?;
-        #[cfg(target_os = "linux")]
-        let executable = PathBuf::from(format!("/proc/self/fd/{}", artifact.as_raw_fd()));
-        #[cfg(not(target_os = "linux"))]
-        let _artifact = artifact;
-        let process = Command::new(executable)
-            .current_dir("/")
-            .env_clear()
-            .env("AGENTURM_CONNECTOR_PROTOCOL", "1")
-            .stdin(Stdio::piped())
-            .stdout(Stdio::piped())
-            .stderr(Stdio::null())
-            .process_group(0)
-            .spawn()
-            .map_err(|_| InvocationError::Launch)?;
+        let artifact = open_connector_file(executable)?;
+        let process = match launch {
+            ConnectorLaunch::Trusted => {
+                verify_artifact_file(&artifact, sha256, MAX_ARTIFACT_BYTES, Some(deadline))?;
+                #[cfg(target_os = "linux")]
+                let pinned_path = connector_fd_path(&artifact);
+                #[cfg(target_os = "linux")]
+                let executable = &pinned_path;
+                #[cfg(not(target_os = "linux"))]
+                let _artifact = artifact;
+                connector_command(executable)
+                    .spawn()
+                    .map_err(|_| InvocationError::Launch)?
+            }
+            ConnectorLaunch::IsolatedLinux => spawn_isolated_connector(artifact, sha256, deadline)?,
+        };
         let mut guard = GuardedChild(Some(process));
         let process = guard.0.as_mut().expect("child guard populated");
         let input = process
@@ -148,14 +155,15 @@ pub(crate) fn invoke_connector(
         Ok(response)
     }
     #[cfg(unix)]
-    return run(executable, sha256, request).map_err(|error| match error {
+    return run(executable, sha256, launch, request).map_err(|error| match error {
         InvocationError::Timeout => "connector_timeout",
+        InvocationError::Sandbox => "connector_isolation_unavailable",
         InvocationError::Protocol(_) => "connector_protocol_error",
         _ => "connector_process_error",
     });
     #[cfg(not(unix))]
     {
-        let _ = (executable, sha256, request);
+        let _ = (executable, sha256, launch, request);
         Err("connector_unsupported_platform")
     }
 }
@@ -163,31 +171,100 @@ pub(crate) fn invoke_connector(
 pub(crate) fn verify_connector_artifact(
     executable: &Path,
     sha256: &str,
+    launch: ConnectorLaunch,
 ) -> Result<(), &'static str> {
     #[cfg(unix)]
-    return open_connector_artifact(executable, sha256, Instant::now() + Duration::from_secs(2))
-        .map(|_| ())
-        .map_err(|_| "connector_artifact_mismatch");
+    {
+        let artifact =
+            open_connector_file(executable).map_err(|_| "connector_artifact_mismatch")?;
+        verify_artifact_file(
+            &artifact,
+            sha256,
+            MAX_ARTIFACT_BYTES,
+            Some(Instant::now() + Duration::from_secs(2)),
+        )
+        .map_err(|_| "connector_artifact_mismatch")?;
+        if launch == ConnectorLaunch::IsolatedLinux {
+            #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+            return crate::connector_sandbox::check_static_elf(&artifact)
+                .map_err(|_| "connector_isolation_artifact_unsupported");
+            #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+            return Err("connector_isolation_unavailable");
+        }
+        Ok(())
+    }
     #[cfg(not(unix))]
     {
-        let _ = (executable, sha256);
+        let _ = (executable, sha256, launch);
         Err("connector_unsupported_platform")
     }
 }
 
 #[cfg(unix)]
-fn open_connector_artifact(
-    path: &Path,
-    hash: &str,
+fn connector_command(executable: &Path) -> Command {
+    use std::os::unix::process::CommandExt;
+    let mut command = Command::new(executable);
+    command
+        .current_dir("/")
+        .env_clear()
+        .env("AGENTURM_CONNECTOR_PROTOCOL", "1")
+        .stdin(Stdio::piped())
+        .stdout(Stdio::piped())
+        .stderr(Stdio::null())
+        .process_group(0);
+    command
+}
+
+#[cfg(target_os = "linux")]
+fn connector_fd_path(artifact: &File) -> PathBuf {
+    PathBuf::from(format!("/proc/self/fd/{}", artifact.as_raw_fd()))
+}
+
+#[cfg(unix)]
+fn spawn_isolated_connector(
+    artifact: File,
+    sha256: &str,
     deadline: Instant,
-) -> Result<File, InvocationError> {
+) -> Result<Child, InvocationError> {
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    {
+        use crate::connector_sandbox::{Stage, check_static_elf, spawn};
+        let stage = Stage::new().map_err(|_| InvocationError::Sandbox)?;
+        let staged = stage
+            .copy(&artifact, MAX_ARTIFACT_BYTES)
+            .map_err(|_| InvocationError::Sandbox)?;
+        // Authenticate the bytes the kernel will execute.
+        verify_artifact_file(&staged, sha256, MAX_ARTIFACT_BYTES, Some(deadline))?;
+        check_static_elf(&staged).map_err(|_| InvocationError::Sandbox)?;
+        if Instant::now() >= deadline {
+            return Err(InvocationError::Timeout);
+        }
+        spawn(connector_command(&connector_fd_path(&staged)), &staged)
+            .map_err(|_| InvocationError::Sandbox)
+    }
+    #[cfg(not(all(target_os = "linux", target_arch = "x86_64")))]
+    {
+        let _ = (artifact, sha256, deadline);
+        Err(InvocationError::Sandbox)
+    }
+}
+
+#[cfg(unix)]
+fn open_connector_file(path: &Path) -> Result<File, InvocationError> {
     use std::os::unix::fs::OpenOptionsExt;
     let file = std::fs::OpenOptions::new()
         .read(true)
         .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
         .open(path)
         .map_err(|_| InvocationError::Protocol("connector executable is unavailable"))?;
-    verify_artifact_file(&file, hash, MAX_ARTIFACT_BYTES, Some(deadline))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| InvocationError::Protocol("connector executable metadata is unavailable"))?;
+    if !metadata.is_file() || metadata.len() > MAX_ARTIFACT_BYTES {
+        return Err(InvocationError::Protocol(
+            "connector executable is not a bounded regular file",
+        ));
+    }
     Ok(file)
 }
 
@@ -483,6 +560,7 @@ fn kind_name(kind: &ObservationKind) -> &'static str {
         ObservationKind::SessionEnded => "session-ended",
         ObservationKind::Activity { .. } => "activity",
         ObservationKind::Tool { .. } => "tool",
+        ObservationKind::FileEdit(_) => "file-edit",
         ObservationKind::McpCall { .. } => "mcp-call",
         ObservationKind::TraceSpan(_) => "trace-span",
         ObservationKind::Lifecycle { .. } => "lifecycle",
@@ -660,6 +738,8 @@ fn next_request_id() -> String {
 enum InvocationError {
     Timeout,
     Launch,
+    #[cfg(unix)]
+    Sandbox,
     Pipe,
     Exit,
     #[cfg(not(unix))]
@@ -673,6 +753,8 @@ impl std::fmt::Display for InvocationError {
         formatter.write_str(match self {
             Self::Timeout => "extension invocation exceeded its deadline",
             Self::Launch => "extension process could not be started",
+            #[cfg(unix)]
+            Self::Sandbox => "connector OS isolation could not be established",
             Self::Pipe => "extension process pipes are unavailable",
             Self::Exit => "extension process exited unsuccessfully",
             #[cfg(not(unix))]

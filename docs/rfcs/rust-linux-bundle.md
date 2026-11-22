@@ -64,6 +64,12 @@ recorded turn, `F1` for keyboard help, and `q` to quit. The available
 evidence varies by source. For Codex MCP calls the view includes the server,
 tool, method, duration and outcome when recorded.
 
+Press `m` in the MCP pane to choose an exact recorded Codex call. Enter
+opens a byte-verified payload where an MCP approval is active. Use
+`content grant --kind codex.mcp_payload` with the history path, source
+configuration and source ID to establish it. Use
+`content revoke --kind codex.mcp_payload` to remove that approval.
+
 From Agents or a session or turn detail, press `b` to open saved tasks.
 Use `n` to create a task linked to the selection, `r` to see its linked
 runs, and `h` to create a handoff using the current selection. Open the
@@ -76,12 +82,14 @@ route. Respond in the harness terminal.
 
 In Review, press `n` for saved decision notes. Press `e` to write a note
 against the selected evidence version and Ctrl+S to save it.
+Supported Codex file changes show recorded edit counts by operation.
 
 Select a session and press `p` for eligible user prompts. Press Enter to
 reveal one and Escape to clear it. The view requires a current grant for a
 pinned source and uses `sources.json` next to the history database or the
 path set in `AGENTURM_CONTENT_CONFIG`. It verifies retained JSONL rows by
-their committed receipt and SQLite rows against the current source sweep.
+their committed receipts. OpenCode SQLite prompts can also use a retained
+admission proof after later sweeps.
 The default cockpit uses its collector's writer lease for reveal. Establish
 or revoke grants from the CLI while the history writer is available.
 
@@ -197,6 +205,15 @@ The turn picker lists the recorded turns on the current history page.
 Use the arrow keys to choose a turn, then press Enter to open its scoped
 observations. A recorded pull request appears as a work result alongside
 the native lifecycle state.
+
+Use `review` to read the typed history for an exact recorded turn as JSON.
+Omit `--worker-id` to select its workerless records. Use the same scope and
+the returned cursor fields to load an older page.
+
+```sh
+"$agenturm" review --db "$state/history.sqlite" \
+  --harness-id <source-id> --session-id <session-id> --turn-id <turn-id>
+```
 
 ## Back up and restore
 

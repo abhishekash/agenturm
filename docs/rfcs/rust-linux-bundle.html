@@ -73,6 +73,11 @@ is stored next to the history database and applies to the reviewed version.</p>
 recorded turn, <code>F1</code> for keyboard help, and <code>q</code> to quit. The available
 evidence varies by source. For Codex MCP calls the view includes the server,
 tool, method, duration and outcome when recorded.</p>
+<p>Press <code>m</code> in the MCP pane to choose an exact recorded Codex call. Enter
+opens a byte-verified payload where an MCP approval is active. Use
+<code>content grant --kind codex.mcp_payload</code> with the history path, source
+configuration and source ID to establish it. Use
+<code>content revoke --kind codex.mcp_payload</code> to remove that approval.</p>
 <p>From Agents or a session or turn detail, press <code>b</code> to open saved tasks.
 Use <code>n</code> to create a task linked to the selection, <code>r</code> to see its linked
 runs, and <code>h</code> to create a handoff using the current selection. Open the
@@ -82,12 +87,14 @@ also record a Git snapshot from a directory you choose with <code>G</code>.</p>
 seen and <code>l</code> to focus the matching tmux pane when Agenturm verifies the
 route. Respond in the harness terminal.</p>
 <p>In Review, press <code>n</code> for saved decision notes. Press <code>e</code> to write a note
-against the selected evidence version and Ctrl+S to save it.</p>
+against the selected evidence version and Ctrl+S to save it.
+Supported Codex file changes show recorded edit counts by operation.</p>
 <p>Select a session and press <code>p</code> for eligible user prompts. Press Enter to
 reveal one and Escape to clear it. The view requires a current grant for a
 pinned source and uses <code>sources.json</code> next to the history database or the
 path set in <code>AGENTURM_CONTENT_CONFIG</code>. It verifies retained JSONL rows by
-their committed receipt and SQLite rows against the current source sweep.
+their committed receipts. OpenCode SQLite prompts can also use a retained
+admission proof after later sweeps.
 The default cockpit uses its collector's writer lease for reveal. Establish
 or revoke grants from the CLI while the history writer is available.</p>
 <p>Use <code>&quot;$agenturm&quot; cockpit --db &lt;path&gt;</code> or <code>&quot;$agenturm&quot; inspect --db &lt;path&gt;</code>
@@ -174,6 +181,12 @@ manager, use <code>&quot;$agenturm&quot; collect --config &quot;$state/sources.j
 Use the arrow keys to choose a turn, then press Enter to open its scoped
 observations. A recorded pull request appears as a work result alongside
 the native lifecycle state.</p>
+<p>Use <code>review</code> to read the typed history for an exact recorded turn as JSON.
+Omit <code>--worker-id</code> to select its workerless records. Use the same scope and
+the returned cursor fields to load an older page.</p>
+<pre><code class="language-sh">&quot;$agenturm&quot; review --db &quot;$state/history.sqlite&quot; \
+  --harness-id &lt;source-id&gt; --session-id &lt;session-id&gt; --turn-id &lt;turn-id&gt;
+</code></pre>
 <h2>Back up and restore</h2>
 <p>Create a history-only snapshot while collection is running or stopped.</p>
 <pre><code class="language-sh">&quot;$agenturm&quot; backup --db &quot;$state/history.sqlite&quot; --output &quot;$state/history-backup.sqlite&quot;

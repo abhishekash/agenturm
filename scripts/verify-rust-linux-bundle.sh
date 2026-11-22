@@ -161,6 +161,13 @@ jq -e '[.sources[].plugin_id] | sort == ["example.rust-codex-harness", "example.
 "${isolated[@]}" collect --config "$config" --db "$db"
 "${isolated[@]}" query --db "$db" > "$state/query.json"
 expect_usage < "$state/query.json"
+codex_source=$(jq -er '.sources[] | select(.plugin_id == "example.rust-codex-harness") | .source_id' "$config")
+"${isolated[@]}" review --db "$db" --harness-id "$codex_source" \
+    --session-id bundle-codex-session --turn-id turn-1 | jq -e '
+    .observations | length > 0 and
+        all(.identity.turn_id == "turn-1" and .identity.worker_id == null) and
+        any(.observation.kind == "lifecycle" and .observation.state == "completed")
+' > /dev/null
 
 "${isolated[@]}" collect --config "$config" --db "$db" > "$state/restart.log"
 expect_replay "$state/restart.log"

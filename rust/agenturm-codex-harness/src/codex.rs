@@ -4,7 +4,7 @@
 
 use agenturm_jsonl_source::Result;
 use agenturm_protocol::observation::{
-    McpCall, McpMethod, RelationshipKind, is_github_pull_request, is_mcp_identifier,
+    FileEdit, McpCall, McpMethod, RelationshipKind, is_github_pull_request, is_mcp_identifier,
     is_valid_mcp_metadata,
 };
 use serde_json::{Value, json};
@@ -278,36 +278,74 @@ fn mcp_call(item: &Value, result: &str) -> Option<McpCall> {
     })
 }
 
+fn file_edit(item: &Value) -> Option<FileEdit> {
+    let changes = item.get("changes")?.as_object()?;
+    if !(1..=FileEdit::MAX_CHANGES).contains(&changes.len()) {
+        return None;
+    }
+    let mut summary = FileEdit::default();
+    for change in changes.values() {
+        match change.get("type")?.as_str()? {
+            "add" => summary.added += 1,
+            "delete" => summary.deleted += 1,
+            "update" => match change.get("move_path") {
+                None | Some(Value::Null) => summary.updated += 1,
+                Some(Value::String(path)) if !path.is_empty() => summary.moved += 1,
+                _ => return None,
+            },
+            _ => return None,
+        }
+    }
+    Some(summary)
+}
+
 fn check_category(item: &Value) -> Option<&'static str> {
     let command = item.get("command")?.as_array()?;
-    if command.is_empty() || command.len() > 8 {
+    if command.is_empty() || command.len() > 128 {
         return None;
     }
     let words: Vec<&str> = command.iter().map(Value::as_str).collect::<Option<_>>()?;
-    let raw = if words.len() >= 3 && matches!(words[1], "-lc" | "-c") {
-        words[2]
-    } else {
-        return None;
+    let expanded;
+    let words = match words.as_slice() {
+        [shell, "-c" | "-lc", raw]
+            if matches!(executable_name(shell), Some("bash" | "dash" | "sh" | "zsh")) =>
+        {
+            expanded = single_shell_command(raw)?;
+            expanded.iter().map(String::as_str).collect()
+        }
+        _ => words,
     };
-    if raw.len() > 160
-        || raw.bytes().any(|byte| {
-            matches!(
-                byte,
-                b';' | b'|' | b'&' | b'>' | b'<' | b'\n' | b'\r' | b'$'
-            )
-        })
-    {
+    let (program, args) = words.split_first()?;
+    let (program, args) = match (executable_name(program)?, args) {
+        ("uv", ["run", args @ ..]) => {
+            let args = args.strip_prefix(&["--no-sync"]).unwrap_or(args);
+            let (program, args) = args.split_first()?;
+            (executable_name(program)?, args)
+        }
+        (program, args) => (program, args),
+    };
+    if args.iter().any(|arg| {
+        matches!(
+            *arg,
+            "-h" | "--help"
+                | "--version"
+                | "--collect-only"
+                | "--co"
+                | "--dry-run"
+                | "--list"
+                | "--no-run"
+        )
+    }) {
         return None;
     }
-    let parts: Vec<_> = raw.split_whitespace().collect();
-    match parts.as_slice() {
-        ["cargo", "test", ..]
-        | ["pytest", ..]
-        | ["python", "-m", "pytest", ..]
-        | ["go", "test", ..] => Some("test"),
-        ["cargo", "clippy", ..] | ["ruff", "check", ..] => Some("lint"),
-        ["cargo", "build", ..] | ["go", "build", ..] => Some("build"),
-        ["npm", "run", name] | ["pnpm", "run", name] | ["yarn", name] => {
+    match (program, args) {
+        ("cargo" | "go", ["test", ..])
+        | ("pytest", _)
+        | ("python" | "python3", ["-m", "pytest" | "unittest", ..])
+        | ("npm" | "pnpm", ["test", ..]) => Some("test"),
+        ("cargo", ["clippy", ..]) | ("ruff", ["check", ..]) => Some("lint"),
+        ("cargo" | "go", ["build", ..]) => Some("build"),
+        ("npm" | "pnpm", ["run", name]) | ("yarn", [name]) => {
             if *name == "check" || *name == "typecheck" || *name == "lint" {
                 Some("lint")
             } else if *name == "build" {
@@ -317,6 +355,32 @@ fn check_category(item: &Value) -> Option<&'static str> {
             } else {
                 None
             }
+        }
+        _ => None,
+    }
+}
+
+fn check_result(item: &Value) -> Option<&'static str> {
+    match (
+        item.get("status").and_then(Value::as_str),
+        item.get("exit_code").and_then(Value::as_i64),
+    ) {
+        (Some("completed" | "success" | "ok"), Some(0)) => Some("passed"),
+        (Some("failed" | "error"), Some(code)) if code > 0 => Some("failed"),
+        _ => None,
+    }
+}
+
+fn task_completion(payload: &Value) -> Option<(&'static str, &'static str)> {
+    match payload.get("error") {
+        None | Some(Value::Null) => Some(("completed", "codex_task_complete")),
+        Some(error)
+            if error
+                .get("message")
+                .and_then(Value::as_str)
+                .is_some_and(|message| !message.is_empty()) =>
+        {
+            Some(("failed", "codex_task_failed"))
         }
         _ => None,
     }
@@ -632,19 +696,28 @@ pub(crate) fn translate_line(
                             "info",
                         ));
                     } else {
-                        let (state, reason) = match event {
-                            "task_complete" => ("completed", "codex_task_complete"),
-                            "task_aborted" => ("interrupted", "codex_task_aborted"),
-                            _ => ("interrupted", "codex_turn_aborted"),
+                        let terminal = match event {
+                            "task_complete" => task_completion(payload),
+                            "task_aborted" => Some(("interrupted", "codex_task_aborted")),
+                            _ => Some(("interrupted", "codex_turn_aborted")),
                         };
-                        facts.push(fact(
-                            format!("{base}:lifecycle"),
-                            "lifecycle",
-                            &time_ns,
-                            &row_context,
-                            json!({"state":state,"reason_code":reason}),
-                            None,
-                        ));
+                        if let Some((state, reason)) = terminal {
+                            facts.push(fact(
+                                format!("{base}:lifecycle"),
+                                "lifecycle",
+                                &time_ns,
+                                &row_context,
+                                json!({"state":state,"reason_code":reason}),
+                                None,
+                            ));
+                        } else {
+                            facts.push(diagnostic(
+                                format!("{base}:unknown-outcome"),
+                                &time_ns,
+                                "unsupported_codex_event",
+                                "warning",
+                            ));
+                        }
                     }
                 }
                 "approval_request" | "request_user_input" => {
@@ -740,11 +813,34 @@ pub(crate) fn translate_line(
                                         Some(operation),
                                     ));
                                 }
+                                if item_kind == "FileChange"
+                                    && result == "succeeded"
+                                    && !row_context.turn_id.is_empty()
+                                    && let Some(operation) = operation.as_deref()
+                                    && let Some(edit) = file_edit(item)
+                                {
+                                    facts.push(fact(
+                                        format!("{base}:file-edit"),
+                                        "file_edit",
+                                        &time_ns,
+                                        &row_context,
+                                        json!(edit),
+                                        Some(operation),
+                                    ));
+                                }
                                 if item_kind == "CommandExecution"
                                     && let Some(check) = check_category(item)
+                                    && let Some(outcome) = check_result(item)
+                                    && let Some(operation) = operation.as_deref()
                                 {
-                                    facts.push(fact(format!("{base}:check"), "check", &time_ns,
-                                    &row_context, json!({"category":check,"result":if result == "succeeded" {"passed"} else if result == "failed" {"failed"} else {"unknown"}}), None));
+                                    facts.push(fact(
+                                        format!("{base}:check"),
+                                        "check",
+                                        &time_ns,
+                                        &row_context,
+                                        json!({"category":check,"result":outcome}),
+                                        Some(operation),
+                                    ));
                                 }
                                 if item_kind == "CommandExecution"
                                     && result == "succeeded"
@@ -947,6 +1043,122 @@ mod tests {
                 .unwrap()
                 .contains("private answer")
         );
+    }
+
+    #[test]
+    fn task_complete_preserves_a_structured_failure_without_retaining_error_content() {
+        let context =
+            header_identity(br#"{"type":"session_meta","payload":{"id":"thread-1"}}"#).unwrap();
+        let (_, running) = translate(json!({"type":"task_started","turn_id":"turn-1"}), &context);
+        let (facts, _) = translate(
+            json!({"type":"task_complete","turn_id":"turn-1","error":{
+                "message":"private provider failure","codex_error_info":"other"}}),
+            &running,
+        );
+        assert_eq!(facts[0]["identity"]["turn_id"], "turn-1");
+        assert_eq!(
+            facts[0]["payload"],
+            json!({"state":"failed","reason_code":"codex_task_failed"})
+        );
+        assert!(
+            !serde_json::to_string(&facts)
+                .unwrap()
+                .contains("private provider failure")
+        );
+        let (ambiguous, _) = translate(
+            json!({"type":"task_complete","turn_id":"turn-1","error":{"unexpected":true}}),
+            &running,
+        );
+        assert_eq!(ambiguous[0]["kind"], "diagnostic");
+    }
+
+    #[test]
+    fn checks_require_exact_command_shape_and_a_consistent_native_exit() {
+        let context =
+            header_identity(br#"{"type":"session_meta","payload":{"id":"thread-1"}}"#).unwrap();
+        for (command, status, exit, expected) in [
+            (
+                json!([
+                    "/usr/bin/zsh",
+                    "-lc",
+                    ".venv/bin/python -m unittest tests.test_example"
+                ]),
+                "completed",
+                json!(0),
+                Some("passed"),
+            ),
+            (
+                json!([
+                    "/usr/bin/zsh",
+                    "-lc",
+                    "uv run --no-sync python -m unittest tests.test_example"
+                ]),
+                "failed",
+                json!(1),
+                Some("failed"),
+            ),
+            (
+                json!([
+                    "/usr/bin/zsh",
+                    "-lc",
+                    "python -m unittest tests.test_example"
+                ]),
+                "completed",
+                Value::Null,
+                None,
+            ),
+            (
+                json!([
+                    "/usr/bin/zsh",
+                    "-lc",
+                    "python -m unittest tests.test_example"
+                ]),
+                "failed",
+                json!(0),
+                None,
+            ),
+            (
+                json!([
+                    "/usr/bin/zsh",
+                    "-lc",
+                    "python -m unittest tests.test_example || true"
+                ]),
+                "completed",
+                json!(0),
+                None,
+            ),
+            (
+                json!(["/usr/bin/zsh", "-lc", "cargo test --no-run"]),
+                "completed",
+                json!(0),
+                None,
+            ),
+            (
+                json!(["some-wrapper", "-lc", "pytest tests"]),
+                "completed",
+                json!(0),
+                None,
+            ),
+        ] {
+            let mut item = json!({"type":"CommandExecution","id":"operation","command":command,"status":status});
+            if !exit.is_null() {
+                item["exit_code"] = exit;
+            }
+            let (facts, _) = translate(
+                json!({"type":"item_completed","turn_id":"turn-1","item":item}),
+                &context,
+            );
+            assert_eq!(
+                facts
+                    .iter()
+                    .find(|fact| fact["kind"] == "check")
+                    .and_then(|fact| fact["payload"]["result"].as_str()),
+                expected
+            );
+            if expected.is_some() {
+                assert_eq!(facts[0]["identity"], facts[1]["identity"]);
+            }
+        }
     }
 
     #[test]

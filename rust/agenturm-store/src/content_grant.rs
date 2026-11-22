@@ -14,6 +14,7 @@ pub enum ContentKind {
     ClaudeUserText,
     KiroUserText,
     OpenCodeUserText,
+    CodexMcpPayload,
 }
 
 impl ContentKind {
@@ -24,6 +25,7 @@ impl ContentKind {
             Self::ClaudeUserText => "claude.user_text",
             Self::KiroUserText => "kiro.user_text",
             Self::OpenCodeUserText => "opencode.user_text",
+            Self::CodexMcpPayload => "codex.mcp_payload",
         }
     }
 }
@@ -74,8 +76,8 @@ impl fmt::Debug for ContentGrant {
     }
 }
 
-/// Metadata from the exact retained user message and its still-current
-/// committed source batch. The host must independently verify source bytes.
+/// Metadata from the exact retained user message and its admission and
+/// current source checkpoints. The host independently verifies source bytes.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct UserTextEvidence {
     pub cursor: String,
@@ -87,11 +89,32 @@ pub struct UserTextEvidence {
     pub revision: u32,
 }
 
-pub(super) fn create_schema(connection: &Connection, modern: bool) -> Result<()> {
-    let rule = if modern {
-        "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text')"
-    } else {
-        "kind = 'pi.user_text'"
+/// The exact durable MCP occurrence to be checked against a native source.
+pub struct CodexMcpSelection<'a> {
+    pub event_id: &'a str,
+    pub revision: u32,
+    pub session_id: &'a str,
+    pub operation_id: &'a str,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct CodexMcpEvidence {
+    pub cursor: String,
+    pub admitted_cursor: String,
+    pub turn_id: String,
+    pub observed_at_unix_ns: u64,
+}
+
+pub(super) fn create_schema(connection: &Connection, version: i64) -> Result<()> {
+    let rule = match version {
+        9 => "kind = 'pi.user_text'",
+        11 => {
+            "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text')"
+        }
+        12 => {
+            "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload')"
+        }
+        _ => return Err(StoreError::UnsupportedSchema(version)),
     };
     connection.execute_batch(&format!(
         "CREATE TABLE agenturm_content_grants (
@@ -122,26 +145,16 @@ pub(super) fn record_receipt_proof(
     request_id: &str,
     cursor: &str,
 ) -> Result<()> {
-    let Some(native) = cursor.strip_prefix("v2:") else {
+    let proof = if let Some(native) = cursor.strip_prefix("v2:") {
+        jsonl_receipt_proof(native)
+    } else if let Some(native) = cursor.strip_prefix("oc4:") {
+        sqlite_receipt_proof(native)
+    } else {
+        None
+    };
+    let Some(proof) = proof else {
         return Ok(());
     };
-    let fields: Vec<_> = native.splitn(7, ':').collect();
-    if fields.len() != 7
-        || fields[..3]
-            .iter()
-            .any(|value| value.parse::<u64>().is_err())
-        || fields[3..6].iter().any(|value| {
-            value.len() != 64
-                || !value
-                    .bytes()
-                    .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        })
-    {
-        return Ok(());
-    }
-    // Keep only the file identity, hash lengths and digests. Adapter
-    // checkpoint details are deliberately absent from historical proofs.
-    let proof = format!("v2:{}:", fields[..6].join(":"));
     connection.execute(
         "INSERT INTO agenturm_content_cursor_proofs(request_id, cursor) VALUES (?1, ?2)",
         params![request_id, proof],
@@ -149,12 +162,50 @@ pub(super) fn record_receipt_proof(
     Ok(())
 }
 
+fn jsonl_receipt_proof(native: &str) -> Option<String> {
+    let fields: Vec<_> = native.splitn(7, ':').collect();
+    if fields.len() != 7
+        || fields[..3]
+            .iter()
+            .any(|value| value.parse::<u64>().is_err())
+        || fields[3..6].iter().any(|value| !valid_digest(value))
+    {
+        return None;
+    }
+    // Keep only the file identity, hash lengths and digests. Adapter
+    // checkpoint details are deliberately absent from historical proofs.
+    Some(format!("v2:{}:", fields[..6].join(":")))
+}
+
+fn sqlite_receipt_proof(native: &str) -> Option<String> {
+    let fields: Vec<_> = native.split(':').skip(12).collect();
+    if !(1..=6).contains(&fields.len()) || fields.iter().any(|value| !valid_digest(value)) {
+        return None;
+    }
+    Some(format!("oc4:{}", fields.join(":")))
+}
+
+fn valid_digest(value: &str) -> bool {
+    value.len() == 64
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
 pub(super) fn migrate_v10(connection: &Connection) -> Result<()> {
+    migrate_grant_schema(connection, 11)?;
+    create_receipt_proof_schema(connection)
+}
+
+pub(super) fn migrate_v11(connection: &Connection) -> Result<()> {
+    migrate_grant_schema(connection, 12)
+}
+
+pub(super) fn migrate_grant_schema(connection: &Connection, version: i64) -> Result<()> {
     connection.execute_batch(
         "ALTER TABLE agenturm_content_grants RENAME TO agenturm_prior_content_grants;",
     )?;
-    create_schema(connection, true)?;
-    create_receipt_proof_schema(connection)?;
+    create_schema(connection, version)?;
     connection.execute_batch(
         "INSERT INTO agenturm_content_grants
              SELECT source_id, kind, source_fingerprint, epoch, nonce, enabled
@@ -320,6 +371,58 @@ impl Store {
         self.current_user_text_candidates(scope, grant, None, Some(session_id), None)
     }
 
+    /// Joins the selected occurrence to its byte proof while the disclosure
+    /// caller holds the writer fence. User-text approvals grant no access here.
+    pub fn current_codex_mcp_evidence(
+        &self,
+        scope: &ContentGrantScope,
+        grant: &ContentGrant,
+        selection: &CodexMcpSelection<'_>,
+    ) -> Result<Option<CodexMcpEvidence>> {
+        self.require_content_writer()?;
+        if scope.kind != ContentKind::CodexMcpPayload {
+            return Err(StoreError::StaleContentGrant);
+        }
+        self.verify_content_grant(scope, grant)?;
+        self.connection
+            .query_row(
+                "SELECT state.cursor, proof.cursor, o.turn_id, o.observed_at_unix_ns
+                 FROM agenturm_observations AS o
+                 JOIN agenturm_source_state AS state ON state.source_id = o.source_id
+                 JOIN agenturm_content_cursor_proofs AS proof ON proof.request_id = o.request_id
+                 WHERE o.source_id = ?1 AND o.event_id = ?2 AND o.revision = ?3
+                   AND o.session_id = ?4 AND o.operation_id = ?5
+                   AND o.scope = 'session' AND o.worker_id IS NULL AND o.turn_id IS NOT NULL
+                   AND proof.cursor GLOB 'v2:*' AND json_extract(o.kind_json, '$.kind') = 'mcp_call'
+                   AND NOT EXISTS (
+                       SELECT 1 FROM agenturm_observations AS newer
+                       WHERE newer.source_id = o.source_id AND newer.event_id = o.event_id
+                             AND newer.revision > o.revision
+                       UNION ALL
+                       SELECT 1 FROM agenturm_retired_observations AS newer
+                       WHERE newer.source_id = o.source_id AND newer.event_id = o.event_id
+                             AND newer.revision > o.revision
+                   )",
+                params![
+                    scope.source_id.as_str(),
+                    selection.event_id,
+                    selection.revision,
+                    selection.session_id,
+                    selection.operation_id,
+                ],
+                |row| {
+                    Ok(CodexMcpEvidence {
+                        cursor: row.get(0)?,
+                        admitted_cursor: row.get(1)?,
+                        turn_id: row.get(2)?,
+                        observed_at_unix_ns: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(Into::into)
+    }
+
     fn require_content_writer(&self) -> Result<()> {
         #[cfg(target_os = "linux")]
         if self.writer_lease.is_none() {
@@ -339,6 +442,9 @@ impl Store {
         revision: Option<u32>,
     ) -> Result<Vec<(String, UserTextEvidence)>> {
         self.require_content_writer()?;
+        if scope.kind == ContentKind::CodexMcpPayload {
+            return Err(StoreError::StaleContentGrant);
+        }
         self.verify_content_grant(scope, grant)?;
         let version = self
             .connection
@@ -352,20 +458,22 @@ impl Store {
              FROM agenturm_observations AS o
              JOIN agenturm_source_state AS state ON state.source_id = o.source_id
              LEFT JOIN agenturm_content_cursor_proofs AS proof ON proof.request_id = o.request_id
+                AND ((?6 AND proof.cursor GLOB 'oc4:*') OR (NOT ?6 AND proof.cursor GLOB 'v2:*'))
              WHERE o.source_id = ?1 AND (?2 IS NULL OR o.event_id = ?2) AND (?3 IS NULL OR o.revision = ?3)
                AND (?4 IS NULL OR o.session_id = ?4)
                AND o.scope = 'session' AND o.turn_id IS NOT NULL AND o.operation_id IS NULL
                AND json_extract(o.kind_json, '$.kind') = 'message'
                AND json_extract(o.kind_json, '$.role') = 'user'
-               AND ((?6 AND proof.request_id IS NOT NULL) OR o.request_id = (
+               AND (proof.request_id IS NOT NULL OR ((NOT ?6 OR state.cursor GLOB 'oc3:*') AND o.request_id = (
                    SELECT newest.request_id FROM agenturm_history_batches AS newest
                    JOIN agenturm_ingest_receipts AS receipt USING (request_id)
                    WHERE receipt.source_id = ?1 ORDER BY newest.sequence DESC LIMIT 1
-               ))
+               )))
                AND NOT EXISTS (
                    SELECT 1 FROM agenturm_observations AS newer
                    WHERE newer.source_id = o.source_id AND newer.event_id = o.event_id
                          AND newer.revision > o.revision
+                         AND NOT (?6 AND ?2 IS NOT NULL AND proof.request_id IS NOT NULL)
                    UNION ALL
                    SELECT 1 FROM agenturm_retired_observations AS newer
                    WHERE newer.source_id = o.source_id AND newer.event_id = o.event_id
@@ -381,7 +489,7 @@ impl Store {
                 revision,
                 session_id,
                 MAX_REFERENCES,
-                scope.kind != ContentKind::OpenCodeUserText
+                scope.kind == ContentKind::OpenCodeUserText
             ],
             |row| {
                 let evidence = UserTextEvidence {

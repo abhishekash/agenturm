@@ -7,9 +7,12 @@ publish = false
 license = "MIT"
 
 [dependencies]
+agenturm-kernel = { path = "../agenturm-kernel" }
 agenturm-storage-admission = { path = "../agenturm-storage-admission" }
 agenturm-storage-service-contract = { path = "../agenturm-storage-service-contract" }
+agenturm-store = { path = "../agenturm-store" }
 libc = "0.2"
+serde = { version = "1", features = ["derive"] }
 
 [[bin]]
 name = "agenturm-storage-service"

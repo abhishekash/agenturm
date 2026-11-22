@@ -320,6 +320,95 @@ fn codex_preview_reveals_only_exact_completed_native_user_items() {
     };
     assert_eq!(checked(preview()), "\"review recorded output\"\n");
     assert!(!checked(run(&["query", "--db", db_arg])).contains("review recorded output"));
+
+    let calls = concat!(
+        r#"{"type":"event_msg","timestamp":"2026-11-20T12:00:03Z","payload":{"type":"item_completed","thread_id":"codex-fixture","turn_id":"turn-1","item":{"type":"McpToolCall","id":"operation-a","server":"fixture","tool":"alpha","status":"completed","arguments":{"query":"fixture first argument"},"result":{"content":"fixture first result"}}}}"#,
+        "\n",
+        r#"{"type":"event_msg","timestamp":"2026-11-20T12:00:04Z","payload":{"type":"item_completed","thread_id":"codex-fixture","turn_id":"turn-1","item":{"type":"McpToolCall","id":"operation-b","server":"fixture","tool":"beta","status":"completed","arguments":{"query":"fixture second argument"}}}}"#,
+        "\n",
+        r#"{"type":"event_msg","timestamp":"2026-11-20T12:00:05Z","payload":{"type":"item_completed","thread_id":"codex-fixture","turn_id":"turn-1","item":{"type":"McpToolCall","id":"operation-c","server":"fixture","tool":"gamma","status":"completed"}}}"#,
+        "\n",
+        r#"{"type":"event_msg","timestamp":"2026-11-20T12:00:06Z","payload":{"type":"item_completed","thread_id":"codex-fixture","turn_id":"turn-1","item":{"type":"McpToolCall","id":"operation-d","server":"fixture","tool":"delta","status":"completed","arguments":null,"result":false}}}"#,
+        "\n",
+    );
+    fs::write(&source, format!("{initial}{calls}")).unwrap();
+    checked(run(&["collect", "--config", config_arg, "--db", db_arg]));
+    let query = checked(run(&["query", "--db", db_arg]));
+    assert!(!query.contains("fixture first argument"));
+    assert!(!query.contains("fixture first result"));
+    assert!(!query.contains("fixture second argument"));
+    let evidence: Value = serde_json::from_str(&query).unwrap();
+    let mcp_row = |tool: &str| {
+        evidence["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| {
+                row["observation"]["kind"] == "mcp_call" && row["observation"]["tool"] == tool
+            })
+            .unwrap()
+    };
+    let mcp = |tool, operation_tool, session| {
+        content(
+            "preview",
+            &[
+                "--kind",
+                "codex.mcp_payload",
+                "--config",
+                config_arg,
+                "--event-id",
+                mcp_row(tool)["event_id"].as_str().unwrap(),
+                "--revision",
+                "0",
+                "--session-id",
+                session,
+                "--operation-id",
+                mcp_row(operation_tool)["identity"]["operation_id"]
+                    .as_str()
+                    .unwrap(),
+            ],
+        )
+    };
+    denied(mcp("alpha", "alpha", "codex-fixture"), "requires approval");
+    checked(content(
+        "grant",
+        &["--kind", "codex.mcp_payload", "--config", config_arg],
+    ));
+    denied(mcp("alpha", "beta", "codex-fixture"), "no verified payload");
+    denied(
+        mcp("alpha", "alpha", "wrong-session"),
+        "no verified payload",
+    );
+    denied(
+        mcp("gamma", "gamma", "codex-fixture"),
+        "no verified payload",
+    );
+    let revealed = checked(mcp("alpha", "alpha", "codex-fixture"));
+    assert_eq!(
+        serde_json::from_str::<Value>(&revealed).unwrap(),
+        json!({
+            "arguments": {"query": "fixture first argument"},
+            "result": {"content": "fixture first result"},
+        })
+    );
+    let partial = checked(mcp("beta", "beta", "codex-fixture"));
+    assert_eq!(
+        serde_json::from_str::<Value>(&partial).unwrap(),
+        json!({
+            "arguments": {"query": "fixture second argument"},
+        })
+    );
+    let explicit = checked(mcp("delta", "delta", "codex-fixture"));
+    assert_eq!(
+        serde_json::from_str::<Value>(&explicit).unwrap(),
+        json!({
+            "arguments": null,
+            "result": false,
+        })
+    );
+    checked(content("revoke", &["--kind", "codex.mcp_payload"]));
+    denied(mcp("alpha", "alpha", "codex-fixture"), "requires approval");
+    assert_eq!(checked(preview()), "\"review recorded output\"\n");
     fs::write(
         &source,
         initial.replace("review recorded output", "edited recorded output"),

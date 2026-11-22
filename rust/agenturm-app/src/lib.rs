@@ -183,6 +183,11 @@ pub enum Command {
         extensions: ResolvedExtensionCatalog,
     },
     Query(HistoryQueryOptions),
+    Review {
+        query: HistoryQueryOptions,
+        turn_id: String,
+        worker_id: Option<String>,
+    },
     Backup {
         db: PathBuf,
         output: PathBuf,
@@ -711,7 +716,8 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
             extensions: options.extensions,
         }),
         Some("inspect") => parse_inspect_options(&args[1..]).map(Command::Inspect),
-        Some("query") => parse_query_options(&args[1..]).map(Command::Query),
+        Some("query") => parse_query_options(&args[1..], false),
+        Some("review") => parse_query_options(&args[1..], true),
         Some("backup") => {
             if let Ok((db, output)) = parse_db_and_option(&args[1..], "--bundle") {
                 return Ok(Command::BackupWorkspace {
@@ -1317,10 +1323,19 @@ fn default_cockpit_extensions(
     }
 }
 
-fn parse_query_options(args: &[String]) -> Result<HistoryQueryOptions, String> {
+fn parse_query_options(args: &[String], review: bool) -> Result<Command, String> {
+    let usage = || {
+        if review {
+            "usage: agenturm review --db <path> --harness-id <id> --session-id <id> --turn-id <id> [--worker-id <id>] [query paging options]".to_owned()
+        } else {
+            self::usage()
+        }
+    };
     let mut db = None;
     let mut harness_id = None;
     let mut session_id = None;
+    let mut turn_id = None;
+    let mut worker_id = None;
     let mut before_timestamp = None;
     let mut before_harness = None;
     let mut before_event = None;
@@ -1338,6 +1353,8 @@ fn parse_query_options(args: &[String]) -> Result<HistoryQueryOptions, String> {
             "--db" => &mut db,
             "--harness-id" => &mut harness_id,
             "--session-id" => &mut session_id,
+            "--turn-id" if review => &mut turn_id,
+            "--worker-id" if review => &mut worker_id,
             "--before-timestamp-ns" => &mut before_timestamp,
             "--before-harness-id" => &mut before_harness,
             "--before-event-id" => &mut before_event,
@@ -1388,14 +1405,29 @@ fn parse_query_options(args: &[String]) -> Result<HistoryQueryOptions, String> {
     if limit == 0 || limit > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
         return Err(usage());
     }
-    Ok(HistoryQueryOptions {
+    let query = HistoryQueryOptions {
         db: PathBuf::from(db.ok_or_else(usage)?),
         harness_id,
         session_id,
         before,
         snapshot_id,
         limit,
-    })
+    };
+    if review {
+        let Some(turn_id) = turn_id else {
+            return Err(usage());
+        };
+        if query.harness_id.is_none() || query.session_id.is_none() {
+            return Err(usage());
+        }
+        Ok(Command::Review {
+            query,
+            turn_id,
+            worker_id,
+        })
+    } else {
+        Ok(Command::Query(query))
+    }
 }
 
 fn parse_ingest_options(
@@ -1840,6 +1872,22 @@ fn load_workspace_history(
 /// Executes one bounded read-only history query and returns a stable cursor
 /// that can be passed back as `--before-*` to fetch the next older page.
 pub fn execute_query(options: &HistoryQueryOptions) -> Result<String, String> {
+    execute_history_query(options, None)
+}
+
+/// Reads one exact recorded turn. An omitted worker selects only workerless evidence.
+pub fn execute_review(
+    options: &HistoryQueryOptions,
+    turn_id: &str,
+    worker_id: Option<&str>,
+) -> Result<String, String> {
+    execute_history_query(options, Some((turn_id, worker_id)))
+}
+
+fn execute_history_query(
+    options: &HistoryQueryOptions,
+    turn: Option<(&str, Option<&str>)>,
+) -> Result<String, String> {
     let store = Store::open_read_only(&options.db)
         .map_err(|error| format!("open existing store failed: {error}"))?;
     let query = ObservationQuery {
@@ -1849,9 +1897,13 @@ pub fn execute_query(options: &HistoryQueryOptions) -> Result<String, String> {
         snapshot_id: options.snapshot_id,
         limit: options.limit,
     };
-    let page = store
-        .query_observations(&query)
-        .map_err(|error| format!("query store failed: {error}"))?;
+    let page = match turn {
+        Some((turn_id, worker_id)) => {
+            store.query_worker_turn_observations(&query, turn_id, worker_id)
+        }
+        None => store.query_observations(&query),
+    }
+    .map_err(|error| format!("query store failed: {error}"))?;
     let next_before = page
         .has_more
         .then(|| {
@@ -1886,6 +1938,10 @@ pub fn execute_query(options: &HistoryQueryOptions) -> Result<String, String> {
                 ObservationKind::Tool { category, result } => {
                     serde_json::json!({"kind":"tool", "category":category, "result":result})
                 }
+                ObservationKind::FileEdit(edit) => serde_json::json!({
+                    "kind":"file_edit", "added":edit.added, "updated":edit.updated,
+                    "deleted":edit.deleted, "moved":edit.moved,
+                }),
                 ObservationKind::McpCall {
                     server,
                     tool,
@@ -2918,6 +2974,7 @@ pub fn render(command: Command) -> String {
             "       agenturm cockpit [--db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]]\n",
             "       agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]\n",
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
+            "       agenturm review --db <path> --harness-id <id> --session-id <id> --turn-id <id> [--worker-id <id>] [query paging options]\n",
             "       agenturm backup --db <path> --output <new-path>\n",
             "       agenturm backup --db <path> --bundle <new-directory>\n",
             "       agenturm restore --bundle <directory> --output <new-directory>\n",
@@ -2964,7 +3021,9 @@ pub fn render(command: Command) -> String {
         | Command::Content(_) => String::new(),
         Command::Discover { .. } | Command::Cockpit { .. } => String::new(),
         Command::Inspect(_) => String::new(),
-        Command::Query(_) | Command::Attention(_) | Command::Task(_) => String::new(),
+        Command::Query(_) | Command::Review { .. } | Command::Attention(_) | Command::Task(_) => {
+            String::new()
+        }
         Command::Ingest(_) | Command::ImportTraces(_) | Command::ServeTraces(_) | Command::Run(_) => String::new(),
         Command::Collect(_) => String::new(),
         Command::Service(_) => String::new(),

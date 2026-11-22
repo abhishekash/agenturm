@@ -1,4 +1,4 @@
-//! Host verification for explicit user-text previews from installed harnesses.
+//! Host verification for explicit private previews from installed harnesses.
 
 use agenturm_kernel::ExtensionId;
 use agenturm_store::Store;
@@ -6,7 +6,7 @@ use serde::Serialize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "Usage: agenturm content grant --db <path> --config <path> --source-id <id>\n       agenturm content revoke --db <path> --source-id <id>\n       agenturm content list --db <path> --config <path> --source-id <id> --session-id <id>\n       agenturm content preview --db <path> --config <path> --source-id <id> [--session-id <id>] --event-id <id> --revision <revision>";
+const USAGE: &str = "Usage: agenturm content grant --db <path> --config <path> --source-id <id> [--kind codex.mcp_payload]\n       agenturm content revoke --db <path> --source-id <id> [--kind codex.mcp_payload]\n       agenturm content list --db <path> --config <path> --source-id <id> --session-id <id>\n       agenturm content preview --db <path> --config <path> --source-id <id> [--session-id <id>] --event-id <id> --revision <revision>\n       agenturm content preview --kind codex.mcp_payload --db <path> --config <path> --source-id <id> --session-id <id> --operation-id <id> --event-id <id> --revision <revision>";
 
 /// Proof-eligible metadata for a single retained user prompt. The selection
 /// grants no authority and is checked anew before any text is delivered.
@@ -29,8 +29,11 @@ pub struct ContentOptions {
 enum Action {
     Grant {
         config: PathBuf,
+        mcp: bool,
     },
-    Revoke,
+    Revoke {
+        mcp_only: bool,
+    },
     List {
         config: PathBuf,
         session_id: String,
@@ -38,6 +41,13 @@ enum Action {
     Preview {
         config: PathBuf,
         session_id: Option<String>,
+        event_id: String,
+        revision: u32,
+    },
+    PreviewMcp {
+        config: PathBuf,
+        session_id: String,
+        operation_id: String,
         event_id: String,
         revision: u32,
     },
@@ -60,12 +70,18 @@ pub(crate) fn parse(args: &[String]) -> Result<ContentOptions, String> {
     let db = PathBuf::from(values.remove("--db").ok_or(USAGE)?);
     let source_id = ExtensionId::parse(values.remove("--source-id").ok_or(USAGE)?)
         .map_err(|_| "invalid content source ID")?;
+    let mcp = match values.remove("--kind") {
+        None => false,
+        Some("codex.mcp_payload") => true,
+        _ => return Err(USAGE.into()),
+    };
     let action = match action.as_str() {
         "grant" => Action::Grant {
             config: PathBuf::from(values.remove("--config").ok_or(USAGE)?),
+            mcp,
         },
-        "revoke" => Action::Revoke,
-        "list" => Action::List {
+        "revoke" => Action::Revoke { mcp_only: mcp },
+        "list" if !mcp => Action::List {
             config: PathBuf::from(values.remove("--config").ok_or(USAGE)?),
             session_id: values.remove("--session-id").ok_or(USAGE)?.to_owned(),
         },
@@ -73,17 +89,27 @@ pub(crate) fn parse(args: &[String]) -> Result<ContentOptions, String> {
             let config = PathBuf::from(values.remove("--config").ok_or(USAGE)?);
             let event_id = values.remove("--event-id").ok_or(USAGE)?;
             if event_id.len() > 256 {
-                return Err("Prompt preview event ID exceeds its limit".into());
+                return Err("Content preview event ID exceeds its limit".into());
             }
             let revision = values
                 .remove("--revision")
                 .and_then(|value| value.parse::<u32>().ok())
-                .ok_or("invalid prompt revision")?;
-            Action::Preview {
-                config,
-                session_id: values.remove("--session-id").map(str::to_owned),
-                event_id: event_id.to_owned(),
-                revision,
+                .ok_or("invalid content revision")?;
+            if mcp {
+                Action::PreviewMcp {
+                    config,
+                    session_id: values.remove("--session-id").ok_or(USAGE)?.to_owned(),
+                    operation_id: values.remove("--operation-id").ok_or(USAGE)?.to_owned(),
+                    event_id: event_id.to_owned(),
+                    revision,
+                }
+            } else {
+                Action::Preview {
+                    config,
+                    session_id: values.remove("--session-id").map(str::to_owned),
+                    event_id: event_id.to_owned(),
+                    revision,
+                }
             }
         }
         _ => return Err(USAGE.into()),
@@ -165,6 +191,36 @@ pub(super) fn reveal_user_prompt(
     )
 }
 
+pub(super) fn reveal_mcp_payload(
+    db: &Path,
+    config: &Path,
+    source_id: &ExtensionId,
+    selection: &agenturm_store::CodexMcpSelection<'_>,
+    output: &mut dyn Write,
+    writer: Option<&Store>,
+) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        if let Some(writer) = writer {
+            linux::reveal_mcp_fenced(writer, config, source_id, selection, output, true)
+        } else {
+            linux::reveal_mcp_fenced(
+                &linux::open_store(db)?,
+                config,
+                source_id,
+                selection,
+                output,
+                true,
+            )
+        }
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (db, config, source_id, selection, output, writer);
+        Err("MCP payload preview is available on Linux".into())
+    }
+}
+
 pub fn execute_content(options: &ContentOptions, output: &mut dyn Write) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
@@ -185,7 +241,9 @@ mod linux {
         load_collection_config,
     };
     use agenturm_jsonl_source::{CursorProof, cursor_proof};
-    use agenturm_store::{ContentGrantScope, ContentKind, UserTextEvidence};
+    use agenturm_store::{
+        CodexMcpEvidence, CodexMcpSelection, ContentGrantScope, ContentKind, UserTextEvidence,
+    };
     use rustix::fs::{Mode, OFlags, open, openat};
     use serde::Deserialize;
     use sha2::{Digest, Sha256};
@@ -246,25 +304,32 @@ mod linux {
     pub(super) fn execute(options: &ContentOptions, output: &mut dyn Write) -> Result<(), String> {
         let mut store = open_store(&options.db)?;
         match &options.action {
-            Action::Grant { config } => {
-                let source = BoundSource::open(config, &options.source_id)?;
+            Action::Grant { config, mcp } => {
+                let source = BoundSource::open_with_kind(config, &options.source_id, *mcp)?;
                 store
                     .grant_content(&source.scope)
                     .map_err(|error| error.to_string())?;
+                let description = if *mcp { "MCP payload" } else { "user-text" };
                 write_output(
                     output,
                     format!(
-                        "Approved {} user-text preview for this source.\n",
-                        source.harness.label()
+                        "Approved {} {description} preview for this source.\n",
+                        source.harness.label(),
                     )
                     .as_bytes(),
                 )
             }
-            Action::Revoke => {
+            Action::Revoke { mcp_only: true } => {
+                store
+                    .revoke_content(&options.source_id, ContentKind::CodexMcpPayload)
+                    .map_err(|error| error.to_string())?;
+                write_output(output, b"Codex MCP payload preview approval is revoked.\n")
+            }
+            Action::Revoke { mcp_only: false } => {
                 store
                     .revoke_source_content(&options.source_id)
                     .map_err(|error| error.to_string())?;
-                write_output(output, b"User-text preview approval is revoked.\n")
+                write_output(output, b"Content preview approval is revoked.\n")
             }
             Action::List { config, session_id } => {
                 let references = list(&store, config, &options.source_id, session_id)?;
@@ -286,6 +351,25 @@ mod linux {
                 event_id,
                 *revision,
                 output,
+            ),
+            Action::PreviewMcp {
+                config,
+                session_id,
+                operation_id,
+                event_id,
+                revision,
+            } => reveal_mcp_fenced(
+                &store,
+                config,
+                &options.source_id,
+                &CodexMcpSelection {
+                    session_id,
+                    operation_id,
+                    event_id,
+                    revision: *revision,
+                },
+                output,
+                false,
             ),
         }
     }
@@ -361,6 +445,53 @@ mod linux {
                 preview(
                     store, config, source_id, session_id, event_id, revision, output,
                 )
+            })
+            .map_err(|error| error.to_string())?
+    }
+
+    pub(super) fn reveal_mcp_fenced(
+        store: &Store,
+        config: &Path,
+        source_id: &ExtensionId,
+        selection: &CodexMcpSelection<'_>,
+        output: &mut dyn Write,
+        terminal: bool,
+    ) -> Result<(), String> {
+        if !valid_id(selection.session_id) || !valid_id(selection.operation_id) {
+            return Err("Invalid MCP session or operation ID".into());
+        }
+        store
+            .with_user_content_fence(|store| {
+                let mut source = BoundSource::open_with_kind(config, source_id, true)?;
+                let grant = store
+                    .current_content_grant(&source.scope)
+                    .map_err(|error| error.to_string())?
+                    .ok_or("MCP payload preview requires approval for the current source")?;
+                let select = |scope: &ContentGrantScope| {
+                    store
+                        .current_codex_mcp_evidence(scope, &grant, selection)
+                        .map_err(|error| error.to_string())?
+                        .ok_or_else(|| {
+                            "The selected MCP operation has no verified payload".to_owned()
+                        })
+                };
+                let evidence = select(&source.scope)?;
+                let prefix = source.verified_prefix(&evidence.cursor)?;
+                let mut reveal = prefix.mcp_payload(selection, &evidence)?;
+                if terminal {
+                    let payload: serde_json::Value =
+                        serde_json::from_str(&reveal).map_err(|_| "Cannot format MCP payload")?;
+                    let pretty = serde_json::to_string_pretty(&payload)
+                        .map_err(|_| "Cannot format MCP payload")?;
+                    reveal =
+                        serde_json::to_string(&pretty).map_err(|_| "Cannot format MCP payload")?;
+                }
+                let fresh = source.recheck(config, source_id)?;
+                if select(&fresh.scope)? != evidence {
+                    return Err("The selected MCP operation changed".into());
+                }
+                reveal.push('\n');
+                write_output(output, reveal.as_bytes())
             })
             .map_err(|error| error.to_string())?
     }
@@ -464,10 +595,19 @@ mod linux {
         scope: ContentGrantScope,
         harness: Harness,
         source_path: PathBuf,
+        mcp: bool,
     }
 
     impl BoundSource {
         fn open(config: &Path, source_id: &ExtensionId) -> Result<Self, String> {
+            Self::open_with_kind(config, source_id, false)
+        }
+
+        fn open_with_kind(
+            config: &Path,
+            source_id: &ExtensionId,
+            mcp: bool,
+        ) -> Result<Self, String> {
             let config = load_collection_config(config)?;
             let source = config
                 .sources
@@ -484,6 +624,9 @@ mod linux {
                     return Err("Prompt preview requires a supported pinned source".into());
                 }
             };
+            if mcp && harness != Harness::Codex {
+                return Err("MCP payload preview requires a supported pinned Codex source".into());
+            }
             let artifact = source.artifact_sha256.as_deref().ok_or(
                 "Prompt preview requires a SHA-256-pinned adapter in catalog configuration",
             )?;
@@ -495,8 +638,13 @@ mod linux {
             let device = stamp.device.to_be_bytes();
             let inode = stamp.inode.to_be_bytes();
             let mut fingerprint = Sha256::new();
+            let domain = if mcp {
+                b"agenturm.codex-mcp-payload/1"
+            } else {
+                harness.fingerprint_domain()
+            };
             for field in [
-                harness.fingerprint_domain(),
+                domain,
                 source.source_id.as_bytes(),
                 source.plugin_id.as_bytes(),
                 artifact.as_bytes(),
@@ -514,7 +662,11 @@ mod linux {
             }
             let scope = ContentGrantScope::new(
                 source_id.clone(),
-                harness.content_kind(),
+                if mcp {
+                    ContentKind::CodexMcpPayload
+                } else {
+                    harness.content_kind()
+                },
                 fingerprint.finalize().into(),
             );
             Ok(Self {
@@ -523,6 +675,7 @@ mod linux {
                 scope,
                 harness,
                 source_path: source.source_root.clone(),
+                mcp,
             })
         }
 
@@ -550,6 +703,7 @@ mod linux {
                             turn_id: &row.turn_id,
                             revision: row.revision,
                             observed_at_unix_ns: row.observed_at_unix_ns,
+                            admitted_proof: row.admitted_cursor.as_deref(),
                         },
                     )
                     .collect::<Vec<_>>();
@@ -715,7 +869,7 @@ mod linux {
         }
 
         fn recheck(&self, config: &Path, source_id: &ExtensionId) -> Result<Self, String> {
-            let fresh = Self::open(config, source_id)?;
+            let fresh = Self::open_with_kind(config, source_id, self.mcp)?;
             if self.stamp != fresh.stamp
                 || self.scope != fresh.scope
                 || FileStamp::from_file(&fresh.file)? != fresh.stamp
@@ -740,6 +894,67 @@ mod linux {
     }
 
     impl VerifiedPrefix {
+        fn mcp_payload(
+            &self,
+            selection: &CodexMcpSelection<'_>,
+            evidence: &CodexMcpEvidence,
+        ) -> Result<String, String> {
+            const UNAVAILABLE: &str = "The selected MCP operation has no verified payload";
+            if !matches!(&self.header, Header::Codex(thread) if thread == selection.session_id)
+                || selection.revision != 0
+            {
+                return Err(UNAVAILABLE.into());
+            }
+            let offset = selection
+                .event_id
+                .strip_prefix("codex:")
+                .and_then(|event| event.strip_prefix(&self.cursor.generation))
+                .and_then(|event| event.strip_prefix(':'))
+                .and_then(|event| event.strip_suffix(":mcp-call"))
+                .filter(|offset| {
+                    !offset.is_empty() && offset.bytes().all(|byte| byte.is_ascii_digit())
+                })
+                .ok_or(UNAVAILABLE)?;
+            let proofs = self.admitted_offsets(std::iter::once(evidence.admitted_cursor.as_str()));
+            let proof_end = proofs
+                .get(evidence.admitted_cursor.as_str())
+                .ok_or(UNAVAILABLE)?;
+            let rows = self.rows(std::iter::once(offset.to_owned()))?;
+            let line = match rows.get(offset) {
+                Some(RowMatch::Exact { line, end }) if end <= proof_end => *line,
+                _ => return Err(UNAVAILABLE.into()),
+            };
+            let row: CodexMcpRow = serde_json::from_slice(line).map_err(|_| UNAVAILABLE)?;
+            let item = row.payload.item;
+            if row.kind != "event_msg"
+                || row.payload.kind != "item_completed"
+                || row.payload.thread_id != selection.session_id
+                || row.payload.turn_id != evidence.turn_id
+                || item.kind != "McpToolCall"
+                || item.id.is_empty()
+                || hash(item.id.as_bytes()) != selection.operation_id
+                || observed_timestamp(&row.timestamp) != Some(evidence.observed_at_unix_ns)
+                || (item.arguments.is_none() && item.result.is_none())
+            {
+                return Err(UNAVAILABLE.into());
+            }
+            let fields = [("arguments", item.arguments), ("result", item.result)]
+                .into_iter()
+                .filter_map(|(field, value)| value.map(|value| (field.to_owned(), value)))
+                .collect::<serde_json::Map<_, _>>();
+            let serialized = serde_json::to_string(&fields).map_err(|_| UNAVAILABLE)?;
+            // Reuse the bounded text policy. Escaped terminal controls remain
+            // JSON data and any policy-driven alteration makes the payload unavailable.
+            if text_preview(UserContent::Text(serialized.clone()))
+                .ok()
+                .as_ref()
+                != Some(&serialized)
+            {
+                return Err(UNAVAILABLE.into());
+            }
+            Ok(serialized)
+        }
+
         fn admitted_offsets<'a>(
             &self,
             receipts: impl Iterator<Item = &'a str>,
@@ -1017,6 +1232,41 @@ mod linux {
         #[serde(rename = "type")]
         kind: String,
         content: UserContent,
+    }
+
+    #[derive(Deserialize)]
+    struct CodexMcpRow {
+        #[serde(rename = "type")]
+        kind: String,
+        timestamp: String,
+        payload: CodexMcpItemCompleted,
+    }
+
+    #[derive(Deserialize)]
+    struct CodexMcpItemCompleted {
+        #[serde(rename = "type")]
+        kind: String,
+        thread_id: String,
+        turn_id: String,
+        item: CodexMcpItem,
+    }
+
+    #[derive(Deserialize)]
+    struct CodexMcpItem {
+        #[serde(rename = "type")]
+        kind: String,
+        id: String,
+        #[serde(default, deserialize_with = "present_payload_value")]
+        arguments: Option<serde_json::Value>,
+        #[serde(default, deserialize_with = "present_payload_value")]
+        result: Option<serde_json::Value>,
+    }
+
+    fn present_payload_value<'de, D>(deserializer: D) -> Result<Option<serde_json::Value>, D::Error>
+    where
+        D: serde::Deserializer<'de>,
+    {
+        serde_json::Value::deserialize(deserializer).map(Some)
     }
 
     #[derive(Deserialize)]

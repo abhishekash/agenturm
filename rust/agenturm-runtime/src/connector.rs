@@ -22,8 +22,23 @@ const BUDGET: PollBudget = PollBudget {
     max_bytes: 256 * 1024,
 };
 
-/// Explicit, trusted executable selection. No endpoint or credential is
-/// acquired from the host's environment.
+/// Selects the process launch policy included in the connector grant binding.
+#[derive(Clone, Copy, Debug, Default, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "snake_case")]
+pub enum ConnectorLaunch {
+    #[default]
+    Trusted,
+    IsolatedLinux,
+}
+
+impl ConnectorLaunch {
+    fn is_trusted(&self) -> bool {
+        *self == Self::Trusted
+    }
+}
+
+/// Explicit executable selection. No endpoint or credential is acquired from
+/// the host's environment.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectorSpec {
@@ -32,6 +47,8 @@ pub struct ConnectorSpec {
     pub sha256: String,
     /// Inbound registered source ID or outbound destination ID.
     pub target: String,
+    #[serde(default, skip_serializing_if = "ConnectorLaunch::is_trusted")]
+    pub launch: ConnectorLaunch,
 }
 
 impl ConnectorSpec {
@@ -122,8 +139,12 @@ fn exchange(spec: &ConnectorSpec, operation: Operation) -> Result<Outcome, &'sta
         operation,
     };
     let payload = serde_json::to_vec(&request).map_err(|_| "connector_protocol_error")?;
-    let bytes =
-        super::observation_extension::invoke_connector(&spec.executable, &spec.sha256, &payload)?;
+    let bytes = super::observation_extension::invoke_connector(
+        &spec.executable,
+        &spec.sha256,
+        spec.launch,
+        &payload,
+    )?;
     let reply: ConnectorResponse =
         serde_json::from_slice(&bytes).map_err(|_| "connector_protocol_error")?;
     if reply.protocol != request.protocol
@@ -185,7 +206,11 @@ impl ConnectorRuntime {
 
     pub fn grant(&mut self, spec: &ConnectorSpec) -> Result<(), &'static str> {
         let binding = spec.binding(spec.descriptor.direction)?;
-        super::observation_extension::verify_connector_artifact(&spec.executable, &spec.sha256)?;
+        super::observation_extension::verify_connector_artifact(
+            &spec.executable,
+            &spec.sha256,
+            spec.launch,
+        )?;
         self.db.execute(
             "INSERT INTO connector_grants VALUES (?1, ?2, 1, 1)
              ON CONFLICT(id) DO UPDATE SET

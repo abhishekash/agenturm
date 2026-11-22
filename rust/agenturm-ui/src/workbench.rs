@@ -59,6 +59,16 @@ pub struct PromptEntry {
     pub timestamp: u64,
 }
 
+#[derive(Clone, Debug)]
+pub struct McpPayloadEntry {
+    pub source_id: String,
+    pub session_id: String,
+    pub event_id: String,
+    pub revision: u32,
+    pub operation_id: String,
+    pub label: String,
+}
+
 pub struct PromptDelivery {
     buffer: Vec<u8>,
     frames: mpsc::Sender<Vec<u8>>,
@@ -70,6 +80,7 @@ pub(super) struct PromptReceiver {
     pub(super) frames: mpsc::Receiver<Vec<u8>>,
     pub(super) acknowledgement: mpsc::Sender<()>,
     pub(super) active: Arc<Mutex<bool>>,
+    pub(super) title: &'static str,
 }
 
 pub(super) fn prompt_channel() -> (PromptDelivery, PromptReceiver) {
@@ -87,6 +98,7 @@ pub(super) fn prompt_channel() -> (PromptDelivery, PromptReceiver) {
             frames: received,
             acknowledgement,
             active,
+            title: "Granted prompt",
         },
     )
 }
@@ -171,6 +183,7 @@ pub enum WorkCommand {
     Locate(RequestEntry),
     Prompts(WorkAnchor),
     RevealPrompt(PromptEntry, PromptDelivery),
+    RevealMcp(McpPayloadEntry, PromptDelivery),
 }
 
 pub struct ReviewNoteEntry {

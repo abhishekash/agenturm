@@ -271,9 +271,12 @@ dependencies = [
 name = "agenturm-storage-service"
 version = "0.1.0"
 dependencies = [
+ "agenturm-kernel",
  "agenturm-storage-admission",
  "agenturm-storage-service-contract",
+ "agenturm-store",
  "libc",
+ "serde",
 ]
 
 [[package]]
