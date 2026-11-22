@@ -2,6 +2,14 @@
 
 Baseline is the Python `v0.2.8` tag and the published Rust 0.3.1 Linux bundle. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.
 
+The current implementation scope retains the remaining workflows. Remote
+receiver access, explicit span-JSONL and eval imports, automatic retention,
+recorded cost and historical host views remain required gaps. No retirement
+has been approved for these features. The default entry-point switch stays
+gated while they and the paired keyboard journeys are incomplete. Explicit
+format imports are separate from automatic migration of Python-era state,
+which the Rust-only product decision excludes.
+
 ## Command inventory
 
 | Python 0.2.8 workflow | Rust path and cutover disposition |
@@ -20,7 +28,7 @@ Baseline is the Python `v0.2.8` tag and the published Rust 0.3.1 Linux bundle. T
 | `task link\|unlink\|handoff\|backup` | Rust links use exact native source/session/turn/worker identities. `task handoff` reads one saved task revision and renders Markdown, HTML, or JSON. Its private export writes a Markdown and HTML pair. Workspace backup retains the ledger and supports restore into a new history directory. |
 | `task update\|snapshot\|brief\|decide\|decisions\|draft\|approve-draft` | Rust supports revision-checked editing, local Git summaries, opt-in tracked text patches, five structured brief fields, and immutable decisions with supersession. Drafts and decision citations can use one exact retained user prompt. Approval and excerpt reopening require revalidation of the original grant and source receipt. Broader Review evidence projections remain open. |
 
-The release owner records the disposition of legacy format support, remote receiver access, launcher injection, eval import, automatic retention, and task or review compatibility. Until there is a recorded disposition, any partially mapped workflow remains open. The CLI maintainer owns the implementation and installed scenarios for retained commands. [Python command source](https://github.com/abhishekash/agenturm/blob/v0.2.8/observatory/__main__.py) · [Rust workflow coverage](rust-cockpit-workflow-coverage.md)
+The CLI maintainer owns implementation and installed scenarios for the retained commands. Any later retirement requires an explicit product decision. [Python command source](https://github.com/abhishekash/agenturm/blob/v0.2.8/observatory/__main__.py) · [Rust workflow coverage](rust-cockpit-workflow-coverage.md)
 
 ### Task Git patches
 
