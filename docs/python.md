@@ -91,6 +91,13 @@ a session to a run without one. To link to native history, give the exact
 `harness_id` and `session_id`. Add `turn_id` to identify a specific native
 turn and `worker_id` when the record has a worker identity.
 
+The broker launcher sets `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` for its producer. The authorization
+value travels directly to the matching numeric loopback trace endpoint.
+For a separately started broker receiver, set both variables for the
+authorized producer. Use `authorization=Bearer%20<token>` with the
+receiver's 64-digit lowercase hexadecimal token.
+
 The transport sends IDs, parent relationships, timing, status, and explicit
 native linkage. It bounds each request to 1,024 spans and 4 MiB. Delivery
 failures, including partial rejections, are available in `Client.last_error`.

@@ -17,6 +17,114 @@ NODE = shutil.which("node")
 CLIENT = (Path(__file__).resolve().parents[1] / "clients/javascript/index.mjs").as_uri()
 
 
+@unittest.skipUnless(NODE, "install Node.js")
+class JavaScriptTraceCredentialsTests(unittest.TestCase):
+    def test_inherited_bearer_stays_bound_to_its_numeric_trace_endpoint(self):
+        script = f"import {{ Client }} from {json.dumps(CLIENT)};\n" + """
+import assert from 'node:assert/strict';
+import { createServer } from 'node:http';
+import { once } from 'node:events';
+
+const token = 'a1'.repeat(32);
+const valid = 'Authorization=Bearer%20' + token;
+const requests = [];
+let malformed = false;
+let redirect;
+async function receiver() {
+  const server = createServer(async (request, response) => {
+    const chunks = [];
+    for await (const chunk of request) chunks.push(chunk);
+    requests.push({
+      port: server.address().port, path: request.url, headers: request.headers,
+      body: Buffer.concat(chunks).toString('utf8'),
+    });
+    const reply = malformed ? 'reflected bearer ' + token : '{}';
+    const headers = { 'content-length': Buffer.byteLength(reply) };
+    if (redirect) headers.location = redirect;
+    response.writeHead(redirect ? 307 : 200, headers);
+    response.end(reply);
+  });
+  server.listen(0, '127.0.0.1');
+  await once(server, 'listening');
+  return server;
+}
+const primary = await receiver();
+const alternate = await receiver();
+const authority = server => `http://127.0.0.1:${server.address().port}`;
+const source = authority(primary) + '/v1/traces';
+process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT = source;
+process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS = 'irrelevant=ignored,' + valid;
+process.env.OTEL_EXPORTER_OTLP_HEADERS = 'authorization=Bearer%20' + 'c1'.repeat(32);
+process.env.OBSERVATORY_TOKEN = 'legacy-private-marker';
+
+async function send(options = {}) {
+  const client = new Client({ transport: 'otlp', ...options });
+  await client.trace({ sessionId: 'native-session' }, () => {});
+  assert.ok(!JSON.stringify(client).includes(token));
+  return client;
+}
+const last = () => requests.at(-1);
+try {
+  await send({ strict: true });
+  assert.equal(last().port, primary.address().port);
+  assert.equal(last().path, '/v1/traces');
+  assert.equal(last().headers.authorization, 'Bearer ' + token);
+  assert.equal(last().headers.irrelevant, undefined);
+  assert.ok(!last().body.includes(token));
+  await send({ endpoint: authority(primary), strict: true });
+  assert.equal(last().headers.authorization, 'Bearer ' + token);
+  await send({ endpoint: authority(alternate), strict: true });
+  assert.equal(last().port, alternate.address().port);
+  assert.equal(last().headers.authorization, undefined);
+  await send({ token: 'explicit-option', strict: true });
+  assert.equal(last().headers.authorization, 'Bearer explicit-option');
+
+  for (const wrongHeader of [
+    valid + ',authorization=Bearer%20' + 'b1'.repeat(32), valid + ',Authorization',
+    valid + '%0A', valid + '%ZZ', valid.replace('%20', '+'), valid.replaceAll('a1', 'A1'),
+    valid + ',' + 'x'.repeat(4096),
+  ]) {
+    process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS = wrongHeader;
+    await send({ strict: true });
+    assert.equal(last().headers.authorization, undefined);
+  }
+  delete process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS;
+  await send({ strict: true });
+  assert.equal(last().headers.authorization, undefined);
+
+  for (const endpoint of [
+    'http://127.1:14318', 'http://127.0.0.1:14318/V1/TRACES',
+    'http://example.invalid:14318/v1/traces', 'http://0x7f000001:14318',
+  ]) {
+    assert.throws(() => new Client({ endpoint, transport: 'otlp', strict: true }), /loopback/);
+  }
+  process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS = valid;
+  const beforeRedirect = requests.length;
+  redirect = authority(alternate) + '/v1/traces';
+  const redirected = await send();
+  assert.equal(redirected.lastError.message, 'OTLP receiver returned HTTP 307');
+  assert.equal(requests.length, beforeRedirect + 1);
+  redirect = undefined;
+  malformed = true;
+  const client = await send();
+  assert.equal(client.lastError.message, 'OTLP receiver returned an invalid reply');
+} finally {
+  primary.close();
+  alternate.close();
+}
+"""
+        result = subprocess.run(
+            [NODE, "--input-type=module", "--eval", script],
+            env=os.environ | {
+                "NODE_USE_ENV_PROXY": "1",
+                "HTTP_PROXY": "http://127.0.0.1:1", "http_proxy": "http://127.0.0.1:1",
+                "NO_PROXY": "", "no_proxy": "",
+            },
+            capture_output=True, text=True, timeout=15,
+        )
+        self.assertEqual(result.returncode, 0, result.stderr)
+
+
 @unittest.skipUnless(RUST_APP and NODE, "set the standalone Rust binary and install Node.js")
 class RustJavaScriptTraceTests(unittest.TestCase):
     def setUp(self):

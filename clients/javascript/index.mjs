@@ -1,4 +1,5 @@
 import { openSync, closeSync, readFileSync, fstatSync, constants } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -10,16 +11,83 @@ const MAX_OTLP_SPANS = 1024;
 const MAX_OTLP_REPLY_BYTES = 4096;
 const OTLP_STATUS = { UNSET: 0, OK: 1, ERROR: 2 };
 
-function otlpTraceEndpoint(explicit) {
-  const url = new URL(explicit ?? (process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
-    || process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://127.0.0.1:14318'));
-  if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(url.hostname)
-      || url.username || url.password || url.search || url.hash
+function otlpTraceEndpoint(raw) {
+  const endpoint = String(raw);
+  const literal = /^http:\/\/(?:127\.0\.0\.1|\[[0-9a-f:]+\])(?::[0-9]+)?(?:\/(?:v1\/traces)?)?$/i;
+  const error = 'OTLP endpoint must be a loopback HTTP trace receiver';
+  if (!literal.test(endpoint) || /[\s\x00-\x1f]/.test(endpoint)) throw new TypeError(error);
+  let url;
+  try { url = new URL(endpoint); }
+  catch { throw new TypeError(error); }
+  if (!['127.0.0.1', '[::1]'].includes(url.hostname) || url.port === '0'
       || !['/', '/v1/traces'].includes(url.pathname)) {
-    throw new TypeError('OTLP endpoint must be a loopback HTTP trace receiver');
+    throw new TypeError(error);
   }
   url.pathname = '/v1/traces';
   return url.href;
+}
+
+function otlpAuthorization(endpoint, configuredEndpoint) {
+  if (!configuredEndpoint) return undefined;
+  try {
+    if (otlpTraceEndpoint(configuredEndpoint) !== endpoint) return undefined;
+    const headers = process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS ?? '';
+    if (headers.length > 4096) return undefined;
+    const matches = headers.split(',').map(item => item.split('='))
+      .filter(([key]) => key.trim().toLowerCase() === 'authorization');
+    if (matches.length !== 1 || matches[0].length !== 2) return undefined;
+    const value = decodeURIComponent(matches[0][1]);
+    if (value.length === 71 && /^Bearer [0-9a-f]{64}$/.test(value)) return value;
+  } catch {
+    // A malformed environment cannot supply a credential.
+  }
+  return undefined;
+}
+
+async function postOtlpJson(endpoint, headers, body, timeoutMs) {
+  // Use a fresh direct connection. Global fetch can inherit environment proxies.
+  const response = await new Promise((resolve, reject) => {
+    const request = httpRequest(endpoint, {
+      method: 'POST', agent: false, maxHeaderSize: MAX_OTLP_REPLY_BYTES,
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { ...headers, 'content-length': Buffer.byteLength(body), connection: 'close' },
+    }, resolve);
+    request.once('error', error => {
+      const message = error.code === 'ABORT_ERR' ? 'OTLP request deadline exceeded' : 'OTLP request failed';
+      reject(new Error(message));
+    });
+    request.end(body);
+  });
+  const status = response.statusCode ?? 0;
+  if (status < 200 || status >= 300) {
+    response.destroy();
+    throw new Error(`OTLP receiver returned HTTP ${status}`);
+  }
+  const contentLength = response.headers['content-length'] ?? '';
+  const length = Number(contentLength);
+  if (!/^[0-9]+$/.test(contentLength) || length > MAX_OTLP_REPLY_BYTES) {
+    response.destroy();
+    throw new Error('OTLP receiver returned an unbounded reply');
+  }
+  const chunks = [];
+  let received = 0;
+  let reply;
+  try {
+    for await (const chunk of response) {
+      received += chunk.length;
+      if (received > length) throw new Error();
+      chunks.push(chunk);
+    }
+    if (received !== length) throw new Error();
+    reply = JSON.parse(Buffer.concat(chunks, received).toString('utf8'));
+    if (!reply || typeof reply !== 'object' || Array.isArray(reply)) throw new Error();
+  } catch {
+    response.destroy();
+    throw new Error('OTLP receiver returned an invalid reply');
+  }
+  if (Number(reply.partialSuccess?.rejectedSpans ?? 0) !== 0) {
+    throw new Error('OTLP receiver rejected one or more spans');
+  }
 }
 
 function id(bytes) {
@@ -69,6 +137,9 @@ function receiverToken(endpoint, explicit) {
 }
 
 export class Client {
+  #otlpAuthorization;
+  #otlpEndpoint;
+
   constructor({ endpoint, service = 'node-agent', token, transport = 'agenturm',
                 timeoutMs = 3000, strict = false, resourceAttributes = {} } = {}) {
     if (!['agenturm', 'otlp'].includes(transport)) throw new TypeError('unknown trace transport');
@@ -79,8 +150,14 @@ export class Client {
       : String(endpoint === undefined ? 'http://127.0.0.1:4318' : endpoint).replace(/\/+$/, '');
     try {
       if (transport === 'otlp') {
-        this.endpoint = otlpTraceEndpoint(endpoint);
+        const configuredEndpoint = process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT;
+        this.endpoint = otlpTraceEndpoint(endpoint ?? (configuredEndpoint
+          || process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://127.0.0.1:14318'));
+        this.#otlpEndpoint = this.endpoint;
         this.token = token;
+        if (token === undefined) {
+          this.#otlpAuthorization = otlpAuthorization(this.#otlpEndpoint, configuredEndpoint);
+        }
       } else {
         this.token = receiverToken(this.endpoint, token);
       }
@@ -97,26 +174,18 @@ export class Client {
       if (this.configurationError) throw this.configurationError;
       const headers = { 'content-type': 'application/json' };
       if (this.token) headers.authorization = `Bearer ${this.token}`;
-      const response = await fetch(`${this.endpoint}${path}`, {
-        method: 'POST', redirect: 'error', headers, body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
-      if (!response.ok) {
-        throw new Error(`${this.transport === 'otlp' ? 'OTLP receiver' : 'Goechala'} returned HTTP ${response.status}`);
-      }
+      const body = JSON.stringify(payload);
       if (this.transport === 'otlp') {
-        const length = response.headers.get('content-length') ?? '';
-        if (!/^\d+$/.test(length) || Number(length) > MAX_OTLP_REPLY_BYTES) {
-          await response.body?.cancel();
-          throw new Error('OTLP receiver returned an unbounded reply');
+        if (this.#otlpAuthorization && !headers.authorization) {
+          headers.authorization = this.#otlpAuthorization;
         }
-        const reply = await response.json();
-        if (!reply || typeof reply !== 'object' || Array.isArray(reply)) {
-          throw new Error('OTLP receiver returned an invalid reply');
-        }
-        if (Number(reply.partialSuccess?.rejectedSpans ?? 0) !== 0) {
-          throw new Error('OTLP receiver rejected one or more spans');
-        }
+        await postOtlpJson(this.#otlpEndpoint, headers, body, this.timeoutMs);
+      } else {
+        const response = await fetch(`${this.endpoint}${path}`, {
+          method: 'POST', redirect: 'error', headers, body,
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+        if (!response.ok) throw new Error(`Goechala returned HTTP ${response.status}`);
       }
       this.lastError = null;
       return true;

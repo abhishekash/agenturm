@@ -132,6 +132,57 @@ class PythonOtlpClientTests(unittest.TestCase):
              "agenturm.turn.id": "turn-2", "agenturm.worker.id": "worker/one"},
         )
 
+    def test_broker_bearer_is_sent_only_to_its_configured_trace_endpoint(self):
+        bearer = "Bearer " + "e1" * 32
+        launch_env = {
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": ENDPOINT,
+            "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "irrelevant=ignored,Authorization=Bearer%20" + "e1" * 32,
+            "OTEL_EXPORTER_OTLP_HEADERS": "authorization=Bearer%20" + "d2" * 32,
+            "OBSERVATORY_TOKEN": MARKER,
+        }
+        with patch.dict(os.environ, launch_env, clear=True):
+            for endpoint in (None, "http://127.0.0.1:14318", "http://127.0.0.1:14319"):
+                client = Client(endpoint, transport="otlp", strict=True)
+                with client.trace(session_id="native-session"):
+                    pass
+                *_, body, headers = self.requests[-1]
+                if endpoint == "http://127.0.0.1:14319":
+                    self.assertNotIn("Authorization", headers)
+                else:
+                    self.assertEqual(headers["Authorization"], bearer)
+                self.assertNotIn(bearer.encode(), body)
+                self.assertNotIn("irrelevant", headers)
+                self.assertNotIn(MARKER, str(headers))
+
+        with patch.dict(os.environ, {
+            "OTEL_EXPORTER_OTLP_HEADERS": launch_env["OTEL_EXPORTER_OTLP_TRACES_HEADERS"]
+        }, clear=True):
+            with Client(ENDPOINT, transport="otlp", strict=True).trace(session_id="native-session"):
+                pass
+            self.assertNotIn("Authorization", self.requests[-1][-1])
+
+    def test_broker_bearer_discards_ambiguous_or_malformed_headers(self):
+        valid = "authorization=Bearer%20" + "e1" * 32
+        for header in (
+            valid + ",Authorization=Bearer%20" + "e2" * 32,
+            valid + ",authorization",
+            valid + "%0A",
+            valid + "%ZZ",
+            valid.replace("%20", "+"),
+            valid.replace("e1", "E1"),
+            valid + "," + "x" * 4096,
+        ):
+            with patch.dict(os.environ, {
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": ENDPOINT,
+                "OTEL_EXPORTER_OTLP_TRACES_HEADERS": header,
+            }, clear=True):
+                self.response = Response(status=401, body=header.encode())
+                client = Client(transport="otlp")
+                with client.trace(session_id="native-session"):
+                    pass
+                self.assertNotIn("Authorization", self.requests[-1][-1])
+                self.assertEqual(str(client.last_error), "OTLP receiver returned HTTP 401")
+
     def test_partial_failure_is_reported_and_strict_keeps_application_error(self):
         self.response = Response(json.dumps({"partialSuccess": {
             "rejectedSpans": "1", "errorMessage": MARKER,

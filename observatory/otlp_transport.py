@@ -10,7 +10,7 @@ import re
 import socket
 import time
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 MAX_EXPORT_SPANS = 1024
 MAX_EXPORT_BYTES = 4 * 1024 * 1024
@@ -21,6 +21,7 @@ _STATUS = {"UNSET": 0, "OK": 1, "ERROR": 2}
 _SESSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,511}")
 _EXECUTION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}")
 _HARNESS = re.compile(r"[a-z][a-z0-9._/-]{0,95}")
+_BEARER = re.compile(r"Bearer [0-9a-f]{64}")
 
 
 @dataclass(frozen=True)
@@ -63,12 +64,7 @@ class TraceScope:
         ]
 
 
-def _trace_endpoint(endpoint):
-    raw = endpoint
-    if raw is None:
-        raw = (os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-               or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
-               or "http://127.0.0.1:14318")
+def _trace_endpoint(raw):
     try:
         if not isinstance(raw, str) or not raw or any(ch.isspace() or ord(ch) < 32 for ch in raw):
             raise ValueError
@@ -88,6 +84,27 @@ def _trace_endpoint(endpoint):
         raise ValueError("OTLP endpoint must be a literal loopback HTTP trace receiver") from None
     address = f"[{host}]" if host.version == 6 else str(host)
     return str(host), port, f"http://{address}:{port}/v1/traces"
+
+
+def _trace_authorization(endpoint, configured_endpoint):
+    if not configured_endpoint:
+        return None
+    try:
+        if _trace_endpoint(configured_endpoint)[2] != endpoint:
+            return None
+    except ValueError:
+        return None
+    headers = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "")
+    if len(headers) > 4096:
+        return None
+    authorization = []
+    for item in headers.split(","):
+        key, _, value = item.partition("=")
+        if key.strip().lower() == "authorization":
+            authorization.append(unquote(value))
+    if len(authorization) == 1 and _BEARER.fullmatch(authorization[0]):
+        return authorization[0]
+    return None
 
 
 def _span_id(value, width):
@@ -200,7 +217,13 @@ class OtlpTransport:
     """Send structural span evidence without inherited proxies or redirects."""
 
     def __init__(self, endpoint, timeout):
+        configured_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        if endpoint is None:
+            endpoint = (configured_endpoint or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+                        or "http://127.0.0.1:14318")
         self.host, self.port, self.endpoint = _trace_endpoint(endpoint)
+        self._authorization = _trace_authorization(self.endpoint, configured_endpoint)
+        self._authorization_target = (self.host, self.port)
         try:
             self.timeout = float(timeout)
         except (ValueError, TypeError, OverflowError):
@@ -247,12 +270,13 @@ class OtlpTransport:
 
     def _send(self, batch):
         body = _PREFIX + b",".join(batch) + _SUFFIX
-        connection = _DeadlineConnection(self.host, self.port, self.timeout)
+        target = (self.host, self.port)
+        headers = {"Content-Type": "application/json", "Connection": "close"}
+        if self._authorization is not None and target == self._authorization_target:
+            headers["Authorization"] = self._authorization
+        connection = _DeadlineConnection(*target, self.timeout)
         try:
-            connection.request(
-                "POST", "/v1/traces", body=body,
-                headers={"Content-Type": "application/json", "Connection": "close"},
-            )
+            connection.request("POST", "/v1/traces", body=body, headers=headers)
             with connection.getresponse() as response:
                 _check_reply(response)
         except http.client.HTTPException:

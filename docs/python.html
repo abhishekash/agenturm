@@ -60,6 +60,12 @@ the exact <code>session_id</code> for a standalone receiver. The Rust launcher c
 a session to a run without one. To link to native history, give the exact
 <code>harness_id</code> and <code>session_id</code>. Add <code>turn_id</code> to identify a specific native
 turn and <code>worker_id</code> when the record has a worker identity.</p>
+<p>The broker launcher sets <code>OTEL_EXPORTER_OTLP_TRACES_HEADERS</code> and
+<code>OTEL_EXPORTER_OTLP_TRACES_ENDPOINT</code> for its producer. The authorization
+value travels directly to the matching numeric loopback trace endpoint.
+For a separately started broker receiver, set both variables for the
+authorized producer. Use <code>authorization=Bearer%20&lt;token&gt;</code> with the
+receiver&#x27;s 64-digit lowercase hexadecimal token.</p>
 <p>The transport sends IDs, parent relationships, timing, status, and explicit
 native linkage. It bounds each request to 1,024 spans and 4 MiB. Delivery
 failures, including partial rejections, are available in <code>Client.last_error</code>.
