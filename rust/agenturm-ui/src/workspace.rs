@@ -1,9 +1,10 @@
 //! Session navigation over immutable history pages supplied by the host.
 
 use super::*;
+use crate::workbench::{PromptReceiver, WorkInput, Workbench, prompt_channel};
 use agenturm_kernel::RelationshipKind;
 use std::collections::{BTreeSet, HashMap, VecDeque};
-use std::sync::mpsc;
+use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -65,11 +66,13 @@ pub enum WorkspaceView {
     Findings,
     Host,
     Usage,
+    Traces,
 }
 
 pub enum WorkspaceRequest {
     Sessions(Option<SessionCursor>),
     MarkReviewed(RecordedSession),
+    Work(WorkCommand),
     History {
         selection: HistorySelection,
         before: Option<ObservationPosition>,
@@ -79,6 +82,7 @@ pub enum WorkspaceRequest {
 pub enum WorkspaceResponse {
     Sessions(SessionCatalog),
     ReviewSaved,
+    Work(WorkResult),
     History(HistoryPage),
 }
 
@@ -382,6 +386,7 @@ enum Change {
     Open(HistorySelection),
     OlderHistory,
     MarkReviewed(RecordedSession),
+    Work(Option<WorkAnchor>),
 }
 
 struct Workspace {
@@ -389,9 +394,46 @@ struct Workspace {
     newer_sessions: VecDeque<SessionCatalog>,
     browsing_older: bool,
     history: Vec<HistoryView>,
+    work: Option<Workbench>,
+    discard_work_result: bool,
+    prompt_receiver: Option<PromptReceiver>,
+    queued_prompt: Option<PromptEntry>,
+    prompt: Option<PromptScreen>,
+    redact_then_acknowledge: Option<mpsc::Sender<()>>,
     pending: Option<Change>,
     message: Option<String>,
     refresh_after: Instant,
+}
+
+struct PromptScreen {
+    text: String,
+    scroll: u16,
+    acknowledge: Option<mpsc::Sender<()>>,
+    active: Arc<Mutex<bool>>,
+    expires: Instant,
+}
+
+impl PromptScreen {
+    fn draw(&self, frame: &mut Frame) {
+        let [main, foot] =
+            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
+        let text = self
+            .text
+            .lines()
+            .map(|line| Line::from(visible_text(line)))
+            .collect::<Vec<_>>();
+        frame.render_widget(
+            Paragraph::new(text)
+                .wrap(Wrap { trim: false })
+                .scroll((self.scroll, 0))
+                .block(Block::bordered().title("Granted prompt")),
+            main,
+        );
+        frame.render_widget(
+            Paragraph::new("↑↓ scroll · Esc close · closes after 25s"),
+            foot,
+        );
+    }
 }
 
 impl Workspace {
@@ -417,8 +459,14 @@ impl Workspace {
             return;
         };
         self.refresh_after = Instant::now() + REFRESH_INTERVAL;
+        if matches!(change, Change::Work(_)) && std::mem::take(&mut self.discard_work_result) {
+            return;
+        }
         match (change, result) {
-            (_, Err(error)) => self.message = Some(error),
+            (_, Err(error)) => {
+                self.prompt_receiver = None;
+                self.message = Some(error);
+            }
             (Change::RefreshSessions, Ok(WorkspaceResponse::Sessions(catalog))) => {
                 self.agents.update(catalog);
                 self.browsing_older = false;
@@ -466,6 +514,26 @@ impl Workspace {
                 }
                 self.message = Some("Review saved for this evidence".into());
             }
+            (Change::Work(_), Ok(WorkspaceResponse::Work(WorkResult::Status(status)))) => {
+                self.prompt_receiver = None;
+                self.message = Some(status);
+            }
+            (Change::Work(_), Ok(WorkspaceResponse::Work(WorkResult::Seen(entry)))) => {
+                if let Some(work) = &mut self.work {
+                    work.note_seen(&entry);
+                }
+                self.message = Some(
+                    "Marked seen. The request stays open until its source records resolution."
+                        .into(),
+                );
+            }
+            (Change::Work(target), Ok(WorkspaceResponse::Work(data))) => {
+                if let Some(work) = &mut self.work {
+                    work.apply(data);
+                } else {
+                    self.work = Some(Workbench::new(data, target));
+                }
+            }
             _ => self.message = Some("History reader returned an unexpected response".into()),
         }
     }
@@ -481,9 +549,63 @@ impl Workspace {
         );
     }
 
+    fn reveal(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, entry: PromptEntry) {
+        let (delivery, receiver) = prompt_channel();
+        self.request(
+            sender,
+            WorkspaceRequest::Work(WorkCommand::RevealPrompt(entry, delivery)),
+            Change::Work(None),
+        );
+        self.prompt_receiver = Some(receiver);
+    }
+
     fn key(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, key: event::KeyEvent) -> bool {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return true;
+        }
+        if let Some(prompt) = &mut self.prompt {
+            match key.code {
+                KeyCode::Esc => {
+                    self.redact_then_acknowledge = prompt.acknowledge.take();
+                    self.prompt = None;
+                    self.message = None;
+                }
+                KeyCode::Char('q') => return true,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    prompt.scroll = prompt.scroll.saturating_add(1)
+                }
+                KeyCode::Up | KeyCode::Char('k') => prompt.scroll = prompt.scroll.saturating_sub(1),
+                KeyCode::Home => prompt.scroll = 0,
+                _ => {}
+            }
+            return false;
+        }
+        if let Some(work) = &mut self.work {
+            if key.code == KeyCode::Char('q') && !work.editing() {
+                return true;
+            }
+            if self.pending.is_some() && work.editing() {
+                return false;
+            }
+            match work.key(key) {
+                WorkInput::Reveal(entry) if self.pending.is_none() => self.reveal(sender, entry),
+                WorkInput::Reveal(entry) if self.prompt_receiver.is_none() => {
+                    self.queued_prompt = Some(entry)
+                }
+                WorkInput::Reveal(_) => {}
+                WorkInput::None => {}
+                WorkInput::Close => {
+                    self.discard_work_result = matches!(self.pending, Some(Change::Work(_)));
+                    self.prompt_receiver = None;
+                    self.queued_prompt = None;
+                    self.work = None;
+                    self.message = None;
+                }
+                WorkInput::Command(command) => {
+                    self.request(sender, WorkspaceRequest::Work(command), Change::Work(None))
+                }
+            }
+            return false;
         }
         if self.history.is_empty() {
             return self.agent_key(sender, key.code);
@@ -519,6 +641,34 @@ impl Workspace {
                 self.message = None;
             }
             KeyCode::Esc => {}
+            KeyCode::Char('b' | 'p') => {
+                let target = match &view.selection {
+                    HistorySelection::Session(session, _) => Some(WorkAnchor::from(session)),
+                    HistorySelection::Turn(turn) => Some(WorkAnchor {
+                        source: turn.harness_id.clone(),
+                        session: turn.session_id.clone(),
+                        worker: turn.worker_id.clone(),
+                        turn: Some(turn.turn_id.clone()),
+                    }),
+                    HistorySelection::All(_) => None,
+                };
+                let command = if key.code == KeyCode::Char('b') {
+                    Some(WorkCommand::Tasks(None))
+                } else {
+                    target.clone().map(|mut anchor| {
+                        anchor.worker = None;
+                        anchor.turn = None;
+                        WorkCommand::Prompts(anchor)
+                    })
+                };
+                if let Some(command) = command {
+                    self.request(
+                        sender,
+                        WorkspaceRequest::Work(command),
+                        Change::Work(target),
+                    );
+                }
+            }
             KeyCode::Char('y') if view.page.reviewing() => {
                 if let HistorySelection::Session(session, _) = &view.selection
                     && !session.reviewed
@@ -549,6 +699,7 @@ impl Workspace {
                     view.page = newer;
                 }
             }
+            KeyCode::F(1) => view.page.ui.help = !view.page.ui.help,
             KeyCode::Char('t') if view.page.ui.turn_available && !view.page.ui.help => {
                 view.page.turn_picker = Some(ListState::default().with_selected(Some(0)));
             }
@@ -576,7 +727,7 @@ impl Workspace {
             KeyCode::Up | KeyCode::Char('k') => self.agents.move_selection(false),
             KeyCode::Char('/') => self.agents.editing = true,
             KeyCode::Char('h') => self.agents.toggle_tree(),
-            KeyCode::Char('?') => self.agents.help = !self.agents.help,
+            KeyCode::Char('?') | KeyCode::F(1) => self.agents.help = !self.agents.help,
             KeyCode::Char('s') => {
                 let identity = self.agents.current().map(session_key);
                 self.agents.sort_by_state = !self.agents.sort_by_state;
@@ -598,7 +749,28 @@ impl Workspace {
                 WorkspaceRequest::Sessions(None),
                 Change::RefreshSessions,
             ),
-            KeyCode::Char('g' | '2'..='7') => {
+            KeyCode::Char('b' | 'w') => {
+                let command = if key == KeyCode::Char('b') {
+                    WorkCommand::Tasks(None)
+                } else {
+                    WorkCommand::Workflow
+                };
+                self.request(
+                    sender,
+                    WorkspaceRequest::Work(command),
+                    Change::Work(self.agents.current().map(WorkAnchor::from)),
+                );
+            }
+            KeyCode::Char('p') => {
+                if let Some(session) = self.agents.current() {
+                    self.request(
+                        sender,
+                        WorkspaceRequest::Work(WorkCommand::Prompts(WorkAnchor::from(session))),
+                        Change::Work(None),
+                    );
+                }
+            }
+            KeyCode::Char('g' | '2'..='8') => {
                 let view = match key {
                     KeyCode::Char('2') => WorkspaceView::Activity,
                     KeyCode::Char('3') => WorkspaceView::Mcp,
@@ -606,6 +778,7 @@ impl Workspace {
                     KeyCode::Char('5') => WorkspaceView::Findings,
                     KeyCode::Char('6') => WorkspaceView::Host,
                     KeyCode::Char('7') => WorkspaceView::Usage,
+                    KeyCode::Char('8') => WorkspaceView::Traces,
                     _ => WorkspaceView::Overview,
                 };
                 self.open(sender, HistorySelection::All(view));
@@ -677,17 +850,64 @@ pub fn run_workspace(
                 newer_sessions: VecDeque::new(),
                 browsing_older: false,
                 history: Vec::new(),
+                work: None,
+                discard_work_result: false,
+                prompt_receiver: None,
+                queued_prompt: None,
+                prompt: None,
+                redact_then_acknowledge: None,
                 pending: None,
                 message: None,
                 refresh_after: Instant::now(),
             };
             let mut dirty = true;
             loop {
+                if let Some(receiver) = &workspace.prompt_receiver
+                    && let Ok(bytes) = receiver.frames.try_recv()
+                {
+                    let receiver = workspace
+                        .prompt_receiver
+                        .take()
+                        .expect("prompt delivery arrived");
+                    if let Ok(text) = serde_json::from_slice::<String>(&bytes) {
+                        workspace.prompt = Some(PromptScreen {
+                            text,
+                            scroll: 0,
+                            acknowledge: Some(receiver.acknowledgement),
+                            active: receiver.active,
+                            expires: Instant::now() + Duration::from_secs(25),
+                        });
+                    } else {
+                        workspace.message = Some("Invalid prompt delivery".into());
+                    }
+                    dirty = true;
+                }
                 if let Ok(result) = results.try_recv() {
                     workspace.finish(result);
+                    if workspace.work.is_some()
+                        && let Some(queued) = workspace.queued_prompt.take()
+                    {
+                        workspace.reveal(&request, queued);
+                    }
+                    dirty = true;
+                }
+                if workspace
+                    .work
+                    .as_ref()
+                    .is_some_and(Workbench::follows_requests)
+                    && workspace.pending.is_none()
+                    && Instant::now() >= workspace.refresh_after
+                {
+                    workspace.refresh_after = Instant::now() + REFRESH_INTERVAL;
+                    workspace.request(
+                        &request,
+                        WorkspaceRequest::Work(WorkCommand::Workflow),
+                        Change::Work(None),
+                    );
                     dirty = true;
                 }
                 if workspace.history.is_empty()
+                    && workspace.work.is_none()
                     && workspace.pending.is_none()
                     && !workspace.browsing_older
                     && Instant::now() >= workspace.refresh_after
@@ -700,8 +920,32 @@ pub fn run_workspace(
                     );
                     dirty = true;
                 }
+                if workspace
+                    .prompt
+                    .as_ref()
+                    .is_some_and(|prompt| Instant::now() >= prompt.expires)
+                    && let Some(mut prompt) = workspace.prompt.take()
+                {
+                    workspace.redact_then_acknowledge = prompt.acknowledge.take();
+                    dirty = true;
+                }
                 if dirty {
+                    let active = workspace
+                        .prompt
+                        .as_ref()
+                        .filter(|prompt| prompt.acknowledge.is_some())
+                        .map(|prompt| Arc::clone(&prompt.active));
+                    let gate = active.as_ref().and_then(|active| active.lock().ok());
+                    if active.is_some() && !gate.as_deref().copied().unwrap_or(false) {
+                        workspace.prompt = None;
+                        workspace.message =
+                            Some("Prompt authorization expired before display".into());
+                    }
                     terminal.draw(|frame| draw_workspace(frame, &mut workspace))?;
+                    if let Some(acknowledge) = workspace.redact_then_acknowledge.take() {
+                        let _ = acknowledge.send(());
+                    }
+                    drop(gate);
                     dirty = false;
                 }
                 if event::poll(Duration::from_millis(80))? {
@@ -726,6 +970,18 @@ pub fn run_workspace(
 }
 
 fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
+    if let Some(prompt) = &workspace.prompt {
+        prompt.draw(frame);
+        return;
+    }
+    if let Some(work) = &mut workspace.work {
+        work.draw(
+            frame,
+            workspace.pending.is_some(),
+            workspace.message.as_deref(),
+        );
+        return;
+    }
     let area = frame.area();
     if let Some(view) = workspace.history.last_mut() {
         view.page.ui.set_viewport(area.width, area.height);
@@ -786,7 +1042,7 @@ fn recorded_state(row: &RecordedSession) -> &str {
     row.state.as_deref().unwrap_or("Unknown")
 }
 
-fn age(nanos: u64) -> String {
+pub(super) fn age(nanos: u64) -> String {
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
@@ -855,7 +1111,7 @@ fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message
     };
     if agents.help {
         frame.render_widget(
-            Paragraph::new("Enter Overview · a Activity · v Review · u Usage\n2 Activity · 3 MCP · 4 Operations · 5 Findings\n6 Host · 7 Usage · g History\n/ Search · x Clear · f Filter · s Sort · r Refresh\n←/→ Collapse/expand · h Flat/tree · [ ] Page · q Quit")
+            Paragraph::new("Enter Overview · a Activity · v Review · u Usage\n2 Activity · 3 MCP · 4 Operations · 5 Findings\n6 Host · 7 Usage · 8 Traces · g History\nb Tasks · w Workflow · p Prompts\n/ Search · x Clear · f Filter · s Sort · r Refresh\n←/→ Collapse/expand · h Flat/tree · [ ] Page · q Quit")
                 .wrap(Wrap { trim: false })
                 .block(Block::bordered().title("? close help")),
             content,
@@ -947,7 +1203,7 @@ fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message
         if pending {
             "Loading…".into()
         } else {
-            "f filter · s sort · ←→ tree · ? views · q quit".into()
+            "b tasks · w workflow · p prompts · F1 help · q quit".into()
         }
     });
     frame.render_widget(

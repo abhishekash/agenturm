@@ -66,12 +66,40 @@ Review with <code>v</code>, and open the selected session’s Usage with <code>u
 is stored next to the history database and applies to the reviewed version.</p>
 <p>From Agents, <code>g</code> opens the cross-source Overview. Use <code>2</code> for Activity,
 <code>3</code> for MCP, <code>4</code> for Operations, <code>5</code> for Findings, <code>6</code> for Host, and
-<code>7</code> for Usage. Press <code>t</code> in a history view to select a recorded turn,
-<code>?</code> for keyboard help, and <code>q</code> to quit. The available evidence varies by
-source. The MCP view lists recorded tool outcomes and operation IDs.</p>
+<code>7</code> for Usage or <code>8</code> for Traces. Press <code>t</code> in a history view to select a
+recorded turn, <code>F1</code> for keyboard help, and <code>q</code> to quit. The available
+evidence varies by source. For Codex MCP calls the view includes the server,
+tool, method, duration and outcome when recorded.</p>
+<p>From Agents or a session or turn detail, press <code>b</code> to open saved tasks.
+Use <code>n</code> to create a task linked to the selection, <code>r</code> to see its linked
+runs, and <code>h</code> to create a handoff using the current selection. Open the
+handoff list with <code>o</code> and export the selected handoff with <code>x</code>. Tasks can
+also record a Git snapshot from a directory you choose with <code>G</code>.</p>
+<p>From Agents, press <code>w</code> to see recorded requests. Use <code>s</code> to mark an item
+seen and <code>l</code> to focus the matching tmux pane when Agenturm verifies the
+route. Respond in the harness terminal.</p>
+<p>Select a session and press <code>p</code> for eligible Pi user prompts. Press Enter to
+reveal a prompt and Escape to clear it. The view requires a current grant
+for a pinned, single-file Pi source and uses <code>sources.json</code> next to the
+history database or the path set in <code>AGENTURM_CONTENT_CONFIG</code>.</p>
 <p>Use <code>&quot;$agenturm&quot; cockpit --db &lt;path&gt;</code> or <code>&quot;$agenturm&quot; inspect --db &lt;path&gt;</code>
 to open a specific existing Rust store without starting local collection.
 For collection between cockpit sessions, set up the managed collector below.</p>
+<h2>Open native traces</h2>
+<p>Point an OTLP JSON producer at the loopback receiver. Each span needs a
+<code>session.id</code> or <code>gen_ai.conversation.id</code> string attribute. Send uncompressed
+JSON to <code>http://127.0.0.1:4318/v1/traces</code>.</p>
+<pre><code class="language-sh">&quot;$agenturm&quot; serve-traces --listen 127.0.0.1:4318 --db traces.sqlite --source-id otlp.local
+</code></pre>
+<p>You can also load an export directly.</p>
+<pre><code class="language-sh">&quot;$agenturm&quot; import-traces --file export.json --db traces.sqlite --source-id otlp.local
+</code></pre>
+<p>After the first stored span, open the cockpit in another terminal and press
+<code>8</code> in Agents.</p>
+<pre><code class="language-sh">&quot;$agenturm&quot; cockpit --db traces.sqlite
+</code></pre>
+<p>If you target a database owned by an active history writer, the receiver
+returns HTTP 503 until the writer releases its lease.</p>
 <h2>Discover, collect, and inspect</h2>
 <pre><code class="language-sh">state=&quot;${XDG_STATE_HOME:-$HOME/.local/state}/agenturm-rust&quot;
 mkdir -m 700 -p &quot;$state&quot;
@@ -107,7 +135,9 @@ the native lifecycle state.</p>
 <p>Run <code>&quot;$agenturm&quot; backup --db &quot;$state/history.sqlite&quot; --output &quot;$state/history-backup.sqlite&quot;</code> while collection is running or stopped.
 The output path must be new. Query or inspect the backup by passing its
 path with <code>--db</code>. To resume collection from a snapshot, stop the current
-collector and configure the backup file as the new database.</p>
+collector and configure the backup file as the new database. Local review
+acknowledgements and saved workbench data use adjacent <code>.reviews.sqlite</code>
+and <code>.workspace.sqlite</code> files. The history backup covers observations.</p>
 <h2>Uninstall</h2>
 <p>Run <code>&quot;$agenturm&quot; service uninstall</code> to stop and remove the systemd unit.
 Remove the extracted bundle directory afterward if desired. The configuration

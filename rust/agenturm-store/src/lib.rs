@@ -16,6 +16,7 @@ mod content_grant;
 mod retention;
 mod review_ledger;
 mod session_catalog;
+mod workspace_ledger;
 
 pub use backup::BackupError;
 pub use content_grant::{ContentGrant, ContentGrantScope, ContentKind, PiUserTextEvidence};
@@ -24,6 +25,10 @@ pub use review_ledger::{ReviewError, ReviewKey, ReviewLedger, ReviewVersion};
 pub use session_catalog::{
     MAX_SESSION_PAGE_SIZE, SessionLifecycle, SessionPage, SessionPosition, SessionQuery,
     SessionSummary,
+};
+pub use workspace_ledger::{
+    MAX_WORKSPACE_PAGE_SIZE, SavedHandoff, SavedTask, WorkspaceAnchor, WorkspaceError,
+    WorkspaceGitSnapshot, WorkspaceLedger, WorkspacePage,
 };
 
 use agenturm_kernel::{
@@ -68,6 +73,14 @@ pub enum ObservationKind {
         category: String,
         result: String,
     },
+    McpCall {
+        server: Option<String>,
+        tool: Option<String>,
+        method: agenturm_kernel::McpMethod,
+        duration_ns: Option<u64>,
+        result: String,
+    },
+    TraceSpan(agenturm_kernel::TraceSpan),
     Lifecycle {
         state: String,
         reason_code: Option<String>,
@@ -1320,6 +1333,20 @@ impl Store {
                     ObservationKind::Tool { category, result } => {
                         KernelObservationKind::Tool { category, result }
                     }
+                    ObservationKind::McpCall {
+                        server,
+                        tool,
+                        method,
+                        duration_ns,
+                        result,
+                    } => KernelObservationKind::McpCall {
+                        server,
+                        tool,
+                        method,
+                        duration_ns,
+                        result,
+                    },
+                    ObservationKind::TraceSpan(span) => KernelObservationKind::TraceSpan(span),
                     ObservationKind::Lifecycle { state, reason_code } => {
                         KernelObservationKind::Lifecycle { state, reason_code }
                     }
@@ -1447,6 +1474,22 @@ impl ObservationStore for Store {
                         category: category.clone(),
                         result: result.clone(),
                     },
+                    KernelObservationKind::McpCall {
+                        server,
+                        tool,
+                        method,
+                        duration_ns,
+                        result,
+                    } => ObservationKind::McpCall {
+                        server: server.clone(),
+                        tool: tool.clone(),
+                        method: *method,
+                        duration_ns: *duration_ns,
+                        result: result.clone(),
+                    },
+                    KernelObservationKind::TraceSpan(span) => {
+                        ObservationKind::TraceSpan(span.clone())
+                    }
                     KernelObservationKind::Lifecycle { state, reason_code } => {
                         ObservationKind::Lifecycle {
                             state: state.clone(),
@@ -1592,6 +1635,32 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
                 )))
         {
             return Err(StoreError::Invalid("tool category or result is invalid"));
+        }
+        if let ObservationKind::McpCall {
+            server,
+            tool,
+            duration_ns,
+            result,
+            ..
+        } = &observation.kind
+            && (observation.identity.scope != StoredScope::Session
+                || observation.identity.session_id.is_none()
+                || observation.identity.operation_id.is_none()
+                || !agenturm_kernel::is_valid_mcp_metadata(
+                    server.as_deref(),
+                    tool.as_deref(),
+                    *duration_ns,
+                    result,
+                ))
+        {
+            return Err(StoreError::Invalid(
+                "MCP call metadata or operation identity is invalid",
+            ));
+        }
+        if let ObservationKind::TraceSpan(span) = &observation.kind
+            && !span.is_valid(observation.observed_at_unix_ns)
+        {
+            return Err(StoreError::Invalid("trace identity or timing is invalid"));
         }
         if let ObservationKind::Lifecycle { state, reason_code } = &observation.kind
             && (!agenturm_kernel::is_lifecycle_state(state)

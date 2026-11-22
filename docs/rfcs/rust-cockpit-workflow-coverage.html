@@ -4,9 +4,9 @@
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
 </style></head><body><main><nav><strong>Agenturm / 0.2.0</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cockpit-workflow-coverage.md">Markdown source ↗</a></nav><h1>Rust cockpit workflow coverage</h1>
 <p>This comparison uses the tagged Python cockpit <code>v0.2.8</code> and the published
-Rust cockpit <code>rust-v0.2.0</code>. Python workflows come from the tagged release
-documentation. Rust coverage comes from the tagged CLI and UI, the archive
-qualification, and the per-harness evidence record.
+Rust cockpit, including development changes after <code>rust-v0.2.0</code>. Python
+workflows come from the tagged release documentation. The published Rust
+archive and its qualification are recorded below.
 The coverage below concerns workflow behavior and recorded evidence.
 <a href="https://github.com/abhishekash/agenturm/blob/v0.2.8/docs/releases/0.2.8.md">Python 0.2.8 release notes</a> ·
 <a href="https://github.com/abhishekash/agenturm/blob/v0.2.8/docs/keyboard-navigation.md">Python 0.2.8 keyboard paths</a> ·
@@ -18,7 +18,7 @@ The coverage below concerns workflow behavior and recorded evidence.
 <tr>
 <th>Job</th>
 <th>Python 0.2.8</th>
-<th>Rust cockpit 0.2.0</th>
+<th>Rust cockpit</th>
 </tr>
 </thead>
 <tbody>
@@ -40,7 +40,7 @@ The coverage below concerns workflow behavior and recorded evidence.
 <tr>
 <td>Investigate Activity, MCP, or a trace</td>
 <td>Dedicated Activity, MCP and Traces navigate to linked evidence.</td>
-<td>Global and scoped Activity, MCP and Operations display admitted metadata and exact operation grouping. Native spans, MCP payloads, and deep linked tracing remain open.</td>
+<td>Activity, MCP and Operations show recorded operations, including typed Codex MCP server, tool, duration and outcome where present. Traces displays imported native OTLP span IDs, parent, timing and status. MCP payloads and cross-source trace links remain open.</td>
 </tr>
 <tr>
 <td>Review an agent's work</td>
@@ -50,7 +50,7 @@ The coverage below concerns workflow behavior and recorded evidence.
 <tr>
 <td>Read prompts</td>
 <td>The Prompts navigator provides recorded requests, readable and original views, and pagination.</td>
-<td>Message roles appear in Activity. The explicit Pi preview reads an eligible event under a verified current grant. General prompt browsing remains open.</td>
+<td>Message roles appear in Activity. <code>p</code> lists eligible user prompt references for a pinned, single-file Pi source. Enter reveals the exact event under the current grant. Escape clears the view. General prompt browsing remains open.</td>
 </tr>
 <tr>
 <td>Check usage or host health</td>
@@ -60,12 +60,12 @@ The coverage below concerns workflow behavior and recorded evidence.
 <tr>
 <td>Handle requests and preserve follow-up work</td>
 <td>Workflow surfaces requests, owner and local seen state. Saved tasks, decisions, linked runs and handoff export support follow-up.</td>
-<td>Recorded lifecycle can describe waiting or failure. Request routing, saved tasks, and handoff export remain open.</td>
+<td><code>w</code> shows recorded Codex and Kiro requests. Local seen state survives restart. Explicit routing can focus a uniquely verified Linux tmux pane. <code>b</code> opens saved tasks with exact run links, optional Git context, and Markdown and HTML handoff export.</td>
 </tr>
 <tr>
 <td>Use the keyboard in a compact terminal</td>
 <td>Global shortcuts and focus controls support compact layouts.</td>
-<td>Root shortcuts select Activity, MCP, Operations, Findings, Host and Usage. At 60 columns the roster uses one pane and detail opens separately. Wide terminals show a selected-session preview.</td>
+<td>Root shortcuts select Activity, MCP, Operations, Findings, Host, Usage and Traces. At 60 columns the roster uses one pane and detail opens separately. Wide terminals show a selected-session preview.</td>
 </tr>
 </tbody>
 </table></div>
@@ -79,12 +79,19 @@ history and displayed its native completion reason.</p>
 <p>The release checks include opening a specific session, reading scoped
 activity and review, returning to the same selection, and terminal restoration.
 <a href="https://github.com/abhishekash/agenturm/blob/main/scripts/verify-rust-linux-bundle.sh">Linux bundle verifier</a></p>
-<p>The cockpit update adds an Agents roster, source-scoped session Overview,
-Activity, Review and Usage, and global shortcuts for available evidence.
-Review acknowledgement applies to the selected evidence version. The global
-MCP pane covers recorded tool outcomes and operation IDs. Workflow request
-handling, terminal routing, deep traces and MCP details, general prompt
-navigation, and cross-session task handoffs remain distinct workflows.</p>
+<p>A 60×18 terminal exercise created and linked a task, exported a handoff in
+both formats, persisted a request’s seen state across reopen, and observed
+the request resolve after a new lifecycle event. A separate run used the
+request’s exact resumed session identity to focus its tmux pane. The prompt exercise listed
+Pi prompt references, revealed and scrolled the exact approved event, cleared
+it on Escape, and verified that revocation prevented another reveal. A local
+OTLP HTTP test submitted the same export twice and reopened a single durable
+span with its native IDs and displayed it in the Traces pane. The receiver
+rejected an HTTP request carrying an Origin header. Local discovery and
+collection checked eight Codex and Pi sources with zero source failures.</p>
+<p>Saved tasks, handoffs, and request seen state live in the adjacent
+<code>.workspace.sqlite</code> database. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-linux-bundle.md">Linux usage guide</a>
+for shortcuts and trace collection commands.</p>
 <h2>Published Rust 0.2.0</h2>
 <p>The Ubuntu 24.04 x86-64 release tag <code>rust-v0.2.0</code> resolves to
 <code>34345408a170f059e8af096c87c17a2e97d074e8</code>. The promoted CI archive has

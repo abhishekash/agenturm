@@ -389,6 +389,8 @@ fn kind_name(kind: &ObservationKind) -> &'static str {
         ObservationKind::SessionEnded => "session-ended",
         ObservationKind::Activity { .. } => "activity",
         ObservationKind::Tool { .. } => "tool",
+        ObservationKind::McpCall { .. } => "mcp-call",
+        ObservationKind::TraceSpan(_) => "trace-span",
         ObservationKind::Lifecycle { .. } => "lifecycle",
         ObservationKind::Check { .. } => "check",
         ObservationKind::PullRequestRaised { .. } => "pull-request-raised",

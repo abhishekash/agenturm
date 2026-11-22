@@ -56,13 +56,55 @@ is stored next to the history database and applies to the reviewed version.
 
 From Agents, `g` opens the cross-source Overview. Use `2` for Activity,
 `3` for MCP, `4` for Operations, `5` for Findings, `6` for Host, and
-`7` for Usage. Press `t` in a history view to select a recorded turn,
-`?` for keyboard help, and `q` to quit. The available evidence varies by
-source. The MCP view lists recorded tool outcomes and operation IDs.
+`7` for Usage or `8` for Traces. Press `t` in a history view to select a
+recorded turn, `F1` for keyboard help, and `q` to quit. The available
+evidence varies by source. For Codex MCP calls the view includes the server,
+tool, method, duration and outcome when recorded.
+
+From Agents or a session or turn detail, press `b` to open saved tasks.
+Use `n` to create a task linked to the selection, `r` to see its linked
+runs, and `h` to create a handoff using the current selection. Open the
+handoff list with `o` and export the selected handoff with `x`. Tasks can
+also record a Git snapshot from a directory you choose with `G`.
+
+From Agents, press `w` to see recorded requests. Use `s` to mark an item
+seen and `l` to focus the matching tmux pane when Agenturm verifies the
+route. Respond in the harness terminal.
+
+Select a session and press `p` for eligible Pi user prompts. Press Enter to
+reveal a prompt and Escape to clear it. The view requires a current grant
+for a pinned, single-file Pi source and uses `sources.json` next to the
+history database or the path set in `AGENTURM_CONTENT_CONFIG`.
 
 Use `"$agenturm" cockpit --db <path>` or `"$agenturm" inspect --db <path>`
 to open a specific existing Rust store without starting local collection.
 For collection between cockpit sessions, set up the managed collector below.
+
+## Open native traces
+
+Point an OTLP JSON producer at the loopback receiver. Each span needs a
+`session.id` or `gen_ai.conversation.id` string attribute. Send uncompressed
+JSON to `http://127.0.0.1:4318/v1/traces`.
+
+```sh
+"$agenturm" serve-traces --listen 127.0.0.1:4318 --db traces.sqlite --source-id otlp.local
+```
+
+You can also load an export directly.
+
+```sh
+"$agenturm" import-traces --file export.json --db traces.sqlite --source-id otlp.local
+```
+
+After the first stored span, open the cockpit in another terminal and press
+`8` in Agents.
+
+```sh
+"$agenturm" cockpit --db traces.sqlite
+```
+
+If you target a database owned by an active history writer, the receiver
+returns HTTP 503 until the writer releases its lease.
 
 ## Discover, collect, and inspect
 
@@ -108,7 +150,9 @@ Run `"$agenturm" backup --db "$state/history.sqlite" --output
 "$state/history-backup.sqlite"` while collection is running or stopped.
 The output path must be new. Query or inspect the backup by passing its
 path with `--db`. To resume collection from a snapshot, stop the current
-collector and configure the backup file as the new database.
+collector and configure the backup file as the new database. Local review
+acknowledgements and saved workbench data use adjacent `.reviews.sqlite`
+and `.workspace.sqlite` files. The history backup covers observations.
 
 ## Uninstall
 

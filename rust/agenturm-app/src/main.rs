@@ -1,7 +1,8 @@
 use agenturm_app::{
     AgenturmApp, Command, discover, execute_backup, execute_cockpit, execute_collect,
     execute_content, execute_ingest, execute_inspect_ui, execute_prune, execute_query,
-    execute_service, execute_watch, parse_command, render,
+    execute_service, execute_trace_import, execute_trace_receiver, execute_watch, parse_command,
+    render,
 };
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -36,6 +37,19 @@ fn main() -> ExitCode {
             Ok(summary) => print!("{summary}"),
             Err(message) => {
                 eprintln!("ingest failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        },
+        Command::ServeTraces(options) => {
+            if let Err(message) = execute_trace_receiver(&options) {
+                eprintln!("trace receiver failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Command::ImportTraces(options) => match execute_trace_import(&options) {
+            Ok(summary) => print!("{summary}"),
+            Err(message) => {
+                eprintln!("trace import failed: {message}");
                 return ExitCode::FAILURE;
             }
         },

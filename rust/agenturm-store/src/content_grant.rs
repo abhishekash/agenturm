@@ -1,6 +1,6 @@
 //! Durable authorization state for host-controlled private source requests.
 
-use crate::{ObservationKind, Result, SCHEMA_VERSION, Store, StoreError};
+use crate::{MAX_BATCH_EVENTS, ObservationKind, Result, SCHEMA_VERSION, Store, StoreError};
 use agenturm_kernel::ExtensionId;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use std::fmt;
@@ -199,6 +199,17 @@ impl Store {
         Ok(())
     }
 
+    /// Retains the writer lease and serializes proof and delivery with
+    /// admission, grants, and retention on other same-process connections.
+    pub fn with_pi_content_fence<T>(&self, use_current: impl FnOnce(&Self) -> T) -> Result<T> {
+        self.require_pi_content_writer()?;
+        let fence =
+            rusqlite::Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+        let response = use_current(self);
+        fence.rollback()?;
+        Ok(response)
+    }
+
     /// Selects a retained observation in the same commit as the current
     /// source cursor. Older batches cannot supply admission-time byte proof
     /// through this API. The caller holds storage's writer fence through use.
@@ -209,13 +220,41 @@ impl Store {
         event_id: &str,
         revision: u32,
     ) -> Result<Option<PiUserTextEvidence>> {
+        let mut found =
+            self.current_pi_user_text_candidates(scope, grant, Some(event_id), None, revision)?;
+        Ok(found.pop().map(|(_, evidence)| evidence))
+    }
+
+    /// Lists native-revision user messages from a single selected session and
+    /// the same commit as its source cursor. Entries still need byte proof.
+    pub fn current_pi_user_text_references(
+        &self,
+        scope: &ContentGrantScope,
+        grant: &ContentGrant,
+        session_id: &str,
+    ) -> Result<Vec<(String, PiUserTextEvidence)>> {
+        self.current_pi_user_text_candidates(scope, grant, None, Some(session_id), 0)
+    }
+
+    fn require_pi_content_writer(&self) -> Result<()> {
         #[cfg(target_os = "linux")]
         if self.writer_lease.is_none() {
             return Err(StoreError::WriterLease(std::io::Error::other(
                 "Pi preview requires a writer lease",
             )));
         }
-        self.verify_write_admission()?;
+        self.verify_write_admission()
+    }
+
+    fn current_pi_user_text_candidates(
+        &self,
+        scope: &ContentGrantScope,
+        grant: &ContentGrant,
+        event_id: Option<&str>,
+        session_id: Option<&str>,
+        revision: u32,
+    ) -> Result<Vec<(String, PiUserTextEvidence)>> {
+        self.require_pi_content_writer()?;
         self.verify_content_grant(scope, grant)?;
         let version = self
             .connection
@@ -223,20 +262,18 @@ impl Store {
         if version != SCHEMA_VERSION {
             return Err(StoreError::UnsupportedSchema(version));
         }
-        let row = self
-            .connection
-            .query_row(
-                "SELECT state.cursor, o.session_id, o.worker_id, o.turn_id,
+        let mut statement = self.connection.prepare(
+            "SELECT o.event_id, state.cursor, o.session_id, o.worker_id, o.turn_id,
                     o.observed_at_unix_ns, o.kind_json
              FROM agenturm_observations AS o
-             JOIN agenturm_history_batches AS history ON history.request_id = o.request_id
              JOIN agenturm_source_state AS state ON state.source_id = o.source_id
-             WHERE o.source_id = ?1 AND o.event_id = ?2 AND o.revision = ?3
+             WHERE o.source_id = ?1 AND (?2 IS NULL OR o.event_id = ?2) AND o.revision = ?3
+               AND (?4 IS NULL OR o.session_id = ?4)
                AND o.scope = 'session' AND o.turn_id IS NOT NULL AND o.operation_id IS NULL
-               AND history.sequence = (
-                   SELECT newest.sequence FROM agenturm_history_batches AS newest
+               AND o.request_id = (
+                   SELECT newest.request_id FROM agenturm_history_batches AS newest
                    JOIN agenturm_ingest_receipts AS receipt USING (request_id)
-                   WHERE receipt.source_id = o.source_id ORDER BY newest.sequence DESC LIMIT 1
+                   WHERE receipt.source_id = ?1 ORDER BY newest.sequence DESC LIMIT 1
                )
                AND NOT EXISTS (
                    SELECT 1 FROM agenturm_observations AS newer
@@ -246,24 +283,87 @@ impl Store {
                    SELECT 1 FROM agenturm_retired_observations AS newer
                    WHERE newer.source_id = o.source_id AND newer.event_id = o.event_id
                          AND newer.revision > o.revision
-               )",
-                params![scope.source_id.as_str(), event_id, revision],
-                |row| {
-                    let evidence = PiUserTextEvidence {
-                        cursor: row.get(0)?,
-                        session_id: row.get(1)?,
-                        worker_id: row.get(2)?,
-                        turn_id: row.get(3)?,
-                        observed_at_unix_ns: row.get(4)?,
-                    };
-                    Ok((evidence, row.get::<_, String>(5)?))
-                },
-            )
-            .optional()?;
-        let Some((evidence, kind)) = row else {
-            return Ok(None);
-        };
-        let kind = serde_json::from_str::<ObservationKind>(&kind)?;
-        Ok(matches!(kind, ObservationKind::Message { role } if role == "user").then_some(evidence))
+               )
+             ORDER BY o.observed_at_unix_ns, o.event_id
+             LIMIT ?5",
+        )?;
+        let rows = statement.query_map(
+            params![
+                scope.source_id.as_str(),
+                event_id,
+                revision,
+                session_id,
+                MAX_BATCH_EVENTS
+            ],
+            |row| {
+                let evidence = PiUserTextEvidence {
+                    cursor: row.get(1)?,
+                    session_id: row.get(2)?,
+                    worker_id: row.get(3)?,
+                    turn_id: row.get(4)?,
+                    observed_at_unix_ns: row.get(5)?,
+                };
+                Ok((row.get(0)?, evidence, row.get::<_, String>(6)?))
+            },
+        )?;
+        let mut found = Vec::new();
+        for row in rows {
+            let (event_id, evidence, kind) = row?;
+            if matches!(serde_json::from_str::<ObservationKind>(&kind)?,
+                ObservationKind::Message { role } if role == "user")
+            {
+                found.push((event_id, evidence));
+            }
+        }
+        Ok(found)
+    }
+}
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+    use std::fs;
+    use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn content_delivery_serializes_same_process_revocation() {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "agenturm-content-fence-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let db = directory.join("history.sqlite");
+        let mut authorizer = Store::open(&db).unwrap();
+        let mut revoker = Store::open(&db).unwrap();
+        revoker.connection.busy_timeout(Duration::ZERO).unwrap();
+        let source = ExtensionId::parse("harness.pi").unwrap();
+        let scope = ContentGrantScope::new(source.clone(), ContentKind::PiUserText, [7; 32]);
+        let grant = authorizer.grant_content(&scope).unwrap();
+        authorizer
+            .with_pi_content_fence(|store| {
+                assert!(matches!(
+                    revoker.revoke_content(&source, ContentKind::PiUserText),
+                    Err(StoreError::Sqlite(rusqlite::Error::SqliteFailure(err, _)))
+                        if err.code == rusqlite::ErrorCode::DatabaseBusy
+                ));
+                store.verify_content_grant(&scope, &grant).unwrap();
+            })
+            .unwrap();
+        assert!(
+            revoker
+                .revoke_content(&source, ContentKind::PiUserText)
+                .unwrap()
+        );
+        assert!(matches!(
+            authorizer.verify_content_grant(&scope, &grant),
+            Err(StoreError::StaleContentGrant)
+        ));
+        drop(revoker);
+        drop(authorizer);
+        fs::remove_dir_all(directory).unwrap();
     }
 }

@@ -6,13 +6,21 @@
 
 mod cockpit_host;
 mod cockpit_startup;
+mod cockpit_workflows;
 mod discovery;
+mod handoff_export;
 mod inspector_activity;
 mod pi_preview;
 mod session_evidence;
+mod task_git;
+mod trace_import;
+mod trace_receiver;
+mod workflow_route;
 
 pub use discovery::{discover, execute_discover};
 pub use pi_preview::{PiContentOptions, execute_content};
+pub use trace_import::{TraceImportOptions, execute_trace_import};
+pub use trace_receiver::{TraceReceiverOptions, execute_trace_receiver};
 
 use agenturm_kernel::{
     Capability, ExtensionId, ExtensionPlugin, Harness, Kernel, MAX_DURABLE_SNAPSHOT_OBSERVATIONS,
@@ -176,6 +184,8 @@ pub enum Command {
     },
     Content(PiContentOptions),
     Ingest(IngestOptions),
+    ImportTraces(TraceImportOptions),
+    ServeTraces(TraceReceiverOptions),
     Collect(ConfiguredCollectOptions),
     Discover {
         sessions_per_harness: usize,
@@ -685,6 +695,8 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         Some("collect") => parse_collect_options(&args[1..]).map(Command::Collect),
         Some("service") => parse_service_options(&args[1..]).map(Command::Service),
         Some("ingest-usage") => parse_ingest_options(&args[1..], None).map(Command::Ingest),
+        Some("serve-traces") => trace_receiver::parse(&args[1..]).map(Command::ServeTraces),
+        Some("import-traces") => trace_import::parse(&args[1..]).map(Command::ImportTraces),
         Some("ingest-codex-usage") => {
             parse_ingest_options(&args[1..], Some(CODEX_PLUGIN_ID)).map(Command::Ingest)
         }
@@ -1464,6 +1476,9 @@ fn workspace_response(
             }
             Ok(WorkspaceResponse::Sessions(catalog))
         }
+        WorkspaceRequest::Work(command) => {
+            cockpit_workflows::execute(store, db, command).map(WorkspaceResponse::Work)
+        }
         WorkspaceRequest::MarkReviewed(session) => {
             let key = ReviewKey {
                 harness_id: ExtensionId::parse(session.harness_id)
@@ -1640,6 +1655,7 @@ fn load_workspace_history(
                 WorkspaceView::Findings => ids.findings,
                 WorkspaceView::Host => host,
                 WorkspaceView::Usage => ids.usage,
+                WorkspaceView::Traces => ids.traces,
             });
             page
         }
@@ -1695,6 +1711,23 @@ pub fn execute_query(options: &HistoryQueryOptions) -> Result<String, String> {
                 ObservationKind::Tool { category, result } => {
                     serde_json::json!({"kind":"tool", "category":category, "result":result})
                 }
+                ObservationKind::McpCall {
+                    server,
+                    tool,
+                    method,
+                    duration_ns,
+                    result,
+                } => serde_json::json!({
+                    "kind":"mcp_call", "server":server, "tool":tool,
+                    "method":method.as_str(), "duration_ns":duration_ns.map(|nanos| nanos.to_string()),
+                    "result":result,
+                }),
+                ObservationKind::TraceSpan(span) => serde_json::json!({
+                    "kind":"trace_span", "trace_id":span.trace_id, "span_id":span.span_id,
+                    "parent_span_id":span.parent_span_id,
+                    "started_at_unix_ns":span.started_at_unix_ns.to_string(),
+                    "status":span.status.as_str(),
+                }),
                 ObservationKind::Lifecycle { state, reason_code } => {
                     serde_json::json!({"kind":"lifecycle", "state":state, "reason_code":reason_code})
                 }
@@ -2710,7 +2743,9 @@ pub fn render(command: Command) -> String {
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
             "       agenturm backup --db <path> --output <new-path>\n",
             "       agenturm prune --db <path> --before-unix-ns <ns>\n",
-            "       agenturm content <grant|revoke|preview> [options]\n",
+            "       agenturm content <grant|revoke|list|preview> [options]\n",
+            "       agenturm serve-traces --listen <loopback-IP:port> --db <path> --source-id otlp.<id>\n",
+            "       agenturm import-traces --file <otlp-json-path|-> --db <path> --source-id otlp.<id>\n",
             "       agenturm discover [--follow] [--sessions-per-harness <1..8>]\n",
             "       agenturm collect --config <json-path> --db <path>\n",
             "       agenturm collect --config <json-path> --db <path> --watch [--interval-ms <100..60000>]\n",
@@ -2741,7 +2776,7 @@ pub fn render(command: Command) -> String {
         Command::Discover { .. } | Command::Cockpit { .. } => String::new(),
         Command::Inspect(_) => String::new(),
         Command::Query(_) => String::new(),
-        Command::Ingest(_) => String::new(),
+        Command::Ingest(_) | Command::ImportTraces(_) | Command::ServeTraces(_) => String::new(),
         Command::Collect(_) => String::new(),
         Command::Service(_) => String::new(),
     }

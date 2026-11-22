@@ -85,11 +85,12 @@ Use a coverage matrix for each supported harness. Finish the typed lifecycle, ac
 **In progress.** The [harness evidence matrix](../validation/rust-harness-evidence-coverage.md) tracks coverage per adapter. The inspector lists identifiable turns on the loaded page and opens activity for the selected source, session, and turn at the same durable snapshot. A 60×18 PTY test selected an interrupted turn and a later active turn and verified terminal restoration. The durable PR fact has a separate source-native operation and turn identity. Codex, Pi, Kiro, and OpenCode preserve explicit relationship evidence where their source records provide it. Kiro credit usage keeps its native unit. The OpenCode adapter records check outcomes for recognized direct commands with a native shell exit. A separately built Prompt Signals executable added a pane and metrics through the SHA-256-pinned inspector extension catalog. An explicit [Pi user-text preview](../validation/rust-content-grant-fence.md) binds the current grant and source to a retained event in the latest committed batch and verifies its source bytes before delivery.
 
 The [Rust cockpit workflow coverage](rust-cockpit-workflow-coverage.md) records
-the interactive 0.2.0 implementation and gaps against Python 0.2.8. The
-cockpit starts or attaches to a Pi and Codex collector, loads a searchable
-session roster, shows bounded Activity and Review, and saves versioned local
-review acknowledgements. General prompt navigation, full native traces,
-workflow request routing, and cross-session task handoffs remain open.
+the interactive Rust implementation and gaps against Python 0.2.8. The
+cockpit adds saved tasks, exact run links, handoff exports, recorded requests
+with persistent seen state, and explicit routing to a verified Linux tmux
+pane. It displays grant-backed Pi user prompts, typed Codex MCP activity, and
+native span metadata imported from OTLP JSON. General prompt navigation,
+richer review and MCP payloads, and cross-source trace links remain open.
 
 ### Step 4 — Complete storage and recovery
 

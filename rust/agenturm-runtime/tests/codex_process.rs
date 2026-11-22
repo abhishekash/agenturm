@@ -1,6 +1,6 @@
 use agenturm_kernel::{
-    ExtensionId, Kernel, Observation, ObservationPage, ObservationStore, RelationshipKind,
-    StoreCommit,
+    ExtensionId, Kernel, McpMethod, Observation, ObservationPage, ObservationStore,
+    RelationshipKind, StoreCommit,
 };
 use agenturm_runtime::{ProcessConfig, ProcessSource};
 use agenturm_store::{ObservationKind, Store};
@@ -75,6 +75,7 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
             "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:00Z\",\"payload\":{\"type\":\"task_started\",\"turn_id\":\"turn-1\"}}\n",
             "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:02Z\",\"payload\":{\"type\":\"item_completed\",\"turn_id\":\"turn-1\",\"item\":{\"type\":\"CommandExecution\",\"id\":\"pr-operation\",\"command\":[\"/usr/bin/zsh\",\"-lc\",\"gh pr create --body 'private PR body never stored'\"],\"status\":\"completed\",\"exit_code\":0,\"aggregated_output\":\"https://github.com/example/agenturm/pull/42\\n\"}}}\n",
             "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:03Z\",\"payload\":{\"type\":\"task_aborted\",\"turn_id\":\"turn-1\"}}\n",
+            "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:02.5Z\",\"payload\":{\"type\":\"item_completed\",\"turn_id\":\"turn-1\",\"item\":{\"type\":\"McpToolCall\",\"id\":\"mcp-operation\",\"server\":\"github\",\"tool\":\"search_code\",\"duration\":{\"secs\":1,\"nanos\":5},\"status\":\"completed\",\"arguments\":{},\"result\":{\"isError\":true,\"content\":\"private MCP result never stored\"}}}}\n",
             "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"private text never stored\"}}\n",
             "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"exec_command\",\"arguments\":\"private command never stored\"}}\n",
             "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"call-1\",\"isError\":false,\"output\":\"private output never stored\"}}\n",
@@ -118,7 +119,7 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .admissions
         .get(&source_id)
         .expect("admission status");
-    assert_eq!(admission.inserted, 13);
+    assert_eq!(admission.inserted, 15);
     assert!(!admission.replay);
     assert_eq!(admission.skipped_unprojected_facts, 0);
     assert!(admission.source_ack_sent);
@@ -138,10 +139,10 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .expect("durable cursor committed");
     assert!(!cursor.is_empty());
     let observations = store.observations().expect("read committed observations");
-    assert_eq!(observations.len(), 13);
+    assert_eq!(observations.len(), 15);
     let mut restarted_kernel = Kernel::new();
     let restored = restarted_kernel.refresh_with_store(&mut store);
-    assert_eq!(restored.observations.len(), 13);
+    assert_eq!(restored.observations.len(), 15);
     assert_eq!(
         restored
             .observations
@@ -219,7 +220,30 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .iter()
         .filter(|(_, row)| matches!(row.kind, ObservationKind::Tool { .. }))
         .collect::<Vec<_>>();
-    assert_eq!(tools.len(), 4);
+    assert_eq!(tools.len(), 5);
+    let (_, mcp) = observations
+        .iter()
+        .find(|(_, row)| {
+            row.kind
+                == ObservationKind::McpCall {
+                    server: Some("github".into()),
+                    tool: Some("search_code".into()),
+                    method: McpMethod::ToolsCall,
+                    duration_ns: Some(1_000_000_005),
+                    result: "failed".into(),
+                }
+        })
+        .expect("reopen typed MCP evidence");
+    assert_eq!(mcp.identity.turn_id.as_deref(), Some("turn-1"));
+    assert!(tools.iter().any(|(_, row)| {
+        row.kind
+            == ObservationKind::Tool {
+                category: "mcp".into(),
+                result: "failed".into(),
+            }
+            && row.identity.operation_id == mcp.identity.operation_id
+    }));
+    assert!(!format!("{observations:?}").contains("private MCP result"));
     assert_eq!(
         observations
             .iter()
