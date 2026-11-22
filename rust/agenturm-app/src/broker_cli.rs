@@ -72,6 +72,7 @@ enum BrokerCommand {
     ServeTraces(trace_receiver::BrokerTraceReceiverOptions),
     Run(trace_run::TraceInvocation),
     Investigation(Box<InvestigationOptions>),
+    Retention(RetentionOptions),
     Grant {
         verb: String,
         binding: PathBuf,
@@ -160,6 +161,12 @@ pub(super) fn parse_os(args: &[OsString]) -> Result<BrokerOptions, String> {
                 &command[1..],
                 true,
             )?)),
+        });
+    }
+    if command.first().is_some_and(|verb| verb == "retention") {
+        return Ok(BrokerOptions {
+            config,
+            command: BrokerCommand::Retention(retention_cli::parse(&command[1..], true)?),
         });
     }
     let management = match command.as_slice() {
@@ -403,6 +410,10 @@ pub fn execute(options: &BrokerOptions) -> Result<ExitCode, BrokerExecutionError
             let token = trace_receiver::ProducerToken::generate()?;
             return trace_run::execute_with_commit(invocation, Some(token), commit)
                 .map_err(Into::into);
+        }
+        BrokerCommand::Retention(options) => {
+            print!("{}", retention_cli::execute_broker(options, &store)?);
+            return Ok(ExitCode::SUCCESS);
         }
         BrokerCommand::Investigation(options) => {
             return crate::with_private_stdout(|output| {

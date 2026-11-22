@@ -14,8 +14,9 @@ use agenturm_kernel::{
 };
 use agenturm_storage_service_contract::{ContractError, ServerPolicy, native};
 use agenturm_store::{
-    ObservationBatch, ResolvedTraceReview, RetentionOutcome, SessionPage, SessionQuery, Store,
-    TraceReviewQuery, WorkspaceAnchor, WorkspaceHistory,
+    AutomaticRetentionPolicy, AutomaticRetentionStatus, ObservationBatch, ResolvedTraceReview,
+    RetentionOutcome, SessionPage, SessionQuery, Store, TraceReviewQuery, WorkspaceAnchor,
+    WorkspaceHistory,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeSet;
@@ -781,6 +782,34 @@ impl NativeStore {
     pub fn prune_before(&self, cutoff_unix_ns: u64) -> Result<RetentionOutcome, NativeClientError> {
         match self.admin(AdminRequest::PruneBefore { cutoff_unix_ns })? {
             AdminReply::Pruned { outcome } => Ok(outcome),
+            _ => Err(NativeClientError::InvalidReply),
+        }
+    }
+
+    pub fn automatic_retention_status(
+        &self,
+    ) -> Result<AutomaticRetentionStatus, NativeClientError> {
+        match self.admin(AdminRequest::GetRetentionPolicy {})? {
+            AdminReply::RetentionPolicy { status } => Ok(status),
+            _ => Err(NativeClientError::InvalidReply),
+        }
+    }
+
+    pub fn set_automatic_retention(
+        &self,
+        policy: AutomaticRetentionPolicy,
+    ) -> Result<AutomaticRetentionStatus, NativeClientError> {
+        match self.admin(AdminRequest::SetRetentionPolicy { policy })? {
+            AdminReply::RetentionPolicy { status } => Ok(status),
+            _ => Err(NativeClientError::InvalidReply),
+        }
+    }
+
+    pub fn apply_current_automatic_retention(
+        &self,
+    ) -> Result<Option<RetentionOutcome>, NativeClientError> {
+        match self.admin(AdminRequest::ApplyRetentionPolicy {})? {
+            AdminReply::RetentionApplied { outcome } => Ok(outcome),
             _ => Err(NativeClientError::InvalidReply),
         }
     }

@@ -18,6 +18,7 @@ mod handoff_export;
 mod inspector_activity;
 mod investigate_cli;
 mod private_output;
+mod retention_cli;
 mod review_receipt;
 mod session_evidence;
 mod span_jsonl_import;
@@ -39,6 +40,7 @@ pub use content_preview::{ContentOptions, execute_content, execute_content_stdou
 pub use discovery::{discover, execute_discover};
 pub use investigate_cli::{InvestigationOptions, execute_investigation};
 pub use private_output::with_private_stdout;
+pub use retention_cli::{RetentionOptions, execute_retention};
 pub use review_receipt::ReviewOutput;
 pub use span_jsonl_import::{SpanJsonlImportOptions, execute_span_jsonl_import};
 pub use task_cli::{TaskOptions, execute_task, execute_task_stdout};
@@ -228,6 +230,7 @@ pub enum Command {
         before_unix_ns: u64,
     },
     Content(ContentOptions),
+    Retention(RetentionOptions),
     Ingest(IngestOptions),
     ImportTraces(TraceImportOptions),
     ImportJsonl(SpanJsonlImportOptions),
@@ -809,6 +812,7 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
                 .map_err(|_| "--before-unix-ns requires a Unix nanosecond timestamp".to_owned())?;
             Ok(Command::Prune { db, before_unix_ns })
         }
+        Some("retention") => retention_cli::parse(&args[1..], false).map(Command::Retention),
         Some("content") => content_preview::parse(&args[1..]).map(Command::Content),
         Some("discover") => parse_discover_options(&args[1..]),
         Some("collect") => parse_collect_options(&args[1..]).map(Command::Collect),
@@ -2393,6 +2397,8 @@ pub struct ConfiguredCollector<S = Store> {
     #[cfg(target_os = "linux")]
     validate_local_database: bool,
     next_scan: Instant,
+    local_maintenance: Option<fn(&mut S) -> Result<(), String>>,
+    next_maintenance: Instant,
 }
 
 impl ConfiguredCollector {
@@ -2413,7 +2419,25 @@ impl ConfiguredCollector {
         }
         let store = Store::open_collector(&database)
             .map_err(|error| format!("open store failed: {error}"))?;
-        Self::with_store(config, database, store, stop)
+        Self::with_local_store(config, database, store, stop)
+    }
+
+    fn with_local_store(
+        config: ValidatedCollectionConfig,
+        database: PathBuf,
+        store: Store,
+        stop: Option<&Arc<AtomicBool>>,
+    ) -> Result<Self, String> {
+        let mut collector = Self::with_store(config, database, store, stop)?;
+        collector.local_maintenance = Some(|store| {
+            store
+                .apply_current_automatic_retention()
+                .map(|_| ())
+                .map_err(|_| {
+                    "Automatic retention could not run; retained history is still available".into()
+                })
+        });
+        Ok(collector)
     }
 }
 
@@ -2440,6 +2464,8 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
             #[cfg(target_os = "linux")]
             validate_local_database: true,
             next_scan: Instant::now() + FOLLOW_INTERVAL,
+            local_maintenance: None,
+            next_maintenance: Instant::now(),
         };
         for source in config.sources {
             collector.add_source(source)?;
@@ -2536,13 +2562,20 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
     }
 
     pub fn refresh(&mut self) -> CollectionReport {
+        let maintenance_error = if Instant::now() >= self.next_maintenance {
+            self.next_maintenance = Instant::now() + Duration::from_secs(60);
+            self.local_maintenance
+                .and_then(|maintain| maintain(&mut self.store).err())
+        } else {
+            None
+        };
         self.retry_pending_sources();
         let snapshot = self.kernel.refresh_with_store(&mut self.store);
         let shutdown_requested = self
             .stop_flag
             .as_ref()
             .is_some_and(|stop| stop.load(Ordering::Relaxed));
-        if self.follow.is_some()
+        let mut report = if self.follow.is_some()
             && self.stop_flag.is_some()
             && Instant::now() >= self.next_scan
             && !shutdown_requested
@@ -2553,21 +2586,27 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
             let polled_ids = self.source_ids.clone();
             let startup_failures = self.startup_failures.clone();
             let discovery_failure = self.rescan_follow_sources().err();
-            return build_collection_report_with_discovery(
+            build_collection_report_with_discovery(
                 &polled_ids,
                 &startup_failures,
                 &snapshot,
                 shutdown_requested,
                 discovery_failure,
-            );
+            )
+        } else {
+            build_collection_report_with_discovery(
+                &self.source_ids,
+                &self.startup_failures,
+                &snapshot,
+                shutdown_requested,
+                None,
+            )
+        };
+        if let Some(message) = maintenance_error {
+            report.summary.push_str(&format!("{message}\n"));
+            report.global_failures.push(message);
         }
-        build_collection_report_with_discovery(
-            &self.source_ids,
-            &self.startup_failures,
-            &snapshot,
-            shutdown_requested,
-            None,
-        )
+        report
     }
 
     fn retry_pending_sources(&mut self) {
@@ -3261,6 +3300,7 @@ pub fn render(command: Command) -> String {
             "       agenturm backup --db <path> --bundle <new-directory>\n",
             "       agenturm restore --bundle <directory> --output <new-directory>\n",
             "       agenturm prune --db <path> --before-unix-ns <ns>\n",
+            "       agenturm retention <status|set|disable|run> --db <path> [--max-age-days <days>]\n",
             "       agenturm content <grant|revoke|list|preview> [options]\n",
             "       agenturm serve-traces --listen <loopback-IP:port> --db <path> --source-id otlp.<id>\n",
             "       agenturm run --db <path> [--source-id otlp.<id>] -- <program> [args...]\n",
@@ -3301,6 +3341,7 @@ pub fn render(command: Command) -> String {
         | Command::BackupWorkspace { .. }
         | Command::RestoreWorkspace { .. }
         | Command::Prune { .. }
+        | Command::Retention(_)
         | Command::Content(_) => String::new(),
         Command::Discover { .. } | Command::Cockpit { .. } => String::new(),
         Command::Inspect(_) => String::new(),

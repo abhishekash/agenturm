@@ -1,7 +1,10 @@
 //! Administrative broker operations. Request data never selects a path.
 
 use agenturm_kernel::ExtensionId;
-use agenturm_store::{ContentGrantScope, ContentKind, RetentionOutcome, Store, StoreError};
+use agenturm_store::{
+    AutomaticRetentionPolicy, AutomaticRetentionStatus, ContentGrantScope, ContentKind,
+    RetentionOutcome, Store, StoreError,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -61,6 +64,9 @@ pub(crate) enum AdminRequest {
     ApproveGrant { binding: GrantBinding },
     RevokeGrant { binding: GrantBinding },
     PruneBefore { cutoff_unix_ns: u64 },
+    GetRetentionPolicy {},
+    SetRetentionPolicy { policy: AutomaticRetentionPolicy },
+    ApplyRetentionPolicy {},
     Backup {},
     CheckIntegrity {},
 }
@@ -71,6 +77,8 @@ pub(crate) enum AdminReply {
     Grant { status: GrantStatus },
     Revoked { changed: bool },
     Pruned { outcome: RetentionOutcome },
+    RetentionPolicy { status: AutomaticRetentionStatus },
+    RetentionApplied { outcome: Option<RetentionOutcome> },
     BackedUp { receipt: BackupReceipt },
     IntegrityPassed,
 }
@@ -99,7 +107,10 @@ pub(crate) fn dispatch(
         AdminRequest::ApproveGrant { binding } | AdminRequest::RevokeGrant { binding } => {
             role == Role::GrantAdministrator && allowed.contains(&binding.source_id)
         }
+        AdminRequest::GetRetentionPolicy {} => role.reads_history() || role == Role::Maintenance,
         AdminRequest::PruneBefore { .. }
+        | AdminRequest::SetRetentionPolicy { .. }
+        | AdminRequest::ApplyRetentionPolicy {}
         | AdminRequest::Backup {}
         | AdminRequest::CheckIntegrity {} => role == Role::Maintenance,
     };
@@ -138,6 +149,18 @@ pub(crate) fn dispatch(
                 .map_err(failure)?;
             Ok(AdminReply::Pruned { outcome })
         }
+        AdminRequest::GetRetentionPolicy {} => Ok(AdminReply::RetentionPolicy {
+            status: store.automatic_retention_status().map_err(failure)?,
+        }),
+        AdminRequest::SetRetentionPolicy { policy } => {
+            store.set_automatic_retention(policy).map_err(failure)?;
+            Ok(AdminReply::RetentionPolicy {
+                status: store.automatic_retention_status().map_err(failure)?,
+            })
+        }
+        AdminRequest::ApplyRetentionPolicy {} => Ok(AdminReply::RetentionApplied {
+            outcome: store.apply_current_automatic_retention().map_err(failure)?,
+        }),
         AdminRequest::Backup {} => {
             let directory = backup_directory.ok_or(AdminFailure::Unavailable)?;
             let receipt = backup(store, directory)?;

@@ -704,7 +704,18 @@ mod linux {
         let socket = SocketGuard::capture(socket_path, transport, config.client_gid)?;
         listener.set_nonblocking(true)?;
         let mut accepted = 0_usize;
+        let mut retention_schedule = agenturm_store::AutomaticRetentionSchedule::default();
         while !STOP.load(Ordering::Relaxed) {
+            if let Some(store) = native_store.as_mut() {
+                data.verify()?;
+                instance.verify()?;
+                if retention_schedule.tick(store).is_err() {
+                    eprintln!(
+                        "Automatic retention could not run; retained history remains available"
+                    );
+                }
+                data.verify()?;
+            }
             let mut ready = libc::pollfd {
                 fd: listener.as_raw_fd(),
                 events: libc::POLLIN,

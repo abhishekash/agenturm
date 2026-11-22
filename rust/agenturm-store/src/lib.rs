@@ -11,6 +11,7 @@
 
 #![forbid(unsafe_code)]
 
+mod automatic_retention;
 mod backup;
 mod content_grant;
 mod linked_trace;
@@ -19,6 +20,10 @@ mod review_ledger;
 mod session_catalog;
 mod workspace_ledger;
 
+pub use automatic_retention::{
+    AutomaticRetentionPolicy, AutomaticRetentionSchedule, AutomaticRetentionStatus,
+    DEFAULT_RETENTION_AGE_NS,
+};
 pub use backup::BackupError;
 pub use content_grant::{
     CodexOperationEvidence, CodexOperationSelection, ContentGrant, ContentGrantScope, ContentKind,
@@ -737,6 +742,7 @@ fn migrate_v7_to_v8(connection: &mut Connection) -> Result<()> {
 /// transactions. Read-only connections do not take the lease.
 pub struct Store {
     connection: Connection,
+    created_new: bool,
     #[cfg(target_os = "linux")]
     writer_lease: Option<agenturm_storage_lease::WriterLease>,
 }
@@ -757,16 +763,16 @@ impl Store {
             let path = std::path::absolute(path).map_err(StoreError::WriterLease)?;
             // The lease binds an inode, so make the fresh database file before
             // attempting the lease. SQLite schema writes happen after acquisition.
-            match OpenOptions::new()
+            let created_new = match OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .mode(0o600)
                 .open(&path)
             {
-                Ok(_) => {}
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+                Ok(_) => true,
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => false,
                 Err(error) => return Err(StoreError::WriterLease(error)),
-            }
+            };
             let lease = agenturm_storage_lease::WriterLease::acquire(&path)
                 .map_err(StoreError::WriterLease)?;
             let connection = Self::open_leased_connection(&lease)?;
@@ -774,6 +780,7 @@ impl Store {
             lease.verify_admission().map_err(StoreError::WriterLease)?;
             return Ok(Self {
                 connection,
+                created_new,
                 writer_lease: Some(lease),
             });
         }
@@ -783,6 +790,7 @@ impl Store {
         )?;
         Ok(Self {
             connection: Self::initialize_writable_connection(connection)?,
+            created_new: false,
             #[cfg(target_os = "linux")]
             writer_lease: None,
         })
@@ -839,6 +847,7 @@ impl Store {
         transaction.commit()?;
         Ok(Self {
             connection,
+            created_new: false,
             #[cfg(target_os = "linux")]
             writer_lease: None,
         })
@@ -1299,6 +1308,7 @@ impl Store {
         )?;
         if batch.observations.iter().any(|row| {
             matches!(&row.kind, ObservationKind::Message { role } if role == "user")
+                || matches!(&row.kind, ObservationKind::Tool { category, .. } if category == "shell")
                 || matches!(
                     &row.kind,
                     ObservationKind::McpCall { .. } | ObservationKind::FileEdit(_)
