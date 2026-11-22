@@ -15,70 +15,195 @@ use std::time::{Duration, Instant};
 
 const USAGE: &str =
     "agenturm serve-traces --listen <loopback-IP:port> --db <path> --source-id otlp.<id>";
+#[cfg(target_os = "linux")]
+const BROKER_USAGE: &str = "agenturm broker serve-traces --broker-config <json> --listen <loopback-IP:port> --source-id otlp.<id> --token-file <path>";
 const MAX_HEADERS: usize = 8192;
 const READ_BUDGET: Duration = Duration::from_secs(3);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TraceReceiverOptions {
-    listen: SocketAddr,
+    settings: TraceReceiverSettings,
     db: PathBuf,
-    source: ExtensionId,
-    launch_session: Option<String>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct TraceReceiverSettings {
+    listen: SocketAddr,
+    pub source: ExtensionId,
+}
+
+#[cfg(target_os = "linux")]
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct BrokerTraceReceiverOptions {
+    pub settings: TraceReceiverSettings,
+    pub token_file: PathBuf,
+}
+
+#[derive(Clone)]
+pub(super) struct ProducerToken(String);
+
+impl ProducerToken {
+    #[cfg(target_os = "linux")]
+    pub(super) fn from_file(path: &std::path::Path) -> Result<Self, String> {
+        use std::fs::OpenOptions;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+        const INVALID: &str =
+            "OTLP token file must be an owner-only regular file with 64 lowercase hex digits";
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)
+            .map_err(|_| INVALID)?;
+        let metadata = file.metadata().map_err(|_| INVALID)?;
+        // SAFETY: geteuid takes no arguments and has no memory preconditions.
+        let owner = unsafe { libc::geteuid() };
+        if !metadata.is_file() || metadata.uid() != owner || metadata.mode() & 0o077 != 0 {
+            return Err(INVALID.into());
+        }
+        let mut token = String::new();
+        file.take(66)
+            .read_to_string(&mut token)
+            .map_err(|_| INVALID)?;
+        if token.ends_with('\n') {
+            token.pop();
+        }
+        if token.len() != 64
+            || !token
+                .bytes()
+                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        {
+            return Err(INVALID.into());
+        }
+        Ok(Self(token))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn generate() -> Result<Self, String> {
+        use std::fmt::Write as _;
+
+        let mut random = [0; 32];
+        std::fs::File::open("/dev/urandom")
+            .and_then(|mut file| file.read_exact(&mut random))
+            .map_err(|_| "Cannot generate a private OTLP launch token")?;
+        let mut token = String::with_capacity(64);
+        for byte in random {
+            write!(token, "{byte:02x}").expect("formatting a token into memory");
+        }
+        Ok(Self(token))
+    }
+
+    pub(super) fn otel_header(&self) -> String {
+        format!("authorization=Bearer%20{}", self.0)
+    }
+
+    fn authorizes(&self, header: &str) -> bool {
+        let Some((scheme, provided)) = header.split_once(' ') else {
+            return false;
+        };
+        if !scheme.eq_ignore_ascii_case("Bearer") || provided.len() != self.0.len() {
+            return false;
+        }
+        // Check the full fixed-width credential without a short-circuit on
+        // individual bytes.
+        self.0
+            .bytes()
+            .zip(provided.bytes())
+            .fold(0, |diff, (a, b)| diff | (a ^ b))
+            == 0
+    }
 }
 
 pub(super) fn parse(args: &[String]) -> Result<TraceReceiverOptions, String> {
-    if args.len() != 6 {
-        return Err(USAGE.into());
+    let (settings, db) = parse_settings(args, true, USAGE)?;
+    Ok(TraceReceiverOptions { settings, db })
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn parse_broker(args: &[String]) -> Result<BrokerTraceReceiverOptions, String> {
+    let (settings, token_file) = parse_settings(args, false, BROKER_USAGE)?;
+    Ok(BrokerTraceReceiverOptions {
+        settings,
+        token_file,
+    })
+}
+
+fn parse_settings(
+    args: &[String],
+    local: bool,
+    usage: &str,
+) -> Result<(TraceReceiverSettings, PathBuf), String> {
+    let (pairs, extras) = args.as_chunks::<2>();
+    if !extras.is_empty() {
+        return Err(usage.into());
     }
-    let (mut listen, mut db, mut source) = (None, None, None);
-    for pair in args.as_chunks::<2>().0 {
-        let value = pair[1].as_str();
+    let (mut listen, mut path, mut source) = (None, None, None);
+    for [flag, value] in pairs {
+        let value = value.as_str();
         if value.is_empty() || value.starts_with("--") {
-            return Err(USAGE.into());
+            return Err(usage.into());
         }
-        match pair[0].as_str() {
+        match flag.as_str() {
             "--listen" if listen.is_none() => {
-                let address = value.parse::<SocketAddr>().map_err(|_| USAGE)?;
+                let address = value.parse::<SocketAddr>().map_err(|_| usage)?;
                 if !address.ip().is_loopback() {
                     return Err("trace receiver requires a loopback IP".into());
                 }
                 listen = Some(address);
             }
-            "--db" if db.is_none() && value != "-" && value != ":memory:" => {
-                db = Some(PathBuf::from(value))
+            "--db" if local && path.is_none() && value != "-" && value != ":memory:" => {
+                path = Some(PathBuf::from(value))
             }
+            "--token-file" if !local && path.is_none() => path = Some(PathBuf::from(value)),
             "--source-id" if source.is_none() => source = Some(parse_source_id(value)?),
-            _ => return Err(USAGE.into()),
+            _ => return Err(usage.into()),
         }
     }
-    Ok(TraceReceiverOptions {
-        listen: listen.ok_or(USAGE)?,
-        db: db.ok_or(USAGE)?,
-        source: source.ok_or(USAGE)?,
-        launch_session: None,
-    })
+    Ok((
+        TraceReceiverSettings {
+            listen: listen.ok_or(usage)?,
+            source: source.ok_or(usage)?,
+        },
+        path.ok_or(usage)?,
+    ))
 }
 
 pub fn execute_trace_receiver(options: &TraceReceiverOptions) -> Result<(), String> {
+    execute_with_commit(&options.settings, None, |source, rows| {
+        commit(&options.db, source, &rows).map(|_| ())
+    })
+}
+
+pub(super) fn execute_with_commit(
+    settings: &TraceReceiverSettings,
+    token: Option<ProducerToken>,
+    commit: impl FnMut(&ExtensionId, Vec<Observation>) -> Result<(), String>,
+) -> Result<(), String> {
     let stop = Arc::new(AtomicBool::new(false));
     let _signals = crate::WatchSignalRegistrations::new(Arc::clone(&stop))?;
-    let receiver = TraceReceiver::bind(options.clone())?;
+    let receiver = TraceReceiver::bind(settings.clone(), None, token)?;
     println!(
         "Listening for OTLP traces at http://{}/v1/traces",
         receiver.address()
     );
-    receiver.serve(&stop)
+    receiver.serve_with(&stop, commit)
 }
 
 pub(super) struct TraceReceiver {
     listener: TcpListener,
     address: SocketAddr,
-    options: TraceReceiverOptions,
+    source: ExtensionId,
+    launch_session: Option<String>,
+    token: Option<ProducerToken>,
 }
 
 impl TraceReceiver {
-    fn bind(options: TraceReceiverOptions) -> Result<Self, String> {
-        let listener = TcpListener::bind(options.listen)
+    fn bind(
+        settings: TraceReceiverSettings,
+        launch_session: Option<String>,
+        token: Option<ProducerToken>,
+    ) -> Result<Self, String> {
+        let listener = TcpListener::bind(settings.listen)
             .map_err(|error| format!("bind trace receiver: {error}"))?;
         listener
             .set_nonblocking(true)
@@ -87,24 +212,28 @@ impl TraceReceiver {
         Ok(Self {
             listener,
             address,
-            options,
+            source: settings.source,
+            launch_session,
+            token,
         })
     }
 
     pub(super) fn bind_ephemeral(
-        db: PathBuf,
         source: ExtensionId,
         launch_session: String,
+        token: Option<ProducerToken>,
     ) -> Result<Self, String> {
-        Self::bind(TraceReceiverOptions {
-            listen: SocketAddr::from(([127, 0, 0, 1], 0)),
-            db,
-            source,
-            launch_session: Some(launch_session),
-        })
+        Self::bind(
+            TraceReceiverSettings {
+                listen: SocketAddr::from(([127, 0, 0, 1], 0)),
+                source,
+            },
+            Some(launch_session),
+            token,
+        )
     }
 
-    pub(super) fn bind_cockpit(db: PathBuf) -> Result<Self, String> {
+    pub(super) fn bind_cockpit() -> Result<Self, String> {
         let port = std::env::var_os("AGENTURM_OTLP_PORT")
             .map(|value| {
                 value
@@ -115,21 +244,18 @@ impl TraceReceiver {
             })
             .transpose()?
             .unwrap_or(14318);
-        Self::bind(TraceReceiverOptions {
-            listen: SocketAddr::from(([127, 0, 0, 1], port)),
-            db,
-            source: parse_source_id("otlp.local")?,
-            launch_session: None,
-        })
+        Self::bind(
+            TraceReceiverSettings {
+                listen: SocketAddr::from(([127, 0, 0, 1], port)),
+                source: parse_source_id("otlp.local")?,
+            },
+            None,
+            None,
+        )
     }
 
     pub(super) fn address(&self) -> SocketAddr {
         self.address
-    }
-
-    pub(super) fn serve(self, stop: &AtomicBool) -> Result<(), String> {
-        let db = self.options.db.clone();
-        self.serve_with(stop, |source, rows| commit(&db, source, &rows).map(|_| ()))
     }
 
     pub(super) fn serve_with(
@@ -142,8 +268,9 @@ impl TraceReceiver {
                 Ok((stream, peer)) if peer.ip().is_loopback() => handle(
                     stream,
                     self.address,
-                    &self.options.source,
-                    self.options.launch_session.as_deref(),
+                    &self.source,
+                    self.launch_session.as_deref(),
+                    self.token.as_ref(),
                     &mut store,
                 ),
                 Ok(_) => {}
@@ -162,10 +289,11 @@ fn handle(
     address: SocketAddr,
     source: &ExtensionId,
     launch_session: Option<&str>,
+    token: Option<&ProducerToken>,
     commit: &mut impl FnMut(&ExtensionId, Vec<Observation>) -> Result<(), String>,
 ) {
     let deadline = Instant::now() + READ_BUDGET;
-    let result = read_request(&stream, address, deadline).and_then(|(encoding, body)| {
+    let result = read_request(&stream, address, token, deadline).and_then(|(encoding, body)| {
         let decoded = match encoding {
             Encoding::Json => decode_json(&body, source, launch_session),
             Encoding::Protobuf => decode_protobuf(&body, source, launch_session),
@@ -227,6 +355,7 @@ impl Encoding {
 fn read_request(
     stream: &TcpStream,
     address: SocketAddr,
+    token: Option<&ProducerToken>,
     deadline: Instant,
 ) -> Result<(Encoding, Vec<u8>), &'static str> {
     let mut reader = BufReader::new(stream);
@@ -244,7 +373,7 @@ fn read_request(
         reader.consume(1);
     }
     let headers = std::str::from_utf8(&raw).map_err(|_| "400 Bad Request")?;
-    let (encoding, length) = parse_headers(headers, address)?;
+    let (encoding, length) = parse_headers(headers, address, token)?;
     let mut body = vec![0; length];
     let mut consumed = 0;
     while consumed < length {
@@ -270,7 +399,11 @@ fn timeout(stream: &TcpStream, deadline: Instant) -> Result<(), &'static str> {
         .map_err(|_| "408 Request Timeout")
 }
 
-fn parse_headers(headers: &str, address: SocketAddr) -> Result<(Encoding, usize), &'static str> {
+fn parse_headers(
+    headers: &str,
+    address: SocketAddr,
+    token: Option<&ProducerToken>,
+) -> Result<(Encoding, usize), &'static str> {
     let mut lines = headers.split("\r\n");
     if !matches!(
         lines.next(),
@@ -279,6 +412,7 @@ fn parse_headers(headers: &str, address: SocketAddr) -> Result<(Encoding, usize)
         return Err("404 Not Found");
     }
     let mut host = false;
+    let mut authorization = None;
     let mut encoding = None;
     let mut length = None;
     for line in lines.take_while(|line| !line.is_empty()) {
@@ -315,6 +449,11 @@ fn parse_headers(headers: &str, address: SocketAddr) -> Result<(Encoding, usize)
                         .map_err(|_| "413 Content Too Large")?,
                 );
             }
+            "authorization" if token.is_some() => {
+                if authorization.replace(value).is_some() {
+                    return Err("401 Unauthorized");
+                }
+            }
             "origin" | "transfer-encoding" | "content-encoding" | "expect" | "host"
             | "content-length" => {
                 return Err("400 Bad Request");
@@ -325,6 +464,11 @@ fn parse_headers(headers: &str, address: SocketAddr) -> Result<(Encoding, usize)
     }
     if !host {
         return Err("400 Bad Request");
+    }
+    if let Some(token) = token
+        && !authorization.is_some_and(|value| token.authorizes(value))
+    {
+        return Err("401 Unauthorized");
     }
     let encoding = encoding.ok_or("400 Bad Request")?;
     let length = length.ok_or("411 Length Required")?;
@@ -342,30 +486,66 @@ mod tests {
         let address = "127.0.0.1:4318".parse().unwrap();
         let prefix = "POST /v1/traces HTTP/1.1\r\nHost: 127.0.0.1:4318\r\nContent-Type: application/json\r\nContent-Length: 2\r\n";
         assert_eq!(
-            parse_headers(&format!("{prefix}\r\n"), address),
+            parse_headers(&format!("{prefix}\r\n"), address, None),
             Ok((Encoding::Json, 2))
         );
         assert_eq!(
             parse_headers(
                 &format!("{prefix}\r\n").replace("application/json", "application/x-protobuf"),
-                address
+                address,
+                None,
             ),
             Ok((Encoding::Protobuf, 2)),
         );
-        assert!(parse_headers(&format!("{prefix}Content-Length: 3\r\n\r\n"), address).is_err());
+        assert!(
+            parse_headers(&format!("{prefix}Content-Length: 3\r\n\r\n"), address, None).is_err()
+        );
         assert!(
             parse_headers(
                 &format!("{prefix}Origin: https://example.invalid\r\n\r\n"),
-                address
+                address,
+                None,
             )
             .is_err()
         );
         assert!(
             parse_headers(
                 &format!("{prefix}Transfer-Encoding: chunked\r\n\r\n"),
-                address
+                address,
+                None,
             )
             .is_err()
+        );
+    }
+
+    #[test]
+    fn protected_receiver_requires_one_exact_bearer_header() {
+        let address = "127.0.0.1:4318".parse().unwrap();
+        let token = ProducerToken("aa".repeat(32));
+        let prefix = "POST /v1/traces HTTP/1.1\r\nHost: 127.0.0.1:4318\r\nContent-Type: application/json\r\nContent-Length: 2\r\n";
+        let authorization = format!("Authorization: Bearer {}\r\n", token.0);
+        for rejected in [
+            String::new(),
+            format!("Authorization: Bearer {}\r\n", "bb".repeat(32)),
+            format!("{authorization}{authorization}"),
+            format!("Proxy-{authorization}"),
+        ] {
+            assert_eq!(
+                parse_headers(&format!("{prefix}{rejected}\r\n"), address, Some(&token)),
+                Err("401 Unauthorized")
+            );
+        }
+        assert_eq!(
+            parse_headers(
+                &format!("{prefix}{authorization}\r\n"),
+                address,
+                Some(&token)
+            ),
+            Ok((Encoding::Json, 2))
+        );
+        assert_eq!(
+            parse_headers(&format!("{prefix}\r\n"), address, None),
+            Ok((Encoding::Json, 2))
         );
     }
 }

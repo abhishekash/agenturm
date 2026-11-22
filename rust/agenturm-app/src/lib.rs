@@ -743,6 +743,10 @@ pub fn parse_os_command(args: &[std::ffi::OsString]) -> Result<Command, String> 
     if args.first().is_some_and(|arg| arg == "run") {
         return trace_run::parse_trace_run(&args[1..]).map(Command::Run);
     }
+    #[cfg(target_os = "linux")]
+    if args.first().is_some_and(|arg| arg == "broker") {
+        return broker_cli::parse_os(&args[1..]).map(Command::Broker);
+    }
     let args = args
         .iter()
         .map(|arg| {

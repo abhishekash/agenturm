@@ -33,10 +33,13 @@ fn main() -> ExitCode {
         },
         #[cfg(target_os = "linux")]
         Command::Broker(options) => {
-            if let Err(message) = agenturm_app::execute_broker(&options) {
-                eprintln!("broker failed: {message}");
-                return ExitCode::from(message.exit_code());
-            }
+            return match agenturm_app::execute_broker(&options) {
+                Ok(code) => code,
+                Err(message) => {
+                    eprintln!("broker failed: {message}");
+                    ExitCode::from(message.exit_code())
+                }
+            };
         }
         Command::Attention(options) => {
             if let Err(message) = execute_attention(&options, std::io::stdout().lock()) {

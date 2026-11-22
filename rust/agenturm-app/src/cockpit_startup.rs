@@ -84,8 +84,7 @@ impl ActiveCollector {
         let worker_notice = Arc::clone(&notice);
         let (requests, work) = mpsc::sync_channel::<CollectorRequest>(2);
         let receiver_notice = Arc::new(Mutex::new(None));
-        let bound_receiver =
-            super::trace_receiver::TraceReceiver::bind_cockpit(collector.database.clone());
+        let bound_receiver = super::trace_receiver::TraceReceiver::bind_cockpit();
         let worker = thread::Builder::new()
             .name("agenturm-cockpit-collector".into())
             .spawn(move || {

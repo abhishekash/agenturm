@@ -58,6 +58,38 @@ scoped trace. The broker checks both source IDs against its allowlist.
 Each trace-selected Review page resolves the turn and reads its evidence
 in a single authenticated request and SQLite snapshot.
 
+### Send live OTLP traces through the broker
+
+Add each `otlp.*` import source to the broker's allowlist. Run the
+loopback receiver or launcher using the configured collector identity.
+Both commands check the selected source before opening the receiver.
+For the foreground receiver, provide a private file owned by the collector
+containing a random token of 64 lowercase hex digits. Configure each
+authorized producer to send that token in an Authorization bearer header.
+
+```sh
+agenturm broker serve-traces --broker-config broker.json \
+  --listen 127.0.0.1:4318 --source-id otlp.local --token-file producer-token
+agenturm broker run --broker-config broker.json --source-id otlp.launch \
+  -- your-instrumented-program --your-flag
+```
+
+The receiver accepts uncompressed OTLP/HTTP JSON and protobuf. The launcher
+uses an ephemeral loopback port and supplies a per-launch bearer token
+through `OTEL_EXPORTER_OTLP_TRACES_HEADERS`. It preserves the program's
+arguments and exit status. Exports receive a successful HTTP response after
+the broker admits the batch or recognizes an exact retry.
+
+Native source, session, turn and worker attributes are assertions made
+by the producer. For linked Review, the broker validates the allowed
+OTLP source and native source against its allowlist and checks that the
+exact native scope exists in the selected history snapshot.
+
+Run the Linux guest verification with
+`python3 scripts/validate_rust_broker_otlp.py --bin-dir /opt/agenturm/bin`
+to check the installed binaries with separate storage, collector and
+reader identities.
+
 The broker cockpit supports saved tasks, handoffs, request seen state and
 review decisions alongside remote history. These user-owned records live
 under the client's state directory. Their namespace binds the authenticated
