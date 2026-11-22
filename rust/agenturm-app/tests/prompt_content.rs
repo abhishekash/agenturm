@@ -67,6 +67,22 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
     .unwrap();
     let (config_arg, db_arg) = (config.to_str().unwrap(), database.to_str().unwrap());
     let collect = || run(&["collect", "--config", config_arg, "--db", db_arg]);
+    let binding: Value = serde_json::from_str(&checked(run(&[
+        "content",
+        "binding",
+        "--config",
+        config_arg,
+        "--source-id",
+        "harness.pi",
+    ])))
+    .unwrap();
+    assert_eq!(binding["source_id"], "harness.pi");
+    assert_eq!(binding["kind"], "pi.user_text");
+    assert_eq!(binding["source_fingerprint"].as_array().unwrap().len(), 32);
+    assert!(
+        !database.exists(),
+        "binding derivation must not open history"
+    );
     assert!(checked(collect()).contains("ACK sent=true"));
     let query = checked(run(&["query", "--db", db_arg]));
     for private in [

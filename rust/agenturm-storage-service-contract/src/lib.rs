@@ -183,6 +183,12 @@ fn read_frame_bytes(reader: &mut impl Read) -> Result<Vec<u8>> {
 }
 
 fn read_frame_bytes_bounded(reader: &mut impl Read, limit: usize) -> Result<Vec<u8>> {
+    let data = read_sized_frame(reader, limit)?;
+    require_frame_eof(reader)?;
+    Ok(data)
+}
+
+fn read_sized_frame(reader: &mut impl Read, limit: usize) -> Result<Vec<u8>> {
     let mut header = [0_u8; 4];
     reader.read_exact(&mut header)?;
     let length = u32::from_be_bytes(header) as usize;
@@ -191,13 +197,15 @@ fn read_frame_bytes_bounded(reader: &mut impl Read, limit: usize) -> Result<Vec<
     }
     let mut data = vec![0_u8; length];
     reader.read_exact(&mut data)?;
-    // Exactly one frame is allowed per connection. The caller half-closes its
-    // write side after the frame; a timeout bounds a peer that never closes.
+    Ok(data)
+}
+
+fn require_frame_eof(reader: &mut impl Read) -> Result<()> {
     let mut trailing = [0_u8; 1];
     if reader.read(&mut trailing)? != 0 {
         return Err(ContractError::Invalid("trailing frame data"));
     }
-    Ok(data)
+    Ok(())
 }
 
 fn read_frame<T: for<'de> Deserialize<'de>>(reader: &mut impl Read) -> Result<T> {

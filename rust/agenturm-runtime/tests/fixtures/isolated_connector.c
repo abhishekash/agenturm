@@ -86,6 +86,13 @@ int main(void) {
                   "{\"session_id\":\"sandbox-session\",\"state\":\"completed\"}}]}}}";
     } else if (strstr(operation, "\"kind\":\"ack\"")) {
         outcome = "\"outcome\":{\"kind\":\"ack\",\"checkpoint\":\"sandbox-1\"}}";
+    } else if (strstr(operation, "\"kind\":\"deliver\"") ||
+               strstr(operation, "\"kind\":\"lookup\"")) {
+        if (strstr(request, "\"credential\"") || strstr(request, "\"host_transport\"") ||
+            strstr(request, "connector-fixture-secret") ||
+            !strstr(operation, "\"action\":\"write_status\""))
+            return 29;
+        outcome = "\"outcome\":{\"kind\":\"forward\"}}";
     } else {
         return 30;
     }

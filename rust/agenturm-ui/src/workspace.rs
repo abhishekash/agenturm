@@ -1052,6 +1052,14 @@ pub fn run_workspace(
                             if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
                         {
                             if workspace.key(&request, key) {
+                                // Keep the proof fence until a flushed non-private
+                                // frame replaces the modal, including q and Ctrl-C.
+                                if let Some(mut prompt) = workspace.prompt.take() {
+                                    terminal.draw(|frame| draw_workspace(frame, &mut workspace))?;
+                                    if let Some(acknowledge) = prompt.acknowledge.take() {
+                                        let _ = acknowledge.send(());
+                                    }
+                                }
                                 break Ok(());
                             }
                             dirty = true;

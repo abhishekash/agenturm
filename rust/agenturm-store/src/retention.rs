@@ -3,8 +3,10 @@
 
 use crate::{Result, SCHEMA_VERSION, Store, StoreError};
 use rusqlite::{Connection, TransactionBehavior, params};
+use serde::{Deserialize, Serialize};
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
 pub struct RetentionOutcome {
     pub cutoff_unix_ns: u64,
     pub removed_observations: usize,

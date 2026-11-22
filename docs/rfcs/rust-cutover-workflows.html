@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Rust cutover</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">Markdown source ↗</a></nav><h1>Rust cutover workflow inventory</h1>
+</style></head><body><main><nav><strong>Agenturm / 0.3.3</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">Markdown source ↗</a></nav><h1>Rust cutover workflow inventory</h1>
 <p>Baseline is the Python <code>v0.2.8</code> tag and the published Rust 0.3.1 Linux bundle. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.</p>
 <h2>Command inventory</h2>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
@@ -47,7 +47,7 @@
 </tr>
 <tr>
 <td><code>review</code></td>
-<td>Keep exact execution scope, evidence paging and export. Rust cockpit Review and scoped history reads exist. Exact noninteractive review, trace-to-turn selection and receipt export are B6 gaps.</td>
+<td>Rust cockpit and noninteractive Review use exact source, session, turn, and worker scope. The CLI reads a bounded page and exports metadata receipts in Markdown, HTML, and JSON. Trace-to-turn selection remains open.</td>
 </tr>
 <tr>
 <td><code>investigate path|command|instruction|source</code></td>
@@ -55,15 +55,15 @@
 </tr>
 <tr>
 <td><code>task list|create|show|archive</code></td>
-<td>Keep list/create/show and lifecycle changes. Rust <code>task list|add|show|complete|reopen</code> exists. Decide whether archive visibility and archived-task restoration need their own state.</td>
+<td>Rust supports create, exact show, completion, archiving and restoration. The default task list hides archived entries. <code>list --all</code> and <code>show</code> can still read them.</td>
 </tr>
 <tr>
 <td><code>task link|unlink|handoff|backup</code></td>
-<td>Keep exact links, standalone Markdown and HTML handoffs, and backup. Rust links accept native source/session/turn/worker identities. Rust <code>task handoffs|export</code> exports saved handoffs, and workspace backup includes the ledger. Qualify noninteractive handoff generation and serialization expectations.</td>
+<td>Rust links use exact native source/session/turn/worker identities. <code>task handoff</code> reads one saved task revision and renders Markdown, HTML, or JSON. Its private export writes a Markdown and HTML pair. Workspace backup retains the ledger and supports restore into a new history directory.</td>
 </tr>
 <tr>
 <td><code>task update|snapshot|brief|decide|decisions|draft|approve-draft</code></td>
-<td>Keep editable notes and decisions by the applicable version, Git context and exact link identity. Rust cockpit has basic local tasks, Review decisions and handoff Git context. CLI editing, structured briefs, revision checks, task decision history and revalidated source-backed drafting still need parity or explicit retirement.</td>
+<td>Rust supports revision-checked editing, local Git summaries, five structured brief fields, and immutable decisions with supersession. Drafts and decision citations can use one exact retained user prompt. Approval and excerpt reopening require revalidation of the original grant and source receipt. Full Git diff capture and broader Review evidence projections remain open.</td>
 </tr>
 </tbody>
 </table></div>

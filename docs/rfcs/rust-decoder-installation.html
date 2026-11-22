@@ -2,17 +2,69 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Rust decoder installation</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-decoder-installation.md">Markdown source ↗</a></nav><h1>Rust decoder installation proposal</h1>
-<p>B8 covers installing a separately packaged <strong>trusted</strong> adapter process that emits an already supported observation format. The Rust host selects and validates its bundled decoder. Adding support for a new format in the host and activating untrusted executable code have their own trust and isolation gates.</p>
-<h2>Installation and selection</h2>
-<ol>
-<li>Accept an explicit local package manifest and a regular executable. The manifest declares its plugin ID, supported platform, protocol version, required source features, observation format and artifact digest. Resolve paths inside the package and enforce the current catalog and executable bounds. Require an explicitly supplied expected digest or a trusted signature configured by the operator. A digest attached by an unknown publisher identifies bytes and carries no trust assertion.</li>
-<li>Verify the format against the host registry, the platform and protocol before installing. Keep the accepted executable in a private managed artifact directory keyed by the verified digest. Install using a temporary file in that directory and atomically publish the completed file. Reject symlinks, path escape, duplicate logical IDs and incompatible manifests.</li>
-<li>Publish a version 2 collector catalog entry only after the executable is durable. Update the catalog atomically under a writer lock. The collector keeps the existing explicit source-level plugin selection. Installing an artifact alone starts no process, assigns no discovery root, and grants no content access.</li>
-<li>Use the existing pre-open and pre-launch pin checks, configured features handshake, and host-side observation validation. A pin, protocol or format mismatch fails closed. Updating the pin requires another explicit install. A previous pin can be selected again if its artifact is still present.</li>
-<li>Remove a catalog selection before garbage-collecting an artifact. Keep running collectors and follow configurations safe across updates. A reloaded collector either recognizes the same complete catalog or starts from a fully published replacement.</li>
-</ol>
-<p>The trust decision owner is the release owner. Approval covers the trust anchor and package origin, code execution permissions, artifact update policy and OS sandbox for untrusted code. Independent trust, runtime decoder loading and remote package resolution stay pending until approved.</p>
-<h2>Acceptance</h2>
-<p>Build an independent adapter separately, install it from a manifest, select it in a source config, and reopen collected facts. Exercise an unsupported format, a mismatched platform or handshake, changed artifact bytes, a conflicting plugin ID, and an interruption before catalog publication. Verify that the active selector never resolves to a partial artifact. Use the same bounded validation, commit-before-ACK and reopen tests as the bundled adapters. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-collection-config.md">Existing source catalog</a> · <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-process-extension-plugins.md">Process extension trust boundary</a></p>
+</style></head><body><main><nav><strong>Agenturm / Rust development</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-decoder-installation.md">Markdown source ↗</a></nav><h1>Trusted local Rust adapter installation</h1>
+<p><code>agenturm adapter install</code> installs an independently packaged trusted adapter
+from local files into a private catalog. The adapter emits an observation
+format supported by the running Rust host. Installing does not start the
+executable, add a source, or establish a content grant.</p>
+<h2>Package and install</h2>
+<p>The package contains a regular executable and a version 1 JSON manifest.
+The executable path is relative to the manifest's directory.</p>
+<pre><code class="language-json">{
+  &quot;version&quot;: 1,
+  &quot;plugin_id&quot;: &quot;example.my-adapter&quot;,
+  &quot;platform&quot;: &quot;linux-x86_64&quot;,
+  &quot;adapter&quot;: &quot;bin/my-adapter&quot;,
+  &quot;sha256&quot;: &quot;&lt;64 lowercase hexadecimal characters&gt;&quot;,
+  &quot;protocol&quot;: 1,
+  &quot;features&quot;: [&quot;source-adapter/1&quot;, &quot;configured-root/1&quot;],
+  &quot;observation_format&quot;: &quot;agenturm-observations/1&quot;
+}
+</code></pre>
+<p>Run the installer with an expected executable SHA-256 obtained through a
+trusted channel. The manifest's digest and the actual executable bytes must
+match that pin.</p>
+<pre><code class="language-sh">agenturm adapter install --manifest ./package/manifest.json \
+  --sha256 &quot;$expected_sha256&quot; --root &quot;$HOME/.local/state/agenturm-adapters&quot;
+</code></pre>
+<p>The root's parent must exist. The installer creates the managed root and
+artifact directory as mode <code>0700</code>. Existing managed directories must have
+that mode and belong to the current user. It places the verified executable
+at <code>artifacts/&lt;sha256&gt;</code> with mode <code>0500</code>. It refuses symlinks in package and
+managed paths and parent traversal. The artifact limit is 256 MiB, and
+manifests and catalogs are limited to 64 KiB.</p>
+<p>The installer verifies the manifest platform against the current operating
+system and architecture. It validates the plugin ID, protocol, declared
+features and observation format against the collector's contract. Platform
+declarations are package metadata. The collector verifies the executable's
+actual handshake when explicitly selected.</p>
+<h2>Select or replace an adapter</h2>
+<p>On success the installer prints the path to its version 1 <code>catalog.json</code>.
+Set that path as <code>plugin_catalog</code> in a version 2 collection configuration,
+and set the desired entry's <code>plugin_id</code> in a source with its own source ID
+and root. The collector verifies catalog artifacts before opening history
+and before spawning the chosen adapter. An incompatible handshake or changed
+artifact cannot be admitted. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-collection-config.md">Collection configuration</a></p>
+<p>Catalog writers take an exclusive lock. The installer synchronizes and
+publishes the full artifact before atomically replacing the catalog. A
+concurrent reader sees either complete catalog. An interrupted installation
+may leave an unselected artifact, which the existing catalog cannot launch.
+Reinstalling the same manifest and bytes is idempotent. To replace a plugin's
+pin, supply both the expected new digest and the current digest using
+<code>--replace-sha256</code>. Keeping prior artifact files lets an already running
+collector continue with a previous pin. Restart the collector to use the
+updated selection.</p>
+<p>The package executable inherits the collector user's OS permissions when
+launched. The operator decides which package and digest to trust. Remote
+package downloads, signature provisioning, new decoder formats, garbage
+collection, and untrusted activation remain separate. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-process-extension-plugins.md">Process extension trust boundary</a></p>
+<h2>Verification</h2>
+<p>On Ubuntu 24.04.5 x86-64 with Rust 1.100.0, the independently built fixture
+adapter installed successfully. It collected, ACKed and reopened evidence
+after the package executable was removed. A second poll added no duplicate
+facts. A manifest with incompatible features failed the collector handshake.
+Changing the managed executable failed its pin check before a history file
+was opened. Installer tests cover manifest bounds, symlinks, a held catalog
+lock, staged partial files, and pin replacement with the original artifact
+retained.</p>
 <footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

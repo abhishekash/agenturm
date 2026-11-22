@@ -6,8 +6,9 @@ This contract is for a fresh standalone Rust history database under a dedicated 
 
 Run `agenturm-storage-service` with the existing data root, transport directory,
 receiver and client identity options, plus `--native-sources ID[,ID]`. The
-allowlist grants 1–64 distinct source IDs to that single collector and reader
-principal. Reads without an explicit source select only those IDs.
+allowlist grants 1–64 distinct source IDs to the collector and any configured
+reader. The collector can also read. Reads without an explicit source
+select only those IDs.
 This mode uses `agenturm-native-storage-v1.sock`, its own listener lock and a
 broker-owned `history.sqlite`. It accepts an empty private data root or an
 existing native history database with its expected sidecars. The service holds
@@ -37,7 +38,11 @@ snapshot watermark for keyset continuation. Session queries have the Store's
 before ordering and paging. An expired snapshot returns the minimum live
 watermark in a typed error. The Rust `NativeStore` client takes the absolute
 socket path, receiver ID and broker UID/GID. It provides the kernel's
-`ObservationStore` port and typed session and linked trace reads.
+`ObservationStore` port and typed session and linked trace reads. The
+broker assigns each history a persistent 128-bit `history_identity`.
+When a cockpit binds its workspace to that identity, the broker verifies
+it within each history read and exact anchor or event check. A replacement
+history at the same socket cannot satisfy the old binding.
 
 The local listener test verifies socket and database ownership and modes,
 denial of same-UID peers, clean socket removal and restart after SIGKILL.
@@ -45,12 +50,49 @@ Unexpected paths and active sockets are preserved. The contract tests
 exercise peer-first checks, malformed frames, a partial-frame timeout and
 request/reply correlation. The admission tests exercise replay after a later
 commit and reopen. Read tests verify allowlisted cross-source pagination and
-exact worker selection. Separate reader roles, grant and retention authority,
-and private evidence delivery remain open.
+exact worker selection.
+
+## Private evidence delivery
+
+Private delivery requires a separately configured `--native-reader` and a
+broker-owned `0600` file supplied as `--native-content-config PATH`. The
+file contains version `1` and a `sources` array of resolved source bindings.
+Each entry defines its source and plugin IDs, absolute source, host and
+adapter paths, a SHA-256 adapter pin and the declared adapter features. The
+broker reopens and validates the configuration and adapter pin when proving
+an occurrence. The reader supplies only the pinned history identity and
+the exact source, session, event and revision. Codex operation detail also
+requires the turn and operation IDs.
+
+The broker uses the same source-byte and current-grant proof as local
+Agenturm. It holds the Store writer fence while sending the bounded private
+response. The reader ACKs the exact request and a random reply challenge
+after the display sink flushes. The cockpit waits for redaction before
+sending the ACK. The broker then releases the fence and confirms completion.
+An invalid, absent or late ACK prevents completion. The acknowledgement
+deadline is 32 seconds. Other operations on this single broker listener
+wait while a private display is outstanding.
+
+The Rust client can also consume a typed, verified user prompt for a task
+draft, approval, decision, or explicit excerpt read. The reply includes the
+proven text and occurrence metadata plus a fingerprint of the current grant.
+The client runs a bounded local callback before acknowledging the reply.
+A failed callback closes the connection and releases the broker fence. Each
+later use must prove the exact occurrence and current approval again.
 
 ## Principals and deployment
 
-The non-root broker owns a `0700` data directory and every database, WAL, shared-memory, lease and maintenance file inside it. Its listener verifies the filesystem owner, mode and identity of the socket directory and lock before use. The collector and cockpit use a different Linux UID. Each configured caller is identified by `SO_PEERCRED` UID and primary GID on every connection. The client also verifies the broker UID and GID before sending requests. Receiver identity and protocol version bind each exchange to its configured endpoint. Each role has a configured UID/GID and may share a UID only if that principal is deliberately authorized for the union of those roles.
+The non-root broker owns a `0700` data directory and every database, WAL, shared-memory, lease and maintenance file inside it. Its listener verifies the filesystem owner, mode and identity of the socket directory and lock before use. The collector and cockpit use Linux UIDs distinct from the broker. Each configured caller is identified by `SO_PEERCRED` UID and primary GID before the service reads its request body. The client also verifies the broker UID and GID before sending requests. Receiver identity and protocol version bind each exchange to its configured endpoint.
+
+The optional `--native-reader UID:GID`, `--native-grant-admin UID:GID` and
+`--native-maintenance UID:GID` options assign separate roles. Each must
+use a distinct non-root UID. The socket group is `--client-gid`. Additional
+roles whose primary GID differs require supplementary membership in that
+group to reach the socket. Kernel peer checks still use their configured
+primary GIDs. The collector and reader may query effective approval for
+an exact source, kind and fingerprint. The grant administrator may also
+approve or revoke that binding. Responses report the active epoch or
+revocation status and omit grant nonces.
 
 The collector owns native discovery, source supervision, format decoding and ACK delivery. The cockpit owns terminal state. Children must be denied the broker socket as well as the database. Children running as the client UID can impersonate that client unless their OS boundary denies access. Process isolation and deployment proof remain separate gates. The broker refuses startup on insecure ownership or unexpected database identity. Clients configured for broker access fail closed if the broker is unavailable.
 
@@ -62,12 +104,23 @@ The collector owns native discovery, source supervision, format decoding and ACK
 | Admit an observation batch | Collector, restricted to configured source IDs | `Store::commit_batch`. Accept typed stored observations, expected and next cursor and deterministic request ID. Derive and verify the ID from the exact validated batch. Return committed or replay only after the transaction. The collector sends ACK after that result. |
 | Read history and linked traces | Cockpit and authorized reader | `Store::query_observations`, exact turn/worker queries and linked trace query. Return a bounded page, the durable snapshot watermark and the next keyset cursor. Turn reads require an exact source and session. |
 | List sessions | Cockpit and authorized reader | Store session-catalog query with its native filter, position and snapshot semantics. A partial result includes a continuation. |
-| Grant, revoke, list approval | Grant administrator. A scoped reader may check the effective grant for its evidence. | Store content grant operations bind source, kind, source fingerprint and epoch. Approval mutations remain effective across restart. The grant administrator must be authorized independently of a reader. |
-| Reveal private evidence | Cockpit, after exact current-grant verification | Resolve the exact retained event and revision, apply the source proof and serialize delivery with revocation. A check followed by a separate reveal on the client cannot enforce this ordering. Production private reveal stays disabled until the broker can enforce the full fence. |
+| Grant, revoke, check approval | Grant administrator. Collector and reader can check approval. | Store content grant operations bind source, kind, source fingerprint and epoch. A revoke only applies to the exact fingerprint, and approval mutations remain effective across restart. |
+| Reveal private evidence | Separate configured reader, with an active grant for the exact source binding and content kind | The broker proves the exact retained occurrence and holds the disclosure fence through the display ACK. |
+| Verify a prompt for task continuity | Same reader, with an active user-text grant for the exact source binding | The broker holds the source grant and retention fence while the client consumes the typed prompt, through the same challenge ACK. |
 | Prune | Maintenance operator | `Store::prune_observations_before`. Preserve checkpoints and replay receipts, advance the retention watermark and reject invalidated traversals. |
-| Back up, restore, integrity check | Maintenance operator | Reuse the native history/workspace backup and restore contracts. The broker takes maintenance destinations from its own configuration. Restore runs with exclusive access, revalidates ownership and starts with private content approval disabled. Workspace sidecars stay client-owned until the workspace authority has its own contract. |
+| Back up and check integrity | Maintenance operator | The broker verifies the snapshot, publishes it to its configured private backup root and returns its assigned filename. Integrity returns a status without diagnostic rows or paths. |
+| Offline restore | Broker filesystem owner | Restore one named broker backup into a fresh private data root while holding the native instance lock. The restored history preserves its identity and starts with private content approval disabled. |
 
 The caller provides bounded identifiers and approved operation fields. The broker owns source authorization, database paths and maintenance destinations. No caller supplies arbitrary SQL, a SQLite path or a filesystem path to reveal. The collector may express a source change only through the configured source policy.
+
+Set `--native-backup-root` to an existing broker-owned `0700` directory
+separate from the history and transport roots. With the broker shut down,
+the broker account can supply `--native-restore NAME` with the assigned
+backup filename and change `--data-root` to a fresh broker-owned `0700`
+directory. Restore accepts only an owner-private, detached native SQLite
+backup from the configured backup root. It verifies and atomically
+publishes the snapshot without overwriting existing history. Remove
+`--native-restore` when starting the listener on the restored data root.
 
 ## Wire and failure rules
 

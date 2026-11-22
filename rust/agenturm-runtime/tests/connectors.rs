@@ -46,12 +46,35 @@ impl Fixture {
             target,
             sha256,
             launch: ConnectorLaunch::Trusted,
+            host_transport: None,
         };
         Self { path, spec }
     }
 
     fn runtime(&self) -> ConnectorRuntime {
         ConnectorRuntime::open(&self.path.join("connector.sqlite")).unwrap()
+    }
+
+    #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+    fn isolate(&mut self) {
+        let executable = self.path.join("static-connector");
+        let build = Command::new("cc")
+            .args(["-static", "-Wall", "-Wextra", "-Werror", "-o"])
+            .arg(&executable)
+            .arg(concat!(
+                env!("CARGO_MANIFEST_DIR"),
+                "/tests/fixtures/isolated_connector.c"
+            ))
+            .output()
+            .unwrap();
+        assert!(
+            build.status.success(),
+            "{}",
+            String::from_utf8_lossy(&build.stderr)
+        );
+        self.spec.launch = ConnectorLaunch::IsolatedLinux;
+        self.spec.sha256 = format!("{:x}", Sha256::digest(fs::read(&executable).unwrap()));
+        self.spec.executable = executable;
     }
 
     fn history(&self) -> Store {
@@ -414,29 +437,231 @@ fn isolated_policy_rejects_interpreter_bearing_artifact() {
 }
 
 #[cfg(all(target_os = "linux", target_arch = "x86_64"))]
+mod host_transport {
+    use super::*;
+    use agenturm_runtime::connector::ConnectorHostTransport;
+    use std::io::{Read, Write};
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::os::unix::net::UnixListener;
+
+    const SECRET: &str = "connector-fixture-secret-with-32-bytes";
+    const ROTATED: &str = "connector-fixture-secret-next-32-bytes";
+
+    fn prepare() -> (Fixture, UnixListener, PathBuf) {
+        let mut fixture = Fixture::new(ConnectorDirection::Outbound, "host");
+        fixture.isolate();
+        let socket = fixture.path.join("status.sock");
+        let endpoint = UnixListener::bind(&socket).unwrap();
+        let credential = fixture.path.join("credential");
+        fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&credential)
+            .unwrap()
+            .write_all(SECRET.as_bytes())
+            .unwrap();
+        // SAFETY: the credential getters take no pointers.
+        let (peer_uid, peer_gid) = unsafe { (libc::geteuid(), libc::getegid()) };
+        fixture.spec.host_transport = Some(ConnectorHostTransport::UnixStatusV1 {
+            socket,
+            peer_uid,
+            peer_gid,
+            credential_file: credential.clone(),
+        });
+        (fixture, endpoint, credential)
+    }
+
+    fn next_peer(endpoint: &UnixListener) -> std::os::unix::net::UnixStream {
+        endpoint.set_nonblocking(true).unwrap();
+        let deadline = Instant::now() + Duration::from_secs(5);
+        loop {
+            match endpoint.accept() {
+                Ok((stream, _)) => {
+                    stream
+                        .set_read_timeout(Some(Duration::from_secs(2)))
+                        .unwrap();
+                    return stream;
+                }
+                Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
+                    assert!(Instant::now() < deadline, "host did not connect to fixture");
+                    std::thread::sleep(Duration::from_millis(10));
+                }
+                Err(error) => panic!("fixture listener failed: {error}"),
+            }
+        }
+    }
+
+    #[test]
+    fn host_grant_binds_endpoint_and_reconciles_exact_status_without_leaking_credentials() {
+        let (fixture, endpoint, credential) = prepare();
+        let debug = format!("{:?}", fixture.spec);
+        assert!(!debug.contains("status.sock") && !debug.contains("credential"));
+        let delivery = fixture.delivery();
+        let mut runtime = fixture.runtime();
+        assert_eq!(
+            runtime.enqueue(&fixture.spec, &delivery),
+            Err("connector_permission_denied")
+        );
+        runtime.grant(&fixture.spec).unwrap();
+        runtime.enqueue(&fixture.spec, &delivery).unwrap();
+        let mut changed = fixture.spec.clone();
+        let Some(ConnectorHostTransport::UnixStatusV1 { socket, .. }) = &mut changed.host_transport
+        else {
+            panic!("missing test host transport");
+        };
+        *socket = fixture.path.join("different-endpoint.sock");
+        assert_eq!(
+            runtime.drive(&changed, &delivery.delivery_id, 0),
+            Err("connector_permission_denied")
+        );
+        let mut changed = fixture.spec.clone();
+        let Some(ConnectorHostTransport::UnixStatusV1 {
+            credential_file, ..
+        }) = &mut changed.host_transport
+        else {
+            panic!("missing test host transport");
+        };
+        *credential_file = fixture.path.join("other-credential");
+        assert_eq!(
+            runtime.drive(&changed, &delivery.delivery_id, 0),
+            Err("connector_permission_denied")
+        );
+
+        let sink = endpoint.try_clone().unwrap();
+        let expected = delivery.clone();
+        let endpoint_thread = std::thread::spawn(move || {
+            for (index, (token, operation)) in [
+                (SECRET, json!({"kind":"deliver","state":"completed"})),
+                (ROTATED, json!({"kind":"lookup"})),
+                (ROTATED, json!({"kind":"lookup"})),
+            ]
+            .into_iter()
+            .enumerate()
+            {
+                let mut stream = next_peer(&sink);
+                let request = agenturm_protocol::read_frame(&mut stream, 4096)
+                    .unwrap()
+                    .unwrap();
+                let request: serde_json::Value = serde_json::from_str(&request).unwrap();
+                if request
+                    != json!({
+                        "version":1,"connector_id":"fixture.runtime",
+                        "destination_id":expected.destination_id,
+                        "idempotency_key":expected.idempotency_key,
+                        "request_sha256":expected.request_sha256,
+                        "operation":operation,"credential":token,
+                    })
+                {
+                    panic!("host request did not match its granted scope");
+                }
+                assert_eq!(stream.read(&mut [0]).unwrap(), 0);
+                if index == 0 {
+                    // The sink accepts but stalls inside the reply frame.
+                    stream.write_all(&128_u32.to_be_bytes()).unwrap();
+                    stream.write_all(b"{").unwrap();
+                    std::thread::sleep(Duration::from_millis(2_100));
+                    continue;
+                }
+                let mut response = json!({
+                    "version":1,"destination_id":expected.destination_id,
+                    "idempotency_key":expected.idempotency_key,
+                    "request_sha256":expected.request_sha256,"status":"accepted",
+                });
+                if index == 1 {
+                    // Arbitrary endpoint values never become receipt IDs.
+                    response["receipt_id"] = json!(ROTATED);
+                }
+                agenturm_protocol::write_frame(&mut stream, &response.to_string(), 4096).unwrap();
+            }
+        });
+        let sent_at = Instant::now();
+        assert_eq!(
+            runtime.drive(&fixture.spec, &delivery.delivery_id, 0),
+            Ok(DeliveryState::Unknown)
+        );
+        assert!(sent_at.elapsed() >= Duration::from_millis(1_900));
+        assert!(sent_at.elapsed() < Duration::from_secs(5));
+        drop(runtime);
+        fs::write(&credential, format!("{ROTATED}\n")).unwrap();
+        let mut runtime = fixture.runtime();
+        assert_eq!(
+            runtime.drive(&fixture.spec, &delivery.delivery_id, 4_000),
+            Ok(DeliveryState::Unknown)
+        );
+        let accepted = runtime.drive(&fixture.spec, &delivery.delivery_id, 8_000);
+        endpoint_thread.join().unwrap();
+        assert!(
+            matches!(accepted, Ok(DeliveryState::Accepted { ref receipt_id })
+            if receipt_id.starts_with("host-status-") && receipt_id.len() == 76)
+        );
+        assert_eq!(
+            runtime.drive(&fixture.spec, &delivery.delivery_id, 9_000),
+            accepted
+        );
+        let bytes = fs::read(fixture.path.join("connector.sqlite")).unwrap();
+        for private in [SECRET, ROTATED, "status.sock", "credential"] {
+            assert!(
+                !bytes
+                    .windows(private.len())
+                    .any(|window| window == private.as_bytes())
+            );
+        }
+        let mut next = delivery.clone();
+        next.delivery_id.push_str("-new");
+        next.idempotency_key.push_str("-new");
+        runtime.enqueue(&fixture.spec, &next).unwrap();
+        assert!(runtime.revoke(&fixture.spec).unwrap());
+        assert_eq!(
+            runtime.drive(&fixture.spec, &next.delivery_id, 10_000),
+            Err("connector_permission_denied")
+        );
+        assert!(matches!(endpoint.accept(), Err(error)
+            if error.kind() == std::io::ErrorKind::WouldBlock));
+    }
+
+    #[test]
+    fn wrong_peer_and_unprotected_credential_receive_no_request_bytes() {
+        use std::os::unix::fs::PermissionsExt;
+        let (mut fixture, endpoint, credential) = prepare();
+        let actual = fixture.spec.clone();
+        let Some(ConnectorHostTransport::UnixStatusV1 { peer_gid, .. }) =
+            &mut fixture.spec.host_transport
+        else {
+            panic!("missing test host transport");
+        };
+        *peer_gid = if *peer_gid == 0 { 1 } else { 0 };
+        let mut runtime = fixture.runtime();
+        runtime.grant(&fixture.spec).unwrap();
+        let mut delivery = fixture.delivery();
+        runtime.enqueue(&fixture.spec, &delivery).unwrap();
+        assert_eq!(
+            runtime.drive(&fixture.spec, &delivery.delivery_id, 0),
+            Ok(DeliveryState::Unknown)
+        );
+        assert_eq!(next_peer(&endpoint).read(&mut [0]).unwrap(), 0);
+
+        fixture.spec = actual;
+        fs::set_permissions(&credential, fs::Permissions::from_mode(0o644)).unwrap();
+        runtime.grant(&fixture.spec).unwrap();
+        delivery.delivery_id.push_str("-new");
+        delivery.idempotency_key.push_str("-new");
+        runtime.enqueue(&fixture.spec, &delivery).unwrap();
+        assert_eq!(
+            runtime.drive(&fixture.spec, &delivery.delivery_id, 0),
+            Ok(DeliveryState::Unknown)
+        );
+        assert_eq!(next_peer(&endpoint).read(&mut [0]).unwrap(), 0);
+    }
+}
+
+#[cfg(all(target_os = "linux", target_arch = "x86_64"))]
 #[test]
 fn isolated_connector_has_only_framed_io_and_commits_before_ack() {
     use std::os::fd::AsRawFd;
     use std::os::unix::process::CommandExt;
     let mut fixture = Fixture::new(ConnectorDirection::Inbound, "isolated");
-    let executable = fixture.path.join("static-connector");
-    let build = Command::new("cc")
-        .args(["-static", "-Wall", "-Wextra", "-Werror", "-o"])
-        .arg(&executable)
-        .arg(concat!(
-            env!("CARGO_MANIFEST_DIR"),
-            "/tests/fixtures/isolated_connector.c"
-        ))
-        .output()
-        .unwrap();
-    assert!(
-        build.status.success(),
-        "{}",
-        String::from_utf8_lossy(&build.stderr)
-    );
-    fixture.spec.launch = ConnectorLaunch::IsolatedLinux;
-    fixture.spec.sha256 = format!("{:x}", Sha256::digest(fs::read(&executable).unwrap()));
-    fixture.spec.executable = executable;
+    fixture.isolate();
     let config = fixture.path.join("config.json");
     let ledger = fixture.path.join("connector.sqlite");
     let history = fixture.path.join("history.sqlite");

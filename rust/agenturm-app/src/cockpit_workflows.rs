@@ -1,4 +1,6 @@
-use agenturm_kernel::{ExtensionId, Observation, ObservationKind, ObservationQuery};
+use agenturm_kernel::{
+    ExtensionId, Observation, ObservationKind, ObservationQuery, ObservationStore,
+};
 use agenturm_store::{
     ReviewKey, ReviewLedger, ReviewVersion as StoredReviewVersion, Store, WorkspaceAnchor,
     WorkspaceLedger,
@@ -49,24 +51,29 @@ fn review_notes(
 }
 
 pub(super) fn execute(
-    store: &Store,
+    store: &impl super::HistoryReader,
     db: &Path,
     command: WorkCommand,
 ) -> Result<WorkResult, String> {
     match command {
         WorkCommand::ReviewNotes(session) => review_notes(db, session, None),
         WorkCommand::SaveReviewNote { session, note } => review_notes(db, session, Some(&note)),
-        WorkCommand::Tasks(before) => tasks(&ledger(db)?, before),
-        WorkCommand::Handoffs(before) => handoffs(&ledger(db)?, before),
+        WorkCommand::Tasks(before) => tasks(&store.workspace_ledger(db)?, before),
+        WorkCommand::Handoffs(before) => handoffs(&store.workspace_ledger(db)?, before),
         WorkCommand::SaveTask {
             id,
+            revision,
             anchor,
             title,
             note,
         } => {
-            let ledger = ledger(db)?;
+            let ledger = store.workspace_ledger(db)?;
             if let Some(id) = id {
-                if !ledger.update_task(id, &title, &note).map_err(string)? {
+                if ledger
+                    .update_task_fields(id, Some(&title), Some(&note), None, revision)
+                    .map_err(string)?
+                    .is_none()
+                {
                     return Err("That task is no longer available".into());
                 }
             } else {
@@ -77,15 +84,23 @@ pub(super) fn execute(
             }
             tasks(&ledger, None)
         }
-        WorkCommand::CompleteTask { id, completed } => {
-            let ledger = ledger(db)?;
-            if !ledger.set_task_completed(id, completed).map_err(string)? {
+        WorkCommand::CompleteTask {
+            id,
+            revision,
+            completed,
+        } => {
+            let ledger = store.workspace_ledger(db)?;
+            if ledger
+                .set_task_completed_if_current(id, completed, Some(revision))
+                .map_err(string)?
+                .is_none()
+            {
                 return Err("That task is no longer available".into());
             }
             tasks(&ledger, None)
         }
         WorkCommand::SaveHandoff { id, from, to, note } => {
-            let ledger = ledger(db)?;
+            let ledger = store.workspace_ledger(db)?;
             if let Some(id) = id {
                 if !ledger.update_handoff(id, &note).map_err(string)? {
                     return Err("That handoff is no longer available".into());
@@ -97,20 +112,20 @@ pub(super) fn execute(
             }
             handoffs(&ledger, None)
         }
-        WorkCommand::TaskLinks(id) => task_links(&ledger(db)?, id),
+        WorkCommand::TaskLinks(id) => task_links(&store.workspace_ledger(db)?, id),
         WorkCommand::LinkTask { id, anchor } => {
-            let ledger = ledger(db)?;
+            let ledger = store.workspace_ledger(db)?;
             ledger.link_task(id, &to_store(anchor)?).map_err(string)?;
             task_links(&ledger, id)
         }
         WorkCommand::UnlinkTask { id, anchor } => {
-            let ledger = ledger(db)?;
+            let ledger = store.workspace_ledger(db)?;
             ledger.unlink_task(id, &to_store(anchor)?).map_err(string)?;
             task_links(&ledger, id)
         }
-        WorkCommand::TaskWorkspace(id) => task_workspace(&ledger(db)?, id),
+        WorkCommand::TaskWorkspace(id) => task_workspace(&store.workspace_ledger(db)?, id),
         WorkCommand::CaptureWorkspace { id, directory } => {
-            let ledger = ledger(db)?;
+            let ledger = store.workspace_ledger(db)?;
             let captured = super::task_git::capture(Path::new(&directory))?;
             if !ledger
                 .save_task_workspace_snapshot(id, &captured)
@@ -121,18 +136,19 @@ pub(super) fn execute(
             task_workspace(&ledger, id)
         }
         WorkCommand::DeleteTask(id) => {
-            let ledger = ledger(db)?;
+            let ledger = store.workspace_ledger(db)?;
             ledger.delete_task(id).map_err(string)?;
             tasks(&ledger, None)
         }
         WorkCommand::DeleteHandoff(id) => {
-            let ledger = ledger(db)?;
+            let ledger = store.workspace_ledger(db)?;
             ledger.delete_handoff(id).map_err(string)?;
             handoffs(&ledger, None)
         }
         WorkCommand::ExportHandoff(id) => {
             let upper = id.checked_add(1).ok_or("Invalid handoff ID")?;
-            let entry = ledger(db)?
+            let entry = store
+                .workspace_ledger(db)?
                 .list_handoffs(1, Some(upper))
                 .map_err(string)?
                 .items
@@ -147,12 +163,13 @@ pub(super) fn execute(
             )))
         }
         WorkCommand::Workflow => {
-            let (items, partial) = pending_requests_with_seen(store, &ledger(db)?)?;
+            let (items, partial) = pending_requests_with_seen(store, &store.workspace_ledger(db)?)?;
             Ok(WorkResult::Workflow { items, partial })
         }
         WorkCommand::Seen(item) => {
             let (owner, event, revision) = request_key(&item)?;
-            ledger(db)?
+            store
+                .workspace_ledger(db)?
                 .mark_request_seen(&owner, &event, revision)
                 .map_err(string)?;
             Ok(WorkResult::Seen(item))
@@ -278,10 +295,6 @@ fn prompt_config(db: &Path) -> Result<PathBuf, String> {
     }
 }
 
-fn ledger(db: &Path) -> Result<WorkspaceLedger, String> {
-    WorkspaceLedger::open(db).map_err(string)
-}
-
 fn string(error: impl std::fmt::Display) -> String {
     error.to_string()
 }
@@ -294,6 +307,7 @@ fn tasks(ledger: &WorkspaceLedger, before: Option<u64>) -> Result<WorkResult, St
             .into_iter()
             .map(|task| TaskEntry {
                 id: task.id,
+                revision: task.revision,
                 anchor: task.anchor.map(from_store),
                 title: task.title,
                 note: task.note,
@@ -379,7 +393,7 @@ fn request_key(row: &RequestEntry) -> Result<(WorkspaceAnchor, String, u32), Str
     ))
 }
 
-fn pending_requests(store: &Store) -> Result<(Vec<RequestEntry>, bool), String> {
+fn pending_requests(store: &impl ObservationStore) -> Result<(Vec<RequestEntry>, bool), String> {
     let page = store
         .query_observations(&ObservationQuery::latest(WORKFLOW_EVIDENCE_LIMIT))
         .map_err(string)?;
@@ -390,7 +404,7 @@ fn pending_requests(store: &Store) -> Result<(Vec<RequestEntry>, bool), String> 
 }
 
 pub(super) fn pending_requests_with_seen(
-    store: &Store,
+    store: &impl ObservationStore,
     ledger: &WorkspaceLedger,
 ) -> Result<(Vec<RequestEntry>, bool), String> {
     let (mut items, partial) = pending_requests(store)?;
@@ -497,6 +511,76 @@ fn event_position(event_id: &str) -> (&str, u64, &str) {
 mod tests {
     use super::*;
     use agenturm_kernel::ObservationIdentity;
+
+    #[test]
+    fn a_stale_cockpit_task_cannot_overwrite_an_intervening_cli_edit() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "agenturm-cockpit-task-cas-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        let database = directory.join("history.sqlite");
+        let store = Store::open_collector(&database).unwrap();
+        let ledger = WorkspaceLedger::open(&database).unwrap();
+        let task = ledger.create_task(None, "Initial", "Initial note").unwrap();
+        let updated = ledger
+            .update_task_fields(
+                task.id,
+                Some("CLI edit"),
+                Some("Retain this note"),
+                None,
+                Some(task.revision),
+            )
+            .unwrap()
+            .unwrap();
+        let stale_save = execute(
+            &store,
+            &database,
+            WorkCommand::SaveTask {
+                id: Some(task.id),
+                revision: Some(task.revision),
+                anchor: None,
+                title: "Stale form".into(),
+                note: "Stale note".into(),
+            },
+        );
+        assert!(stale_save.is_err());
+        assert!(
+            execute(
+                &store,
+                &database,
+                WorkCommand::CompleteTask {
+                    id: task.id,
+                    revision: task.revision,
+                    completed: true,
+                }
+            )
+            .is_err()
+        );
+        let current = ledger.task(task.id).unwrap().unwrap();
+        assert_eq!(current.title, "CLI edit");
+        assert_eq!(current.note, "Retain this note");
+        assert!(!current.completed);
+        assert_eq!(current.revision, updated.revision);
+        execute(
+            &store,
+            &database,
+            WorkCommand::CompleteTask {
+                id: task.id,
+                revision: current.revision,
+                completed: true,
+            },
+        )
+        .unwrap();
+        assert!(ledger.task(task.id).unwrap().unwrap().completed);
+        drop(ledger);
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn workflow_requires_an_exact_pending_state_and_applies_lifecycle_corrections() {

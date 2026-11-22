@@ -61,8 +61,8 @@ jobs:
         env:
           AGENTURM_RUNTIME_APP: ${{ github.workspace }}/target/debug/agenturm
           AGENTURM_RUNTIME_PLUGIN_HOST: ${{ github.workspace }}/target/debug/agenturm-plugin-host
-      - name: Verify configured collection, crash recovery, and native content grants
-        run: cargo test --locked -p agenturm-app --test configured_collection --test prompt_content --test workspace_backup
+      - name: Verify configured collection, native content grants, and task continuity
+        run: cargo test --locked -p agenturm-app --test configured_collection --test prompt_content --test workspace_backup --test adapter_install --test task_cli
         env:
           AGENTURM_RUNTIME_PLUGIN_HOST: ${{ github.workspace }}/target/debug/agenturm-plugin-host
           AGENTURM_RUNTIME_PI_ADAPTER: ${{ github.workspace }}/target/debug/agenturm-pi-harness
@@ -83,6 +83,13 @@ jobs:
         with:
           python-version: "3.13"
       - run: python -m pip install .
+      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
+        with:
+          node-version: "22"
+      - name: Verify Node.js producer through the Rust OTLP launcher and receiver
+        run: python -m unittest tests.test_rust_javascript_client_e2e -v
+        env:
+          AGENTURM_RUST_APP_BIN: ${{ github.workspace }}/target/debug/agenturm
       - run: python -m unittest tests.test_plugin_reference_wire_spi -v
       - run: python -m unittest tests.test_plugin_private_reference_e2e -v
       - run: python -m unittest tests.test_store_writer_lease -v

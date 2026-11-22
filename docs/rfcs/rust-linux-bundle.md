@@ -112,6 +112,102 @@ Use `"$agenturm" cockpit --db <path>` or `"$agenturm" inspect --db <path>`
 to open a specific existing Rust store without starting local collection.
 For collection between cockpit sessions, set up the managed collector below.
 
+## Export a Review receipt
+
+Select one exact source, session, and turn. Add `--worker-id` for the
+recorded worker. Omitting it selects workerless evidence. The receipt
+records the store snapshot ID, observation revisions, and any cursor for
+older evidence. Each receipt covers one page.
+
+```sh
+"$agenturm" review --db "$db" --harness-id "$source_id" \
+  --session-id "$session" --turn-id "$turn" --limit 200 \
+  --format json --output ./review-receipt
+```
+
+The new private directory contains `review.md`, `review.html`, and `review.json`.
+Use `--format text`, `--format markdown`, or `--format html` for readable
+stdout output. Omitting `--format` preserves the history query JSON on
+stdout. Review receipts contain retained observation metadata. Use the
+content-grant commands separately to inspect protected bodies.
+
+## Edit tasks from the CLI
+
+Set `db` to an existing Rust history database and get a task's ID and
+revision from `task list` or `task show`. Pass `--expected-revision` when
+updating or archiving a task and when changing its brief, decisions, exact
+links, or Git snapshot. The local task CLI returns exit code 3 on a revision
+conflict and 2 on invalid input or storage failure.
+
+```sh
+"$agenturm" task create --db "$db" --title "Review the release" --workspace .
+"$agenturm" task update "$task" --db "$db" --notes-file notes.txt --expected-revision "$revision"
+"$agenturm" task brief "$task" --db "$db" --next-action "Check the upgraded store"
+"$agenturm" task decide "$task" --db "$db" --kind accepted --text "Keep the current format"
+"$agenturm" task decisions "$task" --db "$db"
+"$agenturm" task handoff "$task" --db "$db" --output ./release-handoff
+```
+
+`task brief --file` reads a JSON object with `intent`, `acceptance_criteria`,
+`constraints`, `open_questions`, and `next_action`. Omitted brief fields keep
+their previous values and an empty string clears a field. Brief and decision
+text fields take up to 4 KiB of UTF-8 each. To replace a decision, add a new
+version with `--supersedes` and the current decision ID. `task decisions`
+shows current and superseded versions.
+
+`task snapshot` captures a summary of the selected local Git worktree. Set
+or change the directory with `task update --workspace`. Changing it clears
+the prior Git summary. `task handoff` uses a single saved task revision and
+defaults to Markdown with current decisions. Use `--format html` or
+`--format json` for another stdout format, and `--include-decision-history`
+to include superseded decisions. With `--output`, a new private directory
+contains both `handoff.md` and `handoff.html`.
+
+`task archive` hides the task from the default list while preserving its
+history. Use `task list --all` to include it and `task archive --restore`
+to return it to the default list. The workspace backup includes these task
+records and their decision history.
+
+### Prepare a source-backed continuation
+
+Use `content list` after granting user prompt access to find the event,
+revision, turn, and worker if recorded. `task draft` captures one eligible
+prompt from that exact scope. Give `--output` a new path to write a private
+JSON file. Without `--output`, the excerpt and draft go to stdout.
+
+```sh
+"$agenturm" content list --db "$db" --config "$config" \
+  --source-id "$source_id" --session-id "$session"
+"$agenturm" task draft --db "$db" --config "$config" \
+  --source-id "$source_id" --session-id "$session" --turn-id "$turn" \
+  --event-id "$event" --revision "$event_revision" --task-id "$task" \
+  --output ./task-draft.json
+"$agenturm" task approve-draft ./task-draft.json --db "$db" --config "$config"
+"$agenturm" task continuity "$task" --db "$db"
+"$agenturm" task continuity "$task" --db "$db" --config "$config" \
+  --approval-id "$approval"
+```
+
+Include `--worker-id` when the selected prompt belongs to a worker. Edit
+the JSON `continuation` field before approving. Omit `--task-id` at draft
+creation to approve the draft as a new task, using the JSON `title` or
+`--title` on `approve-draft`. Approval checks the source bytes, event
+revision, and original grant again. A draft for an existing task also
+checks the task revision captured during preparation.
+
+Use `task decide --source-file ./task-draft.json --config "$config"` with
+the usual task ID, kind, and decision text to cite its source. For a draft
+created without `--task-id`, also pass the current task `--expected-revision`.
+Use an approval ID from `task continuity` to reopen the original excerpt.
+The original grant must still be active. Task handoffs and backups retain
+the exact source reference and the text you wrote for the task.
+
+For broker history, use `agenturm broker task` with `--broker-config` and
+the broker's configured source and permission. If the connection breaks
+after an approval is saved, the command can return an error. Check the
+task's `continuity` list for the draft digest and the task's revision before
+retrying. A draft digest can receive one approval.
+
 ## Open native traces
 
 Point an OTLP/HTTP producer at the loopback receiver. Each span needs a

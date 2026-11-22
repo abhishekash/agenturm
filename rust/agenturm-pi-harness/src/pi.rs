@@ -5,6 +5,9 @@ use serde_json::{Value, json};
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::error::Error;
+use std::fs::{File, OpenOptions};
+use std::io::{BufRead, BufReader, Read};
+use std::os::unix::fs::OpenOptionsExt;
 use std::path::Path;
 use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 
@@ -45,10 +48,21 @@ pub(crate) struct Context {
     pub session_id: String,
     pub worker_id: String,
     pub turn_id: String,
+    fork_parent: Option<String>,
 }
 
-pub(crate) fn header_identity(raw: &[u8]) -> Result<Context> {
+pub(crate) fn header_context(path: Option<&Path>, raw: &[u8]) -> Result<Context> {
     let row: Value = serde_json::from_slice(raw)?;
+    let mut context = header_from_row(&row)?;
+    if let Some(path) = path
+        && row.get("parentSessionId").is_none()
+    {
+        context.fork_parent = native_fork_parent(path, raw, &row, &context);
+    }
+    Ok(context)
+}
+
+fn header_from_row(row: &Value) -> Result<Context> {
     if row.get("type").and_then(Value::as_str) != Some("session") {
         return Err(invalid("Pi source must start with a session header"));
     }
@@ -68,7 +82,95 @@ pub(crate) fn header_identity(raw: &[u8]) -> Result<Context> {
         session_id: session_id.to_owned(),
         worker_id: worker_id.to_owned(),
         turn_id: String::new(),
+        fork_parent: None,
     })
+}
+
+fn native_fork_parent(path: &Path, raw: &[u8], row: &Value, child: &Context) -> Option<String> {
+    let parent_reference = Path::new(row.get("parentSession")?.as_str()?);
+    let directory = path.parent()?;
+    if !path.is_absolute()
+        || !parent_reference.is_absolute()
+        || parent_reference.parent()? != directory
+        || !child.worker_id.is_empty()
+        || row.get("id")?.as_str()? != child.session_id
+        || native_filename_id(path)? != child.session_id
+    {
+        return None;
+    }
+    let expected_parent = native_filename_id(parent_reference)?;
+    if expected_parent == child.session_id {
+        return None;
+    }
+    let mut parent = open_prefix(&directory.join(parent_reference.file_name()?))?;
+    let parent_row: Value = serde_json::from_slice(&prefix_line(&mut parent)?).ok()?;
+    let parent_header = header_from_row(&parent_row).ok()?;
+    if parent_header.session_id != expected_parent
+        || parent_row.get("id")?.as_str()? != expected_parent
+        || !parent_header.worker_id.is_empty()
+    {
+        return None;
+    }
+    // A parent path is also used for an empty continuation. Require a copied
+    // entry to distinguish a fork and retain only the header's native ID.
+    let mut current = open_prefix(path)?;
+    if prefix_line(&mut current)? != raw {
+        return None;
+    }
+    let copied = prefix_line(&mut parent)?;
+    if copied != prefix_line(&mut current)? {
+        return None;
+    }
+    let entry: Value = serde_json::from_slice(&copied).ok()?;
+    entry.get("id")?.as_str().filter(|id| identifier(id))?;
+    Some(parent_header.session_id)
+}
+
+fn native_filename_id(path: &Path) -> Option<&str> {
+    let (stamp, id) = path
+        .file_name()?
+        .to_str()?
+        .strip_suffix(".jsonl")?
+        .rsplit_once('_')?;
+    // Pi names these files with an ISO timestamp with colons and the decimal
+    // point replaced by dashes, followed by the session UUID.
+    let mut stamp: [u8; 24] = stamp.as_bytes().try_into().ok()?;
+    if [13, 16, 19].into_iter().any(|index| stamp[index] != b'-') || stamp[23] != b'Z' {
+        return None;
+    }
+    [stamp[13], stamp[16], stamp[19]] = *b"::.";
+    OffsetDateTime::parse(std::str::from_utf8(&stamp).ok()?, &Rfc3339).ok()?;
+    (id.len() == 36
+        && id.bytes().enumerate().all(|(index, byte)| {
+            if matches!(index, 8 | 13 | 18 | 23) {
+                byte == b'-'
+            } else {
+                byte.is_ascii_hexdigit()
+            }
+        }))
+    .then_some(id)
+}
+
+fn open_prefix(path: &Path) -> Option<BufReader<File>> {
+    let file = OpenOptions::new()
+        .read(true)
+        .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+        .open(path)
+        .ok()?;
+    file.metadata()
+        .ok()?
+        .is_file()
+        .then(|| BufReader::new(file))
+}
+
+fn prefix_line(reader: &mut impl BufRead) -> Option<Vec<u8>> {
+    const MAX_PREFIX_LINE: usize = 64 * 1024;
+    let mut line = Vec::new();
+    reader
+        .take((MAX_PREFIX_LINE + 1) as u64)
+        .read_until(b'\n', &mut line)
+        .ok()?;
+    (line.len() <= MAX_PREFIX_LINE && line.ends_with(b"\n")).then_some(line)
 }
 
 fn identity(context: &Context, operation: Option<&str>) -> Value {
@@ -197,14 +299,23 @@ pub(crate) fn translate_line(
         .ok_or("Pi row lacks type")?;
     let mut next = context.clone();
     if kind == "session" {
-        let header = header_identity(raw)?;
+        let header = header_from_row(&row)?;
         if header.session_id != context.session_id || header.worker_id != context.worker_id {
             return Err(invalid("Pi session identity changed inside one file"));
         }
+        let relationship = row
+            .get("parentSessionId")
+            .and_then(Value::as_str)
+            .filter(|parent| identifier(parent) && *parent != header.session_id)
+            .map(|parent| ("delegated", parent))
+            .or_else(|| {
+                context
+                    .fork_parent
+                    .as_deref()
+                    .map(|parent| ("forked", parent))
+            });
         if offset == 0
-            && let Some(parent) = row.get("parentSessionId").and_then(Value::as_str)
-            && identifier(parent)
-            && parent != header.session_id
+            && let Some((edge, parent)) = relationship
             && let Ok(time_ns) = stamp(&row)
         {
             return Ok((
@@ -213,7 +324,7 @@ pub(crate) fn translate_line(
                     "relationship",
                     &time_ns,
                     &header,
-                    json!({"relationship_kind":"delegated","parent_session_id":parent}),
+                    json!({"relationship_kind":edge,"parent_session_id":parent}),
                     None,
                 )],
                 next,
@@ -459,6 +570,10 @@ pub(crate) fn translate_line(
 mod tests {
     use super::*;
 
+    fn header_identity(raw: &[u8]) -> Result<Context> {
+        header_from_row(&serde_json::from_slice(raw)?)
+    }
+
     #[test]
     fn composite_provider_operation_ids_pair_calls_and_results() {
         let context = header_identity(br#"{"type":"session","id":"pi-1"}"#).unwrap();
@@ -583,8 +698,8 @@ mod tests {
     fn result_does_not_borrow_current_turn_from_a_later_user() {
         let context = Context {
             session_id: "pi-1".into(),
-            worker_id: String::new(),
             turn_id: "user-2".into(),
+            ..Context::default()
         };
         let (facts, next) = translate_line(
             br#"{"type":"message","id":"result-1","timestamp":"2026-10-24T12:00:03Z","message":{"role":"toolResult","toolCallId":"call-1","toolName":"read","isError":true,"content":"private output"}}"#,

@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 0.3.0</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-connector-api.md">Markdown source ↗</a></nav><h1>Rust connector API and trusted runtime</h1>
+</style></head><body><main><nav><strong>Agenturm / Rust development</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-connector-api.md">Markdown source ↗</a></nav><h1>Rust connector API and trusted runtime</h1>
 <p>The bounded contracts and trusted process runtime are available. The runtime
 also has a Linux x86-64 isolation profile for credential-free connectors.</p>
 <h2>Goal</h2>
@@ -101,21 +101,62 @@ Revocation denied a later collection. A separate statically linked Rust
 standard-library fixture also completed poll, commit and ACK. This qualifies
 the local credential-free profile and its fail-closed launch path on that host.</p>
 <h2>Host-managed credentials and destinations</h2>
-<p>The isolated child has no socket access and receives no credential or
-destination configuration. The remaining credentialed transport should
-keep the application and TLS connection in trusted host code. Bind an
-operator-managed endpoint and credential reference to the connector
-descriptor, pin, launch policy, target and current grant epoch. Resolve the
-credential at the point of use. Connector frames can select only the
-host-authorized operation and carry the bounded data for that operation.
-The host selects the exact approved origin and resource, disables redirects
-and verifies the endpoint before sending a credential. Credentials stay out
-of executable arguments, connector frames, queue rows, receipts and
-diagnostics.</p>
-<p>The transport must recheck the current grant at dispatch and reconciliation,
-and use the same idempotency key and request digest after an ambiguous
-effect. Credentialed transport and production endpoint qualification remain
-open.</p>
+<p>An outbound connector with the <code>isolated_linux</code> launch policy can use the
+host-owned <code>unix_status_v1</code> transport. The connector gets the queued status
+operation with its logical destination. It can approve forwarding by
+returning a correlated <code>forward</code> outcome. The host chooses the socket,
+credential reference and wire operation from the grant and the queued work.
+The child has no socket or filesystem access and receives neither the
+credential nor the physical endpoint configuration.</p>
+<p>Add the transport to the connector configuration, then approve that
+configuration with the existing <code>grant</code> command.</p>
+<pre><code class="language-json">{
+  &quot;launch&quot;: &quot;isolated_linux&quot;,
+  &quot;host_transport&quot;: {
+    &quot;kind&quot;: &quot;unix_status_v1&quot;,
+    &quot;socket&quot;: &quot;/run/status-service/agenturm.sock&quot;,
+    &quot;peer_uid&quot;: 45000,
+    &quot;peer_gid&quot;: 45000,
+    &quot;credential_file&quot;: &quot;/run/user/1000/agenturm/status-token&quot;
+  }
+}
+</code></pre>
+<p>The grant binds the absolute socket path, the peer's Linux UID and primary
+GID, and the credential reference alongside the descriptor, artifact pin,
+launch policy and logical destination. Change any of those settings and
+approve a new grant. The existing queue checks the grant epoch before sending
+and before reconciliation. The operator manages the two paths and controls
+which local account can create a service socket. At each connection the host
+verifies the socket owner and inode and checks the connected peer credentials
+before opening the credential file. The credential must be a private mode
+<code>0600</code> regular file owned by the runtime user, with one link and a
+32–256-byte ASCII token using letters, digits, hyphens or underscores and an
+optional final newline. The host can read a rotated token from the same
+approved reference on its next connection.</p>
+<p><code>unix_status_v1</code> uses one length-prefixed JSON request and response per
+connection, each capped at 4 KiB. The request and response carry protocol
+version <code>1</code>, destination ID, idempotency key and request SHA-256. The
+request also carries the connector ID, credential and either
+<code>{&quot;kind&quot;:&quot;deliver&quot;,&quot;state&quot;:&quot;completed&quot;}</code> or <code>{&quot;kind&quot;:&quot;lookup&quot;}</code> as the
+operation. The supported values for <code>state</code> are the runtime's typed lifecycle
+states. The client and endpoint each close their write side after their frame.
+A deliver reply can report <code>accepted</code>. A lookup reply can report
+<code>accepted</code>, <code>confirmed_missing</code> or <code>unknown</code>. The endpoint may return
+<code>confirmed_missing</code> only after it can rule out a delayed effect for the
+same key and digest. Mismatched replies, unknown results, and transport
+failures leave the delivery uncertain. A valid acceptance uses a
+host-derived receipt ID based on the delivery identity.</p>
+<p>The token traverses only the authenticated host-to-service connection.
+The executable arguments, child frames, queue rows, receipts and diagnostics
+contain no credential. This profile targets a local status service. HTTPS
+transport, credential provisioning for production providers and production
+endpoint qualification remain open.</p>
+<p>On Ubuntu 24.04.5 x86-64, the connector suite used a static isolated child and
+a local Unix status fixture. The host withheld request bytes from a mismatched
+peer and when the token file had unsafe permissions. It timed out a partial
+reply, reopened the ledger, and reconciled the exact key and digest after
+token rotation. An injected endpoint receipt field was rejected, and
+revocation stopped subsequent dispatch.</p>
 <h2>Acceptance gates for runtime integration</h2>
 <ul>
 <li>Missing, wrong-scope, stale-artifact and revoked grants deny work before launch/send.</li>

@@ -30,8 +30,10 @@ pub use session_catalog::{
     SessionSummary,
 };
 pub use workspace_ledger::{
-    MAX_WORKSPACE_PAGE_SIZE, SavedHandoff, SavedTask, WorkspaceAnchor, WorkspaceError,
-    WorkspaceGitSnapshot, WorkspaceLedger, WorkspacePage,
+    ApprovedTaskDraft, MAX_WORKSPACE_PAGE_SIZE, SavedHandoff, SavedTask, SavedTaskDecision,
+    TaskBrief, TaskBriefUpdate, TaskDecisionInput, TaskDecisionKind, TaskDraftApproval,
+    TaskHandoff, TaskSourceProof, WorkspaceAnchor, WorkspaceError, WorkspaceGitSnapshot,
+    WorkspaceHistory, WorkspaceLedger, WorkspacePage,
 };
 
 use agenturm_kernel::{
@@ -783,6 +785,35 @@ impl Store {
         #[cfg(target_os = "linux")]
         let path = std::path::absolute(path).map_err(StoreError::WriterLease)?;
         Self::open(path)
+    }
+
+    /// Initializes the broker history identity under its retained write lease.
+    /// A SQLite backup preserves this metadata along with the history.
+    #[cfg(target_os = "linux")]
+    pub fn ensure_history_identity(&mut self) -> Result<String> {
+        if self.writer_lease.is_none() {
+            return Err(StoreError::WriterLease(std::io::Error::other(
+                "history identity requires a writer lease",
+            )));
+        }
+        self.verify_write_admission()?;
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "INSERT INTO agenturm_store_meta(key, value)
+             VALUES ('history_identity', lower(hex(randomblob(16))))
+             ON CONFLICT(key) DO NOTHING",
+            [],
+        )?;
+        let identity = read_history_identity(&transaction)?;
+        transaction.commit()?;
+        Ok(identity)
+    }
+
+    /// Returns the established history identity without initializing a store.
+    pub fn history_identity(&self) -> Result<String> {
+        read_history_identity(&self.connection)
     }
 
     /// Opens a v8 through v13 store through a read-only connection. This path
@@ -1665,6 +1696,26 @@ impl Store {
             .optional()
             .map_err(StoreError::from)
     }
+}
+
+fn read_history_identity(connection: &Connection) -> Result<String> {
+    let identity = connection
+        .query_row(
+            "SELECT CASE WHEN typeof(value) = 'text' AND length(CAST(value AS BLOB)) = 32
+                         THEN value ELSE '' END
+             FROM agenturm_store_meta WHERE key = 'history_identity'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?;
+    identity
+        .filter(|value| {
+            value.len() == 32
+                && value
+                    .bytes()
+                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        })
+        .ok_or(StoreError::Invalid("history identity is unavailable"))
 }
 
 impl ObservationStore for Store {

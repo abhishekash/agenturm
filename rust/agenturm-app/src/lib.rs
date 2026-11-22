@@ -4,6 +4,8 @@
 //! explicit one-shot and configured multi-source usage collection, and a
 //! full-screen durable-history viewer and Linux user service management.
 
+#[cfg(target_os = "linux")]
+mod adapter_install;
 mod attention;
 #[cfg(target_os = "linux")]
 mod broker_cli;
@@ -14,6 +16,8 @@ mod content_preview;
 mod discovery;
 mod handoff_export;
 mod inspector_activity;
+mod private_output;
+mod review_receipt;
 mod session_evidence;
 mod task_cli;
 mod task_git;
@@ -23,12 +27,17 @@ mod trace_run;
 mod workflow_route;
 
 #[cfg(target_os = "linux")]
-pub use broker_cli::execute as execute_broker;
+pub use broker_cli::{BrokerExecutionError, execute as execute_broker};
+
+#[cfg(target_os = "linux")]
+pub use adapter_install::execute as execute_adapter_install;
 
 pub use attention::{AttentionOptions, execute_attention};
-pub use content_preview::{ContentOptions, execute_content};
+pub use content_preview::{ContentOptions, execute_content, execute_content_stdout};
 pub use discovery::{discover, execute_discover};
-pub use task_cli::{TaskOptions, execute_task};
+pub use private_output::with_private_stdout;
+pub use review_receipt::ReviewOutput;
+pub use task_cli::{TaskOptions, execute_task, execute_task_stdout};
 pub use trace_import::{TraceImportOptions, execute_trace_import};
 pub use trace_receiver::{TraceReceiverOptions, execute_trace_receiver};
 pub use trace_run::{TraceRunOptions, execute_trace_run};
@@ -190,10 +199,13 @@ pub enum Command {
     Query(HistoryQueryOptions),
     #[cfg(target_os = "linux")]
     Broker(broker_cli::BrokerOptions),
+    #[cfg(target_os = "linux")]
+    InstallAdapter(adapter_install::Options),
     Review {
         query: HistoryQueryOptions,
         turn_id: String,
         worker_id: Option<String>,
+        output: ReviewOutput,
     },
     Backup {
         db: PathBuf,
@@ -714,6 +726,8 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         Some("status") if args.len() == 1 => Ok(Command::Status),
         #[cfg(target_os = "linux")]
         Some("broker") => broker_cli::parse(&args[1..]).map(Command::Broker),
+        #[cfg(target_os = "linux")]
+        Some("adapter") => adapter_install::parse(&args[1..]).map(Command::InstallAdapter),
         Some("attention") => attention::parse(&args[1..]).map(Command::Attention),
         Some("task") => task_cli::parse(&args[1..]).map(Command::Task),
         Some("cockpit") if args.len() == 1 => Ok(Command::Cockpit {
@@ -1335,7 +1349,7 @@ fn default_cockpit_extensions(
 fn parse_query_options(args: &[String], review: bool) -> Result<Command, String> {
     let usage = || {
         if review {
-            "usage: agenturm review --db <path> --harness-id <id> --session-id <id> --turn-id <id> [--worker-id <id>] [query paging options]".to_owned()
+            "usage: agenturm review --db <path> --harness-id <id> --session-id <id> --turn-id <id> [--worker-id <id>] [--format text|json|markdown|html] [--output <new-directory>] [query paging options]".to_owned()
         } else {
             self::usage()
         }
@@ -1345,6 +1359,8 @@ fn parse_query_options(args: &[String], review: bool) -> Result<Command, String>
     let mut session_id = None;
     let mut turn_id = None;
     let mut worker_id = None;
+    let mut format = None;
+    let mut output = None;
     let mut before_timestamp = None;
     let mut before_harness = None;
     let mut before_event = None;
@@ -1364,6 +1380,8 @@ fn parse_query_options(args: &[String], review: bool) -> Result<Command, String>
             "--session-id" => &mut session_id,
             "--turn-id" if review => &mut turn_id,
             "--worker-id" if review => &mut worker_id,
+            "--format" if review => &mut format,
+            "--output" if review => &mut output,
             "--before-timestamp-ns" => &mut before_timestamp,
             "--before-harness-id" => &mut before_harness,
             "--before-event-id" => &mut before_event,
@@ -1433,6 +1451,13 @@ fn parse_query_options(args: &[String], review: bool) -> Result<Command, String>
             query,
             turn_id,
             worker_id,
+            output: ReviewOutput {
+                format: format
+                    .as_deref()
+                    .map(review_receipt::ReviewFormat::parse)
+                    .transpose()?,
+                directory: output.map(PathBuf::from),
+            },
         })
     } else {
         Ok(Command::Query(query))
@@ -1657,7 +1682,7 @@ fn install_process_extensions(
 
 fn workspace_response(
     app: &mut AgenturmApp,
-    store: &Store,
+    store: &impl HistoryReader,
     db: &std::path::Path,
     request: WorkspaceRequest,
     notice: impl FnOnce() -> Option<String>,
@@ -1708,7 +1733,7 @@ fn workspace_response(
 }
 
 fn load_session_catalog(
-    store: &Store,
+    store: &impl HistoryReader,
     db: &std::path::Path,
     before: Option<SessionCursor>,
 ) -> Result<SessionCatalog, String> {
@@ -1779,6 +1804,11 @@ fn load_session_catalog(
 }
 
 trait HistoryReader: ObservationStore {
+    fn workspace_ledger(
+        &self,
+        marker: &std::path::Path,
+    ) -> Result<agenturm_store::WorkspaceLedger, String>;
+    fn query_sessions(&self, query: &SessionQuery) -> Result<agenturm_store::SessionPage, String>;
     fn query_linked_traces(
         &self,
         query: &ObservationQuery,
@@ -1786,6 +1816,15 @@ trait HistoryReader: ObservationStore {
 }
 
 impl HistoryReader for Store {
+    fn workspace_ledger(
+        &self,
+        marker: &std::path::Path,
+    ) -> Result<agenturm_store::WorkspaceLedger, String> {
+        agenturm_store::WorkspaceLedger::open(marker).map_err(|error| error.to_string())
+    }
+    fn query_sessions(&self, query: &SessionQuery) -> Result<agenturm_store::SessionPage, String> {
+        Store::query_sessions(self, query).map_err(|error| error.to_string())
+    }
     fn query_linked_traces(
         &self,
         query: &ObservationQuery,
@@ -1796,6 +1835,17 @@ impl HistoryReader for Store {
 
 #[cfg(target_os = "linux")]
 impl HistoryReader for agenturm_storage_service::NativeStore {
+    fn workspace_ledger(
+        &self,
+        marker: &std::path::Path,
+    ) -> Result<agenturm_store::WorkspaceLedger, String> {
+        agenturm_store::WorkspaceLedger::open_with_history(marker, self.clone())
+            .map_err(|error| error.to_string())
+    }
+    fn query_sessions(&self, query: &SessionQuery) -> Result<agenturm_store::SessionPage, String> {
+        self.query_sessions(query)
+            .map_err(|error| error.to_string())
+    }
     fn query_linked_traces(
         &self,
         query: &ObservationQuery,
@@ -1908,7 +1958,9 @@ fn load_workspace_history(
 /// Executes one bounded read-only history query and returns a stable cursor
 /// that can be passed back as `--before-*` to fetch the next older page.
 pub fn execute_query(options: &HistoryQueryOptions) -> Result<String, String> {
-    execute_history_query(options, None)
+    let store = Store::open_read_only(&options.db)
+        .map_err(|error| format!("open existing store failed: {error}"))?;
+    query_from_store(&store, options)
 }
 
 /// Reads one exact recorded turn. An omitted worker selects only workerless evidence.
@@ -1917,23 +1969,56 @@ pub fn execute_review(
     turn_id: &str,
     worker_id: Option<&str>,
 ) -> Result<String, String> {
-    execute_history_query(options, Some((turn_id, worker_id)))
+    execute_review_with_output(options, turn_id, worker_id, &ReviewOutput::default())
 }
 
-fn execute_history_query(
+pub fn execute_review_with_output(
     options: &HistoryQueryOptions,
-    turn: Option<(&str, Option<&str>)>,
+    turn_id: &str,
+    worker_id: Option<&str>,
+    output: &ReviewOutput,
 ) -> Result<String, String> {
     let store = Store::open_read_only(&options.db)
         .map_err(|error| format!("open existing store failed: {error}"))?;
-    query_from_store(&store, options, turn)
+    review_from_store(&store, options, turn_id, worker_id, output)
 }
 
 fn query_from_store(
     store: &impl ObservationStore,
     options: &HistoryQueryOptions,
-    turn: Option<(&str, Option<&str>)>,
 ) -> Result<String, String> {
+    let (data, _) = history_data_from_store(store, options, None)?;
+    serde_json::to_string_pretty(&data).map_err(|_| "serialize history query failed".into())
+}
+
+fn review_from_store(
+    store: &impl ObservationStore,
+    options: &HistoryQueryOptions,
+    turn_id: &str,
+    worker_id: Option<&str>,
+    output: &ReviewOutput,
+) -> Result<String, String> {
+    let scope = review_receipt::ReviewScope {
+        harness_id: options
+            .harness_id
+            .as_deref()
+            .ok_or("Review requires a source ID")?,
+        session_id: options
+            .session_id
+            .as_deref()
+            .ok_or("Review requires a session ID")?,
+        turn_id,
+        worker_id,
+    };
+    let (data, snapshot) = history_data_from_store(store, options, Some((turn_id, worker_id)))?;
+    review_receipt::render(data, scope, snapshot, output)
+}
+
+fn history_data_from_store(
+    store: &impl ObservationStore,
+    options: &HistoryQueryOptions,
+    turn: Option<(&str, Option<&str>)>,
+) -> Result<(serde_json::Value, u64), String> {
     let query = ObservationQuery {
         harness_id: options.harness_id.clone(),
         session_id: options.session_id.clone(),
@@ -2066,12 +2151,14 @@ fn query_from_store(
             })
         })
         .collect::<Vec<_>>();
-    serde_json::to_string_pretty(&serde_json::json!({
-        "observations":observations,
-        "has_more":page.has_more,
-        "next_before":next_before,
-    }))
-    .map_err(|_| "serialize history query failed".into())
+    Ok((
+        serde_json::json!({
+            "observations":observations,
+            "has_more":page.has_more,
+            "next_before":next_before,
+        }),
+        page.snapshot_id,
+    ))
 }
 
 pub fn execute_collect(options: &ConfiguredCollectOptions) -> Result<CollectionReport, String> {
@@ -3030,11 +3117,12 @@ pub fn render(command: Command) -> String {
             "Agenturm · Rust application (early composition shell)\n",
             "\n",
             "Usage: agenturm [--help|--version|status]\n",
-            "       agenturm broker <collect|query|review|inspect> --broker-config <json> [command options]\n",
+            "       agenturm adapter install --manifest <local-json> --sha256 <digest> --root <private-directory>\n",
+            "       agenturm broker <collect|query|review|cockpit|task|grant|content|backup|integrity|prune> --broker-config <json> [command options]\n",
             "       agenturm cockpit [--db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]]\n",
             "       agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]\n",
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
-            "       agenturm review --db <path> --harness-id <id> --session-id <id> --turn-id <id> [--worker-id <id>] [query paging options]\n",
+            "       agenturm review --db <path> --harness-id <id> --session-id <id> --turn-id <id> [--worker-id <id>] [--format text|json|markdown|html] [--output <new-directory>] [query paging options]\n",
             "       agenturm backup --db <path> --output <new-path>\n",
             "       agenturm backup --db <path> --bundle <new-directory>\n",
             "       agenturm restore --bundle <directory> --output <new-directory>\n",
@@ -3082,7 +3170,7 @@ pub fn render(command: Command) -> String {
         Command::Discover { .. } | Command::Cockpit { .. } => String::new(),
         Command::Inspect(_) => String::new(),
         #[cfg(target_os = "linux")]
-        Command::Broker(_) => String::new(),
+        Command::Broker(_) | Command::InstallAdapter(_) => String::new(),
         Command::Query(_) | Command::Review { .. } | Command::Attention(_) | Command::Task(_) => {
             String::new()
         }

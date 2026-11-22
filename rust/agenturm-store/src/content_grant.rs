@@ -3,18 +3,27 @@
 use crate::{Result, SCHEMA_VERSION, Store, StoreError};
 use agenturm_kernel::ExtensionId;
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::fmt;
 
 const MAX_REFERENCES: usize = 256;
 
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ContentKind {
+    #[serde(rename = "pi.user_text")]
     PiUserText,
+    #[serde(rename = "codex.user_text")]
     CodexUserText,
+    #[serde(rename = "claude.user_text")]
     ClaudeUserText,
+    #[serde(rename = "kiro.user_text")]
     KiroUserText,
+    #[serde(rename = "opencode.user_text")]
     OpenCodeUserText,
+    #[serde(rename = "codex.mcp_payload")]
     CodexMcpPayload,
+    #[serde(rename = "codex.edit_detail")]
     CodexEditDetail,
 }
 
@@ -50,6 +59,18 @@ impl ContentGrantScope {
             source_fingerprint,
         }
     }
+
+    pub fn source_id(&self) -> &ExtensionId {
+        &self.source_id
+    }
+
+    pub fn kind(&self) -> ContentKind {
+        self.kind
+    }
+
+    pub fn source_fingerprint(&self) -> [u8; 32] {
+        self.source_fingerprint
+    }
 }
 
 /// Authority for one exact approved source configuration. A private content
@@ -65,6 +86,16 @@ pub struct ContentGrant {
 impl ContentGrant {
     pub fn epoch(&self) -> i64 {
         self.epoch
+    }
+
+    /// Binds derived evidence to this approval without exporting its nonce.
+    pub fn binding_fingerprint(&self) -> [u8; 32] {
+        let mut hash = Sha256::new();
+        hash.update(b"agenturm-content-approval/1");
+        hash.update(self.scope.source_fingerprint);
+        hash.update(self.epoch.to_be_bytes());
+        hash.update(self.nonce);
+        hash.finalize().into()
     }
 }
 
@@ -290,6 +321,22 @@ impl Store {
             "UPDATE agenturm_content_grants SET enabled = 0
              WHERE source_id = ?1 AND kind = ?2 AND enabled = 1",
             params![source_id.as_str(), kind.as_str()],
+        )?;
+        Ok(changed != 0)
+    }
+
+    /// Revokes only the exact binding the caller named. A delayed revoke for
+    /// a replaced source cannot revoke its replacement approval.
+    pub fn revoke_bound_content(&mut self, scope: &ContentGrantScope) -> Result<bool> {
+        self.verify_write_admission()?;
+        let changed = self.connection.execute(
+            "UPDATE agenturm_content_grants SET enabled = 0
+             WHERE source_id = ?1 AND kind = ?2 AND source_fingerprint = ?3 AND enabled = 1",
+            params![
+                scope.source_id.as_str(),
+                scope.kind.as_str(),
+                scope.source_fingerprint
+            ],
         )?;
         Ok(changed != 0)
     }

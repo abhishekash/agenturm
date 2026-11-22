@@ -90,6 +90,29 @@ impl From<StoreError> for BackupError {
 }
 
 impl Store {
+    /// Verifies SQLite consistency and foreign-key links without exposing
+    /// individual database rows in its result.
+    pub fn check_history_integrity(&self) -> crate::Result<()> {
+        if self.history_integrity_passes()? {
+            Ok(())
+        } else {
+            Err(StoreError::Invalid("history integrity check failed"))
+        }
+    }
+
+    fn history_integrity_passes(&self) -> rusqlite::Result<bool> {
+        let integrity: String = self
+            .connection
+            .query_row("PRAGMA quick_check(1)", [], |row| row.get(0))?;
+        let foreign_key_violation = self
+            .connection
+            .prepare("PRAGMA foreign_key_check")?
+            .query([])?
+            .next()?
+            .is_some();
+        Ok(integrity == "ok" && !foreign_key_violation)
+    }
+
     /// Takes a consistent snapshot of committed data, including WAL frames.
     /// The verified result is a standalone SQLite file. A fresh path in an
     /// existing, user-controlled directory is required. The file can be opened
@@ -127,16 +150,7 @@ impl Store {
         snapshot.close().map_err(|(_, error)| error)?;
 
         let restored = Self::open_read_only(&snapshot_path)?;
-        let integrity: String = restored
-            .connection
-            .query_row("PRAGMA quick_check", [], |row| row.get(0))?;
-        let foreign_key_violation = restored
-            .connection
-            .prepare("PRAGMA foreign_key_check")?
-            .query([])?
-            .next()?
-            .is_some();
-        if integrity != "ok" || foreign_key_violation {
+        if !restored.history_integrity_passes()? {
             return Err(BackupError::InvalidSnapshot);
         }
         drop(restored);

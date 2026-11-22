@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 0.3.1</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-harness-evidence-coverage.md">Markdown source ↗</a></nav><h1>Rust harness evidence coverage</h1>
+</style></head><body><main><nav><strong>Agenturm / Rust development</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-harness-evidence-coverage.md">Markdown source ↗</a></nav><h1>Rust harness evidence coverage</h1>
 <p>This matrix describes the evidence each Rust adapter can emit and the checks
 that exercise it. The Linux bundle discovers Pi, Codex, Claude Code, Kiro, and OpenCode
 through separate Rust adapter executables. Source continuity diagnostics report specific gaps the adapter
@@ -22,8 +22,8 @@ detected.</p>
 <td>Pi</td>
 <td>The JSONL header supplies session and optional worker identity. User row IDs identify turns. Native stop, error and abort reasons supply terminal evidence. Tool continuation records ongoing activity.</td>
 <td>User and assistant roles, token and cache counters, tool calls and explicit results. A result carries its call ID and can omit turn identity. Recognized user shell checks with a noncancelled native exit produce session-scoped outcomes.</td>
-<td>Shared JSONL continuity diagnostics and unsupported-row or role evidence. The header's <code>parentSessionId</code> supplies delegation between distinct sessions. Worker relationships are open.</td>
-<td><a href="https://github.com/abhishekash/agenturm/blob/main/rust/agenturm-pi-harness/src/pi.rs">Adapter tests</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/rust/agenturm-runtime/tests/pi_process.rs">commit, retry, ACK and reopen through the real adapter</a> cover a fixture with explicit <code>parentSessionId</code>. Real Pi RPC shell rows supplied passing and failing checks.</td>
+<td>Shared JSONL continuity diagnostics and unsupported-row or role evidence. The header's <code>parentSessionId</code> supplies delegation between distinct sessions. A native sibling <code>parentSession</code> with both matching session headers and a copied first entry supplies a fork. Worker relationships are open.</td>
+<td><a href="https://github.com/abhishekash/agenturm/blob/main/rust/agenturm-pi-harness/src/main.rs">Adapter fixture</a> covers native fork attribution and absence, and <a href="https://github.com/abhishekash/agenturm/blob/main/rust/agenturm-runtime/tests/pi_process.rs">commit, retry, ACK and reopen</a> covers explicit <code>parentSessionId</code>. Real Pi RPC shell rows supplied passing and failing checks. A real Pi fork reopened with both exact native session IDs.</td>
 </tr>
 <tr>
 <td>Codex</td>
@@ -109,8 +109,8 @@ process.</p>
 <tbody>
 <tr>
 <td>A1</td>
-<td>Pi 1.3.0 RPC appended two explicit shell checks to a temporary copy of a real session. A metadata sample of 29 local headers had no parent or worker IDs.</td>
-<td>Both checks reopened with their paired tool operations and session identity. Their native rows lacked a model turn key. A synthetic distinct-session parent fixture remains the direct relationship proof.</td>
+<td>Pi 1.3.0 RPC appended two explicit shell checks to a temporary copy of a real session. A separate Pi 1.3.0 <code>--fork</code> capture supplied a native parent pointer and copied entry.</td>
+<td>Both checks reopened with their paired tool operations and session identity. Their native rows lacked a model turn key. The real fork reopened with the exact parent and child session IDs. Native worker relationship evidence remains open.</td>
 </tr>
 <tr>
 <td>A2</td>
@@ -135,11 +135,21 @@ process.</p>
 </tbody>
 </table></div>
 <p>The Codex failure mapping follows its producer's structured terminal outcome.
-Pi's documented <code>parentSession</code> records the parent transcript file path for a
-fork. A file path alone leaves the native parent identity unresolved in the
-current adapter.
+Pi's documented <code>parentSession</code> records the parent transcript file path.
+An unresolved path remains unknown. To project a fork, the adapter requires
+a distinct sibling path, native filenames that identify the two sessions,
+matching header IDs and one exact copied entry. The process reads bounded
+prefixes without following final symlinks. It records the two IDs.
 <a href="https://github.com/openai/codex/blob/main/codex-rs/core/src/tasks/mod.rs">Codex terminal event source</a> ·
 <a href="https://github.com/earendil-works/pi/blob/main/packages/coding-agent/docs/session-format.md">Pi session format</a></p>
+<p>On Ubuntu 24.04.5 x86-64, a local Pi 1.3.0 <code>--fork</code> produced a distinct child
+transcript and repeated the parent's first entry. The published Rust 0.3.2
+app and plugin host used an independently rebuilt Pi adapter with SHA-256
+<code>8447ea38b0622bd2914ce6d0ee46a7b96b2cab454a4c2d10571c970eba7ba820</code>. Both
+sources committed and ACKed through a pinned catalog. A fresh query reopened
+one <code>forked</code> edge with the exact child and parent header IDs. A second
+collection added zero rows. Previously consumed headers lack this edge unless
+collected into a fresh source. Same-session Pi worker parentage remains open.</p>
 <p>At 60×18, the installed cockpit opened Activity and a recorded turn for
 each available provider. It displayed the Pi stop error, the separate Codex
 failure and abort reasons, the Claude Code worker completion, and the

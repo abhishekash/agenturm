@@ -1,0 +1,62 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Javascript</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / Node.js</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/javascript.md">Markdown source ↗</a></nav><h1>JavaScript client</h1>
+<p>The dependency-free client supports Node.js 18+.</p>
+<p>From a repository checkout:</p>
+<pre><code class="language-bash">npm install ./clients/javascript
+</code></pre>
+<p>Example:</p>
+<pre><code class="language-js">import { Client } from '@agenturm/client';
+
+const telemetry = new Client({ service: 'javascript-research-agent' });
+await telemetry.trace(
+  { task: 'Find current guidance', sessionId: 'thread-42' },
+  async run =&gt; {
+    await run.progress('planning', 'Choosing a search strategy', 10);
+    return run.span('search', { attributes: { 'tool.name': 'web_search' } }, async () =&gt; {
+      return searchWeb();
+    });
+  },
+);
+</code></pre>
+<p>The client sends completed spans to the local receiver. By default, delivery is best effort so telemetry failures do not interrupt the agent; enable <code>strict: true</code> to raise delivery errors. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/usage.md">all client options</a>.</p>
+<h2>Send traces to standalone Rust</h2>
+<p>Choose the <code>otlp</code> transport when running against a standalone Rust receiver.
+Set <code>sessionId</code> to the exact native session and <code>harnessId</code> to its collected
+source ID to make the trace available from that session. The client attaches
+those identities to every span in the trace.</p>
+<pre><code class="language-js">import { Client } from '@agenturm/client';
+
+const telemetry = new Client({ transport: 'otlp', strict: true });
+await telemetry.trace(
+  { sessionId: 'thread-42', harnessId: 'harness.codex' },
+  async run =&gt; run.span('work', async span =&gt; {
+    await doWork();
+    span.setStatus('OK');
+  }),
+);
+</code></pre>
+<p>Launch the producer with the installed Rust app to configure its loopback
+trace endpoint for this invocation.</p>
+<pre><code class="language-sh">agenturm run --db history.sqlite --source-id otlp.node -- node agent.mjs
+</code></pre>
+<p>To send from an existing process, start the receiver with
+<code>agenturm serve-traces --listen 127.0.0.1:14318 --db history.sqlite --source-id otlp.node</code>.
+Set <code>OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:14318/v1/traces</code> for the
+producer. Use a literal loopback IP. An explicit <code>endpoint</code> overrides the environment. With neither
+<code>OTEL_EXPORTER_OTLP_TRACES_ENDPOINT</code> nor <code>OTEL_EXPORTER_OTLP_ENDPOINT</code> set,
+the transport uses that same loopback address.</p>
+<p>OTLP/HTTP JSON exports trace IDs, parent relationships, timestamps, status
+and optional session and harness identity. Payloads use fixed span names
+and omit custom attributes, events and task text. The <code>agenturm</code> transport
+remains the default and supports progress messages. The OTLP receiver can
+group unscoped traces under an <code>agenturm run</code> invocation. Supply a
+<code>sessionId</code> to export from a standalone receiver.</p>
+<p>Node.js 22.23.4 and the published Rust 0.3.2 Linux x86-64 bundle verified
+the launcher, durable parent and source/session identity, nonzero producer
+exit status, and standalone partial rejection and 1,025-span export across
+the receiver's bounded requests. The existing JavaScript-to-Python
+integration test also passed.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

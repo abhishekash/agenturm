@@ -13,6 +13,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::path::{Path, PathBuf};
 
+pub use crate::connector_host_transport::ConnectorHostTransport;
+use crate::connector_host_transport::{StatusAction, exchange_status};
+
 const APPLICATION_ID: i64 = 0x4147434e;
 const MAX_ATTEMPTS: i64 = 4;
 const MAX_LOOKUPS: i64 = 8;
@@ -37,8 +40,7 @@ impl ConnectorLaunch {
     }
 }
 
-/// Explicit executable selection. No endpoint or credential is acquired from
-/// the host's environment.
+/// Explicit executable and optional host transport selection.
 #[derive(Clone, Debug, Serialize, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ConnectorSpec {
@@ -49,6 +51,8 @@ pub struct ConnectorSpec {
     pub target: String,
     #[serde(default, skip_serializing_if = "ConnectorLaunch::is_trusted")]
     pub launch: ConnectorLaunch,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub host_transport: Option<ConnectorHostTransport>,
 }
 
 impl ConnectorSpec {
@@ -65,6 +69,14 @@ impl ConnectorSpec {
                 .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
         {
             return Err("connector_invalid_config");
+        }
+        if let Some(transport) = &self.host_transport {
+            if direction != ConnectorDirection::Outbound
+                || self.launch != ConnectorLaunch::IsolatedLinux
+            {
+                return Err("connector_invalid_config");
+            }
+            transport.validate()?;
         }
         let bytes = serde_json::to_vec(self).map_err(|_| "connector_invalid_config")?;
         Ok(format!("{:x}", Sha256::digest(bytes)))
@@ -117,11 +129,23 @@ pub struct ConnectorResponse {
 #[derive(Deserialize, Serialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
 pub enum Outcome {
-    Batch { batch: InboundBatch },
-    Ack { checkpoint: String },
-    Delivered { receipt: DeliveryReceipt },
-    Lookup { result: DeliveryLookup },
-    Error { error: ConnectorError },
+    Batch {
+        batch: InboundBatch,
+    },
+    Ack {
+        checkpoint: String,
+    },
+    Delivered {
+        receipt: DeliveryReceipt,
+    },
+    Lookup {
+        result: DeliveryLookup,
+    },
+    /// Requests the configured host transport for the exact in-flight operation.
+    Forward,
+    Error {
+        error: ConnectorError,
+    },
 }
 
 fn exchange(spec: &ConnectorSpec, operation: Operation) -> Result<Outcome, &'static str> {
@@ -158,6 +182,31 @@ fn exchange(spec: &ConnectorSpec, operation: Operation) -> Result<Outcome, &'sta
         return Err("connector_reported_error");
     }
     Ok(reply.outcome)
+}
+
+fn outbound_exchange(
+    spec: &ConnectorSpec,
+    action: StatusAction,
+    delivery: &OutboundDelivery,
+    authorize: impl Fn() -> Result<(), &'static str>,
+) -> Result<Outcome, &'static str> {
+    let operation = match action {
+        StatusAction::Deliver => Operation::Deliver {
+            delivery: delivery.clone(),
+        },
+        StatusAction::Lookup => Operation::Lookup {
+            delivery: delivery.clone(),
+        },
+    };
+    let outcome = exchange(spec, operation)?;
+    match (&spec.host_transport, outcome) {
+        (Some(transport), Outcome::Forward) => {
+            authorize()?;
+            exchange_status(transport, spec.key(), action, delivery, authorize)
+        }
+        (None, outcome) => Ok(outcome),
+        _ => Err("connector_protocol_error"),
+    }
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize)]
@@ -408,12 +457,10 @@ impl ConnectorRuntime {
             "unknown" if queued.due.is_none() => return Ok(DeliveryState::Unknown),
             _ if queued.due.is_some_and(|due| now < due) => return Ok(DeliveryState::Waiting),
             "unknown" => {
-                let lookup = exchange(
-                    spec,
-                    Operation::Lookup {
-                        delivery: queued.delivery.clone(),
-                    },
-                );
+                let lookup =
+                    outbound_exchange(spec, StatusAction::Lookup, &queued.delivery, || {
+                        require_epoch(&tx, spec, &binding, grant_epoch)
+                    });
                 let state = match lookup {
                     Ok(Outcome::Lookup { result })
                         if result.validate_for(&queued.delivery).is_ok() =>
@@ -462,9 +509,7 @@ impl ConnectorRuntime {
         ).map_err(store)?;
         tx.commit().map_err(store)?;
         let tx = begin(&mut self.db)?;
-        if epoch(&tx, spec, &binding)? != grant_epoch {
-            return Err("connector_permission_denied");
-        }
+        require_epoch(&tx, spec, &binding, grant_epoch)?;
         let still_claimed: bool = tx
             .query_row(
                 "SELECT state = 'unknown' AND attempts = ?3 AND lookups = 0 AND due = ?4
@@ -481,12 +526,9 @@ impl ConnectorRuntime {
         if !still_claimed {
             return Ok(DeliveryState::Waiting);
         }
-        let sent = exchange(
-            spec,
-            Operation::Deliver {
-                delivery: queued.delivery.clone(),
-            },
-        );
+        let sent = outbound_exchange(spec, StatusAction::Deliver, &queued.delivery, || {
+            require_epoch(&tx, spec, &binding, grant_epoch)
+        });
         let state = match sent {
             Ok(Outcome::Delivered { receipt })
                 if receipt.validate_for(&queued.delivery).is_ok() =>
@@ -551,6 +593,18 @@ fn epoch(db: &Connection, spec: &ConnectorSpec, binding: &str) -> Result<i64, &'
     .optional()
     .map_err(store)?
     .ok_or("connector_permission_denied")
+}
+
+fn require_epoch(
+    db: &Connection,
+    spec: &ConnectorSpec,
+    binding: &str,
+    expected: i64,
+) -> Result<(), &'static str> {
+    if epoch(db, spec, binding)? != expected {
+        return Err("connector_permission_denied");
+    }
+    Ok(())
 }
 
 struct Queued {
