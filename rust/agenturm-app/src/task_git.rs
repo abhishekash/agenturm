@@ -1,12 +1,12 @@
 //! Capture bounded local Git workspace metadata for an explicitly selected task.
 
-use agenturm_store::WorkspaceGitSnapshot;
+use agenturm_store::{WorkspaceGitDiff, WorkspaceGitSnapshot};
 use std::path::Path;
 
 pub(super) fn capture(directory: &Path) -> Result<WorkspaceGitSnapshot, String> {
     #[cfg(target_os = "linux")]
     {
-        linux::capture(directory)
+        linux::capture(directory, false).map(|(snapshot, _)| snapshot)
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -15,13 +15,37 @@ pub(super) fn capture(directory: &Path) -> Result<WorkspaceGitSnapshot, String> 
     }
 }
 
+pub(super) fn capture_with_diff(
+    directory: &Path,
+) -> Result<(WorkspaceGitSnapshot, WorkspaceGitDiff), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let (snapshot, diff) = linux::capture(directory, true)?;
+        Ok((
+            snapshot,
+            diff.expect("explicit patch capture returned a patch"),
+        ))
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = directory;
+        Err("Git patch capture is available on Linux".into())
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
     use super::*;
-    use rustix::fs::{OFlags, fcntl_setfl};
-    use std::fs::{self, DirBuilder};
-    use std::io::{ErrorKind, Read};
-    use std::os::unix::fs::DirBuilderExt;
+    use agenturm_store::MAX_WORKSPACE_GIT_DIFF_BYTES;
+    use rustix::fs::{Mode, OFlags, fcntl_setfl, open, openat};
+    use std::collections::BTreeSet;
+    use std::ffi::OsStr;
+    use std::fs::{self, DirBuilder, File, OpenOptions};
+    use std::io::{ErrorKind, Read, Write};
+    use std::os::unix::{
+        ffi::OsStrExt,
+        fs::{DirBuilderExt, MetadataExt, OpenOptionsExt},
+    };
     use std::path::PathBuf;
     use std::process::{Child, Command, ExitStatus, Stdio};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -30,8 +54,14 @@ mod linux {
 
     const CAPTURE_TIMEOUT: Duration = Duration::from_secs(4);
     const MAX_OUTPUT: usize = 256 * 1024;
+    const MAX_INDEX: u64 = 16 * 1024 * 1024;
+    const MAX_PATCH_INPUT: u64 = 8 * 1024 * 1024;
+    const MAX_PATCH_PATHS: usize = 64;
 
-    pub(super) fn capture(directory: &Path) -> Result<WorkspaceGitSnapshot, String> {
+    pub(super) fn capture(
+        directory: &Path,
+        include_diff: bool,
+    ) -> Result<(WorkspaceGitSnapshot, Option<WorkspaceGitDiff>), String> {
         if !directory.is_dir() {
             return Err("Enter a local Git worktree directory".into());
         }
@@ -100,8 +130,31 @@ mod linux {
         // Git directory. Its fixed configuration excludes repository-defined
         // hooks, fsmonitor, diff programs and content conversion filters.
         let scratch = Scratch::new(format, head_commit.as_deref())?;
+        let root = Path::new(root);
+        let index = Path::new(index);
+        let copied_index = scratch.0.join("index");
+        let index_stamp = if include_diff {
+            let (status, shared) = git(
+                directory,
+                &["rev-parse", "--shared-index-path"],
+                None,
+                deadline,
+            )?;
+            if !status.success() || !shared.is_empty() {
+                return Err("Git patch capture requires a regular, unsplit index".into());
+            }
+            Some(copy_index(index, &copied_index)?)
+        } else {
+            None
+        };
+        let files = GitFiles {
+            directory: &scratch.0,
+            root,
+            index: if include_diff { &copied_index } else { index },
+            objects: Path::new(objects),
+        };
         let (status, changes) = git(
-            Path::new(root),
+            root,
             &[
                 "status",
                 "--porcelain=v1",
@@ -110,12 +163,7 @@ mod linux {
                 "--untracked-files=all",
                 "--ignore-submodules=all",
             ],
-            Some(GitFiles {
-                directory: &scratch.0,
-                root: Path::new(root),
-                index: Path::new(index),
-                objects: Path::new(objects),
-            }),
+            Some(files),
             deadline,
         )?;
         if !status.success() {
@@ -124,20 +172,45 @@ mod linux {
             );
         }
         let (staged_changes, unstaged_changes, untracked_files) = change_counts(&changes)?;
+        let diff = if let Some(index_stamp) = index_stamp {
+            let diff = capture_diff(files, &changes, digits, deadline)?;
+            if named_stamp(index)? != index_stamp
+                || git_ref(directory, &["symbolic-ref", "--quiet", "HEAD"], deadline)?.as_deref()
+                    != branch
+                        .as_deref()
+                        .map(|branch| format!("refs/heads/{branch}"))
+                        .as_deref()
+                || git_ref(
+                    directory,
+                    &["rev-parse", "--verify", "--quiet", "HEAD"],
+                    deadline,
+                )? != head_commit
+            {
+                return Err(
+                    "Git HEAD or index changed during patch capture. Retry the snapshot.".into(),
+                );
+            }
+            Some(diff)
+        } else {
+            None
+        };
         let captured_at_unix_ns = SystemTime::now()
             .duration_since(UNIX_EPOCH)
             .ok()
             .and_then(|time| u64::try_from(time.as_nanos()).ok())
             .ok_or("Cannot timestamp the Git snapshot")?;
-        Ok(WorkspaceGitSnapshot {
-            repository_root: root.to_string(),
-            branch,
-            head_commit,
-            staged_changes,
-            unstaged_changes,
-            untracked_files,
-            captured_at_unix_ns,
-        })
+        Ok((
+            WorkspaceGitSnapshot {
+                repository_root: root.to_string_lossy().into(),
+                branch,
+                head_commit,
+                staged_changes,
+                unstaged_changes,
+                untracked_files,
+                captured_at_unix_ns,
+            },
+            diff,
+        ))
     }
 
     fn git_ref(
@@ -188,6 +261,353 @@ mod linux {
         Ok((staged, unstaged, untracked))
     }
 
+    #[derive(Eq, PartialEq)]
+    struct FileStamp {
+        device: u64,
+        inode: u64,
+        size: u64,
+        modified: (i64, i64),
+        changed: (i64, i64),
+        mode: u32,
+    }
+
+    fn stamp(metadata: &fs::Metadata) -> Result<FileStamp, String> {
+        if !metadata.is_file() {
+            return Err("Git patch inputs must be regular files".into());
+        }
+        Ok(FileStamp {
+            device: metadata.dev(),
+            inode: metadata.ino(),
+            size: metadata.len(),
+            modified: (metadata.mtime(), metadata.mtime_nsec()),
+            changed: (metadata.ctime(), metadata.ctime_nsec()),
+            mode: metadata.mode(),
+        })
+    }
+
+    fn named_stamp(path: &Path) -> Result<Option<FileStamp>, String> {
+        match fs::symlink_metadata(path) {
+            Ok(metadata) => stamp(&metadata).map(Some),
+            Err(error) if error.kind() == ErrorKind::NotFound => Ok(None),
+            Err(_) => Err("Cannot verify Git index identity".into()),
+        }
+    }
+
+    fn copy_index(path: &Path, destination: &Path) -> Result<Option<FileStamp>, String> {
+        let file = match open(
+            path,
+            OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW,
+            Mode::empty(),
+        ) {
+            Ok(fd) => File::from(fd),
+            Err(rustix::io::Errno::NOENT) => return Ok(None),
+            Err(_) => return Err("Cannot open the selected Git index".into()),
+        };
+        let identity = copy_file(file, destination, MAX_INDEX)?;
+        if named_stamp(path)?.as_ref() != Some(&identity) {
+            return Err("Git index changed during patch capture. Retry the snapshot.".into());
+        }
+        Ok(Some(identity))
+    }
+
+    fn copy_file(file: File, destination: &Path, limit: u64) -> Result<FileStamp, String> {
+        let failure = |_| "Cannot copy a Git patch input into the private capture directory";
+        let identity = stamp(&file.metadata().map_err(failure)?)?;
+        if identity.size > limit {
+            return Err("Git patch input exceeds its size limit".into());
+        }
+        let mode = if identity.mode & 0o100 == 0 {
+            0o600
+        } else {
+            0o700
+        };
+        let mut output = OpenOptions::new()
+            .create_new(true)
+            .write(true)
+            .mode(mode)
+            .open(destination)
+            .map_err(failure)?;
+        let copied = std::io::copy(&mut (&file).take(limit + 1), &mut output).map_err(failure)?;
+        if copied != identity.size || stamp(&file.metadata().map_err(failure)?)? != identity {
+            return Err("A Git patch input changed during capture. Retry the snapshot.".into());
+        }
+        Ok(identity)
+    }
+
+    fn capture_diff(
+        files: GitFiles<'_>,
+        changes: &[u8],
+        digits: usize,
+        deadline: Instant,
+    ) -> Result<WorkspaceGitDiff, String> {
+        let projected = files.directory.join("patch-worktree");
+        fs::create_dir(&projected).map_err(|_| "Cannot create private Git patch worktree")?;
+        let (paths, remaining) = project_worktree(files.root, &projected, changes)?;
+        let projected = GitFiles {
+            root: &projected,
+            ..files
+        };
+        let mut blobs = BTreeSet::new();
+        let staged_records = diff(projected, true, false, &[], deadline, MAX_OUTPUT)?;
+        add_blob_ids(&staged_records, digits, &mut blobs)?;
+        if !paths.is_empty() {
+            let unstaged_records = diff(projected, false, false, &paths, deadline, MAX_OUTPUT)?;
+            add_blob_ids(&unstaged_records, digits, &mut blobs)?;
+        }
+        verify_blob_sizes(projected, &blobs, remaining, deadline)?;
+        let maximum = MAX_WORKSPACE_GIT_DIFF_BYTES;
+        let staged = diff(projected, true, true, &[], deadline, maximum)?;
+        let unstaged = if paths.is_empty() {
+            Vec::new()
+        } else {
+            diff(
+                projected,
+                false,
+                true,
+                &paths,
+                deadline,
+                maximum - staged.len(),
+            )?
+        };
+        let utf8 = |_| "Git patch text must be UTF-8";
+        Ok(WorkspaceGitDiff {
+            staged: String::from_utf8(staged).map_err(utf8)?,
+            unstaged: String::from_utf8(unstaged).map_err(utf8)?,
+        })
+    }
+
+    fn project_worktree<'a>(
+        root: &Path,
+        projected: &Path,
+        changes: &'a [u8],
+    ) -> Result<(Vec<&'a OsStr>, u64), String> {
+        let mut paths = Vec::new();
+        let mut changed = 0;
+        let mut remaining = MAX_PATCH_INPUT;
+        for row in changes
+            .split(|&byte| byte == 0)
+            .filter(|row| !row.is_empty())
+        {
+            let [index, worktree, b' ', name @ ..] = row else {
+                return Err("Git returned an invalid patch candidate".into());
+            };
+            if *index == b'?' {
+                continue;
+            }
+            changed += 1;
+            if changed > MAX_PATCH_PATHS || [index, worktree].contains(&&b'U') {
+                return Err("Git patch capture requires at most 64 changed, merged paths".into());
+            }
+            if *worktree == b' ' {
+                continue;
+            }
+            let name = OsStr::from_bytes(name);
+            let path = Path::new(name);
+            let member = worktree_file(root, path)?;
+            if *worktree == b'D' {
+                if member.is_some() {
+                    return Err("A deleted Git path reappeared during patch capture".into());
+                }
+            } else {
+                let file = member.ok_or("A Git path disappeared during patch capture")?;
+                let destination = projected.join(path);
+                fs::create_dir_all(destination.parent().expect("projection has a parent"))
+                    .map_err(|_| "Cannot create a private Git patch directory")?;
+                remaining -= copy_file(file, &destination, remaining)?.size;
+            }
+            paths.push(name);
+        }
+        Ok((paths, remaining))
+    }
+
+    fn worktree_file(root: &Path, path: &Path) -> Result<Option<File>, String> {
+        let unavailable = "Cannot open a Git patch path without following links";
+        // Git emits slash-delimited paths. Check the original bytes because
+        // Path::components normalizes repeated separators and interior dots.
+        let mut parts = path
+            .as_os_str()
+            .as_bytes()
+            .split(|&byte| byte == b'/')
+            .peekable();
+        let directories = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+        let mut directory = open(root, directories, Mode::empty()).map_err(|_| unavailable)?;
+        while let Some(part) = parts.next() {
+            if part.is_empty()
+                || part == b"."
+                || part == b".."
+                || part.eq_ignore_ascii_case(b".git")
+            {
+                return Err("Invalid Git patch path".into());
+            }
+            let last = parts.peek().is_none();
+            let flags = if last {
+                OFlags::RDONLY | OFlags::NONBLOCK | OFlags::NOFOLLOW | OFlags::CLOEXEC
+            } else {
+                directories
+            };
+            match openat(&directory, OsStr::from_bytes(part), flags, Mode::empty()) {
+                Ok(fd) if last => return Ok(Some(File::from(fd))),
+                Ok(fd) => directory = fd,
+                Err(rustix::io::Errno::NOENT) => return Ok(None),
+                Err(_) => return Err(unavailable.into()),
+            }
+        }
+        Err("Invalid Git patch path".into())
+    }
+
+    fn diff(
+        files: GitFiles<'_>,
+        staged: bool,
+        patch: bool,
+        paths: &[&OsStr],
+        deadline: Instant,
+        limit: usize,
+    ) -> Result<Vec<u8>, String> {
+        let mut args: Vec<&OsStr> = [
+            "diff",
+            "--no-ext-diff",
+            "--no-textconv",
+            "--no-renames",
+            "--ignore-submodules=all",
+            "--no-color",
+            "--no-abbrev",
+            "--src-prefix=a/",
+            "--dst-prefix=b/",
+            "--diff-algorithm=myers",
+            if patch { "--patch" } else { "--raw" },
+        ]
+        .into_iter()
+        .map(OsStr::new)
+        .collect();
+        if !patch {
+            args.push(OsStr::new("-z"));
+        }
+        if staged {
+            args.push(OsStr::new("--cached"));
+        }
+        args.push(OsStr::new("--"));
+        args.extend_from_slice(paths);
+        let (status, value) = git_bounded(
+            files.root,
+            &args,
+            Some(files),
+            deadline,
+            limit,
+            Stdio::null(),
+        )?;
+        if !status.success() {
+            return Err("Git could not capture a patch with private configuration".into());
+        }
+        Ok(value)
+    }
+
+    fn add_blob_ids(
+        records: &[u8],
+        digits: usize,
+        blobs: &mut BTreeSet<String>,
+    ) -> Result<(), String> {
+        let invalid = "Git patch contains unsupported or unmerged entries";
+        let records = if records.is_empty() {
+            return Ok(());
+        } else {
+            records.strip_suffix(&[0]).ok_or(invalid)?
+        };
+        let mut fields = records.split(|&byte| byte == 0);
+        let mut paths = 0;
+        while let Some(record) = fields.next() {
+            paths += 1;
+            if paths > MAX_PATCH_PATHS || fields.next().is_none_or(|path| path.is_empty()) {
+                return Err(invalid.into());
+            }
+            for id in parse_diff_record(record).ok_or(invalid)? {
+                if id.len() != digits || !id.bytes().all(|byte| byte.is_ascii_hexdigit()) {
+                    return Err(invalid.into());
+                }
+                if id.bytes().any(|byte| byte != b'0') {
+                    blobs.insert(id.to_owned());
+                }
+            }
+        }
+        Ok(())
+    }
+
+    fn parse_diff_record(record: &[u8]) -> Option<[&str; 2]> {
+        let text = std::str::from_utf8(record).ok()?.strip_prefix(':')?;
+        let mut fields = text.split(' ');
+        let (old, new, old_id, new_id, status) = (
+            fields.next()?,
+            fields.next()?,
+            fields.next()?,
+            fields.next()?,
+            fields.next()?,
+        );
+        if fields.next().is_some()
+            || ![old, new]
+                .iter()
+                .all(|mode| matches!(*mode, "000000" | "100644" | "100755"))
+            || !["A", "D", "M"].contains(&status)
+        {
+            return None;
+        }
+        Some([old_id, new_id])
+    }
+
+    fn verify_blob_sizes(
+        files: GitFiles<'_>,
+        blobs: &BTreeSet<String>,
+        mut remaining: u64,
+        deadline: Instant,
+    ) -> Result<(), String> {
+        if blobs.is_empty() {
+            return Ok(());
+        }
+        let unavailable = |_| "Cannot validate Git patch object sizes";
+        let input = files.directory.join("patch-object-list");
+        let mut contents = File::create_new(&input).map_err(unavailable)?;
+        for id in blobs {
+            writeln!(&mut contents, "{id}").map_err(unavailable)?;
+        }
+        drop(contents);
+        let (status, output) = git_bounded(
+            files.root,
+            &[
+                "cat-file",
+                "--batch-check=%(objectname) %(objecttype) %(objectsize)",
+            ],
+            Some(files),
+            deadline,
+            MAX_PATCH_PATHS * 4 * 96,
+            File::open(input).map_err(unavailable)?.into(),
+        )?;
+        let malformed = "Invalid Git object size response";
+        if !status.success() {
+            return Err(malformed.into());
+        }
+        let mut lines = std::str::from_utf8(&output).map_err(|_| malformed)?.lines();
+        for id in blobs {
+            let mut fields = lines.next().ok_or(malformed)?.split(' ');
+            if fields.next() != Some(id) || fields.next() != Some("blob") {
+                return Err(malformed.into());
+            }
+            let size = fields
+                .next()
+                .ok_or(malformed)?
+                .parse::<u64>()
+                .map_err(|_| malformed)?;
+            if fields.next().is_some() {
+                return Err(malformed.into());
+            }
+            remaining = remaining
+                .checked_sub(size)
+                .ok_or("Git patch inputs exceed 8 MiB")?;
+        }
+        if lines.next().is_some() {
+            return Err(malformed.into());
+        }
+        Ok(())
+    }
+
+    #[derive(Clone, Copy)]
     struct GitFiles<'a> {
         directory: &'a Path,
         root: &'a Path,
@@ -197,9 +617,20 @@ mod linux {
 
     fn git(
         directory: &Path,
-        args: &[&str],
+        args: &[impl AsRef<OsStr>],
         files: Option<GitFiles<'_>>,
         deadline: Instant,
+    ) -> Result<(ExitStatus, Vec<u8>), String> {
+        git_bounded(directory, args, files, deadline, MAX_OUTPUT, Stdio::null())
+    }
+
+    fn git_bounded(
+        directory: &Path,
+        args: &[impl AsRef<OsStr>],
+        files: Option<GitFiles<'_>>,
+        deadline: Instant,
+        limit: usize,
+        input: Stdio,
     ) -> Result<(ExitStatus, Vec<u8>), String> {
         if Instant::now() >= deadline {
             return Err("Git workspace capture timed out".into());
@@ -219,6 +650,8 @@ mod linux {
             .env("GIT_NO_LAZY_FETCH", "1")
             .env("GIT_TERMINAL_PROMPT", "0")
             .env("GIT_NO_REPLACE_OBJECTS", "1")
+            .env("GIT_ATTR_NOSYSTEM", "1")
+            .env("GIT_LITERAL_PATHSPECS", "1")
             .args([
                 "--no-pager",
                 "-c",
@@ -227,9 +660,11 @@ mod linux {
                 "core.fsmonitor=false",
                 "-c",
                 "diff.external=",
+                "-c",
+                "core.attributesFile=/dev/null",
             ])
             .args(args)
-            .stdin(Stdio::null())
+            .stdin(input)
             .stdout(Stdio::piped())
             .stderr(Stdio::null());
         if let Some(files) = files {
@@ -255,11 +690,11 @@ mod linux {
             if !eof {
                 match stdout.read(&mut chunk) {
                     Ok(0) => eof = true,
-                    Ok(count) if bytes.len() + count <= MAX_OUTPUT => {
+                    Ok(count) if bytes.len() + count <= limit => {
                         bytes.extend_from_slice(&chunk[..count]);
                         continue;
                     }
-                    Ok(_) => return stop(child, "Git workspace status exceeds its output limit"),
+                    Ok(_) => return stop(child, "Git workspace capture exceeds its output limit"),
                     Err(error) if error.kind() == ErrorKind::WouldBlock => {}
                     Err(error) if error.kind() == ErrorKind::Interrupted => continue,
                     Err(_) => return stop(child, "Cannot read Git output"),
@@ -367,7 +802,7 @@ mod linux {
                 );
             };
             command(&["init", "-b", "fixture"]);
-            assert_eq!(capture(&directory).unwrap().head_commit, None);
+            assert_eq!(super::super::capture(&directory).unwrap().head_commit, None);
 
             fs::write(directory.join(".gitattributes"), "*.txt filter=fixture\n").unwrap();
             fs::write(directory.join("base.txt"), "base\n").unwrap();
@@ -386,13 +821,18 @@ mod linux {
             command(&["config", "core.fsmonitor", &external]);
             command(&["config", "diff.external", &external]);
 
-            let snapshot = capture(&directory).unwrap();
+            let snapshot = super::super::capture(&directory).unwrap();
             assert_eq!(snapshot.repository_root, directory.to_str().unwrap());
             assert_eq!(snapshot.branch.as_deref(), Some("fixture"));
             assert_eq!(snapshot.head_commit.unwrap().len(), 40);
             assert_eq!(snapshot.staged_changes, 1);
             assert_eq!(snapshot.unstaged_changes, 1);
             assert_eq!(snapshot.untracked_files, 1);
+            let (_, patch) = capture_with_diff(&directory).unwrap();
+            assert!(patch.staged.contains("+new staged value"));
+            assert!(!patch.staged.contains("modified worktree value"));
+            assert!(patch.unstaged.contains("+modified worktree value"));
+            assert!(!patch.unstaged.contains("untracked value"));
             assert!(!sentinel.exists());
         }
     }

@@ -328,7 +328,7 @@ mod tests {
     use crate::{
         ContentGrantScope, ContentKind, ObservationBatch, ObservationIdentity, ObservationKind,
         ReviewKey, ReviewVersion, StoredObservation, StoredScope, WorkspaceAnchor,
-        WorkspaceGitSnapshot,
+        WorkspaceGitDiff, WorkspaceGitSnapshot,
     };
     use agenturm_kernel::ExtensionId;
 
@@ -353,11 +353,14 @@ mod tests {
             untracked_files: 3,
             captured_at_unix_ns: 123,
         };
-        assert!(
-            workspace
-                .save_task_workspace_snapshot(task.id, &git)
-                .unwrap()
-        );
+        let diff = WorkspaceGitDiff {
+            staged: "+Current private patch\n".into(),
+            unstaged: String::new(),
+        };
+        workspace
+            .save_task_workspace_capture_if_current(task.id, &git, Some(&diff), Some(2))
+            .unwrap()
+            .unwrap();
         let task = workspace.task(task.id).unwrap().unwrap();
         assert_eq!(task.revision, 3);
         let handoff = workspace
@@ -405,6 +408,17 @@ mod tests {
              VALUES (?1, 'accepted', ?2, '', '', 1)",
             params![obsolete_id, obsolete_note],
         ).unwrap();
+        live_sidecar.execute(
+            "INSERT INTO agenturm_task_git_snapshots
+             (task_id, repository_root, staged_changes, unstaged_changes, untracked_files, captured_at_unix_ns)
+             VALUES (?1, '/obsolete', 1, 0, 0, 1)",
+            [obsolete_id],
+        ).unwrap();
+        let obsolete_patch = "OBSOLETE_GIT_PATCH_MUST_NOT_LEAVE_THIS_DATABASE";
+        live_sidecar.execute(
+            "INSERT INTO agenturm_task_git_diffs (task_id, staged, unstaged) VALUES (?1, ?2, '')",
+            params![obsolete_id, obsolete_patch],
+        ).unwrap();
         drop(live_sidecar);
         let review_sidecar =
             Connection::open(scratch.0.join("live.sqlite.reviews.sqlite")).unwrap();
@@ -427,6 +441,11 @@ mod tests {
                 !bytes
                     .windows(obsolete_note.len())
                     .any(|bytes| bytes == obsolete_note.as_bytes())
+            );
+            assert!(
+                !bytes
+                    .windows(obsolete_patch.len())
+                    .any(|bytes| bytes == obsolete_patch.as_bytes())
             );
         }
         let copied = scratch.0.join("copied");
@@ -461,6 +480,23 @@ mod tests {
         assert_eq!(
             restored_workspace.task_workspace_snapshot(task.id).unwrap(),
             Some(git)
+        );
+        assert!(
+            restored_workspace
+                .task_handoff(task.id)
+                .unwrap()
+                .unwrap()
+                .git_diff
+                .is_none()
+        );
+        assert!(
+            restored_workspace
+                .task_handoff_with_git_diff(task.id, true)
+                .unwrap()
+                .unwrap()
+                .git_diff
+                .as_ref()
+                == Some(&diff)
         );
         assert_eq!(
             restored_workspace.list_handoffs(10, None).unwrap().items,

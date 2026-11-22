@@ -22,7 +22,8 @@ pub(super) const USAGE: &str = concat!(
     "usage: agenturm task list --db <history> [--all] [--limit <1..200>] [--before <id>]\n",
     "       agenturm task add --db <history> --title <title> [--notes <text>|--notes-file <path>] [--workspace <directory>]\n",
     "       agenturm task show <task-id> --db <history>\n",
-    "       agenturm task <complete|reopen|snapshot> <task-id> --db <history> [--expected-revision <n>]\n",
+    "       agenturm task <complete|reopen> <task-id> --db <history> [--expected-revision <n>]\n",
+    "       agenturm task snapshot <task-id> --db <history> [--include-diff] [--expected-revision <n>]\n",
     "       agenturm task update <task-id> --db <history> [--title <title>] [--notes <text>|--notes-file <path>] [--workspace <directory>] [--expected-revision <n>]\n",
     "       agenturm task archive <task-id> --db <history> [--restore] [--expected-revision <n>]\n",
     "       agenturm task brief <task-id> --db <history> [--file <json>|--intent <text> ...] [--expected-revision <n>]\n",
@@ -31,7 +32,7 @@ pub(super) const USAGE: &str = concat!(
     "       agenturm task draft --db <history> --config <sources> --source-id <id> --session-id <id> --turn-id <id> [--worker-id <id>] --event-id <id> --revision <n> [--task-id <id>] [--output <new-json>]\n",
     "       agenturm task approve-draft <draft-json> --db <history> --config <sources> [--title <title>] [--workspace <directory>] [--expected-revision <n>]\n",
     "       agenturm task continuity <task-id> --db <history> [--config <sources> --approval-id <id>]\n",
-    "       agenturm task handoff <task-id> --db <history> [--format <markdown|html|json>] [--output <new-directory>] [--include-decision-history]\n",
+    "       agenturm task handoff <task-id> --db <history> [--format <markdown|html|json>] [--output <new-directory>] [--include-decision-history] [--include-diff]\n",
     "       agenturm task <link|unlink> <task-id> --db <history> --source-id <id> --session-id <id> [--turn-id <id> [--worker-id <id>]] [--expected-revision <n>]\n",
     "       agenturm task handoffs --db <history> [--limit <1..200>] [--before <id>]\n",
     "       agenturm task export <handoff-id> --db <history>\n",
@@ -73,6 +74,7 @@ enum TaskAction {
     Snapshot {
         id: u64,
         expected: Option<u64>,
+        include_diff: bool,
     },
     Brief {
         id: u64,
@@ -101,6 +103,7 @@ enum TaskAction {
         format: HandoffFormat,
         destination: Option<PathBuf>,
         include_history: bool,
+        include_diff: bool,
     },
     SetCompleted {
         id: u64,
@@ -173,7 +176,7 @@ pub(super) fn parse(args: &[String]) -> Result<TaskOptions, String> {
         }
         if matches!(
             flag.as_str(),
-            "--all" | "--restore" | "--json" | "--include-decision-history"
+            "--all" | "--restore" | "--json" | "--include-decision-history" | "--include-diff"
         ) {
             if flags.insert(flag.as_str(), "").is_some() {
                 return Err(format!("Duplicate option {flag}"));
@@ -248,6 +251,7 @@ pub(super) fn parse(args: &[String]) -> Result<TaskOptions, String> {
         ("snapshot", Some(id)) => TaskAction::Snapshot {
             id,
             expected: expected_revision(&mut flags)?,
+            include_diff: flags.remove("--include-diff").is_some(),
         },
         ("brief", Some(id)) => {
             let patch = TaskBriefUpdate {
@@ -346,6 +350,7 @@ pub(super) fn parse(args: &[String]) -> Result<TaskOptions, String> {
             },
             destination: flags.remove("--output").map(PathBuf::from),
             include_history: flags.remove("--include-decision-history").is_some(),
+            include_diff: flags.remove("--include-diff").is_some(),
         },
         (verb @ ("complete" | "reopen"), Some(id)) => TaskAction::SetCompleted {
             id,
@@ -586,7 +591,11 @@ pub(super) fn execute_ledger(
                 .ok_or(MISSING_TASK)?;
             task_json(&task)
         }
-        TaskAction::Snapshot { id, expected } => {
+        TaskAction::Snapshot {
+            id,
+            expected,
+            include_diff,
+        } => {
             let task = task(ledger, *id)?;
             if let Some(expected) = expected
                 && *expected != task.revision
@@ -603,11 +612,26 @@ pub(super) fn execute_ledger(
                 .as_deref()
                 .or_else(|| previous.as_ref().map(|item| item.repository_root.as_str()))
                 .ok_or("Set a local workspace directory with task update --workspace")?;
-            let git = super::task_git::capture(Path::new(directory))?;
+            let (git, diff) = if *include_diff {
+                let (git, diff) = super::task_git::capture_with_diff(Path::new(directory))?;
+                (git, Some(diff))
+            } else {
+                (super::task_git::capture(Path::new(directory))?, None)
+            };
             let task = ledger
-                .save_task_workspace_snapshot_if_current(*id, &git, Some(task.revision))?
+                .save_task_workspace_capture_if_current(
+                    *id,
+                    &git,
+                    diff.as_ref(),
+                    Some(task.revision),
+                )?
                 .ok_or(MISSING_TASK)?;
-            json!({ "task": task_json(&task), "git_snapshot": git_snapshot_json(&git) })
+            let mut summary =
+                json!({ "task": task_json(&task), "git_snapshot": git_snapshot_json(&git) });
+            if let Some(diff) = diff {
+                summary["git_diff_bytes"] = json!(diff.byte_len());
+            }
+            summary
         }
         TaskAction::Brief {
             id,
@@ -680,8 +704,14 @@ pub(super) fn execute_ledger(
             format,
             destination,
             include_history,
+            include_diff,
         } => {
-            let handoff = ledger.task_handoff(*id)?.ok_or(MISSING_TASK)?;
+            let handoff = ledger
+                .task_handoff_with_git_diff(*id, *include_diff)?
+                .ok_or(MISSING_TASK)?;
+            if *include_diff && handoff.git_diff.is_none() {
+                return Err("Capture a Git patch with task snapshot --include-diff before including it in a handoff".into());
+            }
             if let Some(path) = destination {
                 let published =
                     super::handoff_export::export_task(path, &handoff, *include_history)?;
@@ -689,12 +719,16 @@ pub(super) fn execute_ledger(
                     "markdown": published.join("handoff.md").display().to_string(),
                     "html": published.join("handoff.html").display().to_string(), })
             } else if *format == HandoffFormat::Json {
-                json!({ "task": task_json(&handoff.task), "brief": handoff.brief,
+                let mut document = json!({ "task": task_json(&handoff.task), "brief": handoff.brief,
                     "links": handoff.links.iter().map(anchor_json).collect::<Vec<_>>(),
                     "links_truncated": handoff.links_truncated,
                     "decisions": decision_history_json(&handoff.decisions, *include_history),
                     "continuity": handoff.continuity,
-                    "git_snapshot": handoff.git_snapshot.as_ref().map(git_snapshot_json), })
+                    "git_snapshot": handoff.git_snapshot.as_ref().map(git_snapshot_json), });
+                if let Some(diff) = handoff.git_diff {
+                    document["git_diff"] = serde_json::to_value(diff).map_err(string)?;
+                }
+                document
             } else {
                 let text = super::handoff_export::render_task(
                     &handoff,

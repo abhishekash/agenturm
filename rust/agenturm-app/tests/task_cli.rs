@@ -631,6 +631,167 @@ fn task_workspace_capture_is_revision_checked_and_cleared_when_remapped() {
     assert!(json(&db, &["show", &id])["git_snapshot"].is_null());
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn git_patches_are_revision_checked_private_and_explicitly_exported() {
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch = Scratch::new();
+    let db = scratch.0.join("history.sqlite");
+    Store::open(&db).unwrap();
+    let workspace = scratch.0.join("checkout");
+    std::fs::create_dir(&workspace).unwrap();
+    let git = |args: &[&str]| {
+        let output = Command::new("git")
+            .args(args)
+            .current_dir(&workspace)
+            .output()
+            .unwrap();
+        assert!(output.status.success(), "{:?}", output);
+    };
+    git(&["init", "--quiet"]);
+    std::fs::write(workspace.join("tracked.txt"), "staged-private <tag>\n").unwrap();
+    git(&["add", "tracked.txt"]);
+    std::fs::write(workspace.join("tracked.txt"), "unstaged-private <tag>\n").unwrap();
+    std::fs::write(workspace.join("untracked.txt"), "untracked-private-body\n").unwrap();
+    let task = json(
+        &db,
+        &[
+            "add",
+            "--title",
+            "Patch review",
+            "--workspace",
+            workspace.to_str().unwrap(),
+        ],
+    );
+    let id = task["id"].as_u64().unwrap().to_string();
+    let capture = json(
+        &db,
+        &[
+            "snapshot",
+            &id,
+            "--expected-revision",
+            "1",
+            "--include-diff",
+        ],
+    );
+    assert_eq!(capture["task"]["revision"], 2);
+    assert!(capture["git_diff_bytes"].as_u64().unwrap() > 0);
+    assert!(!capture.to_string().contains("staged-private"));
+    assert!(
+        !json(&db, &["show", &id])
+            .to_string()
+            .contains("staged-private")
+    );
+    assert!(
+        !json(&db, &["handoff", &id, "--format", "json"])
+            .to_string()
+            .contains("staged-private")
+    );
+    let reveal_args = ["handoff", &id, "--format", "json", "--include-diff"];
+    let included = json(&db, &reveal_args);
+    assert!(
+        included["git_diff"]["staged"]
+            .as_str()
+            .unwrap()
+            .contains("+staged-private <tag>")
+    );
+    assert!(
+        included["git_diff"]["unstaged"]
+            .as_str()
+            .unwrap()
+            .contains("+unstaged-private <tag>")
+    );
+    assert!(!included.to_string().contains("untracked-private-body"));
+
+    let export = scratch.0.join("private-export");
+    json(
+        &db,
+        &[
+            "handoff",
+            &id,
+            "--include-diff",
+            "--output",
+            export.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(
+        export.metadata().unwrap().permissions().mode() & 0o777,
+        0o700
+    );
+    for (filename, expected) in [
+        ("handoff.md", "+unstaged-private <tag>"),
+        ("handoff.html", "+unstaged-private &lt;tag&gt;"),
+    ] {
+        let file = export.join(filename);
+        assert_eq!(file.metadata().unwrap().permissions().mode() & 0o777, 0o600);
+        assert!(std::fs::read_to_string(file).unwrap().contains(expected));
+    }
+
+    std::fs::write(
+        workspace.join("tracked.txt"),
+        format!("{}\n", "changed".repeat(12_000)),
+    )
+    .unwrap();
+    let stale = run(
+        &db,
+        &[
+            "snapshot",
+            &id,
+            "--expected-revision",
+            "1",
+            "--include-diff",
+        ],
+    );
+    assert_eq!(stale.status.code(), Some(3));
+    assert_failure(run(
+        &db,
+        &[
+            "snapshot",
+            &id,
+            "--expected-revision",
+            "2",
+            "--include-diff",
+        ],
+    ));
+    assert_eq!(json(&db, &reveal_args), included);
+
+    std::fs::write(workspace.join("tracked.txt"), "small fixture\n").unwrap();
+    let binary = workspace.join("large.bin");
+    std::fs::File::create(&binary)
+        .unwrap()
+        .set_len(9 * 1024 * 1024)
+        .unwrap();
+    git(&["add", "large.bin"]);
+    let input_limit = run(&db, &["snapshot", &id, "--include-diff"]);
+    assert!(!input_limit.status.success());
+    assert!(String::from_utf8_lossy(&input_limit.stderr).contains("patch inputs exceed 8 MiB"));
+    assert_eq!(json(&db, &reveal_args), included);
+    git(&["rm", "--cached", "large.bin"]);
+    std::fs::remove_file(binary).unwrap();
+
+    let metadata_only = json(&db, &["snapshot", &id, "--expected-revision", "2"]);
+    assert_eq!(metadata_only["task"]["revision"], 3);
+    assert_failure(run(&db, &reveal_args));
+    std::fs::write(workspace.join("tracked.txt"), "restored small fixture\n").unwrap();
+    json(
+        &db,
+        &[
+            "snapshot",
+            &id,
+            "--expected-revision",
+            "3",
+            "--include-diff",
+        ],
+    );
+    json(
+        &db,
+        &["update", &id, "--expected-revision", "4", "--workspace", ""],
+    );
+    assert_failure(run(&db, &reveal_args));
+    assert!(json(&db, &["show", &id])["git_snapshot"].is_null());
+}
+
 #[test]
 fn tasks_refuse_missing_or_unrelated_history_without_creating_workspace() {
     let scratch = Scratch::new();

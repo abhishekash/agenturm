@@ -217,6 +217,6 @@ pub(super) fn create_schema(connection: &Connection) -> Result<()> {
          );
          CREATE INDEX agenturm_task_continuity_by_task ON agenturm_task_continuity(task_id, id);",
     )?;
-    connection.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+    connection.pragma_update(None, "user_version", 4)?;
     Ok(())
 }

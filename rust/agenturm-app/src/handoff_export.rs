@@ -356,6 +356,10 @@ fn task_sections(handoff: &TaskHandoff, history: bool) -> (String, Vec<(&'static
         }
         sections.push(("Local Git summary", text));
     }
+    if let Some(diff) = &handoff.git_diff {
+        sections.push(("Staged Git patch", diff.staged.clone()));
+        sections.push(("Unstaged Git patch", diff.unstaged.clone()));
+    }
     (title, sections)
 }
 
