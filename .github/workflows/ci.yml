@@ -118,9 +118,10 @@ jobs:
       - run: python -m unittest tests.test_rust_codex_harness_plugin tests.test_rust_codex_directory_plugin tests.test_plugin_discovery -v
         env:
           AGENTURM_RUST_CODEX_BIN: ${{ github.workspace }}/target/debug/agenturm-codex-harness
-      - run: python -m unittest tests.test_rust_claude_harness_plugin -v
+      - run: python -m unittest tests.test_rust_claude_harness_plugin tests.test_rust_opencode_harness_plugin -v
         env:
           AGENTURM_RUST_CLAUDE_BIN: ${{ github.workspace }}/target/debug/agenturm-claude-harness
+          AGENTURM_RUST_OPENCODE_BIN: ${{ github.workspace }}/target/debug/agenturm-opencode-harness
       - run: python -m unittest tests.test_rust_plugin_host -v
         env:
           AGENTURM_RUST_PLUGIN_HOST_BIN: ${{ github.workspace }}/target/debug/agenturm-plugin-host

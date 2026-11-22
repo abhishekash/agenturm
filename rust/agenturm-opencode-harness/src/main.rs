@@ -1,14 +1,14 @@
-//! Opt-in, metadata-only OpenCode current SQLite schema reader.
+//! Metadata-only OpenCode current SQLite schema reader.
 
 #![forbid(unsafe_code)]
 
 use agenturm_source_process::{Poller, Result};
 use serde_json::Value;
-use std::path::Path;
+use std::{ffi::OsStr, path::Path};
 
-struct OpenCode;
+struct OpenCode<const LEGACY: bool>;
 
-impl Poller for OpenCode {
+impl<const LEGACY: bool> Poller for OpenCode<LEGACY> {
     const PLUGIN_ID: &'static str = "example.rust-opencode-harness";
 
     fn poll(
@@ -18,12 +18,55 @@ impl Poller for OpenCode {
         max_records: usize,
         max_bytes: usize,
     ) -> Result<Value> {
-        agenturm_opencode_harness::poll(path, source_id, cursor, max_records, max_bytes)
+        let mut batch =
+            agenturm_opencode_harness::poll(path, source_id, cursor, max_records, max_bytes)?;
+        if LEGACY {
+            // The old Python admission contract uses different relationship
+            // keys, one session-level lifecycle, and only the generic tool
+            // fact accepts an operation ID.
+            let records = batch["records"]
+                .as_array_mut()
+                .ok_or("missing adapter records")?;
+            records.retain(|row| {
+                row["kind"] != "mcp_call"
+                    && (row["kind"] != "lifecycle" || row["identity"]["turn_id"].is_null())
+            });
+            for record in records {
+                if let Some(identity) = record.get_mut("identity").and_then(Value::as_object_mut) {
+                    identity.remove("turn_id");
+                }
+                match record["kind"].as_str() {
+                    Some("check") => {
+                        if let Some(identity) =
+                            record.get_mut("identity").and_then(Value::as_object_mut)
+                        {
+                            identity.remove("operation_id");
+                        }
+                    }
+                    Some("relationship") => {
+                        if let Some(payload) = record["payload"].as_object_mut()
+                            && let Some(kind) = payload.remove("relationship_kind")
+                        {
+                            payload.insert("kind".into(), kind);
+                        }
+                    }
+                    _ => {}
+                }
+            }
+        }
+        Ok(batch)
     }
 }
 
 fn main() {
-    if agenturm_source_process::run::<OpenCode>().is_err() {
+    let legacy =
+        std::env::var_os("AGENTURM_PLUGIN_LEGACY_ADMISSION").as_deref() == Some(OsStr::new("1"));
+    let outcome = if legacy {
+        agenturm_source_process::run::<OpenCode<true>>()
+    } else {
+        agenturm_source_process::run::<OpenCode<false>>()
+    };
+    if outcome.is_err() {
         std::process::exit(2);
     }
 }

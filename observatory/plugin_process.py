@@ -247,7 +247,8 @@ class PluginProcess:
                 host_copy.chmod(0o700)
                 command = [str(host_copy), "--child", str(copied)]
             child_env = {"PATH": os.defpath, "LANG": "C.UTF-8",
-                         "AGENTURM_PLUGIN_PROTOCOL": "1"}
+                         "AGENTURM_PLUGIN_PROTOCOL": "1",
+                         "AGENTURM_PLUGIN_LEGACY_ADMISSION": "1"}
             if self.source_root is not None:
                 child_env["AGENTURM_PLUGIN_SOURCE_ROOT"] = self.source_root
             if "source-discovery/1" in self.required_features:
