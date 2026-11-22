@@ -419,6 +419,9 @@ async def run_agent():
 
 The client uses the standard library, splits large traces into requests below the receiver 8 MiB limit, and is best effort by default, so telemetry delivery errors do not interrupt the agent. Set `strict=True` to raise delivery errors, or inspect `telemetry.last_error`. Exception messages are omitted by default; `capture_exception_message=True` opts in to recording them.
 
+For `Client(transport="otlp")` and automatic capture into the Rust receiver,
+see [Python producers with the Rust receiver](python.md#send-python-spans-to-the-rust-receiver).
+
 Node.js agents can install the dependency-free package from this repository (Node.js 18 or newer):
 
 ```bash

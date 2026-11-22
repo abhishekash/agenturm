@@ -63,8 +63,13 @@ def main():
     server.add_argument("--use-bundled-rust-plugin-host", action="store_true",
                         help="use the opt-in Rust host included in a qualified platform wheel")
     launcher = sub.add_parser("run", help="automatically capture model calls from a Python agent")
-    launcher.add_argument("--endpoint", default=os.environ.get("OBSERVATORY_ENDPOINT", "http://127.0.0.1:4318"),
-                          help="receiver address (or OBSERVATORY_ENDPOINT)")
+    launcher.add_argument("--endpoint", help="receiver address")
+    launcher.add_argument("--transport", choices=("agenturm", "otlp"), default="agenturm",
+                          help="legacy receiver or metadata-only Rust OTLP")
+    launcher.add_argument("--session-id", help="explicit OTLP session identifier")
+    launcher.add_argument("--harness-id", help="exact native OTLP harness identifier")
+    launcher.add_argument("--turn-id", help="exact native OTLP turn identifier")
+    launcher.add_argument("--worker-id", help="exact native OTLP worker identifier")
     launcher.add_argument("--service", default=os.environ.get("OTEL_SERVICE_NAME", "my-agent"),
                           help="service name shown in Agenturm")
     launcher.add_argument("--module", action="store_true", help="run an importable module instead of a script")
@@ -147,8 +152,13 @@ def main():
     elif args.command == "run":
         from .auto import SetupError, run_agent
         try:
-            run_agent(args.target, args.arguments, endpoint=args.endpoint, service=args.service,
-                      module=args.module, capture_content=args.capture_content)
+            endpoint = args.endpoint
+            if endpoint is None and args.transport == "agenturm":
+                endpoint = os.environ.get("OBSERVATORY_ENDPOINT")
+            run_agent(args.target, args.arguments, endpoint=endpoint, service=args.service,
+                      module=args.module, capture_content=args.capture_content, transport=args.transport,
+                      session_id=args.session_id, harness_id=args.harness_id,
+                      turn_id=args.turn_id, worker_id=args.worker_id)
         except SetupError as exc:
             parser.exit(2, f"Agenturm: {exc}\n")
         except KeyboardInterrupt:

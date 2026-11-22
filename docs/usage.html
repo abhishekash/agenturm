@@ -330,6 +330,8 @@ async def run_agent():
         return answer
 </code></pre>
 <p>The client uses the standard library, splits large traces into requests below the receiver 8 MiB limit, and is best effort by default, so telemetry delivery errors do not interrupt the agent. Set <code>strict=True</code> to raise delivery errors, or inspect <code>telemetry.last_error</code>. Exception messages are omitted by default; <code>capture_exception_message=True</code> opts in to recording them.</p>
+<p>For <code>Client(transport="otlp")</code> and automatic capture into the Rust receiver,
+see <a href="https://github.com/abhishekash/agenturm/blob/main/docs/python.md#send-python-spans-to-the-rust-receiver">Python producers with the Rust receiver</a>.</p>
 <p>Node.js agents can install the dependency-free package from this repository (Node.js 18 or newer):</p>
 <pre><code class="language-bash">npm install ./clients/javascript
 </code></pre>

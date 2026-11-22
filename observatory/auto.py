@@ -91,10 +91,25 @@ class _Connection:
         self.client._post("/api/connections", {**self.payload, "state": "stopped"})
 
 
-def run_agent(target, arguments=(), *, endpoint="http://127.0.0.1:4318", service="my-agent",
-              module=False, capture_content=False):
+def run_agent(target, arguments=(), *, endpoint=None, service="my-agent",
+              module=False, capture_content=False, transport="agenturm",
+              session_id=None, harness_id=None, turn_id=None, worker_id=None):
     """Instrument installed SDKs, then run a script or module in this interpreter."""
-    endpoint = _receiver_endpoint(endpoint)
+    if transport not in {"agenturm", "otlp"}:
+        raise SetupError("Unknown trace transport")
+    legacy = transport == "agenturm"
+    native_scope = dict(session_id=session_id, harness_id=harness_id, turn_id=turn_id, worker_id=worker_id)
+    if legacy:
+        if any(value is not None for value in native_scope.values()):
+            raise SetupError("Native identity flags require --transport otlp")
+        endpoint = _receiver_endpoint("http://127.0.0.1:4318" if endpoint is None else endpoint)
+    else:
+        if capture_content:
+            raise SetupError("Rust OTLP export is metadata-only")
+        client = Client(endpoint=endpoint, service=service, transport=transport, **native_scope)
+        if client.last_error is not None:
+            raise SetupError(str(client.last_error)) from client.last_error
+        endpoint = client.endpoint
     service = service.strip()
     if not service or len(service) > 128:
         raise SetupError("Choose a service name between 1 and 128 characters.")
@@ -104,28 +119,38 @@ def run_agent(target, arguments=(), *, endpoint="http://127.0.0.1:4318", service
     try:
         from openinference.instrumentation import TraceConfig
         from opentelemetry import trace
-        from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
         from opentelemetry.sdk.resources import Resource
         from opentelemetry.sdk.trace import SpanLimits, TracerProvider
         from opentelemetry.sdk.trace.export import BatchSpanProcessor
         from opentelemetry.sdk.trace import SpanProcessor
         from packaging.requirements import Requirement
+        if legacy:
+            from opentelemetry.exporter.otlp.proto.http.trace_exporter import OTLPSpanExporter
+        else:
+            from .integrations.otlp import MetadataSpanExporter
     except ImportError as exc:
         raise SetupError('Automatic capture is not installed in this Python environment. Install this checkout with: python -m pip install ".[auto]"') from exc
 
-    from .receiver_state import endpoint_token
-    token = endpoint_token(endpoint, os.environ.get("OBSERVATORY_TOKEN") or None)
-    _check_receiver(endpoint, token)
-    headers = {"Authorization": f"Bearer {token}"} if token else {}
-    source_id = secrets.token_hex(16)
-    events = queue.Queue(maxsize=256)
-    provider = TracerProvider(resource=Resource.create({"service.name": service,
-        "host.name": socket.gethostname(), "host.arch": platform.machine(),
-        "os.type": platform.system().lower(), "observatory.capture": "automatic",
-        "observatory.source_id": source_id}),
-        span_limits=SpanLimits(max_attribute_length=4000))
+    resource = {"service.name": service}
+    if legacy:
+        from .receiver_state import endpoint_token
+        token = endpoint_token(endpoint, os.environ.get("OBSERVATORY_TOKEN") or None)
+        _check_receiver(endpoint, token)
+        headers = {"Authorization": f"Bearer {token}"} if token else {}
+        source_id = secrets.token_hex(16)
+        events = queue.Queue(maxsize=256)
+        resource.update({
+            "host.name": socket.gethostname(), "host.arch": platform.machine(),
+            "os.type": platform.system().lower(), "observatory.capture": "automatic",
+            "observatory.source_id": source_id,
+        })
+        exporter = OTLPSpanExporter(endpoint=endpoint + "/v1/traces", headers=headers, timeout=3)
+    else:
+        exporter = MetadataSpanExporter(client)
+    provider = TracerProvider(resource=Resource.create(resource),
+                              span_limits=SpanLimits(max_attribute_length=4000))
     provider.add_span_processor(BatchSpanProcessor(
-        OTLPSpanExporter(endpoint=endpoint + "/v1/traces", headers=headers, timeout=3),
+        exporter,
         schedule_delay_millis=500, max_export_batch_size=64))
 
     class FrameworkLinks(SpanProcessor):
@@ -162,7 +187,8 @@ def run_agent(target, arguments=(), *, endpoint="http://127.0.0.1:4318", service
         def on_end(self, span):
             self._send(span, "Model call finished")
 
-    provider.add_span_processor(LiveProgress())
+    if legacy:
+        provider.add_span_processor(LiveProgress())
     trace.set_tracer_provider(provider)
     config = TraceConfig(hide_inputs=not capture_content, hide_outputs=not capture_content,
                          hide_input_images=True, hide_embeddings_vectors=True,
@@ -195,9 +221,12 @@ def run_agent(target, arguments=(), *, endpoint="http://127.0.0.1:4318", service
             raise SetupError("Automatic capture needs the OpenAI SDK, Anthropic SDK, or LangChain in this same Python environment. " + hint)
         if failures:
             print("Goechala: some integrations could not start: " + ", ".join(failures), file=sys.stderr)
-        connection = _Connection(endpoint, service, enabled, capture_content, token, source_id, events)
-        connection.start()
-        print(f"Goechala is listening to {service}: {', '.join(enabled)}.\nReceiver: {endpoint}", file=sys.stderr)
+        if legacy:
+            connection = _Connection(endpoint, service, enabled, capture_content, token, source_id, events)
+            connection.start()
+            print(f"Goechala is listening to {service}: {', '.join(enabled)}.\nReceiver: {endpoint}", file=sys.stderr)
+        else:
+            print(f"Agenturm is exporting metadata for {service}: {', '.join(enabled)}.\nReceiver: {endpoint}", file=sys.stderr)
         sys.argv = [target, *arguments]
         if module:
             runpy.run_module(target, run_name="__main__", alter_sys=True)
