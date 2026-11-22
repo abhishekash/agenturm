@@ -1,0 +1,45 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Paired Rust and Python keyboard qualification</title>
+<style>
+:root{color-scheme:light dark}body{font:1rem/1.6 system-ui,sans-serif;margin:0 auto;max-width:78rem;padding:2rem 1rem}h1,h2{line-height:1.25}code{overflow-wrap:anywhere}.table{overflow-x:auto}table{width:100%;border-collapse:collapse}th,td{padding:.65rem;text-align:left;vertical-align:top;border-bottom:1px solid GrayText}th{min-width:8rem}
+</style>
+</head>
+<body>
+<main>
+<h1>Paired Rust and Python keyboard qualification</h1>
+<p>On November 23, 2026, the installed Python 0.2.8 wheel and the extracted Rust 0.3.4 Linux x86-64 archive ran in separate tmux 3.4 instances at 120×32 and 60×18 with <code>TERM=xterm-256color</code>. Each run used an isolated home, state directory, and synthetic Codex recordings. The recordings contain a parent and child session, two prompts, an interrupted turn, a later completion, MCP and edit events, a synthetic pull request result, and a pending approval. A fixture trace was imported through each application's supported path.</p>
+<div class="table" role="region" aria-label="Artifact fingerprints" tabindex="0">
+<table>
+<thead><tr><th>Artifact</th><th>SHA-256</th></tr></thead>
+<tbody>
+<tr><th scope="row">Python wheel</th><td><code>4fda5471d0a6993e61908949ffc86d7ff28322928071c2463deea774848fba2e</code></td></tr>
+<tr><th scope="row">Rust archive</th><td><code>74f85b9d0b1f0c9c2afc9dbcc9e97119087777b03deed1203a0072e28878a18c</code></td></tr>
+<tr><th scope="row">Extracted Rust executable</th><td><code>96284c7473565b011621b3f1325bb21acb193821a1f21d1c7141f5b7fd2b7893</code></td></tr>
+</tbody>
+</table>
+</div>
+<p>The Python wheel's Python modules matched tag <code>2802d79930728bb331db1d4d718d6dea1c9c374d</code> byte for byte. The Rust archive was built from <code>097b2ab458e18fac00e609ddd7f95fe0248f3e90</code>. Every completed terminal run exited with status 0 and restored the original termios settings.</p>
+<div class="table" role="region" aria-label="Keyboard journeys by application" tabindex="0">
+<table>
+<thead><tr><th>Journey</th><th>Python 0.2.8</th><th>Rust 0.3.4</th></tr></thead>
+<tbody>
+<tr><th scope="row">Agents and selection</th><td>Search narrowed to the fixture session and opened its inspector. The child was recorded in the parent row. Keyboard child expansion remains unverified.</td><td>Search narrowed the list. Left and Right collapsed and expanded the recorded child. Escape from the session overview returned to the same highlighted Codex row. Active search can shift focus to an OTLP row with the same session ID.</td></tr>
+<tr><th scope="row">Interrupted work</th><td>The fixture session's Details and Review opened. Exact interrupted-turn selection and return remain unverified.</td><td>Activity → <code>t</code> → Enter opened <code>turn-first</code> with interrupted state, <code>codex_task_aborted</code> and the synthetic PR result. Escape restored the same highlighted turn picker. The picker also showed the later completion.</td></tr>
+<tr><th scope="row">Retained prompts</th><td>The wide index and compact picker opened the request reader. Scrolling, resize and F1 return stayed in the request reader.</td><td><code>p</code> → Enter revealed the older and latest prompts. Escape returned to the picker. The reader stayed open across resize. Revoking approval denied another reveal.</td></tr>
+<tr><th scope="row">MCP and linked traces</th><td>MCP and Traces opened. Related-evidence exact selection and return remain unverified.</td><td>The MCP picker preserved its row across disclosure. Revoking only the MCP grant denied reveal. Renewing it restored the fixture response at both widths. Session Traces showed the fixture trace and span IDs and returned to Activity.</td></tr>
+<tr><th scope="row">Review, decisions and handoff</th><td>Review and Saved Tasks opened. At 60×18 the task editor requested at least 60×20 and stated that edits were preserved.</td><td>Review saved an evidence note containing literal <code>q?1</code> and displayed it after saving. The linked task reappeared in Saved Tasks. The keyboard Markdown and HTML export journey remains unverified in both applications.</td></tr>
+<tr><th scope="row">Pending request</th><td>The queue showed the approval. The trial opened the previously selected completed row, so the pending request's route remains unverified.</td><td>Workflow selected the pending approval. Locate reported that no unique live tmux pane was verified. Mark seen left the request open, pending native resolution.</td></tr>
+<tr><th scope="row">Usage and Host</th><td>Global Metrics and Host were reached in the narrow run. The full paired unit and history comparison remains open.</td><td>Global Usage and Host opened and returned to Agents at both widths. Historical host metrics and reported cost were outside this fixture.</td></tr>
+<tr><th scope="row">Help and terminal lifecycle</th><td>F1 opened keyboard help and Escape returned to Agents and to the prompt reader.</td><td>In the final archive F1 then Escape restored the selected Agents row or inspector pane. The candidate before this fix exited from Agents help on Escape.</td></tr>
+</tbody>
+</table>
+</div>
+<p>The comparison used explicit local cockpit launches. The bare launch empty-to-populated path, full keyboard handoff export, verified live request routing, related-evidence focus restoration, and repeated host and usage checks remain open in the <a href="../rfcs/rust-cutover-workflows.html">cutover inventory</a>. This record qualifies the listed terminal behaviors for the archive. The default-entry cutover remains gated on the remaining required workflows.</p>
+<p>The qualification host retained synthetic terminal frames and manifests under <code>/tmp/d3-journeys-python</code>, <code>/tmp/d3-journeys-rust</code>, and <code>/tmp/d3-mcp-final</code>.</p>
+</main>
+</body>
+</html>
