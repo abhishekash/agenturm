@@ -30,6 +30,8 @@ mod new_window;
 mod private_output;
 #[cfg(target_os = "linux")]
 mod remote_history;
+#[cfg(target_os = "linux")]
+mod remote_review;
 mod retention_cli;
 mod review_receipt;
 mod session_display;
@@ -68,6 +70,8 @@ pub use private_output::with_private_stdout;
 pub use remote_history::{RemoteHistoryOptions, execute_remote_cockpit};
 pub use retention_cli::{RetentionOptions, execute_retention};
 pub use review_receipt::ReviewOutput;
+#[cfg(target_os = "linux")]
+pub use remote_review::{RemoteReviewOptions, execute_remote_review};
 pub use span_jsonl_import::{SpanJsonlImportOptions, execute_span_jsonl_import};
 pub use summary_cli::{SummaryOptions, execute_summary};
 pub use task_cli::{TaskOptions, execute_task, execute_task_stdout};
@@ -236,6 +240,8 @@ pub enum Command {
     Window(WindowOptions),
     #[cfg(target_os = "linux")]
     RemoteCockpit(RemoteHistoryOptions),
+    #[cfg(target_os = "linux")]
+    RemoteReview(RemoteReviewOptions),
     Query(HistoryQueryOptions),
     #[cfg(target_os = "linux")]
     Broker(broker_cli::BrokerOptions),
@@ -875,6 +881,9 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         }),
         Some("inspect") => parse_inspect_options(&args[1..]).map(Command::Inspect),
         Some("query") => parse_query_options(&args[1..], false),
+        #[cfg(target_os = "linux")]
+        Some("review") => remote_review::parse(&args[1..]),
+        #[cfg(not(target_os = "linux"))]
         Some("review") => parse_query_options(&args[1..], true),
         Some("investigate") => investigate_cli::parse(&args[1..], false).map(Command::Investigate),
         Some("backup") => {
@@ -2390,7 +2399,7 @@ fn load_workspace_history(
                     return Ok(page);
                 }
             };
-            let mut snapshot = visible_workspace_history(app.refresh_history_query(store, query), include_reviews)?;
+            let (mut snapshot, continuation) = visible_workspace_history(app.refresh_history_query(store, query), include_reviews)?;
             let mut panes = session_evidence::add_session_panes(
                 &mut snapshot,
                 &session.harness_id,
@@ -2398,6 +2407,7 @@ fn load_workspace_history(
             );
             session_display::add_context(&mut snapshot, &panes.overview, &session);
             let mut page = inspector_activity::overview_page(snapshot);
+            page.features.continuation = continuation.map(Box::new);
             if !page.snapshot.observations.is_empty() {
                 page.review_pane = Some(panes.review.clone());
             }
@@ -2410,7 +2420,7 @@ fn load_workspace_history(
             Ok(page)
         }
         HistorySelection::All(view) => {
-            let mut snapshot = visible_workspace_history(app.refresh_history_query(store, query), include_reviews)?;
+            let (mut snapshot, continuation) = visible_workspace_history(app.refresh_history_query(store, query), include_reviews)?;
             let mut ids = session_evidence::add_workspace_panes(&mut snapshot);
             let host = store.local_host_data().then(|| {
                 let (id, evidence) = cockpit_host::add_host_pane(&mut snapshot);
@@ -2418,8 +2428,9 @@ fn load_workspace_history(
                 id
             });
             let mut page = inspector_activity::overview_page(snapshot);
+            page.features.continuation = continuation.map(Box::new);
             if view == WorkspaceView::Metrics {
-                page.features.metric_history = Some(metric_history::initial(store, page.snapshot.history_snapshot_id)?);
+                page.features.metric_history = Some(Box::new(metric_history::initial(store, page.snapshot.history_snapshot_id)?));
             }
             if view == WorkspaceView::Usage {
                 page.features.usage_history = Some(Box::new(usage_history::load(store, None, None, page.snapshot.history_snapshot_id)?));
@@ -2448,12 +2459,15 @@ fn load_workspace_history(
     }
 }
 
-fn visible_workspace_history(snapshot: Snapshot, include_reviews: bool) -> Result<Snapshot, String> {
+fn visible_workspace_history(snapshot: Snapshot, include_reviews: bool) -> Result<(Snapshot, Option<ObservationPosition>), String> {
     let mut snapshot = workspace_history_snapshot(snapshot)?;
+    let continuation = snapshot.observations_truncated.then(|| snapshot.observations.first().map(|row| ObservationPosition {
+        observed_at_unix_ns: row.observed_at_unix_ns, harness_id: row.harness_id.as_str().into(), event_id: row.event_id.clone(), revision: row.revision, snapshot_id: snapshot.history_snapshot_id,
+    })).flatten();
     if !include_reviews {
         snapshot.observations.retain(|row| !agenturm_kernel::native_review::is_codex_review_source(row.harness_id.as_str()));
     }
-    Ok(snapshot)
+    Ok((snapshot, continuation))
 }
 
 fn workspace_history_snapshot(snapshot: Snapshot) -> Result<Snapshot, String> {
@@ -3807,6 +3821,8 @@ pub fn execute_ingest(options: &IngestOptions) -> Result<String, String> {
 
 pub fn render(command: Command) -> String {
     match command {
+        #[cfg(target_os = "linux")]
+        Command::RemoteReview(_) => String::new(),
         Command::Help => concat!(
             "Agenturm · Rust application (early composition shell)\n",
             "\n",
@@ -3821,6 +3837,7 @@ pub fn render(command: Command) -> String {
             "       agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]\n",
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
             "       agenturm review --db <path> --harness-id <id> --session-id <id> (--turn-id <id> | --turn-of-trace <trace-id> --trace-source-id <id>) [--worker-id <id>] [--linked-traces] [--format text|json|markdown|html] [--output <new-directory>] [query paging options]\n",
+            "       agenturm review --endpoint http://<loopback-IP:port> --token-file <path> [exact Review scope/paging/output options]\n",
             "       agenturm investigate <instruction|path|command|source> <query> [options]\n",
             "       agenturm investigate failures [--source-id <id>] [--session-id <id>] [options]\n",
             "       agenturm backup --db <path> --output <new-path>\n",

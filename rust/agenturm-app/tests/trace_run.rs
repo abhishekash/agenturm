@@ -54,7 +54,8 @@ fn launcher(db: &std::path::Path, mode: &str, source: Option<&str>) -> Command {
             "https://invalid.example/traces",
         )
         .env(
-                "https://invalid.example/metrics",
+            "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+            "https://invalid.example/metrics",
         )
         .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
         .env("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/json")

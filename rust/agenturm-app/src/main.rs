@@ -162,6 +162,11 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         },
+        #[cfg(target_os = "linux")]
+        Command::RemoteReview(options) => match agenturm_app::execute_remote_review(&options) {
+            Ok(result) => println!("{result}"),
+            Err(message) => { eprintln!("review failed: {message}"); return ExitCode::FAILURE; }
+        },
         Command::Review {
             query,
             selection,
