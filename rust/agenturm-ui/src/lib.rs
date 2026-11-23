@@ -19,7 +19,9 @@ pub mod usage_chart;
 mod workbench;
 mod workspace;
 pub use evidence_view::{EvidenceRow, EvidenceSpec, EvidenceTable, EvidenceTables};
-pub use findings::{FindingGroup, FindingOccurrence, FindingSource, FindingsPage};
+pub use findings::{
+    FindingEvaluation, FindingGroup, FindingOccurrence, FindingSource, FindingsPage,
+};
 pub use operation_table::{ConfiguredMcpServer, McpInventory, OperationRow, OperationTables};
 
 pub use live_receiver::{

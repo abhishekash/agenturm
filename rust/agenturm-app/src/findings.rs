@@ -5,8 +5,10 @@ use agenturm_kernel::{
     ExtensionId, MetricRow, Observation, ObservationKind, ObservationPosition, ObservationScope,
     ReadSnapshot, Snapshot, TraceStatus,
 };
+use agenturm_store::{EvalQuery, SelectedEvalPage, SelectedEvalQuery};
 use agenturm_ui::{
-    FindingGroup, FindingOccurrence, FindingSource, FindingsPage, TelemetrySpanEntry,
+    EvaluationDetailEntry, FindingEvaluation, FindingGroup, FindingOccurrence, FindingSource,
+    FindingsPage, TelemetrySpanEntry,
 };
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
@@ -86,6 +88,7 @@ pub(super) fn project(
                 snapshot_id: snapshot.history_snapshot_id,
             },
             identity: row.identity.clone(),
+            evaluation: None,
             details,
             source: protected_source
                 .and_then(|candidate| source(candidate, snapshot.history_snapshot_id)),
@@ -113,6 +116,17 @@ pub(super) fn project(
             }
         })
         .collect::<Vec<_>>();
+    sort_groups(&mut groups);
+    FindingsPage {
+        groups,
+        snapshot_id: snapshot.history_snapshot_id,
+        scanned: snapshot.observations.len(),
+        has_older: snapshot.observations_truncated,
+        evaluation_partial: false,
+    }
+}
+
+fn sort_groups(groups: &mut [FindingGroup]) {
     groups.sort_by(|left, right| {
         let order = |group: &FindingGroup| {
             let severity = match group.severity.as_str() {
@@ -127,12 +141,119 @@ pub(super) fn project(
         };
         order(left).cmp(&order(right))
     });
-    FindingsPage {
-        groups,
-        snapshot_id: snapshot.history_snapshot_id,
-        scanned: snapshot.observations.len(),
-        has_older: snapshot.observations_truncated,
+}
+
+/// Query only distinct trace keys selected by the loaded evidence page.
+/// Evaluation metadata is current at each read; its revision is independent
+/// of the observation revision and selected trace evidence watermark.
+pub(super) fn include_failed_evaluations(
+    page: &mut FindingsPage,
+    snapshot: &Snapshot,
+    private: bool,
+    read: impl Fn(&ExtensionId, &SelectedEvalQuery) -> Result<Option<SelectedEvalPage>, String>,
+) {
+    const MAX_EVAL_TRACES: usize = 12;
+    let mut traces = BTreeSet::new();
+    let mut groups = BTreeMap::<_, Vec<_>>::new();
+    for row in snapshot.observations.iter().rev() {
+        let ObservationKind::TraceSpan(span) = &row.kind else {
+            continue;
+        };
+        if !row.harness_id.as_str().starts_with("otlp.")
+            || row.identity.scope != ObservationScope::Session
+            || !traces.insert((&row.harness_id, span.trace_id.as_str()))
+        {
+            continue;
+        }
+        if traces.len() > MAX_EVAL_TRACES {
+            page.evaluation_partial = true;
+            break;
+        }
+        let query = SelectedEvalQuery {
+            trace_id: span.trace_id.clone(),
+            evidence_snapshot: page.snapshot_id,
+            view: EvalQuery::History {
+                trace_id: span.trace_id.clone(),
+                before_revision: None,
+                limit: 1,
+            },
+        };
+        let selected = match read(&row.harness_id, &query) {
+            Ok(Some(selected)) => selected,
+            Ok(None) => {
+                page.evaluation_partial = true;
+                continue;
+            }
+            Err(_) => {
+                page.evaluation_partial = true;
+                break;
+            }
+        };
+        let Some(result) = selected.page.outcomes.into_iter().next() else {
+            continue;
+        };
+        if result.trace_source_id != row.harness_id
+            || result.outcome.trace_id != span.trace_id
+            || selected.current_revision != Some(result.revision)
+        {
+            page.evaluation_partial = true;
+            continue;
+        }
+        if result.outcome.passed {
+            continue;
+        }
+        let source = result
+            .detail_selection
+            .filter(|_| private)
+            .filter(|detail| {
+                detail.trace_source_id == row.harness_id
+                    && detail.trace_id == span.trace_id
+                    && detail.revision == result.revision
+                    && detail.snapshot_id.incarnation() == page.snapshot_id.incarnation()
+                    && detail.snapshot_id.watermark() >= page.snapshot_id.watermark()
+            })
+            .map(|detail| {
+                FindingSource::Evaluation(Box::new(EvaluationDetailEntry {
+                    source: detail.trace_source_id,
+                    trace_id: detail.trace_id,
+                    revision: detail.revision,
+                    receipt_id: detail.receipt_id,
+                    snapshot_id: detail.snapshot_id,
+                }))
+            });
+        let occurrence = FindingOccurrence {
+            position: ObservationPosition {
+                observed_at_unix_ns: row.observed_at_unix_ns,
+                harness_id: row.harness_id.as_str().into(),
+                event_id: row.event_id.clone(),
+                revision: row.revision,
+                snapshot_id: page.snapshot_id,
+            },
+            identity: agenturm_kernel::ObservationIdentity::source(),
+            evaluation: Some(FindingEvaluation {
+                trace_id: span.trace_id.clone(),
+                revision: result.revision,
+            }),
+            details: vec![metric("Verdict", "Failed")],
+            source,
+        };
+        groups
+            .entry(row.harness_id.clone())
+            .or_default()
+            .push(occurrence);
     }
+    page.groups.extend(
+        groups
+            .into_iter()
+            .map(|(source_id, occurrences)| FindingGroup {
+                source_id,
+                kind: "Evaluation",
+                severity: "error".into(),
+                signal: "Evaluation did not pass".into(),
+                occurrences,
+            }),
+    );
+    sort_groups(&mut page.groups);
 }
 
 pub(super) fn telemetry_source(
@@ -362,6 +483,87 @@ mod tests {
             observed_at_unix_ns: 42,
             kind,
         }
+    }
+
+    #[test]
+    fn failed_evaluation_findings_keep_source_trace_revision_without_inferred_ownership() {
+        use agenturm_store::{EvalDetailSelection, EvalOutcome, EvalPage, RetainedEvalOutcome};
+        let trace_id = "a".repeat(32);
+        let make_span = |source, span: &str| {
+            let span_id = span.repeat(16);
+            row(
+                source,
+                &format!("otlp:{trace_id}:{span_id}"),
+                "private-sibling-owner",
+                0,
+                ObservationKind::TraceSpan(agenturm_kernel::TraceSpan {
+                    trace_id: trace_id.clone(),
+                    span_id,
+                    parent_span_id: None,
+                    target_source_id: None,
+                    target_operation_id: None,
+                    started_at_unix_ns: 1,
+                    status: TraceStatus::Ok,
+                }),
+            )
+        };
+        let snapshot = Snapshot {
+            observations: vec![
+                make_span("otlp.failed", "b"),
+                make_span("otlp.passed", "b"),
+                make_span("otlp.failed", "c"),
+            ],
+            history_snapshot_id: 14.into(),
+            ..Snapshot::default()
+        };
+        let mut page = project(&snapshot);
+        assert!(page.groups.is_empty());
+        let reads = std::cell::Cell::new(0);
+        let revision = u64::from(u32::MAX) + 1;
+        include_failed_evaluations(&mut page, &snapshot, true, |source, query| {
+            reads.set(reads.get() + 1);
+            assert_eq!(query.trace_id, trace_id);
+            assert_eq!(query.evidence_snapshot, 14.into());
+            let passed = source.as_str() == "otlp.passed";
+            Ok(Some(SelectedEvalPage {
+                current_revision: Some(revision),
+                page: EvalPage {
+                    outcomes: vec![RetainedEvalOutcome {
+                        trace_source_id: source.clone(),
+                        revision,
+                        outcome: EvalOutcome {
+                            trace_id: trace_id.clone(),
+                            passed,
+                            task_id: None,
+                            provider_model: None,
+                            scores: Vec::new(),
+                        },
+                        detail_selection: Some(EvalDetailSelection {
+                            trace_source_id: source.clone(),
+                            trace_id: trace_id.clone(),
+                            revision,
+                            receipt_id: "d".repeat(32),
+                            snapshot_id: 15.into(),
+                        }),
+                    }],
+                    next_trace_id: None,
+                    next_before_revision: None,
+                },
+            }))
+        });
+        assert_eq!(reads.get(), 2);
+        assert!(!page.evaluation_partial);
+        assert_eq!(page.groups.len(), 1);
+        let group = &page.groups[0];
+        assert_eq!(group.source_id.as_str(), "otlp.failed");
+        assert_eq!(group.occurrences.len(), 1);
+        let occurrence = &group.occurrences[0];
+        assert_eq!(occurrence.identity, ObservationIdentity::source());
+        assert_eq!(occurrence.evaluation.as_ref().unwrap().revision, revision);
+        assert!(
+            matches!(&occurrence.source, Some(FindingSource::Evaluation(detail))
+            if detail.trace_id == trace_id && detail.revision == revision && detail.snapshot_id == 15.into())
+        );
     }
 
     fn tool(category: &str, result: &str) -> ObservationKind {

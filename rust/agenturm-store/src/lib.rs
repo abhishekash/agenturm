@@ -43,7 +43,7 @@ pub use content_grant::{
     UserTextEvidence,
 };
 pub use eval_detail::{
-    EvalDetailRecord, EvalDetailSelection, EvalResultDetail, EvalScoreDetail,
+    EvalDetailRecord, EvalDetailSelection, EvalFindingSelection, EvalResultDetail, EvalScoreDetail,
     eval_detail_grant_scope,
 };
 pub use eval_inventory::{

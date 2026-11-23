@@ -7,6 +7,114 @@ const SIBLING_ONLY: &str = "22222222222222222222222222222222";
 const PRIMARY: &str = "otlp.primary";
 const SIBLING: &str = "otlp.sibling";
 
+#[cfg(target_os = "linux")]
+#[test]
+fn failed_finding_requires_its_exact_current_evaluation_and_trace_receipts() {
+    use agenturm_kernel::{ExtensionId, ObservationQuery};
+    use agenturm_store::{
+        EvalDetailRecord, EvalFindingSelection, EvalOutcome, EvalResultDetail, Store,
+        eval_detail_grant_scope,
+    };
+
+    let scratch = Scratch::new();
+    let db = scratch.0.join("history.sqlite");
+    let trace_file = scratch.0.join("traces.json");
+    std::fs::write(
+        &trace_file,
+        json!({"resourceSpans":[{"scopeSpans":[{"spans":[span(TRACE,"1111111111111111",200)]}]}]})
+            .to_string(),
+    )
+    .unwrap();
+    checked(run(
+        &db,
+        &[
+            "import-traces",
+            "--source-id",
+            PRIMARY,
+            "--file",
+            path(&trace_file),
+        ],
+    ));
+    let source = ExtensionId::parse(PRIMARY).unwrap();
+    let mut store = Store::open_collector(&db).unwrap();
+    let evidence_snapshot = store
+        .query_observations(&ObservationQuery::latest(1))
+        .unwrap()
+        .snapshot_id;
+    let outcome = EvalOutcome {
+        trace_id: TRACE.into(),
+        passed: false,
+        task_id: None,
+        provider_model: None,
+        scores: Vec::new(),
+    };
+    let text = "Recorded assertion detail";
+    store
+        .import_eval_outcomes_with_details(
+            &source,
+            std::slice::from_ref(&outcome),
+            &[EvalDetailRecord {
+                trace_id: TRACE.into(),
+                detail: EvalResultDetail {
+                    error: Some(text.into()),
+                    scores: Vec::new(),
+                },
+            }],
+        )
+        .unwrap();
+    let detail = store
+        .eval_outcome(&source, TRACE)
+        .unwrap()
+        .unwrap()
+        .detail_selection
+        .unwrap();
+    let selected = EvalFindingSelection {
+        detail,
+        history_identity: store.history_identity().unwrap(),
+        evidence_snapshot,
+    };
+    let read = |store: &Store, selection: &EvalFindingSelection| {
+        store.with_failed_eval_finding(selection, |result| result.error.clone())
+    };
+    assert!(read(&store, &selected).is_err());
+    store
+        .grant_content(&eval_detail_grant_scope(&source).unwrap())
+        .unwrap();
+    assert_eq!(
+        read(&store, &selected).unwrap().flatten().as_deref(),
+        Some(text)
+    );
+
+    let mut foreign = selected.clone();
+    foreign.history_identity = "e".repeat(32);
+    assert!(read(&store, &foreign).is_err());
+    let mut foreign = selected.clone();
+    foreign.detail.receipt_id = "e".repeat(32);
+    assert_eq!(read(&store, &foreign).unwrap(), None);
+    let mut unretained = selected.clone();
+    unretained.evidence_snapshot = 0.into();
+    assert_eq!(read(&store, &unretained).unwrap(), None);
+
+    store
+        .import_eval_outcomes(
+            &source,
+            &[EvalOutcome {
+                passed: true,
+                ..outcome
+            }],
+        )
+        .unwrap();
+    assert_eq!(read(&store, &selected).unwrap(), None);
+    assert_eq!(
+        store
+            .with_eval_result_detail(&selected.detail, |result| result.error.clone())
+            .unwrap()
+            .flatten()
+            .as_deref(),
+        Some(text),
+    );
+}
+
 #[test]
 fn evaluation_import_reopens_exact_retained_trace_and_preserves_execution_status() {
     let scratch = Scratch::new();

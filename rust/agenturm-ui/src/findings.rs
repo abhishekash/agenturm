@@ -23,6 +23,7 @@ pub struct FindingsPage {
     pub snapshot_id: ReadSnapshot,
     pub scanned: usize,
     pub has_older: bool,
+    pub evaluation_partial: bool,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -38,19 +39,32 @@ pub struct FindingGroup {
 pub struct FindingOccurrence {
     pub position: ObservationPosition,
     pub identity: ObservationIdentity,
+    /// A current evaluation refers to a trace, not to an inferred span owner.
+    /// Its position identifies the retained trace support used to select it.
+    pub evaluation: Option<FindingEvaluation>,
     pub details: Vec<MetricRow>,
     /// A body-free selector for the existing protected source viewer.
     pub source: Option<FindingSource>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
+pub struct FindingEvaluation {
+    pub trace_id: String,
+    pub revision: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub enum FindingSource {
     Command(String),
     Telemetry(Box<crate::TelemetrySpanEntry>),
+    Evaluation(Box<crate::EvaluationDetailEntry>),
 }
 
 impl FindingOccurrence {
     pub(super) fn inspected_source(&self) -> Option<FindingSource> {
+        if self.evaluation.is_some() && !matches!(self.source, Some(FindingSource::Evaluation(_))) {
+            return None;
+        }
         if let Some(FindingSource::Telemetry(span)) = &self.source
             && (span.source_id.as_str() != self.position.harness_id
                 || self.position.revision != 0
@@ -59,6 +73,17 @@ impl FindingOccurrence {
                 || Some(span.session_id.as_str()) != self.identity.session_id.as_deref()
                 || span.worker_id != self.identity.worker_id
                 || span.turn_id != self.identity.turn_id)
+        {
+            return None;
+        }
+        if let Some(FindingSource::Evaluation(detail)) = &self.source
+            && !self.evaluation.as_ref().is_some_and(|outcome| {
+                detail.source.as_str() == self.position.harness_id
+                    && outcome.trace_id == detail.trace_id
+                    && outcome.revision == detail.revision
+                    && detail.snapshot_id.incarnation() == self.position.snapshot_id.incarnation()
+                    && detail.snapshot_id.watermark() >= self.position.snapshot_id.watermark()
+            })
         {
             return None;
         }
@@ -151,7 +176,12 @@ impl Browser {
                                 .into_iter()
                                 .chain(row.identity.session_id.as_deref())
                                 .chain(row.identity.turn_id.as_deref())
-                                .chain(row.identity.worker_id.as_deref()),
+                                .chain(row.identity.worker_id.as_deref())
+                                .chain(
+                                    row.evaluation
+                                        .as_ref()
+                                        .map(|outcome| outcome.trace_id.as_str()),
+                                ),
                         )
                     });
                 matches.then_some(index)
@@ -250,9 +280,14 @@ impl Browser {
         };
         let count = self.page.groups.len();
         let label = if count == 1 { "group" } else { "groups" };
+        let coverage = if self.page.evaluation_partial {
+            " · evals partial"
+        } else {
+            ""
+        };
         frame.render_widget(
             Paragraph::new(format!(
-                "{count} {label} · {} examined on this page{older}",
+                "{count} {label} · {} examined on this page{coverage}{older}",
                 self.page.scanned
             ))
             .style(label_style()),
@@ -342,6 +377,13 @@ impl Browser {
         let [list, identity] =
             Layout::vertical([Constraint::Min(4), Constraint::Length(3)]).areas(area);
         let rows = group.occurrences.iter().enumerate().map(|(index, row)| {
+            if let Some(outcome) = &row.evaluation {
+                return Row::new(vec![
+                    visible_text(&outcome.trace_id),
+                    outcome.revision.to_string(),
+                ])
+                .style(theme::row(index));
+            }
             let scope = row.identity.session_id.as_deref().unwrap_or("Source scope");
             let turn = row.identity.turn_id.as_deref().unwrap_or("—");
             let worker = row.identity.worker_id.as_deref().unwrap_or("—");
@@ -358,28 +400,40 @@ impl Browser {
             group.occurrences.len(),
             visible_text(&group.signal)
         );
-        let table = Table::new(
-            rows,
-            [
-                Constraint::Fill(2),
-                Constraint::Fill(1),
-                Constraint::Fill(1),
-                Constraint::Length(8),
-            ],
-        )
-        .header(Row::new(["Session", "Turn", "Worker", "Revision"]).style(heading_style()))
-        .block(panel(title))
-        .row_highlight_style(selection_style())
-        .highlight_symbol("› ");
+        let evaluation = group.occurrences.iter().any(|row| row.evaluation.is_some());
+        let (widths, headings): (&[_], &[_]) = if evaluation {
+            (
+                &[Constraint::Fill(1), Constraint::Length(12)],
+                &["Trace", "Revision"],
+            )
+        } else {
+            (
+                &[
+                    Constraint::Fill(2),
+                    Constraint::Fill(1),
+                    Constraint::Fill(1),
+                    Constraint::Length(8),
+                ],
+                &["Session", "Turn", "Worker", "Revision"],
+            )
+        };
+        let table = Table::new(rows, widths.to_vec())
+            .header(Row::new(headings.iter().copied()).style(heading_style()))
+            .block(panel(title))
+            .row_highlight_style(selection_style())
+            .highlight_symbol("› ");
         frame.render_stateful_widget(table, list, &mut self.occurrence);
         if let Some(row) = self
             .occurrence
             .selected()
             .and_then(|index| group.occurrences.get(index))
         {
+            let (id, caption) = row.evaluation.as_ref().map_or(
+                (row.position.event_id.as_str(), " Selected event "),
+                |outcome| (outcome.trace_id.as_str(), " Selected trace "),
+            );
             frame.render_widget(
-                Paragraph::new(visible_text(&row.position.event_id))
-                    .block(panel(" Selected event ")),
+                Paragraph::new(visible_text(id)).block(panel(caption)),
                 identity,
             );
         }
@@ -399,7 +453,10 @@ impl Browser {
         } else {
             row.position.observed_at_unix_ns.to_string()
         };
-        let revision = row.position.revision.to_string();
+        let revision = row.evaluation.as_ref().map_or_else(
+            || row.position.revision.to_string(),
+            |outcome| outcome.revision.to_string(),
+        );
         let snapshot = row.position.snapshot_id.to_string();
         let scope = match row.identity.scope {
             ObservationScope::Source => "Source",
@@ -408,12 +465,23 @@ impl Browser {
         let mut fields = vec![
             ("Signal", group.signal.as_str()),
             ("Source", row.position.harness_id.as_str()),
-            ("Scope", scope),
-            ("Event", row.position.event_id.as_str()),
-            ("Revision", revision.as_str()),
-            ("Snapshot", snapshot.as_str()),
-            ("Observed Unix ns", time.as_str()),
         ];
+        if let Some(outcome) = &row.evaluation {
+            fields.extend([
+                ("Trace", outcome.trace_id.as_str()),
+                ("Evaluation revision", revision.as_str()),
+                ("Trace evidence snapshot", snapshot.as_str()),
+                ("Coverage", "Current evaluation at read time"),
+            ]);
+        } else {
+            fields.extend([
+                ("Scope", scope),
+                ("Event", row.position.event_id.as_str()),
+                ("Revision", revision.as_str()),
+                ("Snapshot", snapshot.as_str()),
+                ("Observed Unix ns", time.as_str()),
+            ]);
+        }
         for (label, value) in [
             ("Session", row.identity.session_id.as_deref()),
             ("Turn", row.identity.turn_id.as_deref()),
@@ -530,6 +598,7 @@ mod tests {
                 snapshot_id: 10.into(),
             },
             identity,
+            evaluation: None,
             source: Some(FindingSource::Telemetry(Box::new(entry.clone()))),
             details: Vec::new(),
         };
@@ -563,6 +632,7 @@ mod tests {
                     snapshot_id: 88.into(),
                 },
                 identity,
+                evaluation: None,
                 details: vec![MetricRow {
                     label: "Reason".into(),
                     value: "confirmed-fixture".into(),
@@ -584,6 +654,7 @@ mod tests {
             snapshot_id: 88.into(),
             scanned: 7,
             has_older: true,
+            evaluation_partial: false,
         };
         for (width, height) in [(120, 32), (80, 24), (60, 18)] {
             let mut browser = Browser::new(page.clone());
@@ -679,6 +750,7 @@ mod tests {
             snapshot_id: 0.into(),
             scanned: 0,
             has_older: false,
+            evaluation_partial: false,
         });
         assert!(browser.key(KeyCode::Enter));
         assert!(!browser.key(KeyCode::Esc));

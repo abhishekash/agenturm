@@ -823,6 +823,24 @@ fn execute_private_cockpit(
                 .map_err(|error| error.to_string())?;
             Ok(WorkResult::Status(String::new()))
         }
+        WorkCommand::RevealFailedEvalFinding {
+            detail,
+            history_identity,
+            evidence_snapshot,
+            mut delivery,
+        } => {
+            let selection = agenturm_store::EvalFindingSelection {
+                detail: eval_detail_cli::modal_selection(*detail),
+                history_identity,
+                evidence_snapshot,
+            };
+            store
+                .with_failed_eval_finding(&selection, |body| {
+                    eval_detail_cli::deliver_modal(body, &mut delivery)
+                })
+                .map_err(|error| error.to_string())?;
+            Ok(WorkResult::Status(String::new()))
+        }
         WorkCommand::RevealOperation(operation, mut output) => {
             let kind = match operation.kind {
                 OperationDetailKind::Mcp => PrivateEvidenceKind::CodexMcpPayload {

@@ -2711,31 +2711,37 @@ fn load_workspace_history(
                 )?));
             }
             let history_identity = store.workspace_history_identity();
-            page.features.findings = Some((
-                ids.findings.clone(),
-                findings::project(&page.snapshot, |row, snapshot_id| {
-                    #[cfg(target_os = "linux")]
-                    if store.allows_private_capture() {
-                        if let Some(reference) = investigate_cli::cockpit::finding_reference(
-                            row,
-                            snapshot_id,
-                            db,
-                            history_identity.as_deref(),
-                        )
-                        .ok()
-                        .flatten()
-                        {
-                            return Some(agenturm_ui::FindingSource::Command(reference));
-                        }
-                        if let Some(identity) = store.private_telemetry_history() {
-                            return findings::telemetry_source(row, snapshot_id, &identity);
-                        }
+            let mut findings = findings::project(&page.snapshot, |row, snapshot_id| {
+                #[cfg(target_os = "linux")]
+                if store.allows_private_capture() {
+                    if let Some(reference) = investigate_cli::cockpit::finding_reference(
+                        row,
+                        snapshot_id,
+                        db,
+                        history_identity.as_deref(),
+                    )
+                    .ok()
+                    .flatten()
+                    {
+                        return Some(agenturm_ui::FindingSource::Command(reference));
                     }
-                    #[cfg(not(target_os = "linux"))]
-                    let _ = (row, snapshot_id, &history_identity);
-                    None
-                }),
-            ));
+                    if let Some(identity) = store.private_telemetry_history() {
+                        return findings::telemetry_source(row, snapshot_id, &identity);
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                let _ = (row, snapshot_id, &history_identity);
+                None
+            });
+            if view == WorkspaceView::Findings {
+                findings::include_failed_evaluations(
+                    &mut findings,
+                    &page.snapshot,
+                    store.allows_private_capture() && history_identity.is_some(),
+                    |source, query| store.query_selected_evals(source, query),
+                );
+            }
+            page.features.findings = Some((ids.findings.clone(), findings));
             page.operation_tables = ids.tables;
             page.evidence_tables = ids.evidence;
             page.initial_pane = match view {

@@ -342,6 +342,7 @@ pub(super) fn is_prompt_command(command: &WorkCommand) -> bool {
             | WorkCommand::RevealOperation(_, _)
             | WorkCommand::RevealTelemetry(_, _)
             | WorkCommand::RevealEvalDetail(_, _)
+            | WorkCommand::RevealFailedEvalFinding { .. }
             | WorkCommand::RevealInvestigation { .. }
     ) || matches!(command, WorkCommand::Investigate(request) if request.kind.is_private())
 }
@@ -461,6 +462,32 @@ pub(super) fn execute_prompt(
                 })
                 .map_err(string)?
                 .ok_or("Exact retained evaluation detail is unavailable")??;
+            Ok(WorkResult::Status(String::new()))
+        }
+        WorkCommand::RevealFailedEvalFinding {
+            detail,
+            history_identity,
+            evidence_snapshot,
+            mut delivery,
+        } => {
+            let selection = agenturm_store::EvalFindingSelection {
+                detail: super::eval_detail_cli::modal_selection(*detail),
+                history_identity,
+                evidence_snapshot,
+            };
+            let opened;
+            let store = if let Some(writer) = writer {
+                writer
+            } else {
+                opened = Store::open_collector(db).map_err(string)?;
+                &opened
+            };
+            store
+                .with_failed_eval_finding(&selection, |body| {
+                    super::eval_detail_cli::deliver_modal(body, &mut delivery)
+                })
+                .map_err(string)?
+                .ok_or("Failed evaluation changed or detail is unavailable")??;
             Ok(WorkResult::Status(String::new()))
         }
         _ => Err("Unsupported prompt request".into()),

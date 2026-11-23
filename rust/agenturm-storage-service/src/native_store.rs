@@ -24,11 +24,12 @@ use agenturm_store::native_attention::{
 };
 use agenturm_store::{
     AutomaticRetentionPolicy, AutomaticRetentionStatus, EvalDetailRecord, EvalDetailSelection,
-    EvalImportReport, EvalInventory, EvalInventoryQuery, EvalOutcome, EvalPage, EvalQuery,
-    EvalResultDetail, McpTraceQuery, ObservationBatch, ResolvedTraceReview, RetainedEvalOutcome,
-    RetentionOutcome, SelectedEvalPage, SelectedEvalQuery, SessionPage, SessionQuery,
-    StandaloneTraceQuery, Store, TelemetryBinding, TelemetryPayload, TelemetryPayloadRecord,
-    TelemetryPayloadSelection, TraceReviewQuery, WorkspaceAnchor, WorkspaceHistory,
+    EvalFindingSelection, EvalImportReport, EvalInventory, EvalInventoryQuery, EvalOutcome,
+    EvalPage, EvalQuery, EvalResultDetail, McpTraceQuery, ObservationBatch, ResolvedTraceReview,
+    RetainedEvalOutcome, RetentionOutcome, SelectedEvalPage, SelectedEvalQuery, SessionPage,
+    SessionQuery, StandaloneTraceQuery, Store, TelemetryBinding, TelemetryPayload,
+    TelemetryPayloadRecord, TelemetryPayloadSelection, TraceReviewQuery, WorkspaceAnchor,
+    WorkspaceHistory,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeSet;
@@ -119,6 +120,10 @@ pub(crate) enum NativeOperation {
     RevealEvalDetail {
         history_identity: String,
         selection: EvalDetailSelection,
+    },
+    RevealFailedEvalFinding {
+        history_identity: String,
+        selection: EvalFindingSelection,
     },
     EvalPage {
         source_id: ExtensionId,
@@ -311,6 +316,7 @@ impl NativeOperation {
                 | Self::VerifyPrivateOperation { .. }
                 | Self::RevealTelemetry { .. }
                 | Self::RevealEvalDetail { .. }
+                | Self::RevealFailedEvalFinding { .. }
         )
     }
 
@@ -324,6 +330,19 @@ impl NativeOperation {
         output: &mut Disclosure<'_>,
     ) -> Result<(), PrivateEvidenceFailure> {
         match self {
+            Self::RevealFailedEvalFinding {
+                history_identity,
+                selection,
+            } => {
+                authorize_private(
+                    store,
+                    allowed,
+                    role,
+                    &history_identity,
+                    &selection.detail.trace_source_id,
+                )?;
+                native_content::disclose_failed_eval_finding(store, &selection, output)
+            }
             Self::RevealEvalDetail {
                 history_identity,
                 selection,
@@ -723,7 +742,8 @@ pub(crate) fn dispatch(
         | NativeOperation::VerifyPrivatePrompt { .. }
         | NativeOperation::VerifyPrivateOperation { .. }
         | NativeOperation::RevealTelemetry { .. }
-        | NativeOperation::RevealEvalDetail { .. } => {
+        | NativeOperation::RevealEvalDetail { .. }
+        | NativeOperation::RevealFailedEvalFinding { .. } => {
             return NativeReply::PrivatePrompts(Err(PrivateEvidenceFailure::Unauthorized));
         }
         NativeOperation::Admin { request } => {
@@ -1352,18 +1372,40 @@ impl NativeStore {
         selection: &EvalDetailSelection,
         consume: impl FnOnce(&EvalResultDetail) -> Result<T, String>,
     ) -> Result<T, NativeClientError> {
-        self.consume_private(
+        self.consume_eval_detail(
             NativeOperation::RevealEvalDetail {
                 history_identity: self.private_history_identity()?,
                 selection: selection.clone(),
             },
-            |detail: &EvalResultDetail| {
-                detail
-                    .validate()
-                    .map_err(|_| NativeClientError::InvalidReply)?;
-                consume(detail).map_err(|_| NativeClientError::PrivateConsumer)
-            },
+            consume,
         )
+    }
+
+    pub fn with_failed_eval_finding<T>(
+        &self,
+        selection: &EvalFindingSelection,
+        consume: impl FnOnce(&EvalResultDetail) -> Result<T, String>,
+    ) -> Result<T, NativeClientError> {
+        self.consume_eval_detail(
+            NativeOperation::RevealFailedEvalFinding {
+                history_identity: self.private_history_identity()?,
+                selection: selection.clone(),
+            },
+            consume,
+        )
+    }
+
+    fn consume_eval_detail<T>(
+        &self,
+        operation: NativeOperation,
+        consume: impl FnOnce(&EvalResultDetail) -> Result<T, String>,
+    ) -> Result<T, NativeClientError> {
+        self.consume_private(operation, |detail: &EvalResultDetail| {
+            detail
+                .validate()
+                .map_err(|_| NativeClientError::InvalidReply)?;
+            consume(detail).map_err(|_| NativeClientError::PrivateConsumer)
+        })
     }
 
     pub fn check_telemetry_admission(

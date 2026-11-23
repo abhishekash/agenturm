@@ -1503,6 +1503,7 @@ impl Workspace {
                 .and_then(|browser| browser.inspected_occurrence())
         {
             if self.pending.is_none() && self.prompt_receiver.is_none() {
+                let evidence_snapshot = occurrence.position.snapshot_id;
                 let source = occurrence.inspected_source();
                 let request = match (source, view.page.history_identity.clone()) {
                     (Some(crate::FindingSource::Command(reference)), Some(history_identity)) => {
@@ -1521,6 +1522,18 @@ impl Workspace {
                     {
                         let (delivery, receiver) = prompt_channel(PromptKind::Telemetry);
                         Some((WorkCommand::RevealTelemetry(span, delivery), receiver))
+                    }
+                    (Some(crate::FindingSource::Evaluation(detail)), Some(history_identity)) => {
+                        let (delivery, receiver) = prompt_channel(PromptKind::Evaluation);
+                        Some((
+                            WorkCommand::RevealFailedEvalFinding {
+                                detail,
+                                history_identity,
+                                evidence_snapshot,
+                                delivery,
+                            },
+                            receiver,
+                        ))
                     }
                     _ => None,
                 };
@@ -3171,6 +3184,7 @@ mod tests {
                 snapshot_id: pinned,
             },
             identity: agenturm_kernel::ObservationIdentity::session("fixture-session"),
+            evaluation: None,
             source: protected,
             details: Vec::new(),
         };
@@ -3193,6 +3207,7 @@ mod tests {
                 snapshot_id: pinned,
                 scanned: 2,
                 has_older: false,
+                evaluation_partial: false,
             },
         ));
         workspace.history.push(HistoryView::new(

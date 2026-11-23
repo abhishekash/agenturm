@@ -382,6 +382,12 @@ pub enum WorkCommand {
     RevealOperation(OperationDetailEntry, PromptDelivery),
     RevealTelemetry(Box<TelemetrySpanEntry>, PromptDelivery),
     RevealEvalDetail(Box<evaluation::EvaluationDetailEntry>, PromptDelivery),
+    RevealFailedEvalFinding {
+        detail: Box<evaluation::EvaluationDetailEntry>,
+        history_identity: String,
+        evidence_snapshot: ReadSnapshot,
+        delivery: PromptDelivery,
+    },
 }
 
 pub struct ReviewNoteEntry {
