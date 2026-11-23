@@ -764,7 +764,23 @@ fn lifecycle_evidence_rows(
     ]
 }
 
+fn default_cockpit_flag(flag: &str) -> bool {
+    matches!(
+        flag,
+        "--db" | "--once" | "--new-window" | "--endpoint" | "--token-file"
+    )
+}
+
 pub fn parse_os_command(args: &[std::ffi::OsString]) -> Result<Command, String> {
+    if args
+        .first()
+        .and_then(|arg| arg.to_str())
+        .is_some_and(default_cockpit_flag)
+    {
+        let mut explicit = vec![std::ffi::OsString::from("cockpit")];
+        explicit.extend_from_slice(args);
+        return parse_os_command(&explicit);
+    }
     #[cfg(target_os = "linux")]
     if new_window::handles(args) {
         return new_window::parse(args).map(Command::Window);
@@ -788,6 +804,11 @@ pub fn parse_os_command(args: &[std::ffi::OsString]) -> Result<Command, String> 
 }
 
 pub fn parse_command(args: &[String]) -> Result<Command, String> {
+    if args.first().is_some_and(|arg| default_cockpit_flag(arg)) {
+        let mut explicit = vec!["cockpit".to_owned()];
+        explicit.extend_from_slice(args);
+        return parse_command(&explicit);
+    }
     #[cfg(target_os = "linux")]
     if new_window::handles(args) {
         let original = args
@@ -795,11 +816,6 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
             .map(std::ffi::OsString::from)
             .collect::<Vec<_>>();
         return new_window::parse(&original).map(Command::Window);
-    }
-    if args.first().is_some_and(|arg| arg == "--once") {
-        let mut explicit = vec!["cockpit".to_owned()];
-        explicit.extend_from_slice(args);
-        return parse_command(&explicit);
     }
     if args.first().is_some_and(|arg| arg == "cockpit")
         && args[1..].iter().any(|arg| arg == "--once")

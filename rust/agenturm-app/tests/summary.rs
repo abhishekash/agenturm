@@ -71,6 +71,21 @@ fn one_shot_summary_keeps_source_scope_unknown_state_and_page_coverage() {
         String::from_utf8(output.stdout).unwrap()
     };
     let json: Value = serde_json::from_str(&invoke(&["cockpit", "--once", "--json"])).unwrap();
+    let global = Command::new(env!("CARGO_BIN_EXE_agenturm"))
+        .arg("--db")
+        .arg(&db)
+        .args(["--once", "--json"])
+        .output()
+        .unwrap();
+    assert!(
+        global.status.success(),
+        "{}",
+        String::from_utf8_lossy(&global.stderr)
+    );
+    assert_eq!(
+        serde_json::from_slice::<Value>(&global.stdout).unwrap(),
+        json
+    );
     assert_eq!(json["format"], "agenturm-summary/1");
     assert_eq!(json["sessions"].as_array().unwrap().len(), 2);
     assert_eq!(json["sessions"][0]["harness_id"], "harness.pi");
