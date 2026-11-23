@@ -287,7 +287,7 @@ def _project(span, scope, attributes, capture_content):
     result = {
         "traceId": _span_id(span["trace_id"], 32),
         "spanId": _span_id(span["span_id"], 16),
-        "name": "agenturm.span",
+        "name": "agent.run" if span.get("agent_run") is True else "agenturm.span",
         "startTimeUnixNano": str(start),
         "endTimeUnixNano": str(end),
         "status": {"code": status},

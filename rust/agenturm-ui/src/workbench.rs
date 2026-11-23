@@ -87,7 +87,7 @@ pub struct OperationDetailEntry {
 }
 
 /// Exact metadata for a producer-captured span text request.
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TelemetrySpanEntry {
     pub history_identity: String,
     pub source_id: ExtensionId,
@@ -98,6 +98,37 @@ pub struct TelemetrySpanEntry {
     pub turn_id: Option<String>,
     pub worker_id: Option<String>,
     pub snapshot_id: agenturm_kernel::ReadSnapshot,
+}
+
+impl TelemetrySpanEntry {
+    pub fn from_observation(
+        row: &agenturm_kernel::Observation,
+        snapshot_id: ReadSnapshot,
+        history_identity: &str,
+    ) -> Option<Self> {
+        let agenturm_kernel::ObservationKind::TraceSpan(span) = &row.kind else {
+            return None;
+        };
+        // The captured-text vault accepts only these canonical revision-zero
+        // span receipts. A metadata correction cannot select the older body.
+        if row.revision != 0
+            || row.identity.operation_id.is_some()
+            || row.event_id != format!("otlp:{}:{}", span.trace_id, span.span_id)
+        {
+            return None;
+        }
+        Some(Self {
+            history_identity: history_identity.to_owned(),
+            source_id: row.harness_id.clone(),
+            native_source_id: span.target_source_id.clone(),
+            trace_id: span.trace_id.clone(),
+            span_id: span.span_id.clone(),
+            session_id: row.identity.session_id.clone()?,
+            turn_id: row.identity.turn_id.clone(),
+            worker_id: row.identity.worker_id.clone(),
+            snapshot_id,
+        })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]

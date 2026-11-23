@@ -40,7 +40,30 @@ pub struct FindingOccurrence {
     pub identity: ObservationIdentity,
     pub details: Vec<MetricRow>,
     /// A body-free selector for the existing protected source viewer.
-    pub source_reference: Option<String>,
+    pub source: Option<FindingSource>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum FindingSource {
+    Command(String),
+    Telemetry(Box<crate::TelemetrySpanEntry>),
+}
+
+impl FindingOccurrence {
+    pub(super) fn inspected_source(&self) -> Option<FindingSource> {
+        if let Some(FindingSource::Telemetry(span)) = &self.source
+            && (span.source_id.as_str() != self.position.harness_id
+                || self.position.revision != 0
+                || self.position.event_id != format!("otlp:{}:{}", span.trace_id, span.span_id)
+                || span.snapshot_id != self.position.snapshot_id
+                || Some(span.session_id.as_str()) != self.identity.session_id.as_deref()
+                || span.worker_id != self.identity.worker_id
+                || span.turn_id != self.identity.turn_id)
+        {
+            return None;
+        }
+        self.source.clone()
+    }
 }
 
 #[derive(Clone, Copy)]
@@ -202,7 +225,7 @@ impl Browser {
             Level::Detail
                 if self
                     .inspected_occurrence()
-                    .is_some_and(|occurrence| occurrence.source_reference.is_some()) =>
+                    .is_some_and(|occurrence| occurrence.source.is_some()) =>
             {
                 "s source · ↑↓ scroll · PgUp/PgDn · Esc occurrences"
             }
@@ -408,7 +431,7 @@ impl Browser {
         );
         fields.push((
             "Source body",
-            if row.source_reference.is_some() {
+            if row.source.is_some() {
                 "s requests a grant-checked preview"
             } else {
                 "Unavailable for this occurrence"
@@ -482,6 +505,49 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
+    fn a_telemetry_finding_reuses_only_the_exact_snapshot_and_worker() {
+        let source = ExtensionId::parse("otlp.fixture").unwrap();
+        let mut identity = ObservationIdentity::session("session");
+        identity.turn_id = Some("turn".into());
+        identity.worker_id = Some("worker".into());
+        let entry = crate::TelemetrySpanEntry {
+            history_identity: "retained-history".into(),
+            source_id: source.clone(),
+            native_source_id: Some("harness.codex.fixture".into()),
+            trace_id: "1".repeat(32),
+            span_id: "2".repeat(16),
+            session_id: "session".into(),
+            turn_id: Some("turn".into()),
+            worker_id: Some("worker".into()),
+            snapshot_id: 10.into(),
+        };
+        let mut row = FindingOccurrence {
+            position: ObservationPosition {
+                observed_at_unix_ns: 20,
+                harness_id: source.as_str().to_owned(),
+                event_id: format!("otlp:{}:{}", entry.trace_id, entry.span_id),
+                revision: 0,
+                snapshot_id: 10.into(),
+            },
+            identity,
+            source: Some(FindingSource::Telemetry(Box::new(entry.clone()))),
+            details: Vec::new(),
+        };
+        assert_eq!(
+            row.inspected_source(),
+            Some(FindingSource::Telemetry(Box::new(entry)))
+        );
+        row.position.snapshot_id = 11.into();
+        assert!(row.inspected_source().is_none());
+        row.position.snapshot_id = 10.into();
+        row.position.revision = 1;
+        assert!(row.inspected_source().is_none());
+        row.position.revision = 0;
+        row.identity.worker_id = None;
+        assert!(row.inspected_source().is_none());
+    }
+
+    #[test]
     fn finding_drilldown_keeps_group_occurrence_and_exact_scope_at_three_widths() {
         let source = ExtensionId::parse("harness.codex.fixture").unwrap();
         let one = |event: &str, worker: &str, revision| {
@@ -501,7 +567,7 @@ mod tests {
                     label: "Reason".into(),
                     value: "confirmed-fixture".into(),
                 }],
-                source_reference: None,
+                source: None,
             }
         };
         let page = FindingsPage {

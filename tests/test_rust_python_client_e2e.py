@@ -62,14 +62,68 @@ class RustPythonProducerTests(unittest.TestCase):
                 self.assertEqual(summary["observation"][field], row["observation"][field])
         return spans
 
-    def launch(self, source, status):
+    def launch(self, source, status, *options):
         result = subprocess.run(
             [RUST_APP, "run", "--db", self.database, "--source-id", source,
-             "--", sys.executable, self.producer],
+             *options, "--", sys.executable, self.producer],
             env=self.environment, capture_output=True, text=True, timeout=25,
         )
         self.assertEqual(result.returncode, status, result.stderr)
         return json.loads(result.stdout)
+
+    def test_manual_run_retains_classification_and_usage_with_capture(self):
+        self.producer.write_text("""
+import json
+from observatory.client import Client
+
+client = Client(transport="otlp", strict=True, capture_content=True)
+with client.trace(session_id="python-capture") as run:
+    run.root.set_status("ERROR")
+    run.root.set_attribute("agenturm.payload.input", "synthetic private captured message")
+    run.root.set_attribute("gen_ai.usage.output_tokens", 999)
+    run.root.set_attribute("agenturm.reported_cost.amount", 99)
+    run.root.set_attribute("agenturm.reported_cost.currency", "USD")
+    run.root.set_attribute("model.name", "synthetic private model")
+    with run.span("synthetic private name") as child:
+        child.set_attribute("gen_ai.usage.input_tokens", 0)
+        child.set_attribute("agenturm.reported_cost.amount", 0)
+        child.set_attribute("agenturm.reported_cost.currency", "EUR")
+print(json.dumps({"trace": run.trace_id, "root": run.root.span_id, "child": child.span_id}))
+""")
+        source = "otlp.python-capture"
+        ids = self.launch(source, 0, "--payload-scope", "standalone")
+        rows = self.observations(source)
+        self.paired_spans(rows, 2)
+        self.assertEqual(len(rows), 8)
+        summary = {
+            row["observation"]["span_id"]: row["observation"]
+            for row in rows if row["observation"]["kind"] == "trace_span_summary"
+        }
+        for key, is_root in (("root", True), ("child", False)):
+            self.assertEqual(summary[ids[key]], {
+                "kind": "trace_span_summary", "trace_id": ids["trace"], "span_id": ids[key],
+                "agent_run": is_root, "reported_error": is_root,
+            })
+        usage = {
+            row["observation"]["span"]["span_id"]: row["observation"]
+            for row in rows if row["observation"]["kind"] == "span_token_usage"
+        }
+        cost = {
+            row["observation"]["span"]["span_id"]: row["observation"]
+            for row in rows if row["observation"]["kind"] == "reported_cost"
+        }
+        root_span = {"trace_id": ids["trace"], "span_id": ids["root"]}
+        child_span = {"trace_id": ids["trace"], "span_id": ids["child"]}
+        self.assertEqual(usage, {
+            ids["root"]: {"kind": "span_token_usage", "span": root_span, "output_tokens": 999},
+            ids["child"]: {"kind": "span_token_usage", "span": child_span, "input_tokens": 0},
+        })
+        self.assertEqual(cost, {
+            ids["root"]: {"kind": "reported_cost", "span": root_span, "currency": "USD",
+                          "nanounits": "99000000000"},
+            ids["child"]: {"kind": "reported_cost", "span": child_span, "currency": "EUR",
+                           "nanounits": "0"},
+        })
 
     def test_launcher_reopens_exact_python_scope_ancestry_and_exit(self):
         self.producer.write_text("""

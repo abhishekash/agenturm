@@ -5,7 +5,9 @@ use agenturm_kernel::{
     ExtensionId, MetricRow, Observation, ObservationKind, ObservationPosition, ObservationScope,
     ReadSnapshot, Snapshot, TraceStatus,
 };
-use agenturm_ui::{FindingGroup, FindingOccurrence, FindingsPage};
+use agenturm_ui::{
+    FindingGroup, FindingOccurrence, FindingSource, FindingsPage, TelemetrySpanEntry,
+};
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -35,7 +37,7 @@ fn anchor(row: &Observation) -> Anchor<'_> {
 
 pub(super) fn project(
     snapshot: &Snapshot,
-    source_reference: impl Fn(&Observation, ReadSnapshot) -> Option<String>,
+    source: impl Fn(&Observation, ReadSnapshot) -> Option<FindingSource>,
 ) -> FindingsPage {
     let mut latest = BTreeMap::new();
     for row in &snapshot.observations {
@@ -68,7 +70,7 @@ pub(super) fn project(
             continue;
         };
         let key = (row.harness_id.clone(), kind, severity.to_owned(), signal);
-        let protected_source = if codex_failed_command(row) {
+        let protected_source = if codex_failed_command(row) || failed_span(row) {
             Some(row)
         } else if matches!(row.kind, ObservationKind::Check { .. }) {
             companion(row, false).and_then(|key| commands.get(&key).copied())
@@ -85,8 +87,8 @@ pub(super) fn project(
             },
             identity: row.identity.clone(),
             details,
-            source_reference: protected_source
-                .and_then(|candidate| source_reference(candidate, snapshot.history_snapshot_id)),
+            source: protected_source
+                .and_then(|candidate| source(candidate, snapshot.history_snapshot_id)),
         };
         groups.entry(key).or_insert_with(Vec::new).push(occurrence);
     }
@@ -131,6 +133,22 @@ pub(super) fn project(
         scanned: snapshot.observations.len(),
         has_older: snapshot.observations_truncated,
     }
+}
+
+pub(super) fn telemetry_source(
+    row: &Observation,
+    snapshot_id: ReadSnapshot,
+    history_identity: &str,
+) -> Option<FindingSource> {
+    if !failed_span(row) {
+        return None;
+    }
+    let entry = TelemetrySpanEntry::from_observation(row, snapshot_id, history_identity)?;
+    Some(FindingSource::Telemetry(Box::new(entry)))
+}
+
+fn failed_span(row: &Observation) -> bool {
+    matches!(&row.kind, ObservationKind::TraceSpan(span) if span.status == TraceStatus::Error)
 }
 
 fn codex_failed_command(row: &Observation) -> bool {
@@ -589,20 +607,80 @@ mod tests {
             assert_eq!(command.harness_id.as_str(), source);
             assert_eq!(command.revision, 3);
             assert!(command.identity.worker_id.is_none());
-            Some("opaque-main-command".into())
+            Some(FindingSource::Command("opaque-main-command".into()))
         });
         let occurrences = page.groups.iter().flat_map(|group| &group.occurrences);
         let selected = occurrences
             .clone()
-            .filter(|row| row.source_reference.is_some())
+            .filter(|row| row.source.is_some())
             .collect::<Vec<_>>();
         assert_eq!(occurrences.count(), 4);
         assert_eq!(selected.len(), 1);
         assert_eq!(selected[0].position.event_id, check_id);
         assert_eq!(
-            selected[0].source_reference.as_deref(),
-            Some("opaque-main-command")
+            selected[0].source.as_ref(),
+            Some(&FindingSource::Command("opaque-main-command".into()))
         );
+    }
+
+    #[test]
+    fn a_failed_span_mints_a_body_free_exact_telemetry_selection() {
+        let trace_id = "11".repeat(16);
+        let span_id = "33".repeat(8);
+        let event_id = format!("otlp:{trace_id}:{span_id}");
+        let mut span = row(
+            "otlp.fixture",
+            &event_id,
+            "typed-worker",
+            0,
+            ObservationKind::TraceSpan(agenturm_kernel::TraceSpan {
+                trace_id: trace_id.clone(),
+                span_id: span_id.clone(),
+                parent_span_id: None,
+                target_source_id: Some("harness.codex.fixture".into()),
+                target_operation_id: None,
+                started_at_unix_ns: 8,
+                status: TraceStatus::Error,
+            }),
+        );
+        span.identity.operation_id = None;
+        let mut rebound = span.clone();
+        rebound.revision = 1;
+        assert!(telemetry_source(&rebound, 8.into(), "one-history").is_none());
+        rebound.revision = 0;
+        rebound.event_id = "not-the-vault-receipt".into();
+        assert!(telemetry_source(&rebound, 8.into(), "one-history").is_none());
+        let mut other = span.clone();
+        other.event_id = "successful-span".into();
+        if let ObservationKind::TraceSpan(span) = &mut other.kind {
+            span.status = TraceStatus::Ok;
+        }
+        assert!(telemetry_source(&other, 8.into(), "one-history").is_none());
+        let page = super::project(
+            &Snapshot {
+                observations: vec![span, other],
+                history_snapshot_id: 8.into(),
+                ..Snapshot::default()
+            },
+            |row, snapshot| telemetry_source(row, snapshot, "one-history"),
+        );
+        assert_eq!(page.groups.len(), 1);
+        let occurrence = &page.groups[0].occurrences[0];
+        assert_eq!(occurrence.position.event_id, event_id);
+        let Some(FindingSource::Telemetry(selection)) = &occurrence.source else {
+            panic!("expected exact telemetry selection");
+        };
+        assert_eq!(selection.trace_id, trace_id);
+        assert_eq!(selection.span_id, span_id);
+        assert_eq!(
+            selection.native_source_id.as_deref(),
+            Some("harness.codex.fixture")
+        );
+        assert_eq!(selection.source_id.as_str(), "otlp.fixture");
+        assert_eq!(selection.turn_id.as_deref(), Some("shared-turn"));
+        assert_eq!(selection.worker_id.as_deref(), Some("typed-worker"));
+        assert_eq!(selection.snapshot_id, 8.into());
+        assert_eq!(selection.history_identity, "one-history");
     }
 
     #[test]

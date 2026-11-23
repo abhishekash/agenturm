@@ -67,8 +67,15 @@ pub(super) fn current_indices(sample: &HostSample, filter: &Filter) -> Vec<usize
         .enumerate()
         .filter_map(|(index, process)| {
             let pid = process.pid.to_string();
+            let parent_pid = process.parent_pid.map(|pid| pid.to_string());
             filter
-                .matches([process.runtime.label(), &pid, cwd_name(process)])
+                .matches([
+                    process.runtime.label(),
+                    &pid,
+                    parent_pid.as_deref().unwrap_or_default(),
+                    cwd_name(process),
+                    process.state.map_or("Unknown", |state| state.label()),
+                ])
                 .then_some(index)
         })
         .collect()
@@ -357,6 +364,7 @@ fn sample_details(sample: &HostSample) -> Vec<MetricRow> {
         )
     };
     vec![
+        detail("Platform", "Linux"),
         detail(
             "Process coverage",
             format!(
@@ -421,6 +429,12 @@ fn process_details(process: &HostProcess, sample: &HostSample) -> Vec<MetricRow>
                 .unwrap_or("Unavailable"),
         ),
         detail(
+            "Parent PID",
+            process
+                .parent_pid
+                .map_or_else(|| "Unavailable".into(), |pid| pid.to_string()),
+        ),
+        detail(
             "RSS",
             format!(
                 "{} · start {} ticks",
@@ -478,7 +492,7 @@ fn memory(bytes: Option<u64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agenturm_kernel::{ExtensionId, HostRuntime, ObservationIdentity};
+    use agenturm_kernel::{ExtensionId, HostProcessState, HostRuntime, ObservationIdentity};
     use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
@@ -501,9 +515,14 @@ mod tests {
                 processes_partial: false,
                 processes: vec![HostProcess {
                     pid: 12,
+                    parent_pid: match id {
+                        "selected" | "reused-pid" => Some(493),
+                        "former-parent" => Some(494),
+                        _ => None,
+                    },
                     start_ticks,
                     runtime: HostRuntime::Codex,
-                    state: None,
+                    state: Some(HostProcessState::Sleeping),
                     resident_bytes: None,
                     user_ticks: Some(0),
                     system_ticks: None,
@@ -517,6 +536,7 @@ mod tests {
                 event("other-boot", "host.a", "boot-b", 11),
                 event("other-source", "host.b", "boot-a", 11),
                 event("same-process", "host.a", "boot-a", 11),
+                event("former-parent", "host.a", "boot-a", 11),
                 event("selected", "host.a", "boot-a", 11),
             ],
             ..ObservationPage::default()
@@ -524,7 +544,7 @@ mod tests {
         let events: Vec<_> = occurrences(&page, 0, 0)
             .map(|(row, _, _)| row.event_id.as_str())
             .collect();
-        assert_eq!(events, ["selected", "same-process"]);
+        assert_eq!(events, ["selected", "former-parent", "same-process"]);
         let view = HostLevel::ProcessHistory {
             sample: 0,
             process: 0,
@@ -545,11 +565,18 @@ mod tests {
         );
         assert_eq!(view.table.rows[1].cells[1], "—");
         assert!(
-            view.table.rows[1]
+            view.table.rows[2]
                 .details
                 .iter()
                 .any(|row| row.label == "Working directory" && row.value == "Unavailable")
         );
+        for (row, expected) in view.table.rows.iter().zip(["493", "494", "Unavailable"]) {
+            assert!(
+                row.details
+                    .iter()
+                    .any(|row| row.label == "Parent PID" && row.value == expected)
+            );
+        }
         let processes = HostLevel::Processes(0).present(&page, &Filter::default());
         for (width, height) in [(120, 32), (80, 24), (60, 18)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -564,7 +591,9 @@ mod tests {
                     .map(|cell| cell.symbol())
                     .collect::<String>();
                 assert!(
-                    screen.contains("Cwd") && screen.contains("fixture-project"),
+                    screen.contains("Cwd")
+                        && screen.contains("fixture-project")
+                        && screen.contains("Parent PID  493"),
                     "{width}×{height}: {screen}"
                 );
             }
@@ -574,6 +603,7 @@ mod tests {
             sample.processes.insert(
                 0,
                 HostProcess {
+                    parent_pid: Some(494),
                     working_directory_name: Some("unrelated-project".into()),
                     start_ticks: 3,
                     ..sample.processes[0].clone()
@@ -590,7 +620,11 @@ mod tests {
         };
         let mut work = super::super::Workbench::new(current(sample.clone()), None);
         for key in std::iter::once(KeyCode::Char('/'))
-            .chain("CODEX 12 fixture-project".chars().map(KeyCode::Char))
+            .chain(
+                "CODEX 12 493 Sleeping fixture-project"
+                    .chars()
+                    .map(KeyCode::Char),
+            )
             .chain([KeyCode::Enter])
         {
             assert!(work.host_filter_key(key));

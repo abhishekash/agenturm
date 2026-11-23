@@ -48,6 +48,9 @@ impl HostSample {
             && self.processes.iter().all(|process| {
                 process.pid > 0
                     && process
+                        .parent_pid
+                        .is_none_or(|pid| pid > 0 && pid != process.pid)
+                    && process
                         .working_directory_name
                         .as_deref()
                         .is_none_or(HostProcess::valid_working_directory_name)
@@ -71,6 +74,9 @@ fn valid_boot_id(value: &str) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct HostProcess {
     pub pid: u32,
+    /// Parent PID observed during this sample. It does not identify a retained process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_pid: Option<u32>,
     pub start_ticks: u64,
     pub runtime: HostRuntime,
     pub state: Option<HostProcessState>,
@@ -170,12 +176,33 @@ mod tests {
     use super::*;
 
     #[test]
-    fn legacy_host_process_payload_round_trips_without_a_directory() {
+    fn legacy_host_process_payload_round_trips_without_a_directory_or_parent() {
         let prior = serde_json::json!({"pid":12,"start_ticks":1,"runtime":"codex","state":null,
             "resident_bytes":null,"user_ticks":null,"system_ticks":null});
         let process: HostProcess = serde_json::from_value(prior.clone()).unwrap();
         assert!(process.working_directory_name.is_none());
+        assert!(process.parent_pid.is_none());
         assert_eq!(serde_json::to_value(process).unwrap(), prior);
+    }
+
+    #[test]
+    fn retained_host_sample_preserves_only_a_valid_parent_pid() {
+        let mut retained = serde_json::json!({
+            "boot_id": "11111111-1111-1111-1111-111111111111", "processes_partial": false,
+            "processes": [{"pid":12,"parent_pid":9,"start_ticks":1,"runtime":"codex",
+                "state":null,"resident_bytes":null,"user_ticks":null,"system_ticks":null}]
+        });
+        let sample: HostSample = serde_json::from_value(retained.clone()).unwrap();
+        assert!(sample.is_valid());
+        assert_eq!(sample.processes[0].parent_pid, Some(9));
+        let restored: HostSample =
+            serde_json::from_slice(&serde_json::to_vec(&sample).unwrap()).unwrap();
+        assert_eq!(restored, sample);
+        for invalid in [0, 12] {
+            retained["processes"][0]["parent_pid"] = serde_json::json!(invalid);
+            let sample: HostSample = serde_json::from_value(retained.clone()).unwrap();
+            assert!(!sample.is_valid());
+        }
     }
 
     #[test]

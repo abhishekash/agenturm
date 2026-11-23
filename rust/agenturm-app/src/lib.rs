@@ -2655,14 +2655,20 @@ fn load_workspace_history(
                 findings::project(&page.snapshot, |row, snapshot_id| {
                     #[cfg(target_os = "linux")]
                     if store.allows_private_capture() {
-                        return investigate_cli::cockpit::finding_reference(
+                        if let Some(reference) = investigate_cli::cockpit::finding_reference(
                             row,
                             snapshot_id,
                             db,
                             history_identity.as_deref(),
                         )
                         .ok()
-                        .flatten();
+                        .flatten()
+                        {
+                            return Some(agenturm_ui::FindingSource::Command(reference));
+                        }
+                        if let Some(identity) = store.private_telemetry_history() {
+                            return findings::telemetry_source(row, snapshot_id, &identity);
+                        }
                     }
                     #[cfg(not(target_os = "linux"))]
                     let _ = (row, snapshot_id, &history_identity);

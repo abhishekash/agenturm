@@ -176,6 +176,7 @@ def main():
                 assert sample["cpu"]["user_ticks"] is not None
                 assert other_process.pid not in [item["pid"] for item in sample["processes"]]
                 match = next(item for item in sample["processes"] if item["pid"] == shared_process.pid)
+                assert match["parent_pid"] == os.getpid(), match
                 assert match["runtime"] == "codex" and match["resident_bytes"] > 0
                 process_keys.add((sample["boot_id"], match["pid"], match["start_ticks"]))
             assert len(process_keys) == 1

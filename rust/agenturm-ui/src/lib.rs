@@ -19,7 +19,7 @@ pub mod usage_chart;
 mod workbench;
 mod workspace;
 pub use evidence_view::{EvidenceRow, EvidenceSpec, EvidenceTable, EvidenceTables};
-pub use findings::{FindingGroup, FindingOccurrence, FindingsPage};
+pub use findings::{FindingGroup, FindingOccurrence, FindingSource, FindingsPage};
 pub use operation_table::{ConfiguredMcpServer, McpInventory, OperationRow, OperationTables};
 
 pub use live_receiver::{
@@ -50,7 +50,7 @@ pub use workspace::{
 };
 
 use agenturm_kernel::ReadSnapshot;
-use agenturm_kernel::{ExtensionId, MetricRow, ObservationKind, ObservationPosition, Snapshot};
+use agenturm_kernel::{ExtensionId, MetricRow, ObservationPosition, Snapshot};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -395,20 +395,11 @@ impl PageView {
                 .iter()
                 .rev()
                 .filter_map(|observation| {
-                    let ObservationKind::TraceSpan(span) = &observation.kind else {
-                        return None;
-                    };
-                    Some(TelemetrySpanEntry {
-                        history_identity: history_identity.clone(),
-                        source_id: observation.harness_id.clone(),
-                        native_source_id: span.target_source_id.clone(),
-                        trace_id: span.trace_id.clone(),
-                        span_id: span.span_id.clone(),
-                        session_id: observation.identity.session_id.clone()?,
-                        turn_id: observation.identity.turn_id.clone(),
-                        worker_id: observation.identity.worker_id.clone(),
-                        snapshot_id: page.snapshot.history_snapshot_id,
-                    })
+                    TelemetrySpanEntry::from_observation(
+                        observation,
+                        page.snapshot.history_snapshot_id,
+                        history_identity,
+                    )
                 })
                 .collect()
         } else {

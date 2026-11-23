@@ -1437,17 +1437,31 @@ impl Workspace {
                 .and_then(|browser| browser.inspected_occurrence())
         {
             if self.pending.is_none() && self.prompt_receiver.is_none() {
-                if let Some(reference) = occurrence.source_reference.clone()
-                    && let Some(history_identity) = view.page.history_identity.clone()
-                {
-                    let (delivery, receiver) = prompt_channel(PromptKind::Investigation);
+                let source = occurrence.inspected_source();
+                let request = match (source, view.page.history_identity.clone()) {
+                    (Some(crate::FindingSource::Command(reference)), Some(history_identity)) => {
+                        let (delivery, receiver) = prompt_channel(PromptKind::Investigation);
+                        Some((
+                            WorkCommand::RevealInvestigation {
+                                reference,
+                                history_identity: Some(history_identity),
+                                delivery,
+                            },
+                            receiver,
+                        ))
+                    }
+                    (Some(crate::FindingSource::Telemetry(span)), Some(history_identity))
+                        if span.history_identity == history_identity =>
+                    {
+                        let (delivery, receiver) = prompt_channel(PromptKind::Telemetry);
+                        Some((WorkCommand::RevealTelemetry(span, delivery), receiver))
+                    }
+                    _ => None,
+                };
+                if let Some((command, receiver)) = request {
                     self.request(
                         sender,
-                        WorkspaceRequest::Work(WorkCommand::RevealInvestigation {
-                            reference,
-                            history_identity: Some(history_identity),
-                            delivery,
-                        }),
+                        WorkspaceRequest::Work(command),
                         Change::FindingSource { cancelled: false },
                     );
                     if self.pending.is_some() {
@@ -2882,7 +2896,7 @@ mod tests {
                 rows: Vec::new(),
             },
         );
-        let occurrence = |id: &str, source_reference| crate::FindingOccurrence {
+        let occurrence = |id: &str, protected| crate::FindingOccurrence {
             position: ObservationPosition {
                 observed_at_unix_ns: 12,
                 harness_id: source.as_str().into(),
@@ -2891,7 +2905,7 @@ mod tests {
                 snapshot_id: pinned,
             },
             identity: agenturm_kernel::ObservationIdentity::session("fixture-session"),
-            source_reference,
+            source: protected,
             details: Vec::new(),
         };
         page.features.findings = Some((
@@ -2904,7 +2918,10 @@ mod tests {
                     signal: "Failed check".into(),
                     occurrences: vec![
                         occurrence("unsupported-sibling", None),
-                        occurrence("selected-check", Some(reference.into())),
+                        occurrence(
+                            "selected-check",
+                            Some(crate::FindingSource::Command(reference.into())),
+                        ),
                     ],
                 }],
                 snapshot_id: pinned,
