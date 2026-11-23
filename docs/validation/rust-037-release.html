@@ -1,0 +1,144 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust 037 Release</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / Rust 0.3.7 candidate</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-037-release.md">Markdown source ↗</a></nav><h1>Agenturm Rust 0.3.7 release validation</h1>
+<p>This draft records source and fixture qualification for the Linux release
+candidate. The joined runtime source is
+<code>2c63bb43971b1c21a60a9ecfc83f6d30b7b35275</code>. Each check below names the source,
+fixture, or previously published package it exercised. The exact 0.3.7 archive
+and its executable digests remain pending.</p>
+<h2>Retained workflows</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Workflow</th>
+<th>Source qualification</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Private span JSONL import</td>
+<td>The collector admitted explicitly selected, bounded text with its exact telemetry span. Local process tests checked native binding and standalone capture, legacy agent-harness field selection, replay, changed-body conflict, metadata-only reimport, and atomic rejection of oversized text. The separate-principal guest checked private preview, body-free metadata, replay after prune, and restore. <code>agenturm-037-jsonl-vault-guest.log</code>, <code>agenturm-037-telemetry-history-cli.log</code></td>
+</tr>
+<tr>
+<td>Current evaluation inventory</td>
+<td><code>evals --list</code>, <code>broker evals --list</code>, and authenticated <code>GET /api/outcomes</code> listed the latest retained outcome per exact source and trace. The fixture exercised correction, same-ID spans in different sources, mixed allowed and denied source sets, numeric zero and absent scores, and private text exclusion. It checked complete-or-error behavior at the key limit, HTTP 413, prune, and same-port restore. <code>agenturm-037-eval-inventory-tracked-kvm.log</code>, <code>agenturm-037-eval-store.log</code>, <code>agenturm-037-eval-process.log</code></td>
+</tr>
+<tr>
+<td>Explicit Python receiver attach</td>
+<td>The Rust cockpit and Attention client attached to the unchanged Python <code>v0.2.8</code> receiver on loopback with the explicit protocol option. At 120×32 and 60×18, the cockpit scoped Activity, Traces and Pending to the selected session and returned to the original roster selection. The guest exercised complete versus partial lifecycle evidence, exact request resolution, protocol and identity denial, and body-free output. <code>agenturm-037-legacy-quit-kvm.log</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>The Python receiver client rejects a different lifecycle occurrence that
+reuses a sender sequence already seen on another request, even after the
+receiver has dropped that request from its inventory. A unit regression checks
+that the conflicting refresh leaves pending evidence unchanged. The
+stalled-read fixture held an HTTP request open and verified that <code>q</code> and
+Ctrl-C still exited at 120×32 and 60×18 and restored the original termios.
+These checks use source-built executables. <code>bc1e5fc</code>, <code>2c63bb4</code>,
+<code>agenturm-037-legacy-stalled-quit.log</code>, <code>agenturm-037-legacy-quit-kvm.log</code></p>
+<h2>Private telemetry selection</h2>
+<p>Rust 0.3.5 and 0.3.6 could interpret a saved telemetry selector from one
+fresh history in another history with the same source, span, session and
+numeric watermark. A synthetic reproduction opened different text. Each
+history required its own current grant.</p>
+<p>The candidate fix in <code>c1d2a28</code> checks the issuing history identity and
+snapshot inside the existing grant fence. A restored branch needs a fresh
+snapshot and approval.
+Older selection files without <code>history_identity</code> fail with refresh guidance.
+Run <code>trace-payload snapshot</code> against the intended history and copy its
+<code>history_identity</code> and <code>snapshot_id</code> together. The fix uses the history
+identity already stored by Rust.</p>
+<p>Eleven JSONL CLI process tests and two Store telemetry tests passed. The
+distinct-UID guest also rejected a wrong history identity and the older
+selector format. It verified restore, replay, retention, and terminal
+redaction on Escape, <code>q</code>, and Ctrl-C. The imported JSONL fixture belonged to
+the collector with mode <code>0600</code>, and the reader's direct file open failed with
+<code>PermissionError</code>. <code>agenturm-037-telemetry-history-cli.log</code>,
+<code>agenturm-037-telemetry-history-store.log</code>, <code>agenturm-037-telemetry-history-kvm.log</code></p>
+<h2>Completed source and installer checks</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+<th>Qualification host log</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Final joined Rust workspace</td>
+<td>At frozen runtime <code>2c63bb4</code>, 602 tests passed across 93 suites, with zero failures and zero ignored tests.</td>
+<td><code>agenturm-037-final-workspace.log</code></td>
+</tr>
+<tr>
+<td>Earlier joined Rust workspace</td>
+<td>600 tests passed across 93 suites, with zero failures and zero ignored tests.</td>
+<td><code>agenturm-037-joined-workspace.log</code></td>
+</tr>
+<tr>
+<td>Earlier joined strict Clippy</td>
+<td>The all-target workspace check passed with warnings denied.</td>
+<td><code>agenturm-037-joined-clippy.log</code></td>
+</tr>
+<tr>
+<td>Opt-in installer fixture</td>
+<td>All 14 offline installer tests passed. Coverage included verified replay, release ownership, preservation of existing user files, and uninstall preflight.</td>
+<td><code>agenturm-037-installer-final-tests.log</code></td>
+</tr>
+<tr>
+<td>Installer with published archives</td>
+<td>The opt-in installer used checksum-verified Linux x86-64 packages for 0.3.5 and 0.3.6. Upgrade, same-release replay, history queries and uninstall passed. The history database and an extra file under the release directory kept their verified bytes.</td>
+<td><code>agenturm-037-exact-installer-ownership.log</code>, <code>agenturm-037-exact-installer-upgrade.log</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>The source and fixture logs are retained under <code>/tmp</code> on the qualification
+host. The installer archive check above covers the published 0.3.5 and 0.3.6
+packages. The default Rust cutover remains gated and the installer is opt-in.</p>
+<h2>Pending final gates</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Gate</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Joined runtime lint and binary checks</td>
+<td>Pending final formatting, strict Clippy and complete binary build sign-off for the frozen source.</td>
+</tr>
+<tr>
+<td>Mandatory CI</td>
+<td>Pending the final source run, including bridge compatibility and the mandatory vendor SDK jobs.</td>
+</tr>
+<tr>
+<td>Linux x86-64 release archive</td>
+<td>Pending exact archive checksum, executable digests and packaged qualification.</td>
+</tr>
+<tr>
+<td>Native Linux ARM64 release archive</td>
+<td>Pending the native runner results, archive checksum and qualified release attachment.</td>
+</tr>
+<tr>
+<td>Managed installation</td>
+<td>Pending exact 0.3.7 install, prior-release upgrade, restart, backup and uninstall with retained history.</td>
+</tr>
+<tr>
+<td>Exact-archive D3 keyboard journeys</td>
+<td>Pending retained, strict, and MCP follow-up checks at 120×32 and 60×18, including terminal restoration.</td>
+</tr>
+</tbody>
+</table></div>
+<ul>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-036-release.md">Published Rust 0.3.6 validation</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-distribution-installation.md">Rust distribution and installation</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-linux-bundle.md">Linux bundle and upgrade guide</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md">Broker operations and private approvals</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">Retained workflow inventory</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md">Rust-only implementation gates</a></li>
+</ul>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
