@@ -273,7 +273,9 @@ mod tests {
         let id = agenturm_kernel::ExtensionId::parse("otlp.fixture").unwrap();
         let project = |span: &[u8]| {
             let export = message(1, &message(2, &message(2, span)));
-            super::super::decode_protobuf(&export, &id, None).unwrap().0
+            super::super::decode_protobuf(&export, &id, None, None)
+                .unwrap()
+                .0
         };
         let rows = project(&span);
         assert_eq!(rows.len(), 2);
