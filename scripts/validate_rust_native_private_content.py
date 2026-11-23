@@ -54,6 +54,13 @@ def drop(uid,gid=GID,groups=()):
         os.setuid(uid)
     return prepare
 
+def select_private_session(master, until, body):
+    until('Agenturm command center', '› ', forbidden=(body,))
+    os.write(master, b'/')
+    until('Backspace edit', forbidden=(body,))
+    os.write(master, b'private-session\r')
+    until('Agenturm command center', ' / private-session', 'Enter inspect', '› ', forbidden=(body,))
+
 def cockpit_investigate(endpoint, home, binding, columns, lines):
     body = 'Review the bounded broker fixture'
     master, slave = pty.openpty()
@@ -81,7 +88,7 @@ def cockpit_investigate(endpoint, home, binding, columns, lines):
 
     revoke = None
     try:
-        until('Agenturm', 'private-session', absent=(body,))
+        select_private_session(master, until, body)
         os.write(master, b'\x06')
         until('Investigate retained history', 'Failures', 'harness.pi / private-session')
         os.write(master, b's\r')
@@ -107,7 +114,10 @@ def cockpit_investigate(endpoint, home, binding, columns, lines):
         os.write(master, b'\r')
         until('Current approved source evidence is unavailable', forbidden=protected)
         os.write(master, b'\x1b')
-        until('Agenturm', 'private-session', absent=(body, 'Investigate retained history'))
+        until('Agenturm command center', ' / private-session', 'Enter inspect', '› ',
+              forbidden=(body,), absent=('Investigate retained history',))
+        os.write(master, b'\r')
+        until('Session overview', 'Source', 'harness.pi', 'Session', 'private-session', forbidden=(body,))
         os.write(master, b'q')
         assert child.wait(timeout=10) == 0
         assert termios.tcgetattr(slave) == original
@@ -325,18 +335,27 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
             fcntl.ioctl(slave,termios.TIOCSWINSZ,struct.pack('HHHH',18,60,0,0))
             original_termios=termios.tcgetattr(slave)
             cockpit=subprocess.Popen([APP,'broker','cockpit','--broker-config',endpoint],preexec_fn=drop(READER),stdin=slave,stdout=slave,stderr=slave,env={'HOME':str(home),'PATH':'','TERM':'xterm-256color'})
-            def screen_until(expected):
-                screen=b'';deadline=time.monotonic()+15
-                while time.monotonic()<deadline:
-                    if select.select([master],[],[],.1)[0]:screen+=os.read(master,65536)
-                    if expected in screen:return screen
-                    assert cockpit.poll() is None,screen
-                raise AssertionError((expected,screen))
+            screen = TerminalCells(60, 18)
+            def screen_until(*markers, forbidden=()):
+                deadline = time.monotonic() + 15
+                while time.monotonic() < deadline:
+                    if select.select([master], [], [], .05)[0]:
+                        screen.feed(os.read(master, 65536))
+                    frame = screen.contents()
+                    assert all(marker not in frame for marker in forbidden), (forbidden, frame)
+                    if all(marker in frame for marker in markers):
+                        return
+                    assert cockpit.poll() is None, frame
+                raise AssertionError((markers, screen.contents()))
             revoke=None
             try:
-                screen_until(b'private-session')
-                os.write(master,b'P');screen_until(b'prompt-1')
-                os.write(master,b'\r');screen_until(b'Review the bounded broker fixture')
+                body = 'Review the bounded broker fixture'
+                select_private_session(master, screen_until, body)
+                os.write(master, b'P')
+                screen_until('Agenturm / Prompts', 'harness.pi', 'private-session', 'prompt-1',
+                             'Enter reveal', forbidden=(body,))
+                os.write(master, b'\r')
+                screen_until('Granted prompt', body)
                 revoke=subprocess.Popen([APP,'broker','grant','revoke','--binding',binding,'--broker-config',endpoint],preexec_fn=drop(ADMIN),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
                 time.sleep(.3)
                 assert revoke.poll() is None,'revocation completed before terminal redaction'
@@ -344,16 +363,17 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
                 output,errors=revoke.communicate(timeout=10)
                 assert revoke.returncode==0,(output,errors)
                 if close_key==b'\x1b':
-                    time.sleep(.2)
-                    os.write(master,b'\x1b');time.sleep(.2);os.write(master,b'q')
+                    screen_until('Agenturm / Prompts', 'Enter reveal', forbidden=(body,))
+                    os.write(master, b'\x1b')
+                    screen_until('Agenturm command center', ' / private-session', forbidden=(body,))
+                    os.write(master,b'q')
                 assert cockpit.wait(timeout=10)==0
-                after=b''
                 while select.select([master],[],[],.05)[0]:
-                    try: after+=os.read(master,65536)
+                    try: screen.feed(os.read(master,65536))
                     except OSError: break
-                assert b'Prompts' in after,after
-                assert b'\x1b[?1049l' in after,after
-                assert after.index(b'Prompts')<after.index(b'\x1b[?1049l'),after
+                assert screen.departed is not None and body not in screen.departed, screen.departed
+                if close_key != b'\x1b':
+                    assert 'Agenturm / Prompts' in screen.departed, screen.departed
                 assert termios.tcgetattr(slave)==original_termios
             finally:
                 if cockpit.poll() is None:cockpit.kill();cockpit.wait(timeout=5)

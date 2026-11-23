@@ -93,11 +93,11 @@ def cockpit_preview(args, principal, state, *, columns, rows, close):
         raise AssertionError((markers, screen.contents()))
 
     try:
-        until("Agenturm command center", SESSION)
+        until("Agenturm command center", "› ")
         os.write(master, b"4")
         until("Traces", TRACE, "d captured text")
         os.write(master, b"d")
-        until("Captured span text", SPAN, "Enter reveal")
+        until("Captured span text", SPAN, SESSION, "Enter reveal")
         os.write(master, b"\r")
         frame = until("Producer-captured text", INPUT, OUTPUT, public=False)
         assert UNRELATED not in frame

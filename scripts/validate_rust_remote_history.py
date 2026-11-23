@@ -116,27 +116,35 @@ def assert_seen_in_cockpit(command, drop, env, root):
     terminal = TerminalCells(60, 18)
     raw = bytearray()
 
-    def screen_until(needle):
+    def screen_until(*needles):
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
             if select.select([master], [], [], 0.1)[0]:
                 chunk = os.read(master, 8192)
                 raw.extend(chunk)
                 terminal.feed(chunk)
-            assert PROMPT.encode() not in raw
-            if needle.decode() in terminal.contents():
+            frame = terminal.contents()
+            assert PROMPT.encode() not in raw and PROMPT not in frame
+            text = "\n".join(" ".join(line.split()) for line in frame.splitlines())
+            if all(needle in text for needle in needles):
                 return
-            assert process.poll() is None, terminal.contents()
-        raise AssertionError((needle, terminal.contents()))
+            assert process.poll() is None, frame
+        raise AssertionError((needles, terminal.contents()))
 
     try:
-        screen_until(b"Agenturm command center")
-        os.write(master, b"/" + SESSION.encode() + b"\r")
-        screen_until((CODEX + " / " + SESSION).encode())
+        screen_until("Agenturm command center", "› ")
+        os.write(master, b"/")
+        screen_until("Backspace edit")
+        os.write(master, SESSION.encode() + b"\r")
+        screen_until("Agenturm command center", f"/ {SESSION}", "› ", "Enter inspect")
+        os.write(master, b"\r")
+        screen_until("Session overview", f"Source {CODEX}", f"Session {SESSION}")
+        os.write(master, b"\x1b")
+        screen_until("Agenturm command center", f"/ {SESSION}", "› ", "Enter inspect")
         os.write(master, b"w")
-        screen_until(b"Pending")
+        screen_until("Workflow", "Pending", SESSION)
         os.write(master, b"s")
-        screen_until(b"seen")
+        screen_until("Pending · seen", SESSION)
         os.write(master, b"q")
         assert process.wait(timeout=8) == 0
         assert termios.tcgetattr(slave) == original
