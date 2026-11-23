@@ -1,6 +1,6 @@
 # Rust cutover workflow inventory
 
-Baseline is the Python `v0.2.8` tag and the published Rust 0.3.1 Linux bundle. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.
+Baseline is the Python `v0.2.8` tag and the published Rust 0.3.7 Linux bundle. Rust 0.3.8 UI changes below are a candidate pending integrated qualification. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.
 
 The current implementation scope retains the remaining workflows. Remote
 receiver access, remaining eval views, automatic retention, recorded cost and
@@ -44,6 +44,24 @@ to the same service, session, and actor. Legacy task fields can contain
 captured prompts, so the live roster leaves those fields outside its labels.
 
 
+### Command-center first screen
+
+The Rust 0.3.8 candidate opens with a full-width task table, aligned status
+and updated columns, and project path headings with counts. `Tab` and
+`Shift+Tab` select All, Needs you, Working, Ready or Inactive; counts apply to
+the loaded evidence page and unknown states remain explicit. `G` cycles
+project, source and ungrouped views. Project headings use the exact linked
+operator task workspace when available; missing paths stay **Project unavailable**.
+No path is inferred from prompt text or process cwd. `Enter` opens the
+selected inspector; `Esc` preserves the group, filter and exact source/session.
+Use `Show more` or `]` for the next recorded page.
+
+`c` requests clipboard copy of bounded loaded metadata. Terminal support and
+permission determine whether it reaches the clipboard. `x` opens a directory
+form, then writes Markdown, HTML and JSON into a new private directory. It
+never overwrites a destination, reads additional source content or exports a
+private modal body. Query and form inputs own printable keys.
+
 ### Cockpit keyboard navigation
 
 `1` Agents · `2` Activity · `3` MCP · `4` Traces · `5` Host · `6` Metrics · `7` Findings. `9` opens Operations, `U` opens workspace Usage, and `H` opens live local Host information. `8` remains a trace shortcut. On a selected session, `t` opens its exact linked Traces and `T` selects a recorded turn when available.
@@ -51,6 +69,8 @@ captured prompts, so the live roster leaves those fields outside its labels.
 `Ctrl+R` opens Review for the selected session. `m` cycles the session overview, prompt index, and recorded Activity details. `P` opens the grant-controlled prompt index directly. In MCP, `m` opens a recorded payload selection when available. `M` opens that selection from another eligible pane. In Traces, `d` opens captured text selection when available. Outside that context `d` opens recorded diagnostics, which are also available with `D`.
 
 `Ctrl+F` opens Investigate from the Agents roster or a retained history view. Use `Tab` to choose Failures, Instruction, Path, Command, or Failed command. From a selected session or turn, `s` lets Failures search all authorized sources. `Enter` searches and `PgDn` continues at the same snapshot. The results show occurrence metadata and page coverage. `Enter` on a result with source evidence opens a protected view after checking the current grant and exact retained source. `Esc` closes that view, then returns from Investigate to the same selection. An attached Rust HTTP receiver supports Failures metadata. Protected searches and evidence require local or broker history. The legacy Python receiver attachment supplies live metadata and has no retained investigation view.
+
+`z` switches an open user prompt between Readable and original captured layout; both use the same already granted text and fixed 25-second display lifetime. Original layout preserves captured newlines and tab stops and allows horizontal scrolling. This does not reveal uncaptured source envelopes or affect other private viewers.
 
 `p` pauses or resumes automatic refresh. `R` refreshes on demand. `[` moves to a loaded newer page, `]` reads an older page, and `l` returns to the latest page within the current scope. `a` resets the roster filters. `f` switches between tree and flat views, `o` changes the sort, and `!` shows sessions needing attention. `Esc` closes the current overlay or returns to the previous view. `F1` or `?` opens keyboard help.
 

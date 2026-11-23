@@ -2,9 +2,9 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Rust 0.3.6</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cockpit-workflow-coverage.md">Markdown source ↗</a></nav><h1>Rust cockpit workflow coverage</h1>
-<p>This comparison uses the tagged Python cockpit <code>v0.2.8</code> and the published
-Rust cockpit, including development changes after <code>rust-v0.2.0</code>. Python
+</style></head><body><main><nav><strong>Agenturm / Rust 0.3.8 candidate</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cockpit-workflow-coverage.md">Markdown source ↗</a></nav><h1>Rust cockpit workflow coverage</h1>
+<p>This comparison uses the tagged Python cockpit <code>v0.2.8</code>, the published
+Rust 0.3.7 cockpit, and explicitly identified Rust 0.3.8 UI candidate changes. Python
 workflows come from the tagged release documentation. The published Rust
 archive and its qualification are recorded below.
 The coverage below concerns workflow behavior and recorded evidence.
@@ -30,7 +30,7 @@ The coverage below concerns workflow behavior and recorded evidence.
 <tr>
 <td>Locate a session or worker</td>
 <td>Agents provides search, Today and History filters, and an expandable hierarchy.</td>
-<td>Agents refreshes every three seconds on the newest catalog page. It provides search, paging, recorded-state filters, sorting, and expandable explicit delegation on the current page.</td>
+<td>The 0.3.8 candidate opens a full-width Agenturm command center. It groups exact session tasks by explicit linked operator workspace, source, or no group; unknown project metadata stays labeled unavailable. Status filters and counts cover the loaded page, including unknown states. Search, selectable Show more, sorting and explicit delegation preserve source/session identity. The newest page refreshes every three seconds unless paused.</td>
 </tr>
 <tr>
 <td>Read state and reason</td>
@@ -50,7 +50,7 @@ The coverage below concerns workflow behavior and recorded evidence.
 <tr>
 <td>Read prompts</td>
 <td>The Prompts navigator provides recorded requests, readable and original views, and pagination.</td>
-<td>Message roles appear in Activity. <code>P</code> lists eligible user prompt references for pinned Pi, Codex, Claude Code, Kiro, and OpenCode sources. Enter reveals the exact event under the current grant. Escape clears the view. Retained JSONL batches and supported OpenCode SQLite sweeps carry their own proofs. Older OpenCode prompt text can be revealed when the retained row still matches the current source bytes.</td>
+<td>Message roles appear in Activity. <code>P</code> lists eligible user prompt references for pinned Pi, Codex, Claude Code, Kiro, and OpenCode sources. Enter reveals the exact event under the current grant. <code>z</code> switches the same granted text between Readable and original captured layout in the 0.3.8 candidate; it does not extend the fixed display lifetime. Escape clears the view. Retained JSONL batches and supported OpenCode SQLite sweeps carry their own proofs. Older OpenCode prompt text can be revealed when the retained row still matches the current source bytes.</td>
 </tr>
 <tr>
 <td>Check usage or host health</td>
@@ -60,15 +60,31 @@ The coverage below concerns workflow behavior and recorded evidence.
 <tr>
 <td>Handle requests and preserve follow-up work</td>
 <td>Workflow surfaces requests, owner and local seen state. Saved tasks, decisions, linked runs and handoff export support follow-up.</td>
-<td><code>w</code> shows recorded Codex and Kiro requests. Local seen state survives restart. Explicit routing can focus a uniquely verified Linux tmux pane. <code>b</code> opens saved tasks with exact run links, optional Git context, and Markdown and HTML handoff export.</td>
+<td><code>w</code> shows recorded Codex and Kiro requests. Local seen state survives restart. The 0.3.8 <code>X</code> action checks the selected exact current request, offers a chooser for multiple workers, and never resolves native lifecycle state. Explicit routing can focus a uniquely verified Linux tmux pane. <code>b</code> opens saved tasks with exact run links, optional Git context, and Markdown and HTML handoff export.</td>
 </tr>
 <tr>
 <td>Use the keyboard in a compact terminal</td>
 <td>Global shortcuts and focus controls support compact layouts.</td>
-<td>Root shortcuts select Activity, MCP, Operations, Findings, Host, Usage and Traces. At 60 columns the roster uses one pane and detail opens separately. Wide terminals show a selected-session preview.</td>
+<td>Root shortcuts select Activity, MCP, Operations, Findings, Host, Usage and Traces. The 0.3.8 command center uses a full-width task list at 120, 80 and 60 columns. Enter opens the selected inspector; Escape restores the same group, filter and task. The protected investigation overlay owns query typing, and loaded-view copy/export includes metadata only.</td>
 </tr>
 </tbody>
 </table></div>
+<h2>Rust 0.3.8 UI candidate</h2>
+<p>This candidate is not a published release. The first screen follows the user's
+command-center reference with Agenturm branding and colors. <code>Tab</code> selects All,
+Needs you, Working, Ready and Inactive. Unknown state counts remain explicit.
+<code>G</code> cycles Project, Source and None without changing the exact selected session.
+Project paths come only from the exact operator-linked saved task workspace;
+that provenance remains explicit. No prompt, edit path or process cwd is used
+to invent a project or task title.</p>
+<p><code>Ctrl+F</code> searches retained failure metadata and explicitly granted source
+evidence. <code>c</code> copies bounded loaded metadata through a terminal clipboard
+request, and <code>x</code> writes a new private Markdown/HTML/JSON export directory.
+Export never overwrites a destination and is labeled as a loaded view rather
+than an evidence receipt. Private prompt, edit, MCP, span and eval bodies stay
+inside their existing grant-fenced viewers.</p>
+<p>Final integrated acceptance is tracked in the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md">execution plan</a>.
+Comparative performance benchmarking remains deferred, and default cutover is gated.</p>
 <h2>Cockpit patch acceptance</h2>
 <p>The local cockpit candidate opened Agents from the bare executable at 60×18
 with empty state. Two fixture files added while the cockpit was open produced

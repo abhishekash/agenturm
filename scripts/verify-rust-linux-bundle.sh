@@ -233,7 +233,7 @@ verify_default_cockpit() {
     local cockpit_db="$cockpit_home/.local/state/agenturm-rust/history.sqlite"
     local cockpit_config="$state/cockpit-sources.json"
     local transcript="$state/cockpit.txt"
-    local keyboard="$state/cockpit-keys" keyboard_fd status=0
+    local keyboard="$state/cockpit-keys" keyboard_fd status=0 attempt
     local -a cockpit_isolated=(env -i HOME="$cockpit_home" PATH="$empty_path" "$agenturm")
     mkdir -p -- "$cockpit_codex" "$cockpit_pi"
     mkfifo -- "$keyboard"
@@ -245,7 +245,7 @@ verify_default_cockpit() {
             exec env -i HOME="$AGENTURM_TEST_HOME" PATH="$AGENTURM_TEST_PATH" TERM=xterm-256color "$AGENTURM_TEST_BIN"
         ' "$transcript" < "$keyboard" > /dev/null &
     watch_pid=$!
-    if ! wait_for_live_check grep -aFq 'Agenturm  /  Agents' "$transcript" ||
+    if ! wait_for_live_check grep -aFq 'Agenturm command center' "$transcript" ||
         ! wait_for_live_check query_empty_history "$cockpit_db"; then
         echo "Bare cockpit did not open the empty Agents workspace" >&2
         return 1
@@ -256,7 +256,20 @@ verify_default_cockpit() {
         echo "Bare cockpit did not collect both newly arrived sessions" >&2
         return 1
     fi
-    printf r >&"$keyboard_fd"
+    printf R >&"$keyboard_fd"
+    # The command center shows readable titles. Exact source/session IDs are
+    # exposed by selection and the inspector, so exercise both loaded rows.
+    for ((attempt = 0; attempt < 25; attempt++)); do
+        if grep -aFq 'bundle-codex-session' "$transcript" &&
+            grep -aFq 'bundle-pi-session' "$transcript"; then
+            break
+        fi
+        printf '\r' >&"$keyboard_fd"
+        sleep 0.2
+        printf '\033' >&"$keyboard_fd"
+        sleep 0.1
+        printf '\033[B' >&"$keyboard_fd"
+    done
     wait_for_live_check grep -aFq 'bundle-codex-session' "$transcript"
     wait_for_live_check grep -aFq 'bundle-pi-session' "$transcript"
     printf q >&"$keyboard_fd"

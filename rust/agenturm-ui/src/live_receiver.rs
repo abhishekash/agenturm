@@ -561,6 +561,7 @@ mod tests {
             include_reviews: false,
             notice: None,
             error: None,
+            investigation_notice: false,
         };
         view.set_page(Ok(LivePage {
             sessions: vec![row(review.clone(), true), row(regular.clone(), false)],

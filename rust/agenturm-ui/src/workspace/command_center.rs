@@ -102,7 +102,9 @@ fn filter_lines(agents: &AgentList, width: u16) -> Vec<Line<'static>> {
 }
 
 fn status(row: &RecordedSession) -> &str {
-    if row.pending_requests.iter().any(|request| !request.seen) { return "Needs you"; }
+    if row.pending_requests.iter().any(|request| !request.seen) {
+        return "Needs you";
+    }
     match row.state.as_deref() {
         Some("failed") => "Error",
         Some("interrupted" | "waiting" | "blocked") => "Needs you",
@@ -154,7 +156,7 @@ pub(super) fn draw(
             if agents.editing { "▏" } else { "" }
         )
     } else if area.width >= 110 {
-        format!(" {}", keymap::navigation_hints(&keymap::NAVIGATION))
+        format!(" {}", keymap::navigation_hints(keymap::NAVIGATION))
     } else {
         format!(
             " {} · F1 more",

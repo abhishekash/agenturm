@@ -2,8 +2,8 @@
 
 use super::*;
 use crate::keymap::{self, Destination};
-use crate::workbench::{PromptKind, PromptReceiver, WorkInput, Workbench, prompt_channel};
 use crate::workbench::investigation::{Investigation, InvestigationInput};
+use crate::workbench::{PromptKind, PromptReceiver, WorkInput, Workbench, prompt_channel};
 use agenturm_kernel::{ReadSnapshot, RelationshipKind};
 use ratatui::buffer::CellWidth;
 use ratatui::widgets::{Row, Table, TableState};
@@ -158,7 +158,10 @@ impl Filter {
         let state = session.state.as_deref();
         match self {
             Self::All => true,
-            Self::Active => !Self::Attention.accepts(session) && matches!(state, Some("running" | "started" | "restored")),
+            Self::Active => {
+                !Self::Attention.accepts(session)
+                    && matches!(state, Some("running" | "started" | "restored"))
+            }
             Self::Attention => {
                 session.pending_requests.iter().any(|request| !request.seen)
                     || matches!(
@@ -166,8 +169,13 @@ impl Filter {
                         Some("failed" | "interrupted" | "waiting" | "blocked")
                     )
             }
-            Self::Finished => !Self::Attention.accepts(session) && matches!(state, Some("completed" | "ended")),
-            Self::Inactive => !Self::Attention.accepts(session) && matches!(state, Some("idle" | "stopped" | "cancelled" | "closed")),
+            Self::Finished => {
+                !Self::Attention.accepts(session) && matches!(state, Some("completed" | "ended"))
+            }
+            Self::Inactive => {
+                !Self::Attention.accepts(session)
+                    && matches!(state, Some("idle" | "stopped" | "cancelled" | "closed"))
+            }
             Self::ToReview => {
                 !session.reviewed
                     && matches!(
@@ -2246,7 +2254,8 @@ mod tests {
         else {
             panic!("expected an investigation request from the roster");
         };
-        assert_eq!(read.query, "cxq");    }
+        assert_eq!(read.query, "cxq");
+    }
 
     #[test]
     fn numeric_shortcuts_route_recorded_views_and_return_to_the_same_agent() {
