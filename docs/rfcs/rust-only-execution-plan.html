@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 0.3.1</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md">Markdown source ↗</a></nav><h1>Rust-only Agenturm execution plan</h1>
+</style></head><body><main><nav><strong>Agenturm / Rust 0.3.7 candidate</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md">Markdown source ↗</a></nav><h1>Rust-only Agenturm execution plan</h1>
 <p>Status: scope reset on 21 November 2026 at the user's direction. This document supersedes the Python-bridge, compatibility, and migration portions of <code>rust-plugin-kernel-plan.md</code> for all future implementation.</p>
 <h2>Product decision</h2>
 <p>Agenturm is being rebuilt as a Rust application. Python is not part of the target runtime. Do not preserve Python runtime compatibility, create dual-runtime paths, route Python clients through a Rust bridge, or build data-migration tooling. The Rust application starts with its own clean data directory. Existing Python-era state is out of scope for automatic import.</p>
@@ -80,6 +80,17 @@ view. A real OpenTelemetry SDK verified protobuf ingestion. The published
 download matched the qualified archive and its SHA-256.</p>
 <p><a href="https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.1">Release</a> ·
 <a href="https://github.com/abhishekash/agenturm/actions/runs/45024901558">Tagged build</a></p>
+<p><strong>Rust 0.3.6 qualified and published on Linux x86-64 and ARM64.</strong> The tag
+points to <code>67eb65056c23c7490b5b0c235bedecc3c73fb617</code>. Both architecture
+jobs passed archive qualification. The exact x86-64 package additionally
+passed the 0.3.5 schema upgrade, managed user service, separate-principal
+private evidence and broker checks, and retained keyboard journeys at
+120×32 and 60×18. Read-only histories remain unchanged; the first writer
+upgrades to schema 17, which Rust 0.3.5 refuses. Rollback requires a
+pre-upgrade backup. The default entry-point switch remains gated.</p>
+<p><a href="https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.6">Release</a> ·
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-036-release.md">Validation</a> ·
+<a href="https://github.com/abhishekash/agenturm/actions/runs/45105969055">Tagged build</a></p>
 <h3>Step 6 — Add connector runtime support after the Rust release gates</h3>
 <p>Use the existing inbound admission path and the connector API as the starting point. Wire explicit grants and supervised processes, then add durable outbound delivery and reconciliation.</p>
 <p><strong>Acceptance.</strong> Use isolated fake sources and sinks to prove revocation, replay, stable idempotency keys and recovery after an ambiguous send. Apply OS isolation and credential boundaries before enabling untrusted connector executables.</p>
@@ -115,13 +126,13 @@ gated on OS isolation and credential control.</p>
 </tr>
 <tr>
 <td>Storage and recovery</td>
-<td>Atomic records and cursors, crash replay, writer leases, and portable workspace backup/restore are exercised. Restore preserves review and workbench state and disables private-content approvals.</td>
-<td>A standalone broker must serve observation admission, queries, grants, and retention under a distinct principal. The available host denied user-namespace mapping and offered no noninteractive secondary UID. The feature-off service tests exercised their own contracts and refused standalone history writes.</td>
+<td>Atomic records and cursors, crash replay, writer leases, and portable workspace backup/restore are exercised. Separate-principal Linux guests verified broker admission, reader queries, grants, retention, backup/restore and private disclosure fences. Restore preserves review and workbench state and disables private-content approvals.</td>
+<td>Qualify the supported production connector against the deployed storage and child isolation boundary. Current source allowlists and private-content approvals remain required.</td>
 </tr>
 <tr>
 <td>Release and compatibility</td>
-<td>The published Rust 0.3.1 archive passed Ubuntu 24.04.5 x86-64 install, restart, history upgrade, and uninstall.</td>
-<td>Additional operating systems and architectures remain unqualified.</td>
+<td>Rust 0.3.6 is published for Linux x86-64 and ARM64. Native archive jobs passed install, restart, history upgrade, backup and retained-history uninstall; x86-64 additionally passed packaged private evidence and terminal workflows.</td>
+<td>Additional operating systems remain unqualified. The retained remote compatibility and import inventory still gates the default entry point.</td>
 </tr>
 <tr>
 <td>Connector runtime</td>
@@ -138,7 +149,7 @@ gated on OS isolation and credential control.</p>
 <h2>Current blockers</h2>
 <ul>
 <li>Full harness parity still needs the unsupported native evidence identified in the coverage matrix. Private-content delivery covers bounded retained Pi, Codex, Claude Code, and Kiro JSONL receipts, plus OpenCode SQLite rows whose retained admission digests still match the native source.</li>
-<li>The collector and child adapters share an OS user. A separate storage authority or child isolation remains necessary for untrusted executables.</li>
-<li>Ubuntu 24.04 x86-64 is the qualified release platform. Other platforms require their own release checks.</li>
+<li>The trusted local collector and child adapters share an OS user. Separate-principal broker workflows are qualified in Linux guests; untrusted production connectors still require their supported endpoint and deployed isolation qualification.</li>
+<li>Linux x86-64 and ARM64 archives are qualified. Other operating systems require their own release checks.</li>
 </ul>
 <footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
