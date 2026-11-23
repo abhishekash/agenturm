@@ -61,7 +61,7 @@ const PROCESSES: EvidenceSpec = EvidenceSpec {
 };
 
 const PROCESS_HISTORY: EvidenceSpec = EvidenceSpec {
-    title: "Process history · loaded samples",
+    title: "Recorded process history · loaded samples · not live",
     inspector: "Process inspector",
     columns: &[("Sample", 3), ("Cwd", 5), ("RAM", 3), ("CPU ticks", 3)],
     empty: "No samples for this exact process.",
@@ -326,8 +326,16 @@ impl HostLevel {
             Self::Processes(index) => {
                 let data = sample(page, index).map(|(_, data)| data);
                 let mut spec = PROCESSES;
+                if !inventory {
+                    spec.title = "Recorded host processes · not live";
+                    spec.inspector = "Recorded process";
+                }
                 if data.is_some_and(|data| data.processes_partial) {
-                    spec.title = "Host processes · partial";
+                    spec.title = if inventory {
+                        "Host processes · partial"
+                    } else {
+                        "Recorded host processes · partial · not live"
+                    };
                 }
                 if filter.active() {
                     spec.empty = "No matching processes in this sample.";
@@ -342,9 +350,7 @@ impl HostLevel {
                         })
                         .collect(),
                 );
-                if inventory {
-                    table.context = inventory_context(page, index);
-                }
+                table.context = provenance(page, index, inventory);
                 Presentation {
                     table,
                     keys: filter
@@ -370,9 +376,19 @@ impl HostLevel {
                         })
                         .collect(),
                 );
-                if inventory {
-                    table.context = inventory_context(page, sample);
-                }
+                table.context = inventory_context(page, sample);
+                table.context.push(detail(
+                    "Latest loaded sample",
+                    match newest_presence(page, sample, process) {
+                        Some(true) => {
+                            "Present in the newest loaded sample for this exact source and boot"
+                        }
+                        Some(false) => {
+                            "Not present in the newest loaded sample · exited or unreadable"
+                        }
+                        None => "Exact process identity is unavailable in loaded samples",
+                    },
+                ));
                 Presentation {
                     table,
                     keys: "Esc processes",
@@ -383,11 +399,18 @@ impl HostLevel {
 }
 
 fn inventory_context(page: &ObservationPage, index: usize) -> Vec<MetricRow> {
+    provenance(page, index, true)
+}
+
+/// Source, viewer-clock age and recorded timestamp. Hostname is only shown
+/// where the exact recorded sample can supply it without displacing process
+/// evidence on compact terminals.
+fn provenance(page: &ObservationPage, index: usize, hostname: bool) -> Vec<MetricRow> {
     let Some((row, sample)) = sample(page, index) else {
         return Vec::new();
     };
     let mut context = recorded_context(row.harness_id.as_str(), row.observed_at_unix_ns);
-    if let Some(hostname) = &sample.hostname {
+    if hostname && let Some(hostname) = &sample.hostname {
         context.push(detail("Hostname", hostname));
     }
     context
@@ -431,6 +454,35 @@ fn occurrences(
             .find(|process| process.pid == pid && process.start_ticks == start_ticks)?;
         Some((row, data, process))
     })
+}
+
+/// Whether the exact source/boot/pid/start identity appears in the newest
+/// loaded sample for its stream. `None` means the loaded page lacks it.
+fn newest_presence(
+    page: &ObservationPage,
+    sample_index: usize,
+    process_index: usize,
+) -> Option<bool> {
+    let (source, data) = sample(page, sample_index)?;
+    let process = data.processes.get(process_index)?;
+    let source = &source.harness_id;
+    let boot_id = data.boot_id.as_str();
+    let (pid, start_ticks) = (process.pid, process.start_ticks);
+    for index in 0..page.observations.len() {
+        let Some((row, loaded)) = sample(page, index) else {
+            continue;
+        };
+        if &row.harness_id != source || loaded.boot_id != boot_id {
+            continue;
+        }
+        return Some(
+            loaded
+                .processes
+                .iter()
+                .any(|process| process.pid == pid && process.start_ticks == start_ticks),
+        );
+    }
+    None
 }
 
 fn sample_coverage(sample: &HostSample) -> &'static str {
@@ -590,6 +642,73 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
+    fn process_history_marks_an_exact_process_missing_from_the_newest_loaded_sample() {
+        let host = |event: &str, processes: Vec<HostProcess>| Observation {
+            harness_id: ExtensionId::parse("host.a").unwrap(),
+            event_id: event.into(),
+            revision: 0,
+            identity: ObservationIdentity::source(),
+            observed_at_unix_ns: 1,
+            kind: ObservationKind::HostSample(HostSample {
+                boot_id: "boot-a".into(),
+                hostname: Some("fixture-host.example".into()),
+                platform: Some(agenturm_kernel::HostPlatform::Linux),
+                clock_ticks_per_second: Some(100),
+                cpu: None,
+                load_1m_milli: None,
+                load_5m_milli: None,
+                load_15m_milli: None,
+                memory_available_bytes: None,
+                memory_total_bytes: None,
+                processes_partial: false,
+                processes,
+            }),
+        };
+        let process = |pid| HostProcess {
+            pid,
+            parent_pid: None,
+            start_ticks: 7,
+            runtime: HostRuntime::Codex,
+            state: Some(HostProcessState::Sleeping),
+            resident_bytes: None,
+            user_ticks: None,
+            system_ticks: None,
+            working_directory_name: Some("fixture-project".into()),
+        };
+        let page = ObservationPage {
+            observations: vec![
+                host("older", vec![process(42)]),
+                host("newer", vec![process(43)]),
+            ],
+            ..ObservationPage::default()
+        };
+        // Newest first: sample 0 is `newer`, which no longer contains PID 42.
+        assert_eq!(newest_presence(&page, 1, 0), Some(false));
+        assert_eq!(newest_presence(&page, 0, 0), Some(true));
+        let view = HostLevel::ProcessHistory {
+            sample: 1,
+            process: 0,
+        }
+        .present(&page, &Filter::default(), false);
+        assert!(view.table.context.iter().any(|row| {
+            row.label == "Latest loaded sample" && row.value.contains("Not present in the newest")
+        }));
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| view.table.draw(frame, frame.area(), 0))
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("exited or unre"), "{screen}");
+        assert!(screen.contains("Recorded process history"), "{screen}");
+    }
+
+    #[test]
     fn recorded_age_uses_the_viewer_clock_with_future_and_zero_unknown() {
         let now = Some(Duration::from_secs(500));
         assert_eq!(recorded_age(now, 0), "Unknown on viewer clock");
@@ -665,6 +784,18 @@ mod tests {
             process: 0,
         }
         .present(&page, &Filter::default(), false);
+        let context = |label: &str| {
+            view.table
+                .context
+                .iter()
+                .find(|row| row.label == label)
+                .map(|row| row.value.as_str())
+        };
+        assert!(
+            context("Latest loaded sample")
+                .is_some_and(|value| value.starts_with("Present in the newest"))
+        );
+        assert_eq!(context("Source"), Some("host.a"));
         let selected = &view.table.rows[0];
         assert_eq!(selected.cells[1], "fixture-project");
         assert!(
@@ -693,25 +824,43 @@ mod tests {
             );
         }
         let processes = HostLevel::Processes(0).present(&page, &Filter::default(), false);
+        assert_eq!(
+            processes.table.spec.title,
+            "Recorded host processes · not live"
+        );
         for (width, height) in [(120, 32), (80, 24), (60, 18)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-            for table in [&processes.table, &view.table] {
-                terminal
-                    .draw(|frame| table.draw(frame, frame.area(), 0))
-                    .unwrap();
-                let buffer = terminal.backend().buffer();
-                let screen = buffer
-                    .content
-                    .iter()
-                    .map(|cell| cell.symbol())
-                    .collect::<String>();
-                assert!(
-                    screen.contains("Cwd")
-                        && screen.contains("fixture-project")
-                        && screen.contains("Parent PID  493"),
-                    "{width}×{height}: {screen}"
-                );
-            }
+            terminal
+                .draw(|frame| processes.table.draw(frame, frame.area(), 0))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let screen = buffer
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(
+                screen.contains("Recorded host processes")
+                    && screen.contains("Cwd")
+                    && screen.contains("fixture-project")
+                    && screen.contains("Parent PID  493"),
+                "{width}×{height}: {screen}"
+            );
+            terminal
+                .draw(|frame| view.table.draw(frame, frame.area(), 0))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let screen = buffer
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(
+                screen.contains("Recorded process history")
+                    && screen.contains("Source  host.a")
+                    && screen.contains("Latest loaded sample"),
+                "{width}×{height}: {screen}"
+            );
         }
 
         let current = |mut sample: HostSample| {

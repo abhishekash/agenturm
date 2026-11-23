@@ -24,6 +24,23 @@ pub struct UsageChart {
     counter: Counter,
     measure: Measure,
     currency: usize,
+    view: View,
+}
+
+#[derive(Clone, Copy, Default, Eq, PartialEq)]
+enum View {
+    #[default]
+    Chart,
+    List,
+}
+
+impl View {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Chart => "chart",
+            Self::List => "list",
+        }
+    }
 }
 
 #[derive(Clone, Copy, Default)]
@@ -159,11 +176,18 @@ impl UsageChart {
             counter: Counter::default(),
             measure: Measure::default(),
             currency: 0,
+            view: View::default(),
         }
     }
 
     pub fn key(&mut self, key: KeyCode) -> bool {
         match key {
+            KeyCode::Char('v') => {
+                self.view = match self.view {
+                    View::Chart => View::List,
+                    View::List => View::Chart,
+                }
+            }
             KeyCode::Char('s') => {
                 self.mode = self.mode.next();
                 self.measure = Measure::Tokens;
@@ -333,15 +357,137 @@ impl UsageChart {
         LoadedView {
             title: format!("Usage · 7 UTC days · {}", self.label(currency)),
             scope: format!(
-                "{} · {mode} · Snapshot {}",
-                self.data.scope, self.data.page.snapshot_id
+                "{} · {mode} · {} view · Snapshot {}",
+                self.data.scope,
+                self.view.label(),
+                self.data.page.snapshot_id
             ),
             rows,
             truncated,
         }
     }
 
+    fn reports(&self, day: &UsageDay) -> Option<u128> {
+        let reports = match self.mode {
+            Mode::Traces => day.traces.traces,
+            Mode::ActivityLogs => day.logs.as_ref()?.logs,
+            _ => self.mode.tokens(day)?.reports,
+        };
+        Some(reports as u128)
+    }
+
+    fn coverage(&self, day: &UsageDay, index: usize, value: Option<u128>) -> String {
+        let mut notes = Vec::new();
+        if value.is_none() {
+            notes.push("Unreported");
+        }
+        if index + 1 == USAGE_DAYS {
+            notes.push("today to capture time");
+        }
+        if day.retention_partial {
+            notes.push("retention cutoff");
+        }
+        if day.scan_partial {
+            notes.push("scan limit");
+        }
+        if self.incomplete(day) {
+            notes.push("incomplete retained telemetry");
+        }
+        if notes.is_empty() {
+            "Complete for this loaded page".into()
+        } else {
+            notes.join(" · ")
+        }
+    }
+
+    fn draw_list(&self, frame: &mut Frame, area: Rect) {
+        let currency = self.currency();
+        let label = self.label(currency);
+        let block = panel(" Usage  ·  7 UTC days  ·  list ");
+        let width = usize::from(block.inner(area).width.max(1));
+        let values: [_; USAGE_DAYS] =
+            std::array::from_fn(|index| self.value(&self.data.page.days[index], currency));
+        let digits = values
+            .iter()
+            .copied()
+            .flatten()
+            .map(|count| self.display(Some(count)).len())
+            .max()
+            .unwrap_or(1)
+            .max("Unreported".len());
+        let wide = width >= 76;
+        let mut rows = vec![
+            Line::from(format!("{label} · {} · list", self.mode.label())).style(label_style()),
+            Line::from(format!(
+                "{:<10}  {:>digits$}{}",
+                "DATE",
+                "VALUE",
+                if wide {
+                    "  REPORTS  COVERAGE"
+                } else {
+                    "  COVERAGE"
+                }
+            ))
+            .style(label_style()),
+        ];
+        for (index, value) in values.into_iter().enumerate() {
+            let day = &self.data.page.days[index];
+            let reports = self
+                .reports(day)
+                .map_or_else(|| "—".into(), |count| count.to_string());
+            let line = if wide {
+                format!(
+                    "{:<10}  {:>digits$}  {:>7}  {}",
+                    self.data.dates[index],
+                    self.display(value),
+                    reports,
+                    self.coverage(day, index, value)
+                )
+            } else {
+                let mut flags = String::new();
+                if value.is_none() {
+                    flags.push('—');
+                }
+                if index + 1 == USAGE_DAYS {
+                    flags.push('†');
+                }
+                if day.retention_partial || day.scan_partial {
+                    flags.push('*');
+                }
+                if self.incomplete(day) {
+                    flags.push('‡');
+                }
+                format!(
+                    "{:<10}  {:>digits$}  {flags}",
+                    self.data.dates[index],
+                    self.display(value)
+                )
+            };
+            rows.push(Line::from(line).style(theme::row(index)));
+        }
+        rows.push(Line::from(""));
+        rows.extend(
+            wrap_display_width(
+                "— Unreported · † Today to capture time · * Retention cutoff or scan limit · ‡ Incomplete retained telemetry",
+                width,
+            )
+            .into_iter()
+            .map(Line::from),
+        );
+        let controls = if matches!(self.measure, Measure::Cost) {
+            "v chart   s source   t tokens   n totals   C currency"
+        } else {
+            "v chart   s combined / native / spans / traces / logs   t tokens   n totals"
+        };
+        rows.push(Line::from(controls).style(label_style()));
+        frame.render_widget(Paragraph::new(rows).block(block), area);
+    }
+
     pub fn draw(&self, frame: &mut Frame, area: Rect) {
+        if matches!(self.view, View::List) {
+            self.draw_list(frame, area);
+            return;
+        }
         let block = panel(" Usage  ·  7 UTC days ");
         let width = usize::from(block.inner(area).width.max(1));
         let currency = self.currency();
@@ -417,9 +563,9 @@ impl UsageChart {
             rows.push(Line::from("‡ Incomplete retained telemetry"));
         }
         let controls = if matches!(self.measure, Measure::Cost) {
-            "s source   t tokens   n totals   C currency"
+            "v list   s source   t tokens   n totals   C currency"
         } else {
-            "s combined / native / spans / traces / logs   t tokens   n totals"
+            "v list   s combined / native / spans / traces / logs   t tokens   n totals"
         };
         rows.push(Line::from(controls).style(label_style()));
         frame.render_widget(Paragraph::new(rows).block(block), area);
@@ -442,6 +588,71 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    #[test]
+    fn usage_list_view_labels_per_day_coverage_in_compact_and_wide_layouts() {
+        let chart_page = || UsageHistoryPage {
+            snapshot_id: 9.into(),
+            end_unix_ns: 7,
+            days: std::array::from_fn(|index| UsageDay {
+                start_unix_ns: index as u64,
+                combined: agenturm_kernel::retained_history::CombinedUsageTotals {
+                    tokens: UsageTotals {
+                        reports: usize::from(index == 6),
+                        input_tokens: (index == 3).then(|| "40".into()),
+                        ..UsageTotals::default()
+                    },
+                    ..Default::default()
+                },
+                native: UsageTotals::default(),
+                span: UsageTotals::default(),
+                traces: Default::default(),
+                logs: None,
+                retention_partial: index == 0,
+                scan_partial: index == 1,
+            }),
+            retention_cutoff_unix_ns: 0,
+            scan_limited: false,
+        };
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut chart = UsageChart::new(UsageChartData {
+                page: chart_page(),
+                dates: std::array::from_fn(|index| format!("2026-11-{:02}", index + 1)),
+                scope: "All authorized sources".into(),
+            });
+            assert!(chart.key(KeyCode::Char('v')));
+            let screen = render(&mut terminal, &chart);
+            let lower = screen.to_lowercase();
+            for text in ["list", "DATE", "VALUE", "COVERAGE", "2026-11-04", "40"] {
+                assert!(screen.contains(text), "{width}×{height}: missing {text}");
+            }
+            for text in [
+                "unreported",
+                "retention",
+                "scan limit",
+                "today",
+                "incomplete",
+            ] {
+                assert!(
+                    lower.contains(text),
+                    "{width}×{height}: missing {text}\n{lower}"
+                );
+            }
+            assert_eq!(screen.contains("REPORTS"), width >= 76);
+            assert!(chart.loaded_view().scope.contains("list view"));
+            assert!(chart.key(KeyCode::Char('n')));
+            assert!(
+                chart
+                    .loaded_view()
+                    .title
+                    .contains("Attributed usage reports")
+            );
+            assert!(chart.key(KeyCode::Char('v')));
+            let screen = render(&mut terminal, &chart);
+            assert!(screen.contains("7 UTC days") && !screen.contains("COVERAGE"));
+        }
     }
 
     #[test]
