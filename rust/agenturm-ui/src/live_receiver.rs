@@ -1,7 +1,11 @@
 //! Bounded metadata browser for a receiver without durable Rust read cursors.
 
 use super::*;
-use std::sync::mpsc;
+use std::sync::{
+    Arc,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -255,73 +259,82 @@ impl LiveView {
     }
 }
 
-/// Interactive view over bounded live pages. The loader never runs on the terminal thread.
+/// Interactive view over live pages loaded by one owned worker. The loader
+/// must bound each call. A closing terminal discards queued work and replies.
 pub fn run_live_receiver(
-    mut load: impl FnMut() -> Result<LivePage, String> + Send,
+    mut load: impl FnMut() -> Result<LivePage, String> + Send + 'static,
 ) -> io::Result<()> {
-    std::thread::scope(|scope| {
-        let (request, requests) = mpsc::channel();
-        let (send, results) = mpsc::channel();
-        scope.spawn(move || {
-            while requests.recv().is_ok() {
-                if send.send(load()).is_err() {
+    let (request, requests) = mpsc::sync_channel(1);
+    let (send, results) = mpsc::sync_channel(1);
+    let cancelled = Arc::new(AtomicBool::new(false));
+    let worker_cancelled = Arc::clone(&cancelled);
+    let worker = std::thread::Builder::new()
+        .name("agenturm-live-receiver".into())
+        .spawn(move || {
+            while requests.recv().is_ok() && !worker_cancelled.load(Ordering::Acquire) {
+                let page = load();
+                if worker_cancelled.load(Ordering::Acquire) || send.try_send(page).is_err() {
                     break;
                 }
             }
-        });
-        let result = ratatui::run(|terminal| {
-            let mut view = LiveView {
-                page: None,
-                tab: Tab::Agents,
-                owner: None,
-                agents: ListState::default(),
-                detail: ListState::default(),
-                pending_read: false,
-                error: None,
-            };
-            let mut next_read = Instant::now();
-            let mut dirty = true;
-            loop {
-                if let Ok(result) = results.try_recv() {
-                    view.set_page(result);
-                    next_read = Instant::now() + Duration::from_secs(2);
+        })?;
+    let result = ratatui::run(|terminal| {
+        let mut view = LiveView {
+            page: None,
+            tab: Tab::Agents,
+            owner: None,
+            agents: ListState::default(),
+            detail: ListState::default(),
+            pending_read: false,
+            error: None,
+        };
+        let mut next_read = Instant::now();
+        let mut dirty = true;
+        loop {
+            if let Ok(result) = results.try_recv() {
+                view.set_page(result);
+                next_read = Instant::now() + Duration::from_secs(2);
+                dirty = true;
+            }
+            if !view.pending_read && Instant::now() >= next_read {
+                request
+                    .try_send(())
+                    .map_err(|_| io::Error::other("receiver reader stopped"))?;
+                view.pending_read = true;
+            }
+            if dirty {
+                terminal.draw(|frame| view.draw(frame))?;
+                dirty = false;
+            }
+            if !event::poll(Duration::from_millis(80))? {
+                continue;
+            }
+            match event::read()? {
+                Event::Resize(_, _) => dirty = true,
+                Event::Key(key)
+                    if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
+                {
+                    if key.code == KeyCode::Char('q')
+                        || key.code == KeyCode::Char('c')
+                            && key.modifiers.contains(KeyModifiers::CONTROL)
+                    {
+                        break Ok(());
+                    }
+                    if key.code == KeyCode::Char('r') {
+                        next_read = Instant::now();
+                    }
+                    view.key(key.code);
                     dirty = true;
                 }
-                if !view.pending_read && Instant::now() >= next_read {
-                    request
-                        .send(())
-                        .map_err(|_| io::Error::other("receiver reader stopped"))?;
-                    view.pending_read = true;
-                }
-                if dirty {
-                    terminal.draw(|frame| view.draw(frame))?;
-                    dirty = false;
-                }
-                if !event::poll(Duration::from_millis(80))? {
-                    continue;
-                }
-                match event::read()? {
-                    Event::Resize(_, _) => dirty = true,
-                    Event::Key(key)
-                        if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
-                    {
-                        if key.code == KeyCode::Char('q')
-                            || key.code == KeyCode::Char('c')
-                                && key.modifiers.contains(KeyModifiers::CONTROL)
-                        {
-                            break Ok(());
-                        }
-                        if key.code == KeyCode::Char('r') {
-                            next_read = Instant::now();
-                        }
-                        view.key(key.code);
-                        dirty = true;
-                    }
-                    _ => {}
-                }
+                _ => {}
             }
-        });
-        drop(request);
-        result
-    })
+        }
+    });
+    cancelled.store(true, Ordering::Release);
+    drop(request);
+    drop(results);
+    // The in-flight read is bounded by the loader's own deadline. Keep
+    // terminal exit independent of the remaining time in that read.
+    drop(worker);
+    result
 }

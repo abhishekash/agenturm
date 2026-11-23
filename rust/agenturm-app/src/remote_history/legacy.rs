@@ -139,12 +139,13 @@ impl LegacyReceiver {
 }
 
 pub(super) fn cockpit(options: &RemoteHistoryOptions) -> Result<(), String> {
+    let options = options.clone();
     let mut receiver = None;
     let mut attention = AttentionState::default();
     agenturm_ui::run_live_receiver(move || {
         let receiver = match &receiver {
             Some(receiver) => receiver,
-            None => receiver.insert(LegacyReceiver::connect(options)?),
+            None => receiver.insert(LegacyReceiver::connect(&options)?),
         };
         receiver
             .report(SESSION_PAGE, &mut attention)

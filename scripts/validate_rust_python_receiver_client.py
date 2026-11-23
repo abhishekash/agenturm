@@ -92,6 +92,47 @@ def stop(server, thread):
     assert not thread.is_alive()
 
 
+def verify_quit_during_read(app, flags, environment, token):
+    for columns, rows, key in ((120, 32, b"q"), (60, 18, b"\x03")):
+        accepted = threading.Event()
+        release = threading.Event()
+
+        class HeldHealth(BaseHTTPRequestHandler):
+            def log_message(self, *_):
+                pass
+
+            def do_GET(self):
+                assert self.path == "/api/health"
+                assert self.headers.get("Authorization") == f"Bearer {token}"
+                accepted.set()
+                # Hold the socket open without sending any headers until the
+                # process has quit. The app's normal read budget is longer.
+                release.wait(timeout=12)
+
+        receiver = HTTPServer(("127.0.0.1", 0), HeldHealth)
+        background = serve(receiver)
+        master, slave = pty.openpty()
+        process = None
+        try:
+            fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+            original = termios.tcgetattr(slave)
+            process = subprocess.Popen([app, "cockpit", *flags(receiver.server_port)],
+                env=environment, stdin=slave, stdout=slave, stderr=slave)
+            assert accepted.wait(timeout=5), "Cockpit never started the held read"
+            assert process.poll() is None
+            os.write(master, key)
+            assert process.wait(timeout=1.5) == 0, (columns, rows, key)
+            assert termios.tcgetattr(slave) == original, (columns, rows, key)
+        finally:
+            release.set()
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=8)
+            os.close(master)
+            os.close(slave)
+            stop(receiver, background)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bin-dir", type=Path, required=True)
@@ -271,9 +312,10 @@ def main():
 
         for mode in ("missing", "duplicate", "mismatch", "swap", "redirect", "unprotected", "unready", "partial", "unavailable"):
             synthetic(mode)
+        verify_quit_during_read(app, flags, env, token)
         token_file.chmod(0o644)
         assert "owner-only" in run(["cockpit", "--once", *flags()], succeeds=False).stderr
-        print("PASS tagged Python receiver, isolated live metadata, exact requests, two PTYs and denied protocol/identity changes", flush=True)
+        print("PASS tagged Python receiver, exact requests, two PTYs, stalled-read quit and protocol/identity denial", flush=True)
 
 
 if __name__ == "__main__":
