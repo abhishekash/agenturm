@@ -104,9 +104,10 @@ def run_agent(target, arguments=(), *, endpoint=None, service="my-agent",
             raise SetupError("Native identity flags require --transport otlp")
         endpoint = _receiver_endpoint("http://127.0.0.1:4318" if endpoint is None else endpoint)
     else:
-        if capture_content:
-            raise SetupError("Rust OTLP export is metadata-only")
-        client = Client(endpoint=endpoint, service=service, transport=transport, **native_scope)
+        if capture_content and session_id is None:
+            raise SetupError("Rust OTLP captured text requires --session-id")
+        client = Client(endpoint=endpoint, service=service, transport=transport,
+                        capture_content=capture_content, **native_scope)
         if client.last_error is not None:
             raise SetupError(str(client.last_error)) from client.last_error
         endpoint = client.endpoint
@@ -192,8 +193,8 @@ def run_agent(target, arguments=(), *, endpoint=None, service="my-agent",
     trace.set_tracer_provider(provider)
     config = TraceConfig(hide_inputs=not capture_content, hide_outputs=not capture_content,
                          hide_input_images=True, hide_embeddings_vectors=True,
-                         hide_embeddings_text=not capture_content,
-                         hide_llm_invocation_parameters=not capture_content)
+                         hide_embeddings_text=not capture_content or not legacy,
+                         hide_llm_invocation_parameters=not capture_content or not legacy)
     enabled, failures, instrumentors = [], [], []
     connection = None
     original_argv, original_path = sys.argv[:], sys.path[:]
@@ -226,7 +227,8 @@ def run_agent(target, arguments=(), *, endpoint=None, service="my-agent",
             connection.start()
             print(f"Goechala is listening to {service}: {', '.join(enabled)}.\nReceiver: {endpoint}", file=sys.stderr)
         else:
-            print(f"Agenturm is exporting metadata for {service}: {', '.join(enabled)}.\nReceiver: {endpoint}", file=sys.stderr)
+            mode = "metadata and opted-in message text" if capture_content else "metadata"
+            print(f"Agenturm is exporting {mode} for {service}: {', '.join(enabled)}.\nReceiver: {endpoint}", file=sys.stderr)
         sys.argv = [target, *arguments]
         if module:
             runpy.run_module(target, run_name="__main__", alter_sys=True)

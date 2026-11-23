@@ -602,7 +602,8 @@ mod tests {
                 "DROP TABLE agenturm_content_grants;
                  DROP TABLE agenturm_content_cursor_proofs;
                  DROP INDEX agenturm_observations_by_trace;
-                 DROP TABLE agenturm_eval_outcomes;",
+                 DROP TABLE agenturm_eval_outcomes;
+                 DROP TABLE agenturm_telemetry_payloads;",
             )
             .unwrap();
         crate::content_grant::create_schema(&store.connection, 9).unwrap();

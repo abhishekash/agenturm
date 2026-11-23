@@ -16,7 +16,7 @@ fn start() -> std::io::Result<()> {
     fn invalid() -> io::Error {
         io::Error::new(
             ErrorKind::InvalidInput,
-            "expected --data-root PATH --transport-dir PATH --receiver-id ID --client-uid UID --client-gid GID [--max-connections N] [--native-sources ID[,ID] [--native-reader UID:GID [--native-content-config PATH]] [--native-grant-admin UID:GID] [--native-maintenance UID:GID [--native-backup-root PATH [--native-restore NAME]]] | --experimental-v2-scratch enabled | --experimental-real-clone-activation enabled]",
+            "expected --data-root PATH --transport-dir PATH --receiver-id ID --client-uid UID --client-gid GID [--max-connections N] [--native-sources ID[,ID] [--native-telemetry-payload-sources ID[=NATIVE][,ID[=NATIVE]]] [--native-reader UID:GID [--native-content-config PATH]] [--native-grant-admin UID:GID] [--native-maintenance UID:GID [--native-backup-root PATH [--native-restore NAME]]] | --experimental-v2-scratch enabled | --experimental-real-clone-activation enabled]",
         )
     }
     let mut args = std::env::args().skip(1);
@@ -39,6 +39,7 @@ fn start() -> std::io::Result<()> {
                 | "--experimental-v2-scratch"
                 | "--experimental-real-clone-activation"
                 | "--native-sources"
+                | "--native-telemetry-payload-sources"
                 | "--native-reader"
                 | "--native-grant-admin"
                 | "--native-maintenance"
@@ -54,6 +55,22 @@ fn start() -> std::io::Result<()> {
         for source in sources.split(',') {
             let id = agenturm_kernel::ExtensionId::parse(source).map_err(|_| invalid())?;
             if !native_sources.insert(id) || native_sources.len() > 64 {
+                return Err(invalid());
+            }
+        }
+    }
+    let mut native_telemetry_bindings = Vec::new();
+    if let Some(bindings) = values.remove("--native-telemetry-payload-sources") {
+        for binding in bindings.split(',') {
+            let (source, native) = binding
+                .split_once('=')
+                .map_or((binding, None), |(source, native)| (source, Some(native)));
+            let parse = |id| agenturm_kernel::ExtensionId::parse(id).map_err(|_| invalid());
+            native_telemetry_bindings.push(agenturm_store::TelemetryBinding {
+                source_id: parse(source)?,
+                native_source_id: native.map(parse).transpose()?,
+            });
+            if native_telemetry_bindings.len() > 64 {
                 return Err(invalid());
             }
         }
@@ -78,6 +95,7 @@ fn start() -> std::io::Result<()> {
     };
     let config = ServiceConfig {
         native_sources,
+        native_telemetry_bindings,
         native_roles,
         native_restore: values.remove("--native-restore"),
         native_content_config: values.remove("--native-content-config").map(PathBuf::from),

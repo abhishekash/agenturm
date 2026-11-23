@@ -377,6 +377,7 @@ jobs:
           python -m unittest -v
           tests.test_rust_vendor_sdk_e2e.RustVendorSdkTests.test_openai_sync_stream_and_error_flush_through_automatic_launcher
           tests.test_rust_vendor_sdk_e2e.RustVendorSdkTests.test_anthropic_messages_flush_through_automatic_launcher
+          tests.test_rust_telemetry_payloads
         env:
           AGENTURM_RUST_APP_BIN: ${{ runner.temp }}/rust-vendor/agenturm
           AGENTURM_REQUIRE_VENDOR_SDK_TESTS: "1"

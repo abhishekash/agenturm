@@ -37,7 +37,7 @@ mod linux {
         PeerPolicy, ProbeTopic, Request, read_authorized_request, read_authorized_v2_request,
         send_probe_reply, send_v2_reply,
     };
-    use agenturm_store::Store;
+    use agenturm_store::{Store, TelemetryBinding};
     use std::collections::BTreeSet;
     use std::ffi::OsStr;
     use std::fs::{self, File, Metadata, OpenOptions};
@@ -97,6 +97,7 @@ mod linux {
         pub experimental_v2_scratch: bool,
         pub experimental_real_clone_activation: bool,
         pub native_sources: BTreeSet<ExtensionId>,
+        pub native_telemetry_bindings: Vec<TelemetryBinding>,
         pub native_roles: NativeRolesConfig,
         pub native_restore: Option<String>,
         pub native_content_config: Option<PathBuf>,
@@ -491,6 +492,18 @@ mod linux {
         {
             return Err(denied("invalid service receiver or connection bound"));
         }
+        let mut payload_sources = BTreeSet::new();
+        if config.native_telemetry_bindings.iter().any(|binding| {
+            binding.grant_scope().is_err()
+                || !config.native_sources.contains(&binding.source_id)
+                || binding
+                    .native_source_id
+                    .as_ref()
+                    .is_some_and(|source| !config.native_sources.contains(source))
+                || !payload_sources.insert(&binding.source_id)
+        }) {
+            return Err(denied("invalid native telemetry payload source binding"));
+        }
         if config.native_restore.is_some()
             && (config.native_sources.is_empty() || config.native_roles.backup_root.is_none())
         {
@@ -780,6 +793,7 @@ mod linux {
                             &config.native_sources,
                             role,
                             private.as_ref(),
+                            &config.native_telemetry_bindings,
                             &mut output,
                         );
                         data.verify()?;
@@ -792,13 +806,14 @@ mod linux {
                         } else {
                             None
                         };
-                        let reply = native_store::dispatch(
+                        let reply = native_store::dispatch_with_telemetry(
                             store,
                             &config.native_sources,
                             role,
                             request,
                             backup.map(|root| root.path.as_path()),
                             private.as_ref(),
+                            &config.native_telemetry_bindings,
                         );
                         data.verify()?;
                         instance.verify()?;

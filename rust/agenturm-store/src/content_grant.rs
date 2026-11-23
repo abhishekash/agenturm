@@ -27,6 +27,8 @@ pub enum ContentKind {
     CodexEditDetail,
     #[serde(rename = "codex.command_detail")]
     CodexCommandDetail,
+    #[serde(rename = "telemetry.span_payload")]
+    TelemetrySpanPayload,
 }
 
 impl ContentKind {
@@ -40,6 +42,7 @@ impl ContentKind {
             Self::CodexMcpPayload => "codex.mcp_payload",
             Self::CodexEditDetail => "codex.edit_detail",
             Self::CodexCommandDetail => "codex.command_detail",
+            Self::TelemetrySpanPayload => "telemetry.span_payload",
         }
     }
 }
@@ -156,6 +159,9 @@ pub(super) fn create_schema(connection: &Connection, version: i64) -> Result<()>
         }
         14 | 15 => {
             "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'codex.command_detail')"
+        }
+        16 => {
+            "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'codex.command_detail', 'telemetry.span_payload')"
         }
         _ => return Err(StoreError::UnsupportedSchema(version)),
     };
@@ -526,6 +532,7 @@ impl Store {
             ContentKind::CodexMcpPayload
                 | ContentKind::CodexEditDetail
                 | ContentKind::CodexCommandDetail
+                | ContentKind::TelemetrySpanPayload
         ) {
             return Err(StoreError::StaleContentGrant);
         }

@@ -28,6 +28,7 @@ mod span_jsonl_import;
 mod summary_cli;
 mod task_cli;
 mod task_git;
+mod telemetry_payload_cli;
 mod trace_import;
 mod trace_receiver;
 mod trace_run;
@@ -52,6 +53,7 @@ pub use review_receipt::ReviewOutput;
 pub use span_jsonl_import::{SpanJsonlImportOptions, execute_span_jsonl_import};
 pub use summary_cli::{SummaryOptions, execute_summary};
 pub use task_cli::{TaskOptions, execute_task, execute_task_stdout};
+pub use telemetry_payload_cli::{PayloadCommand, execute_payload_stdout};
 pub use trace_import::{TraceImportOptions, execute_trace_import};
 pub use trace_receiver::{TraceReceiverOptions, execute_trace_receiver};
 pub use trace_run::{TraceRunOptions, execute_trace_run};
@@ -241,6 +243,7 @@ pub enum Command {
         before_unix_ns: u64,
     },
     Content(ContentOptions),
+    TracePayload(PayloadCommand),
     Retention(RetentionOptions),
     Summary(SummaryOptions),
     Ingest(IngestOptions),
@@ -845,6 +848,9 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         }
         Some("retention") => retention_cli::parse(&args[1..], false).map(Command::Retention),
         Some("content") => content_preview::parse(&args[1..]).map(Command::Content),
+        Some("trace-payload") => {
+            telemetry_payload_cli::parse(&args[1..]).map(Command::TracePayload)
+        }
         Some("discover") => parse_discover_options(&args[1..]),
         Some("collect") => parse_collect_options(&args[1..]).map(Command::Collect),
         Some("service") => parse_service_options(&args[1..]).map(Command::Service),
@@ -3352,8 +3358,9 @@ pub fn render(command: Command) -> String {
             "       agenturm prune --db <path> --before-unix-ns <ns>\n",
             "       agenturm retention <status|set|disable|run> --db <path> [--max-age-days <days>]\n",
             "       agenturm content <grant|revoke|list|preview> [options]\n",
-            "       agenturm serve-traces --listen <loopback-IP:port> --db <path> --source-id otlp.<id>\n",
-            "       agenturm run --db <path> [--source-id otlp.<id>] -- <program> [args...]\n",
+            "       agenturm serve-traces --listen <loopback-IP:port> --db <path> --source-id otlp.<id> [--payload-scope <standalone|harness-id> --token-file <path>]\n",
+            "       agenturm run --db <path> [--source-id otlp.<id>] [--payload-scope <standalone|harness-id>] -- <program> [args...]\n",
+            "       agenturm trace-payload <binding|grant|revoke|snapshot|preview> [options]\n",
             "       agenturm import-traces --file <otlp-json-path|-> --db <path> --source-id otlp.<id>\n",
             "       agenturm import-jsonl --file <span-jsonl-path|-> --db <path> --source-id otlp.<id> [--session-id <id>]\n",
             "       agenturm import-evals --file <results.json|-> --db <path> --source-id otlp.<id>\n",
@@ -3396,7 +3403,8 @@ pub fn render(command: Command) -> String {
         | Command::Prune { .. }
         | Command::Retention(_)
         | Command::Summary(_)
-        | Command::Content(_) => String::new(),
+        | Command::Content(_)
+        | Command::TracePayload(_) => String::new(),
         Command::Discover { .. } | Command::Cockpit { .. } => String::new(),
         #[cfg(target_os = "linux")]
         Command::RemoteCockpit(_) => String::new(),

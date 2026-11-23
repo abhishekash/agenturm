@@ -10,7 +10,7 @@ import time
 import urllib.request
 from typing import Any
 
-from .otlp_transport import OtlpTransport, TraceScope
+from .otlp_transport import OtlpTransport, PAYLOAD_KEYS, TraceScope
 
 _ACTIVE_RUN: contextvars.ContextVar["Run | None"] = contextvars.ContextVar("observatory_run", default=None)
 _ACTIVE_SPAN: contextvars.ContextVar["Span | None"] = contextvars.ContextVar("observatory_span", default=None)
@@ -31,14 +31,17 @@ class Client:
     def __init__(self, endpoint=None, service="python-agent",
                  token=None, timeout=3.0, strict=False, capture_exception_message=False,
                  resource_attributes=None, *, transport="agenturm", session_id=None,
-                 harness_id=None, turn_id=None, worker_id=None):
+                 harness_id=None, turn_id=None, worker_id=None, capture_content=False):
         if transport not in {"agenturm", "otlp"}:
             raise ValueError("Unknown trace transport")
         if transport == "agenturm" and any(
             value is not None for value in (session_id, harness_id, turn_id, worker_id)
         ):
             raise ValueError("Client-level native linkage requires OTLP transport")
+        if capture_content and transport != "otlp":
+            raise ValueError("The client capture_content option requires OTLP transport")
         self.transport = transport
+        self.capture_content = bool(capture_content)
         self.service = str(service)
         self._configuration_error = None
         self._otlp = None
@@ -59,7 +62,7 @@ class Client:
                 if token is not None:
                     raise ValueError("The Rust OTLP transport accepts no receiver token")
                 self._trace_scope = TraceScope(session_id, harness_id, turn_id, worker_id)
-                self._otlp = OtlpTransport(endpoint, timeout)
+                self._otlp = OtlpTransport(endpoint, timeout, capture_content=self.capture_content)
                 self.endpoint = self._otlp.endpoint
                 self.timeout = self._otlp.timeout
             else:
@@ -258,6 +261,12 @@ class Run:
             for span in self.spans
         )
         if self._otlp_scope is not None:
+            if self.client.capture_content:
+                metadata = (
+                    {**row, "attributes": {key: span.attributes[key] for key in PAYLOAD_KEYS
+                                           if key in span.attributes}}
+                    for row, span in zip(metadata, self.spans)
+                )
             return self.client._post_otlp_spans(metadata, self._otlp_scope)
         return self.client._post_spans([
             {**row, "name": span.name, "events": span.events,

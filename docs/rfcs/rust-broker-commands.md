@@ -92,6 +92,56 @@ Run the Linux guest verification with
 to check the installed binaries with separate storage, collector and
 reader identities.
 
+### Preview opted-in telemetry text
+
+The trace receiver defaults to metadata. To accept private captured text,
+enable the exact source at the broker with
+`--native-telemetry-payload-sources otlp.example=harness.codex`. For a
+standalone SDK session, configure `otlp.example` without a native source and
+use `--payload-scope standalone` on the launcher. Names in this policy must
+also be present in `--native-sources`.
+
+```sh
+agenturm broker run --broker-config broker.json --source-id otlp.example \
+  --payload-scope harness.codex -- python -m observatory run --transport otlp \
+  --capture-content --harness-id harness.codex --session-id example-session agent.py
+agenturm trace-payload binding --source-id otlp.example \
+  --payload-scope harness.codex > payload-binding.json
+agenturm broker grant approve --broker-config broker.json --binding payload-binding.json
+agenturm broker trace-payload snapshot --broker-config broker.json \
+  --source-id otlp.example --session-id example-session
+agenturm broker trace-payload preview --broker-config broker.json --selection payload.json
+```
+
+The grant administrator approves the binding and the dedicated broker reader
+runs preview. The selection JSON names `binding` with `source_id` and
+`native_source_id` (null for a standalone session), the exact `trace_id`,
+`span_id`, `session_id`, `turn_id`, and `worker_id` (null when absent),
+and the returned `snapshot_id`. The response labels the text as
+`producer_captured_telemetry`. A claimed native linkage is a producer
+assertion. It does not certify native transcript bytes.
+
+Local `run` supports the same `--payload-scope` with an explicit
+`--source-id` and a generated bearer. Local `serve-traces` requires an
+owner-only bearer file when payload capture is enabled. Use
+`trace-payload grant|revoke|snapshot|preview --db history.sqlite` in the
+local workflow. A manual Python OTLP client uses `capture_content=True`
+and explicit `agenturm.payload.input` or `agenturm.payload.output` text.
+The automatic producer projects text from supported OpenInference user and
+assistant message fields. A text slot is limited to 2 KiB and a batch to
+64 KiB of captured text.
+
+Metadata queries, review receipts, and SSH history reads omit payload text.
+An exact retry can recover its prior admission. Changing a captured text
+slot or adding a payload to a span already admitted as metadata conflicts
+with that occurrence. A broker backup retains the data in its private
+history file. Restore rotates the read snapshot and requires a fresh
+approval. Pruning removes the retained text and keeps replay evidence.
+
+The current preview covers explicit text fields and automatic OpenInference
+message text. Additional SDK-specific structured content, Node capture,
+and tool payloads need their own bounded projections.
+
 The broker cockpit supports saved tasks, handoffs, request seen state and
 review decisions alongside remote history. These user-owned records live
 under the client's state directory. Their namespace binds the authenticated

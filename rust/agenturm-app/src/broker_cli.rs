@@ -16,6 +16,7 @@ const USAGE: &str = concat!(
     "       agenturm broker import-evals --broker-config <json> --file <results.json|-> --source-id otlp.<id>\n",
     "       agenturm broker evals --broker-config <json> --source-id otlp.<id> --trace-id <id> [--json]\n",
     "       agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path>\n",
+    "       agenturm broker trace-payload <snapshot|preview> --broker-config <json> [options]\n",
     "       agenturm broker grant <check|approve|revoke> --broker-config <json> --binding <json>\n",
     "       agenturm broker content list --broker-config <json> --source-id <id> --session-id <id>\n",
     "       agenturm broker content preview --broker-config <json> --selection <json>\n",
@@ -74,6 +75,7 @@ enum BrokerCommand {
     Application(Box<Command>),
     ServeTraces(trace_receiver::BrokerTraceReceiverOptions),
     ServeHistory(remote_history::ReadServerOptions),
+    TracePayload(telemetry_payload_cli::PayloadRead),
     Run(trace_run::TraceInvocation),
     Investigation(Box<InvestigationOptions>),
     Retention(RetentionOptions),
@@ -156,6 +158,14 @@ pub(super) fn parse_os(args: &[OsString]) -> Result<BrokerOptions, String> {
         return Ok(BrokerOptions {
             config,
             command: BrokerCommand::ServeTraces(trace_receiver::parse_broker(&command[1..])?),
+        });
+    }
+    if command.first().is_some_and(|verb| verb == "trace-payload") {
+        return Ok(BrokerOptions {
+            config,
+            command: BrokerCommand::TracePayload(telemetry_payload_cli::parse_broker(
+                &command[1..],
+            )?),
         });
     }
     if command.first().is_some_and(|verb| verb == "serve-history") {
@@ -421,18 +431,30 @@ pub fn execute(options: &BrokerOptions) -> Result<ExitCode, BrokerExecutionError
     let (mut store, config) = connect(&options.config)?;
     let command = match &options.command {
         BrokerCommand::Application(command) => command.as_ref(),
+        BrokerCommand::TracePayload(options) => {
+            telemetry_payload_cli::execute_broker(options, store)?;
+            return Ok(ExitCode::SUCCESS);
+        }
         BrokerCommand::ServeHistory(options) => {
             remote_history::execute_server(options, store)?;
             return Ok(ExitCode::SUCCESS);
         }
         BrokerCommand::ServeTraces(options) => {
-            let commit = trace_commit(store, &options.settings.source)?;
+            let commit = trace_commit(
+                store,
+                &options.settings.source,
+                options.settings.payload_binding.clone(),
+            )?;
             let token = trace_receiver::ProducerToken::from_file(&options.token_file)?;
             trace_receiver::execute_with_commit(&options.settings, Some(token), commit)?;
             return Ok(ExitCode::SUCCESS);
         }
         BrokerCommand::Run(invocation) => {
-            let commit = trace_commit(store, &invocation.source)?;
+            let commit = trace_commit(
+                store,
+                &invocation.source,
+                invocation.payload_binding.clone(),
+            )?;
             let token = trace_receiver::ProducerToken::generate()?;
             return trace_run::execute_with_commit(invocation, Some(token), commit)
                 .map_err(Into::into);
@@ -642,15 +664,43 @@ pub fn execute(options: &BrokerOptions) -> Result<ExitCode, BrokerExecutionError
     Ok(ExitCode::SUCCESS)
 }
 
+type BrokerTraceCommit = Box<
+    dyn FnMut(
+            &ExtensionId,
+            Vec<Observation>,
+            Vec<agenturm_store::TelemetryPayloadRecord>,
+        ) -> Result<(), String>
+        + Send,
+>;
+
 fn trace_commit(
     mut store: NativeStore,
     source: &ExtensionId,
-) -> Result<impl FnMut(&ExtensionId, Vec<Observation>) -> Result<(), String> + Send + 'static, String>
-{
+    binding: Option<agenturm_store::TelemetryBinding>,
+) -> Result<BrokerTraceCommit, String> {
     trace_import::admission_cursor(&store, source)?;
-    Ok(move |source: &ExtensionId, rows: Vec<Observation>| {
-        trace_import::commit_with_store(&mut store, source, &rows).map(|_| ())
-    })
+    if let Some(binding) = &binding {
+        store
+            .check_telemetry_admission(binding)
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(Box::new(
+        move |source: &ExtensionId,
+              rows: Vec<Observation>,
+              payloads: Vec<agenturm_store::TelemetryPayloadRecord>| {
+            if payloads.is_empty() {
+                return trace_import::commit_with_store(&mut store, source, &rows).map(|_| ());
+            }
+            let binding = binding
+                .as_ref()
+                .ok_or("private trace capture is disabled")?;
+            let batch = trace_import::prepare_payload_batch(&store, binding, &rows)?;
+            store
+                .commit_telemetry_batch(binding, batch, payloads)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        },
+    ))
 }
 
 fn execute_private_cockpit(

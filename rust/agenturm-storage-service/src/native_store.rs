@@ -18,7 +18,8 @@ use agenturm_storage_service_contract::{ContractError, ServerPolicy, native};
 use agenturm_store::{
     AutomaticRetentionPolicy, AutomaticRetentionStatus, EvalImportReport, EvalOutcome,
     ObservationBatch, ResolvedTraceReview, RetainedEvalOutcome, RetentionOutcome, SessionPage,
-    SessionQuery, Store, TraceReviewQuery, WorkspaceAnchor, WorkspaceHistory,
+    SessionQuery, Store, TelemetryBinding, TelemetryPayload, TelemetryPayloadRecord,
+    TelemetryPayloadSelection, TraceReviewQuery, WorkspaceAnchor, WorkspaceHistory,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeSet;
@@ -35,6 +36,18 @@ pub(crate) enum NativeOperation {
     },
     Admit {
         batch: ObservationBatch,
+    },
+    CheckTelemetryAdmission {
+        binding: TelemetryBinding,
+    },
+    AdmitTelemetry {
+        binding: TelemetryBinding,
+        batch: ObservationBatch,
+        records: Vec<TelemetryPayloadRecord>,
+    },
+    RevealTelemetry {
+        history_identity: String,
+        selection: TelemetryPayloadSelection,
     },
     QueryHistory {
         query: ObservationQuery,
@@ -168,6 +181,7 @@ impl NativeOperation {
             Self::RevealPrivate { .. }
                 | Self::VerifyPrivatePrompt { .. }
                 | Self::VerifyPrivateOperation { .. }
+                | Self::RevealTelemetry { .. }
         )
     }
 
@@ -177,9 +191,26 @@ impl NativeOperation {
         allowed: &BTreeSet<ExtensionId>,
         role: Role,
         private: Option<&PrivateConfig>,
+        telemetry: &[TelemetryBinding],
         output: &mut Disclosure<'_>,
     ) -> Result<(), PrivateEvidenceFailure> {
         match self {
+            Self::RevealTelemetry {
+                history_identity,
+                selection,
+            } => {
+                if !telemetry.contains(&selection.binding) {
+                    return Err(PrivateEvidenceFailure::Unauthorized);
+                }
+                authorize_private(
+                    store,
+                    allowed,
+                    role,
+                    &history_identity,
+                    &selection.binding.source_id,
+                )?;
+                native_content::disclose_telemetry(store, &selection, output)
+            }
             Self::RevealPrivate {
                 history_identity,
                 selection,
@@ -243,6 +274,45 @@ impl NativeOperation {
     }
 }
 
+pub(crate) fn dispatch_with_telemetry(
+    store: &mut Store,
+    allowed: &BTreeSet<ExtensionId>,
+    role: Role,
+    operation: NativeOperation,
+    backup_directory: Option<&Path>,
+    private: Option<&PrivateConfig>,
+    telemetry: &[TelemetryBinding],
+) -> NativeReply {
+    match operation {
+        NativeOperation::CheckTelemetryAdmission { binding } => {
+            NativeReply::Admission(if role == Role::Collector && telemetry.contains(&binding) {
+                Ok(AdmissionReply::PayloadPolicyEnabled)
+            } else {
+                Err(AdmissionFailure::Unauthorized)
+            })
+        }
+        NativeOperation::AdmitTelemetry {
+            binding,
+            batch,
+            records,
+        } => NativeReply::Admission(if role == Role::Collector && telemetry.contains(&binding) {
+            native_admission::admit_telemetry(store, &binding, batch, &records)
+        } else {
+            Err(AdmissionFailure::Unauthorized)
+        }),
+        NativeOperation::Admin { request }
+            if matches!(&request, AdminRequest::ApproveGrant { binding }
+            if binding.kind == agenturm_store::ContentKind::TelemetrySpanPayload
+                && !telemetry.iter().any(|configured| configured.grant_scope().is_ok_and(
+                    |scope| GrantBinding::from(&scope) == *binding
+                ))) =>
+        {
+            NativeReply::Admin(Err(AdminFailure::Unauthorized))
+        }
+        operation => dispatch(store, allowed, role, operation, backup_directory, private),
+    }
+}
+
 pub(crate) fn dispatch(
     store: &mut Store,
     allowed: &BTreeSet<ExtensionId>,
@@ -253,6 +323,10 @@ pub(crate) fn dispatch(
 ) -> NativeReply {
     let admission = match operation {
         NativeOperation::SourceCursor { source_id } => AdmissionRequest::SourceCursor { source_id },
+        NativeOperation::CheckTelemetryAdmission { .. }
+        | NativeOperation::AdmitTelemetry { .. } => {
+            return NativeReply::Admission(Err(AdmissionFailure::Unauthorized));
+        }
         NativeOperation::Admit { batch } => AdmissionRequest::Admit { batch },
         NativeOperation::QueryHistory {
             query,
@@ -386,7 +460,8 @@ pub(crate) fn dispatch(
         }
         NativeOperation::RevealPrivate { .. }
         | NativeOperation::VerifyPrivatePrompt { .. }
-        | NativeOperation::VerifyPrivateOperation { .. } => {
+        | NativeOperation::VerifyPrivateOperation { .. }
+        | NativeOperation::RevealTelemetry { .. } => {
             return NativeReply::PrivatePrompts(Err(PrivateEvidenceFailure::Unauthorized));
         }
         NativeOperation::Admin { request } => {
@@ -872,6 +947,54 @@ impl NativeStore {
         self.consume_private_operation(selection, snapshot_id, consume)
     }
 
+    pub fn with_telemetry_payload<T>(
+        &self,
+        selection: &TelemetryPayloadSelection,
+        consume: impl FnOnce(&TelemetryPayload) -> Result<T, String>,
+    ) -> Result<T, NativeClientError> {
+        self.consume_private(
+            NativeOperation::RevealTelemetry {
+                history_identity: self.private_history_identity()?,
+                selection: selection.clone(),
+            },
+            |payload: &TelemetryPayload| {
+                payload
+                    .validate()
+                    .map_err(|_| NativeClientError::InvalidReply)?;
+                consume(payload).map_err(|_| NativeClientError::PrivateConsumer)
+            },
+        )
+    }
+
+    pub fn check_telemetry_admission(
+        &self,
+        binding: &TelemetryBinding,
+    ) -> Result<(), NativeClientError> {
+        match self.admission(NativeOperation::CheckTelemetryAdmission {
+            binding: binding.clone(),
+        })? {
+            AdmissionReply::PayloadPolicyEnabled => Ok(()),
+            _ => Err(NativeClientError::InvalidReply),
+        }
+    }
+
+    pub fn commit_telemetry_batch(
+        &self,
+        binding: &TelemetryBinding,
+        batch: ObservationBatch,
+        records: Vec<TelemetryPayloadRecord>,
+    ) -> Result<usize, NativeClientError> {
+        match self.admission(NativeOperation::AdmitTelemetry {
+            binding: binding.clone(),
+            batch,
+            records,
+        })? {
+            AdmissionReply::Committed { inserted } => Ok(inserted),
+            AdmissionReply::Replay => Ok(0),
+            _ => Err(NativeClientError::InvalidReply),
+        }
+    }
+
     fn consume_private_operation<P: DeserializeOwned, T>(
         &self,
         selection: &PrivateEvidenceSelection,
@@ -1157,7 +1280,9 @@ impl ObservationStore for NativeStore {
                 inserted: 0,
                 replay: true,
             }),
-            AdmissionReply::Cursor { .. } => Err(NativeClientError::InvalidReply.to_string()),
+            AdmissionReply::Cursor { .. } | AdmissionReply::PayloadPolicyEnabled => {
+                Err(NativeClientError::InvalidReply.to_string())
+            }
         }
     }
 }

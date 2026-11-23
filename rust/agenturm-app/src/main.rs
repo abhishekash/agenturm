@@ -1,11 +1,11 @@
 use agenturm_app::{
     AgenturmApp, Command, discover, execute_attention, execute_backup, execute_backup_workspace,
     execute_cockpit_with_extensions, execute_collect, execute_content_stdout, execute_evals,
-    execute_ingest, execute_inspect_ui, execute_investigation, execute_prune, execute_query,
-    execute_restore_workspace, execute_retention, execute_selected_review, execute_service,
-    execute_span_jsonl_import, execute_summary, execute_task_stdout, execute_trace_import,
-    execute_trace_receiver, execute_trace_run, execute_watch, parse_os_command, render,
-    with_private_stdout,
+    execute_ingest, execute_inspect_ui, execute_investigation, execute_payload_stdout,
+    execute_prune, execute_query, execute_restore_workspace, execute_retention,
+    execute_selected_review, execute_service, execute_span_jsonl_import, execute_summary,
+    execute_task_stdout, execute_trace_import, execute_trace_receiver, execute_trace_run,
+    execute_watch, parse_os_command, render, with_private_stdout,
 };
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -190,6 +190,12 @@ fn main() -> ExitCode {
         Command::Content(options) => {
             if let Err(message) = execute_content_stdout(&options) {
                 eprintln!("content preview failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Command::TracePayload(options) => {
+            if let Err(message) = execute_payload_stdout(&options) {
+                eprintln!("telemetry payload failed: {message}");
                 return ExitCode::FAILURE;
             }
         }

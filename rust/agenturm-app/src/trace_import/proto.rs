@@ -1,8 +1,9 @@
 //! Decode the structural OTLP/HTTP trace fields we retain. Unknown fields
-//! are skipped without decoding names, events, links, or payload attributes.
+//! are skipped without decoding names, events, links, or arbitrary attributes.
 
 use super::{
-    Attribute, AttributeValue, MAX_EXPORT_SPANS, OtlpSpan, Status, TURN_KEY, Timestamp, WORKER_KEY,
+    Attribute, AttributeValue, MAX_EXPORT_SPANS, OtlpSpan, PAYLOAD_INPUT, PAYLOAD_OUTPUT, Status,
+    TURN_KEY, Timestamp, WORKER_KEY,
 };
 use std::fmt::Write as _;
 
@@ -152,11 +153,22 @@ fn decode_attribute(input: &[u8]) -> Result<Option<Attribute>, &'static str> {
     if !cost_key
         && !matches!(
             key,
-            "session.id" | "gen_ai.conversation.id" | "agenturm.source.id" | TURN_KEY | WORKER_KEY
+            "session.id"
+                | "gen_ai.conversation.id"
+                | "agenturm.source.id"
+                | TURN_KEY
+                | WORKER_KEY
+                | PAYLOAD_INPUT
+                | PAYLOAD_OUTPUT
         )
     {
         return Ok(None);
     }
+    let max_len = if matches!(key, PAYLOAD_INPUT | PAYLOAD_OUTPUT) {
+        agenturm_store::MAX_TELEMETRY_PAYLOAD_TEXT_BYTES
+    } else {
+        512
+    };
     let mut scalar = AttributeValue::default();
     if let Some(value) = value {
         for field in fields(value) {
@@ -164,7 +176,7 @@ fn decode_attribute(input: &[u8]) -> Result<Option<Attribute>, &'static str> {
             if (1..=7).contains(&number) {
                 scalar = AttributeValue::default();
                 match (number, field) {
-                    (1, Field::Bytes(data)) if data.len() <= 512 => {
+                    (1, Field::Bytes(data)) if data.len() <= max_len => {
                         if let Ok(text) = std::str::from_utf8(data) {
                             scalar.string_value = text.into();
                         } else if !cost_key {
@@ -301,7 +313,7 @@ mod tests {
         let export = message(1, &message(2, &message(2, &span)));
 
         let id = agenturm_kernel::ExtensionId::parse("otlp.fixture").unwrap();
-        let (rows, skipped) = super::super::decode_protobuf(&export, &id, None).unwrap();
+        let (rows, skipped, _) = super::super::decode_protobuf(&export, &id, None, None).unwrap();
         assert_eq!(skipped, 0);
         assert_eq!(rows.len(), 1);
         assert_eq!(
@@ -316,7 +328,46 @@ mod tests {
         assert_eq!(span.started_at_unix_ns, 10);
         assert_eq!(rows[0].observed_at_unix_ns, 20);
         assert_eq!(span.status, agenturm_kernel::TraceStatus::Error);
-        assert!(super::super::decode_protobuf(&export[..export.len() - 1], &id, None).is_err());
+        assert!(
+            super::super::decode_protobuf(&export[..export.len() - 1], &id, None, None).is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_payload_fields_require_a_matching_receiver_scope() {
+        let source = agenturm_kernel::ExtensionId::parse("otlp.fixture").unwrap();
+        let binding = agenturm_store::TelemetryBinding {
+            source_id: source.clone(),
+            native_source_id: None,
+        };
+        let mut span = message(1, &[3; 16]);
+        span.extend(message(2, &[4; 8]));
+        span.push(7 << 3 | 1);
+        span.extend(10_u64.to_le_bytes());
+        span.push(8 << 3 | 1);
+        span.extend(20_u64.to_le_bytes());
+        for (key, value) in [
+            ("session.id", "fixture-session"),
+            (PAYLOAD_INPUT, "recorded text"),
+            ("input.value", "excluded provider request"),
+        ] {
+            let mut attribute = message(1, key.as_bytes());
+            attribute.extend(message(2, &message(1, value.as_bytes())));
+            span.extend(message(9, &attribute));
+        }
+        let export = message(1, &message(2, &message(2, &span)));
+        assert!(super::super::decode_protobuf(&export, &source, None, None).is_err());
+
+        let (rows, skipped, private) =
+            super::super::decode_protobuf(&export, &source, None, Some(&binding)).unwrap();
+        assert_eq!(skipped, 0);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(private.len(), 1);
+        assert_eq!(private[0].event_id, rows[0].event_id);
+        assert_eq!(private[0].payload.input.as_deref(), Some("recorded text"));
+        let metadata = serde_json::to_string(&rows).unwrap();
+        assert!(!metadata.contains("recorded text"));
+        assert!(!metadata.contains("excluded provider request"));
     }
 
     #[test]

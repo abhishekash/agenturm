@@ -4,7 +4,7 @@ use agenturm_content::{OperationDetailKind, PromptReference, ResolvedSource};
 use agenturm_kernel::ExtensionId;
 use agenturm_kernel::ReadSnapshot;
 use agenturm_storage_service_contract::native;
-use agenturm_store::{CodexOperationSelection, Store, StoreError};
+use agenturm_store::{CodexOperationSelection, Store, StoreError, TelemetryPayloadSelection};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -400,6 +400,22 @@ pub(crate) fn verify_operation(
     .map_err(|_| PrivateEvidenceFailure::Unavailable)?
 }
 
+pub(crate) fn disclose_telemetry(
+    store: &Store,
+    selected: &TelemetryPayloadSelection,
+    output: &mut Disclosure<'_>,
+) -> Result<(), PrivateEvidenceFailure> {
+    store
+        .with_telemetry_payload(selected, |payload| output.publish(payload))
+        .map_err(|error| match error {
+            StoreError::SnapshotReplaced => PrivateEvidenceFailure::HistoryReplaced,
+            StoreError::ExpiredHistorySnapshot { .. } => PrivateEvidenceFailure::SnapshotExpired,
+            _ => PrivateEvidenceFailure::Unavailable,
+        })?
+        .ok_or(PrivateEvidenceFailure::Unavailable)?
+        .map_err(|_| PrivateEvidenceFailure::Unavailable)
+}
+
 pub(crate) struct Disclosure<'a> {
     stream: &'a mut UnixStream,
     request: &'a native::ReplyIdentity,
@@ -786,6 +802,7 @@ mod tests {
                 &fixture.sources,
                 role,
                 Some(&fixture.config),
+                &[],
                 &mut output,
             );
             assert_eq!(result, Err(failure));
@@ -809,6 +826,7 @@ mod tests {
                     &fixture.sources,
                     Role::Reader,
                     Some(&fixture.config),
+                    &[],
                     &mut output,
                 );
                 output.complete(result);

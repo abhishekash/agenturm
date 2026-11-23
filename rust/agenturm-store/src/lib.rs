@@ -16,9 +16,11 @@ mod backup;
 mod content_grant;
 mod eval_outcome;
 mod linked_trace;
+mod private_text;
 mod retention;
 mod review_ledger;
 mod session_catalog;
+mod telemetry_payload;
 mod workspace_ledger;
 
 pub use automatic_retention::{
@@ -34,11 +36,16 @@ pub use eval_outcome::{
     EvalImportReport, EvalOutcome, EvalScore, MAX_EVAL_OUTCOMES, RetainedEvalOutcome,
 };
 pub use linked_trace::{ResolvedTraceReview, ResolvedTraceTurn, TraceReviewQuery, TraceTurnQuery};
+pub use private_text::bounded_text_preview;
 pub use retention::RetentionOutcome;
 pub use review_ledger::{ReviewDecisionNote, ReviewError, ReviewKey, ReviewLedger, ReviewVersion};
 pub use session_catalog::{
     MAX_SESSION_PAGE_SIZE, SessionLifecycle, SessionPage, SessionPosition, SessionQuery,
     SessionSummary,
+};
+pub use telemetry_payload::{
+    MAX_TELEMETRY_PAYLOAD_TEXT_BYTES, TelemetryBinding, TelemetryPayload, TelemetryPayloadRecord,
+    TelemetryPayloadSelection,
 };
 pub use workspace_ledger::{
     ApprovedTaskDraft, MAX_WORKSPACE_GIT_DIFF_BYTES, MAX_WORKSPACE_PAGE_SIZE, SavedHandoff,
@@ -61,7 +68,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 15;
+const SCHEMA_VERSION: i64 = 16;
 const MAX_BATCH_EVENTS: usize = 2_048;
 const MAX_SOURCE_ID_BYTES: usize = 96;
 const MAX_REQUEST_ID_BYTES: usize = 128;
@@ -74,7 +81,8 @@ const STORE_MARKER_V11: &str = "agenturm.observation-store.v11";
 const STORE_MARKER_V12: &str = "agenturm.observation-store.v12";
 const STORE_MARKER_V13: &str = "agenturm.observation-store.v13";
 const STORE_MARKER_V14: &str = "agenturm.observation-store.v14";
-const STORE_MARKER: &str = "agenturm.observation-store.v15";
+const STORE_MARKER_V15: &str = "agenturm.observation-store.v15";
+const STORE_MARKER: &str = "agenturm.observation-store.v16";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -490,6 +498,9 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         ));
         expected.push(("table".to_owned(), "agenturm_eval_outcomes".to_owned()));
     }
+    if version >= 16 {
+        expected.push(("table".to_owned(), "agenturm_telemetry_payloads".to_owned()));
+    }
     expected.sort();
     if objects != expected {
         return Err(StoreError::UnrecognizedDatabase);
@@ -515,7 +526,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         12 => STORE_MARKER_V12,
         13 => STORE_MARKER_V13,
         14 => STORE_MARKER_V14,
-        15 => STORE_MARKER,
+        15 => STORE_MARKER_V15,
+        16 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -613,6 +625,19 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
             ],
         ));
         eval_outcome::validate_trace_index(connection)?;
+    }
+    if version >= 16 {
+        expected_tables.push((
+            "agenturm_telemetry_payloads",
+            vec![
+                ("source_id", "TEXT", 1, 1),
+                ("event_id", "TEXT", 1, 2),
+                ("revision", "INTEGER", 1, 3),
+                ("request_id", "TEXT", 1, 0),
+                ("payload_digest", "BLOB", 1, 0),
+                ("payload_json", "TEXT", 0, 0),
+            ],
+        ));
     }
     for (table, expected_columns) in expected_tables {
         let mut statement = connection.prepare(&format!("PRAGMA table_info({table})"))?;
@@ -881,7 +906,7 @@ impl Store {
         retention::read_incarnation(&self.connection)
     }
 
-    /// Opens a v8 through v15 store through a read-only connection. This path
+    /// Opens a v8 through v16 store through a read-only connection. This path
     /// never initializes, migrates, changes journal mode, or creates a DB.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -983,6 +1008,7 @@ impl Store {
             content_grant::create_receipt_proof_schema(&transaction)?;
             retention::create_schema(&transaction)?;
             eval_outcome::create_schema(&transaction)?;
+            telemetry_payload::create_schema(&transaction)?;
             transaction.commit()?;
         } else if schema_version == 2 {
             validate_marked_shape(&connection, 2)?;
@@ -1220,10 +1246,23 @@ impl Store {
             transaction.commit()?;
             validate_marked_shape(&connection, 14)?;
         }
-        if (2..SCHEMA_VERSION).contains(&schema_version) {
+        if (2..15).contains(&schema_version) {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             eval_outcome::create_schema(&transaction)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V15],
+            )?;
+            transaction.pragma_update(None, "user_version", 15)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 15)?;
+        }
+        if (2..SCHEMA_VERSION).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            content_grant::migrate_grant_schema(&transaction, SCHEMA_VERSION)?;
+            telemetry_payload::create_schema(&transaction)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],
@@ -1235,6 +1274,7 @@ impl Store {
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "FULL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
+        connection.pragma_update(None, "secure_delete", "ON")?;
         Ok(connection)
     }
 
@@ -1253,6 +1293,23 @@ impl Store {
         self.commit_batch_inner(
             batch,
             None,
+            None,
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    pub fn commit_telemetry_batch(
+        &mut self,
+        batch: &ObservationBatch,
+        binding: &TelemetryBinding,
+        payloads: &[TelemetryPayloadRecord],
+    ) -> Result<CommitOutcome> {
+        self.verify_telemetry_storage()?;
+        self.commit_batch_inner(
+            batch,
+            Some((binding, payloads)),
+            None,
             #[cfg(test)]
             None,
         )
@@ -1261,10 +1318,15 @@ impl Store {
     fn commit_batch_inner(
         &mut self,
         batch: &ObservationBatch,
+        telemetry: Option<(&TelemetryBinding, &[TelemetryPayloadRecord])>,
         fail_after_insert: Option<usize>,
         #[cfg(test)] before_commit: Option<fn()>,
     ) -> Result<CommitOutcome> {
         validate_batch(batch)?;
+        let payloads = telemetry
+            .map(|(binding, records)| telemetry_payload::build_admission(batch, binding, records))
+            .transpose()?
+            .unwrap_or_default();
         let digest = batch_digest(batch)?;
         self.verify_write_admission()?;
         let transaction = self
@@ -1279,6 +1341,9 @@ impl Store {
             .optional()?;
         if let Some((source_id, prior_digest)) = prior {
             if source_id == batch.source_id && prior_digest == digest {
+                for (event_id, payload) in &payloads {
+                    payload.verify_replay(&transaction, &batch.source_id, event_id)?;
+                }
                 return Ok(CommitOutcome::Replay);
             }
             return Err(StoreError::RequestConflict);
@@ -1295,9 +1360,12 @@ impl Store {
             return Err(StoreError::StaleCursor);
         }
 
+        let validating_telemetry_replay =
+            !payloads.is_empty() && current_cursor.as_deref() == Some(batch.next_cursor.as_str());
         let retention_cutoff = retention::read_state(&transaction)?.cutoff_unix_ns;
         let mut inserted = 0;
         for observation in &batch.observations {
+            let payload = payloads.get(observation.event_id.as_str());
             let event_hash = event_digest(&batch.source_id, observation)?;
             let prior_digest: Option<String> = transaction.query_row(
                 "SELECT COALESCE(
@@ -1310,14 +1378,32 @@ impl Store {
             )?;
             if let Some(prior_digest) = prior_digest {
                 if prior_digest == event_hash {
+                    if let Some(payload) = payload {
+                        payload.verify_replay(
+                            &transaction,
+                            &batch.source_id,
+                            &observation.event_id,
+                        )?;
+                    }
                     continue;
                 }
                 return Err(StoreError::EventConflict {
                     event_id: observation.event_id.clone(),
                 });
             }
+            if validating_telemetry_replay {
+                return Err(StoreError::RequestConflict);
+            }
             let timestamp = i64::try_from(observation.observed_at_unix_ns)
                 .map_err(|_| StoreError::Invalid("timestamp exceeds SQLite INTEGER"))?;
+            if let Some(payload) = payload {
+                payload.insert(
+                    &transaction,
+                    batch,
+                    &observation.event_id,
+                    timestamp >= retention_cutoff,
+                )?;
+            }
             if timestamp < retention_cutoff {
                 transaction.execute(
                     "INSERT INTO agenturm_retired_observations
@@ -1355,6 +1441,9 @@ impl Store {
             if fail_after_insert == Some(inserted) {
                 return Err(StoreError::InjectedFailure);
             }
+        }
+        if validating_telemetry_replay {
+            return Ok(CommitOutcome::Replay);
         }
         transaction.execute(
             "INSERT INTO agenturm_ingest_receipts (request_id, source_id, batch_digest, event_count)
@@ -2225,6 +2314,7 @@ mod tests {
         connection.execute_batch(
             "DROP INDEX agenturm_observations_by_trace;
              DROP TABLE agenturm_eval_outcomes;
+             DROP TABLE agenturm_telemetry_payloads;
              UPDATE agenturm_store_meta SET value='agenturm.observation-store.v14' WHERE key='format';
              PRAGMA user_version=14;"
         ).unwrap();
@@ -3816,7 +3906,7 @@ mod tests {
             ],
         );
         assert!(matches!(
-            store.commit_batch_inner(&input, Some(1), None),
+            store.commit_batch_inner(&input, None, Some(1), None),
             Err(StoreError::InjectedFailure)
         ));
         assert!(store.observations().unwrap().is_empty());
@@ -3862,6 +3952,7 @@ mod tests {
             store
                 .commit_batch_inner(
                     &input,
+                    None,
                     None,
                     Some(|| {
                         fs::write(std::env::var_os(CHILD_MARKER).unwrap(), b"ready").unwrap();

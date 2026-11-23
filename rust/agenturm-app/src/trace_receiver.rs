@@ -1,9 +1,11 @@
 //! Loopback-only HTTP ingestion for bounded OTLP trace exports.
 
 use crate::trace_import::{
-    MAX_EXPORT_BYTES, commit, decode_json, decode_protobuf, parse_source_id, protobuf_response,
+    MAX_EXPORT_BYTES, commit, commit_payloads, decode_json, decode_protobuf, parse_source_id,
+    protobuf_response,
 };
 use agenturm_kernel::{ExtensionId, Observation};
+use agenturm_store::{TelemetryBinding, TelemetryPayloadRecord};
 use std::io::{BufRead, BufReader, Read, Write};
 use std::net::{SocketAddr, TcpListener, TcpStream};
 use std::path::PathBuf;
@@ -13,10 +15,9 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-const USAGE: &str =
-    "agenturm serve-traces --listen <loopback-IP:port> --db <path> --source-id otlp.<id>";
+const USAGE: &str = "agenturm serve-traces --listen <loopback-IP:port> --db <path> --source-id otlp.<id> [--payload-scope <standalone|harness-id> --token-file <path>]";
 #[cfg(target_os = "linux")]
-const BROKER_USAGE: &str = "agenturm broker serve-traces --broker-config <json> --listen <loopback-IP:port> --source-id otlp.<id> --token-file <path>";
+const BROKER_USAGE: &str = "agenturm broker serve-traces --broker-config <json> --listen <loopback-IP:port> --source-id otlp.<id> --token-file <path> [--payload-scope <standalone|harness-id>]";
 const MAX_HEADERS: usize = 8192;
 const READ_BUDGET: Duration = Duration::from_secs(3);
 
@@ -24,12 +25,14 @@ const READ_BUDGET: Duration = Duration::from_secs(3);
 pub struct TraceReceiverOptions {
     settings: TraceReceiverSettings,
     db: PathBuf,
+    payload_token_file: Option<PathBuf>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct TraceReceiverSettings {
     listen: SocketAddr,
     pub source: ExtensionId,
+    pub payload_binding: Option<TelemetryBinding>,
 }
 
 #[cfg(target_os = "linux")]
@@ -120,16 +123,23 @@ impl ProducerToken {
 }
 
 pub(super) fn parse(args: &[String]) -> Result<TraceReceiverOptions, String> {
-    let (settings, db) = parse_settings(args, true, USAGE)?;
-    Ok(TraceReceiverOptions { settings, db })
+    let (settings, db, payload_token_file) = parse_settings(args, true, USAGE)?;
+    if settings.payload_binding.is_some() != payload_token_file.is_some() {
+        return Err(USAGE.into());
+    }
+    Ok(TraceReceiverOptions {
+        settings,
+        db,
+        payload_token_file,
+    })
 }
 
 #[cfg(target_os = "linux")]
 pub(super) fn parse_broker(args: &[String]) -> Result<BrokerTraceReceiverOptions, String> {
-    let (settings, token_file) = parse_settings(args, false, BROKER_USAGE)?;
+    let (settings, _, token_file) = parse_settings(args, false, BROKER_USAGE)?;
     Ok(BrokerTraceReceiverOptions {
         settings,
-        token_file,
+        token_file: token_file.ok_or(BROKER_USAGE)?,
     })
 }
 
@@ -137,12 +147,14 @@ fn parse_settings(
     args: &[String],
     local: bool,
     usage: &str,
-) -> Result<(TraceReceiverSettings, PathBuf), String> {
+) -> Result<(TraceReceiverSettings, PathBuf, Option<PathBuf>), String> {
     let (pairs, extras) = args.as_chunks::<2>();
     if !extras.is_empty() {
         return Err(usage.into());
     }
     let (mut listen, mut path, mut source) = (None, None, None);
+    let mut scope = None;
+    let mut token_file = None;
     for [flag, value] in pairs {
         let value = value.as_str();
         if value.is_empty() || value.starts_with("--") {
@@ -159,33 +171,80 @@ fn parse_settings(
             "--db" if local && path.is_none() && value != "-" && value != ":memory:" => {
                 path = Some(PathBuf::from(value))
             }
-            "--token-file" if !local && path.is_none() => path = Some(PathBuf::from(value)),
+            "--token-file" if token_file.is_none() => token_file = Some(PathBuf::from(value)),
+            "--payload-scope" if scope.is_none() => scope = Some(value),
             "--source-id" if source.is_none() => source = Some(parse_source_id(value)?),
             _ => return Err(usage.into()),
         }
     }
+    let source = source.ok_or(usage)?;
+    let payload_binding = scope
+        .map(|scope| parse_payload_scope(&source, scope))
+        .transpose()?;
     Ok((
         TraceReceiverSettings {
             listen: listen.ok_or(usage)?,
-            source: source.ok_or(usage)?,
+            source,
+            payload_binding,
         },
-        path.ok_or(usage)?,
+        if local {
+            path.ok_or(usage)?
+        } else {
+            PathBuf::new()
+        },
+        token_file,
     ))
 }
 
+pub(super) fn parse_payload_scope(
+    source: &ExtensionId,
+    scope: &str,
+) -> Result<TelemetryBinding, String> {
+    let native_source_id = if scope == "standalone" {
+        None
+    } else {
+        Some(ExtensionId::parse(scope).map_err(|_| "invalid telemetry payload scope")?)
+    };
+    let binding = TelemetryBinding {
+        source_id: source.clone(),
+        native_source_id,
+    };
+    binding.grant_scope().map_err(|error| error.to_string())?;
+    Ok(binding)
+}
+
 pub fn execute_trace_receiver(options: &TraceReceiverOptions) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    let token = options
+        .payload_token_file
+        .as_deref()
+        .map(ProducerToken::from_file)
+        .transpose()?;
+    #[cfg(not(target_os = "linux"))]
+    let token = if options.payload_token_file.is_some() {
+        return Err("Private trace capture requires Linux producer authentication".into());
+    } else {
+        None
+    };
     execute_with_maintenance(
         &options.settings,
-        None,
+        token,
         Some(options.db.clone()),
-        |source, rows| commit(&options.db, source, &rows).map(|_| ()),
+        |source, rows, payloads| match &options.settings.payload_binding {
+            Some(binding) => commit_payloads(&options.db, binding, &rows, &payloads),
+            None => commit(&options.db, source, &rows).map(|_| ()),
+        },
     )
 }
 
 pub(super) fn execute_with_commit(
     settings: &TraceReceiverSettings,
     token: Option<ProducerToken>,
-    commit: impl FnMut(&ExtensionId, Vec<Observation>) -> Result<(), String>,
+    commit: impl FnMut(
+        &ExtensionId,
+        Vec<Observation>,
+        Vec<TelemetryPayloadRecord>,
+    ) -> Result<(), String>,
 ) -> Result<(), String> {
     execute_with_maintenance(settings, token, None, commit)
 }
@@ -194,7 +253,11 @@ fn execute_with_maintenance(
     settings: &TraceReceiverSettings,
     token: Option<ProducerToken>,
     maintenance_db: Option<PathBuf>,
-    commit: impl FnMut(&ExtensionId, Vec<Observation>) -> Result<(), String>,
+    commit: impl FnMut(
+        &ExtensionId,
+        Vec<Observation>,
+        Vec<TelemetryPayloadRecord>,
+    ) -> Result<(), String>,
 ) -> Result<(), String> {
     let stop = Arc::new(AtomicBool::new(false));
     let _signals = crate::WatchSignalRegistrations::new(Arc::clone(&stop))?;
@@ -204,7 +267,7 @@ fn execute_with_maintenance(
         "Listening for OTLP traces at http://{}/v1/traces",
         receiver.address()
     );
-    receiver.serve_with(&stop, commit)
+    receiver.serve_with_payloads(&stop, commit)
 }
 
 pub(super) struct TraceReceiver {
@@ -214,6 +277,7 @@ pub(super) struct TraceReceiver {
     source: ExtensionId,
     launch_session: Option<String>,
     token: Option<ProducerToken>,
+    payload_binding: Option<TelemetryBinding>,
 }
 
 impl TraceReceiver {
@@ -222,6 +286,9 @@ impl TraceReceiver {
         launch_session: Option<String>,
         token: Option<ProducerToken>,
     ) -> Result<Self, String> {
+        if settings.payload_binding.is_some() && token.is_none() {
+            return Err("Private trace capture requires an authenticated producer".into());
+        }
         let listener = TcpListener::bind(settings.listen)
             .map_err(|error| format!("bind trace receiver: {error}"))?;
         listener
@@ -235,6 +302,7 @@ impl TraceReceiver {
             source: settings.source,
             launch_session,
             token,
+            payload_binding: settings.payload_binding,
         })
     }
 
@@ -242,11 +310,13 @@ impl TraceReceiver {
         source: ExtensionId,
         launch_session: String,
         token: Option<ProducerToken>,
+        payload_binding: Option<TelemetryBinding>,
     ) -> Result<Self, String> {
         Self::bind(
             TraceReceiverSettings {
                 listen: SocketAddr::from(([127, 0, 0, 1], 0)),
                 source,
+                payload_binding,
             },
             Some(launch_session),
             token,
@@ -268,6 +338,7 @@ impl TraceReceiver {
             TraceReceiverSettings {
                 listen: SocketAddr::from(([127, 0, 0, 1], port)),
                 source: parse_source_id("otlp.local")?,
+                payload_binding: None,
             },
             None,
             None,
@@ -284,9 +355,21 @@ impl TraceReceiver {
     }
 
     pub(super) fn serve_with(
-        mut self,
+        self,
         stop: &AtomicBool,
         mut store: impl FnMut(&ExtensionId, Vec<Observation>) -> Result<(), String>,
+    ) -> Result<(), String> {
+        self.serve_with_payloads(stop, |source, rows, _| store(source, rows))
+    }
+
+    pub(super) fn serve_with_payloads(
+        mut self,
+        stop: &AtomicBool,
+        mut store: impl FnMut(
+            &ExtensionId,
+            Vec<Observation>,
+            Vec<TelemetryPayloadRecord>,
+        ) -> Result<(), String>,
     ) -> Result<(), String> {
         while !stop.load(Ordering::Relaxed) {
             if let Some(maintenance) = self.maintenance.as_mut() {
@@ -299,6 +382,7 @@ impl TraceReceiver {
                     &self.source,
                     self.launch_session.as_deref(),
                     self.token.as_ref(),
+                    self.payload_binding.as_ref(),
                     &mut store,
                 ),
                 Ok(_) => {}
@@ -318,17 +402,22 @@ fn handle(
     source: &ExtensionId,
     launch_session: Option<&str>,
     token: Option<&ProducerToken>,
-    commit: &mut impl FnMut(&ExtensionId, Vec<Observation>) -> Result<(), String>,
+    binding: Option<&TelemetryBinding>,
+    commit: &mut impl FnMut(
+        &ExtensionId,
+        Vec<Observation>,
+        Vec<TelemetryPayloadRecord>,
+    ) -> Result<(), String>,
 ) {
     let deadline = Instant::now() + READ_BUDGET;
     let result = read_request(&stream, address, token, deadline).and_then(|(encoding, body)| {
         let decoded = match encoding {
-            Encoding::Json => decode_json(&body, source, launch_session),
-            Encoding::Protobuf => decode_protobuf(&body, source, launch_session),
+            Encoding::Json => decode_json(&body, source, launch_session, binding),
+            Encoding::Protobuf => decode_protobuf(&body, source, launch_session, binding),
         };
-        let (rows, skipped) = decoded.map_err(|_| "400 Bad Request")?;
+        let (rows, skipped, payloads) = decoded.map_err(|_| "400 Bad Request")?;
         if !rows.is_empty() {
-            commit(source, rows).map_err(|_| "503 Service Unavailable")?;
+            commit(source, rows, payloads).map_err(|_| "503 Service Unavailable")?;
         }
         let bytes = match encoding {
             Encoding::Json if skipped == 0 => b"{}".to_vec(),

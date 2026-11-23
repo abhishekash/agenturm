@@ -1,4 +1,4 @@
-"""Bounded metadata-only OTLP/HTTP export to a literal loopback endpoint."""
+"""Bounded OTLP/HTTP export to a literal loopback endpoint."""
 from __future__ import annotations
 
 import http.client
@@ -16,6 +16,18 @@ from urllib.parse import unquote, urlsplit
 MAX_EXPORT_SPANS = 1024
 MAX_EXPORT_BYTES = 4 * 1024 * 1024
 MAX_REPLY_BYTES = 4096
+MAX_PAYLOAD_TEXT_BYTES = 2048
+MAX_PAYLOAD_BATCH_BYTES = 64 * 1024
+PAYLOAD_KEYS = ("agenturm.payload.input", "agenturm.payload.output")
+_CREDENTIAL_MARKERS = re.compile(
+    r"private key|sk-|[sr]k_(?:live|test)_|gh[pousr]_|github_pat_|akia|aiza|xox[baprs]-|\bbearer\b",
+    re.IGNORECASE,
+)
+_CREDENTIAL_FIELD = re.compile(
+    r"authorization|password|passwd|token|secret|credential|api[_-]?key",
+    re.IGNORECASE,
+)
+
 _PREFIX = b'{"resourceSpans":[{"scopeSpans":[{"scope":{"name":"agenturm.python"},"spans":['
 _SUFFIX = b']}]}]}'
 _STATUS = {"UNSET": 0, "OK": 1, "ERROR": 2}
@@ -181,7 +193,45 @@ def _span_id(value, width):
     return value.lower()
 
 
-def _project(span, attributes):
+def _payload_text(value):
+    if not isinstance(value, str) or not value or len(value) > MAX_PAYLOAD_TEXT_BYTES:
+        raise ValueError("OTLP captured text is invalid or exceeds its byte limit")
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeError:
+        raise ValueError("OTLP captured text is not valid Unicode") from None
+    if size > MAX_PAYLOAD_TEXT_BYTES:
+        raise ValueError("OTLP captured text exceeds its byte limit")
+    if _CREDENTIAL_MARKERS.search(value) or any(
+        (":" in line or "=" in line) and _CREDENTIAL_FIELD.search(line)
+        for line in value.splitlines()
+    ) or re.search(r"://[^/\s]+:[^/\s]+@", value):
+        raise ValueError("OTLP captured text was withheld")
+    if any(
+        (ord(ch) < 32 and ch not in "\n\t") or 127 <= ord(ch) <= 159
+        or ch in "\u061c\u200e\u200f"
+        or "\u2028" <= ch <= "\u202e" or "\u2066" <= ch <= "\u2069"
+        for ch in value
+    ):
+        raise ValueError("OTLP captured text was withheld")
+    return size
+
+
+def _payload_attributes(span, scope):
+    attributes = span.get("attributes") or {}
+    payload = []
+    size = 0
+    for key in PAYLOAD_KEYS:
+        if key in attributes:
+            if scope.session_id is None:
+                raise ValueError("OTLP captured text requires an explicit session identity")
+            text = attributes[key]
+            size += _payload_text(text)
+            payload.append({"key": key, "value": {"stringValue": text}})
+    return payload, size
+
+
+def _project(span, scope, attributes, capture_content):
     if span is None:
         raise ValueError("OTLP span context is unavailable")
     start = span["start_unix_nano"]
@@ -191,6 +241,7 @@ def _project(span, attributes):
     status = _STATUS.get(span["status"])
     if status is None:
         raise ValueError("Invalid OTLP span status")
+    payload, payload_bytes = _payload_attributes(span, scope) if capture_content else ([], 0)
     result = {
         "traceId": _span_id(span["trace_id"], 32),
         "spanId": _span_id(span["span_id"], 16),
@@ -198,14 +249,14 @@ def _project(span, attributes):
         "startTimeUnixNano": str(start),
         "endTimeUnixNano": str(end),
         "status": {"code": status},
-        "attributes": [*attributes, *_reported_cost_attributes(span.get("attributes"))],
+        "attributes": [*attributes, *_reported_cost_attributes(span.get("attributes")), *payload],
     }
     if span.get("parent_span_id") is not None:
         parent = _span_id(span["parent_span_id"], 16)
         if parent == result["spanId"]:
             raise ValueError("Invalid OTLP parent span identity")
         result["parentSpanId"] = parent
-    return json.dumps(result, separators=(",", ":")).encode("ascii")
+    return json.dumps(result, separators=(",", ":")).encode("ascii"), payload_bytes
 
 
 def _check_reply(response):
@@ -280,7 +331,7 @@ class _DeadlineConnection(http.client.HTTPConnection):
 class OtlpTransport:
     """Send structural span evidence without inherited proxies or redirects."""
 
-    def __init__(self, endpoint, timeout):
+    def __init__(self, endpoint, timeout, *, capture_content=False):
         configured_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
         if endpoint is None:
             endpoint = (configured_endpoint or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
@@ -288,6 +339,10 @@ class OtlpTransport:
         self.host, self.port, self.endpoint = _trace_endpoint(endpoint)
         self._authorization = _trace_authorization(self.endpoint, configured_endpoint)
         self._authorization_target = (self.host, self.port)
+        self.capture_content = bool(capture_content)
+        if self.capture_content and self._authorization is None:
+            raise ValueError("OTLP captured text requires an authenticated trace receiver")
+
         try:
             self.timeout = float(timeout)
         except (ValueError, TypeError, OverflowError):
@@ -300,6 +355,7 @@ class OtlpTransport:
         batch = []
         overhead = len(_PREFIX) + len(_SUFFIX)
         size = overhead
+        captured_bytes = 0
         failure = None
 
         def send():
@@ -313,7 +369,7 @@ class OtlpTransport:
 
         for span in spans:
             try:
-                item = _project(span, attributes)
+                item, item_payload_bytes = _project(span, scope, attributes, self.capture_content)
                 if overhead + len(item) > MAX_EXPORT_BYTES:
                     raise ValueError("OTLP span exceeds the request byte limit")
             except (KeyError, TypeError, ValueError) as exc:
@@ -321,11 +377,16 @@ class OtlpTransport:
                     raise
                 failure = exc
                 continue
-            if batch and (len(batch) == MAX_EXPORT_SPANS or size + len(item) + 1 > MAX_EXPORT_BYTES):
+            if batch and (
+                len(batch) == MAX_EXPORT_SPANS or size + len(item) + 1 > MAX_EXPORT_BYTES
+                or captured_bytes + item_payload_bytes > MAX_PAYLOAD_BATCH_BYTES
+            ):
                 send()
                 batch = []
                 size = overhead
+                captured_bytes = 0
             size += len(item) + bool(batch)
+            captured_bytes += item_payload_bytes
             batch.append(item)
         if batch:
             send()

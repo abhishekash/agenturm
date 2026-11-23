@@ -1,8 +1,9 @@
 //! Launch an already instrumented process with a local OTLP trace receiver.
 
-use crate::trace_import::{commit, parse_source_id};
-use crate::trace_receiver::{ProducerToken, TraceReceiver};
+use crate::trace_import::{commit, commit_payloads, parse_source_id};
+use crate::trace_receiver::{ProducerToken, TraceReceiver, parse_payload_scope};
 use agenturm_kernel::{ExtensionId, Observation};
+use agenturm_store::{TelemetryBinding, TelemetryPayloadRecord};
 use std::ffi::{OsStr, OsString};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -14,10 +15,9 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "agenturm run --db <path> [--source-id otlp.<id>] -- <program> [args...]";
+const USAGE: &str = "agenturm run --db <path> [--source-id otlp.<id>] [--payload-scope <standalone|harness-id>] -- <program> [args...]";
 #[cfg(target_os = "linux")]
-const BROKER_USAGE: &str =
-    "agenturm broker run --broker-config <json> --source-id otlp.<id> -- <program> [args...]";
+const BROKER_USAGE: &str = "agenturm broker run --broker-config <json> --source-id otlp.<id> [--payload-scope <standalone|harness-id>] -- <program> [args...]";
 const SIGNAL_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -29,6 +29,7 @@ pub struct TraceRunOptions {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct TraceInvocation {
     pub source: ExtensionId,
+    pub payload_binding: Option<TelemetryBinding>,
     program: OsString,
     arguments: Vec<OsString>,
 }
@@ -61,6 +62,7 @@ fn parse_invocation(
         return Err(usage.into());
     }
     let (mut db, mut source) = (None, None);
+    let mut payload_scope = None;
     for [flag, value] in flags {
         if value.is_empty() || value.as_encoded_bytes().starts_with(b"--") {
             return Err(usage.into());
@@ -72,17 +74,26 @@ fn parse_invocation(
             Some("--source-id") if source.is_none() => {
                 source = Some(parse_source_id(value.to_str().ok_or(usage)?)?)
             }
+            Some("--payload-scope") if payload_scope.is_none() => {
+                payload_scope = Some(value.to_str().ok_or(usage)?)
+            }
             _ => return Err(usage.into()),
         }
     }
     let source = match source {
         Some(source) => source,
-        None if local => parse_source_id("otlp.run").expect("valid default launcher source"),
+        None if local && payload_scope.is_none() => {
+            parse_source_id("otlp.run").expect("valid default launcher source")
+        }
         None => return Err(usage.into()),
     };
+    let payload_binding = payload_scope
+        .map(|scope| parse_payload_scope(&source, scope))
+        .transpose()?;
     Ok((
         TraceInvocation {
             source,
+            payload_binding,
             program: program.clone(),
             arguments: arguments.to_vec(),
         },
@@ -98,18 +109,40 @@ pub fn execute_trace_run(options: &TraceRunOptions) -> Result<ExitCode, String> 
             .map_err(|error| format!("open trace history: {error}"))?,
     );
     let db = options.db.clone();
+    let payload = options.invocation.payload_binding.clone();
+    #[cfg(target_os = "linux")]
+    let token = if payload.is_some() {
+        Some(ProducerToken::generate()?)
+    } else {
+        None
+    };
+    #[cfg(not(target_os = "linux"))]
+    let token = if payload.is_some() {
+        return Err("Private trace capture requires Linux producer authentication".into());
+    } else {
+        None
+    };
     execute_with_maintenance(
         &options.invocation,
-        None,
+        token,
         Some(options.db.clone()),
-        move |source, rows| commit(&db, source, &rows).map(|_| ()),
+        move |source, rows, payloads| match &payload {
+            Some(binding) => commit_payloads(&db, binding, &rows, &payloads),
+            None => commit(&db, source, &rows).map(|_| ()),
+        },
     )
 }
 
 pub(super) fn execute_with_commit(
     invocation: &TraceInvocation,
     token: Option<ProducerToken>,
-    commit: impl FnMut(&ExtensionId, Vec<Observation>) -> Result<(), String> + Send + 'static,
+    commit: impl FnMut(
+        &ExtensionId,
+        Vec<Observation>,
+        Vec<TelemetryPayloadRecord>,
+    ) -> Result<(), String>
+    + Send
+    + 'static,
 ) -> Result<ExitCode, String> {
     execute_with_maintenance(invocation, token, None, commit)
 }
@@ -118,7 +151,13 @@ fn execute_with_maintenance(
     invocation: &TraceInvocation,
     token: Option<ProducerToken>,
     maintenance_db: Option<PathBuf>,
-    commit: impl FnMut(&ExtensionId, Vec<Observation>) -> Result<(), String> + Send + 'static,
+    commit: impl FnMut(
+        &ExtensionId,
+        Vec<Observation>,
+        Vec<TelemetryPayloadRecord>,
+    ) -> Result<(), String>
+    + Send
+    + 'static,
 ) -> Result<ExitCode, String> {
     let mut signals = RunSignals::new()?;
     let launch_time = std::time::SystemTime::now()
@@ -126,9 +165,13 @@ fn execute_with_maintenance(
         .map_err(|_| "system time is outside the launcher range")?
         .as_nanos();
     let launch_session = format!("launch-{}-{launch_time}", std::process::id());
-    let receiver =
-        TraceReceiver::bind_ephemeral(invocation.source.clone(), launch_session, token.clone())?
-            .with_local_maintenance(maintenance_db);
+    let receiver = TraceReceiver::bind_ephemeral(
+        invocation.source.clone(),
+        launch_session,
+        token.clone(),
+        invocation.payload_binding.clone(),
+    )?
+    .with_local_maintenance(maintenance_db);
     let mut command = traced_command(invocation, receiver.address(), token.as_ref());
     let isolated = configure_process_group(&mut command);
     let receiver = ReceiverTask::start(receiver, commit)?;
@@ -353,13 +396,19 @@ struct ReceiverTask {
 impl ReceiverTask {
     fn start(
         receiver: TraceReceiver,
-        commit: impl FnMut(&ExtensionId, Vec<Observation>) -> Result<(), String> + Send + 'static,
+        commit: impl FnMut(
+            &ExtensionId,
+            Vec<Observation>,
+            Vec<TelemetryPayloadRecord>,
+        ) -> Result<(), String>
+        + Send
+        + 'static,
     ) -> Result<Self, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let receiver_stop = Arc::clone(&stop);
         let thread = thread::Builder::new()
             .name("agenturm-run-traces".into())
-            .spawn(move || receiver.serve_with(&receiver_stop, commit))
+            .spawn(move || receiver.serve_with_payloads(&receiver_stop, commit))
             .map_err(|error| format!("start trace receiver: {error}"))?;
         Ok(Self {
             stop,

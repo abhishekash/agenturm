@@ -1,14 +1,49 @@
-"""OpenTelemetry SDK adapter for the metadata-only Rust producer transport."""
+"""OpenTelemetry SDK adapter for the Rust producer transport."""
 from __future__ import annotations
 
 import logging
+import re
 
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
 _LOGGER = logging.getLogger(__name__)
 
 
-def _span_metadata(span):
+_MESSAGE_TEXT = re.compile(
+    r"llm\.(input|output)_messages\.([0-9]{1,3})\.message\.content"
+    r"(?:s\.([0-9]{1,3})\.message_content\.text)?"
+)
+_MESSAGE_SCOPES = frozenset(
+    "openinference.instrumentation." + name for name in ("openai", "anthropic", "langchain")
+)
+
+
+def _captured_text(span):
+    scope = getattr(span, "instrumentation_scope", None)
+    if scope is None or scope.name not in _MESSAGE_SCOPES:
+        return {}
+    attributes = span.attributes or {}
+    messages = {"input": [], "output": []}
+    for key, text in attributes.items():
+        match = _MESSAGE_TEXT.fullmatch(key)
+        if match is None or not isinstance(text, str) or not text:
+            continue
+        direction, index, block = match.groups()
+        prefix = f"llm.{direction}_messages.{index}.message"
+        if attributes.get(prefix + ".role") not in {"user", "assistant"}:
+            continue
+        if block is not None:
+            kind = attributes.get(f"{prefix}.contents.{block}.message_content.type")
+            if kind != "text":
+                continue
+        messages[direction].append((int(index), int(block) if block is not None else -1, text))
+    return {
+        f"agenturm.payload.{direction}": "\n".join(text for _, _, text in sorted(parts))
+        for direction, parts in messages.items() if parts
+    }
+
+
+def _span_metadata(span, capture_content=False):
     context = span.get_span_context()
     if context is None:
         return None
@@ -19,7 +54,7 @@ def _span_metadata(span):
         "start_unix_nano": span.start_time,
         "end_unix_nano": span.end_time,
         "status": span.status.status_code.name,
-        "attributes": span.attributes,
+        "attributes": {**(span.attributes or {}), **(_captured_text(span) if capture_content else {})},
     }
 
 
@@ -30,7 +65,9 @@ class MetadataSpanExporter(SpanExporter):
         self.client = client
 
     def export(self, spans):
-        if self.client._post_spans(_span_metadata(span) for span in spans):
+        if self.client._post_spans(
+            _span_metadata(span, self.client.capture_content) for span in spans
+        ):
             return SpanExportResult.SUCCESS
         _LOGGER.warning("Agenturm OTLP span export failed: %s", self.client.last_error)
         return SpanExportResult.FAILURE

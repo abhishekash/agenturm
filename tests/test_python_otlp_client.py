@@ -132,6 +132,36 @@ class PythonOtlpClientTests(unittest.TestCase):
              "agenturm.turn.id": "turn-2", "agenturm.worker.id": "worker/one"},
         )
 
+    def test_captured_text_requires_explicit_mode_bearer_session_and_safe_text(self):
+        environment = {
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": ENDPOINT,
+            "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "authorization=Bearer%20" + "e1" * 32,
+        }
+        fields = {"agenturm.payload.input": MARKER, "input.value": "provider arguments"}
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "authenticated trace receiver"):
+                Client(transport="otlp", strict=True, capture_content=True)
+        with patch.dict(os.environ, environment, clear=True):
+            default = Client(transport="otlp", strict=True)
+            with default.trace(session_id="explicit", attributes=fields):
+                pass
+            self.assertNotIn(MARKER.encode(), self.requests[-1][4])
+            explicit = Client(transport="otlp", strict=True, capture_content=True)
+            with self.assertRaisesRegex(ValueError, "explicit session"):
+                with explicit.trace(attributes=fields):
+                    pass
+            with explicit.trace(session_id="explicit", attributes=fields):
+                pass
+            self.assertIn(MARKER.encode(), self.requests[-1][4])
+            self.assertNotIn(b"provider arguments", self.requests[-1][4])
+            self.assertEqual(len(self.requests), 2)
+            with self.assertRaisesRegex(ValueError, "text was withheld"):
+                with explicit.trace(session_id="explicit", attributes={
+                    "agenturm.payload.output": "Authorization: Bearer synthetic credential",
+                }):
+                    pass
+            self.assertEqual(len(self.requests), 2)
+
     def test_broker_bearer_is_sent_only_to_its_configured_trace_endpoint(self):
         bearer = "Bearer " + "e1" * 32
         launch_env = {

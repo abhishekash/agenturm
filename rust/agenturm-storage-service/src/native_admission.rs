@@ -5,6 +5,8 @@
 
 use agenturm_kernel::ExtensionId;
 use agenturm_store::{CommitOutcome, ObservationBatch, Store, StoreError};
+#[cfg(target_os = "linux")]
+use agenturm_store::{TelemetryBinding, TelemetryPayloadRecord};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -21,6 +23,7 @@ pub enum AdmissionReply {
     Cursor { cursor: Option<String> },
     Committed { inserted: usize },
     Replay,
+    PayloadPolicyEnabled,
 }
 
 #[derive(Debug, PartialEq, Eq, Deserialize, Serialize)]
@@ -54,21 +57,43 @@ pub fn dispatch(
             .map(|cursor| AdmissionReply::Cursor { cursor })
             .map_err(failure),
         AdmissionRequest::Admit { batch } => {
-            let prepared = ObservationBatch::new_deterministic(
-                batch.source_id,
-                batch.expected_cursor,
-                batch.next_cursor,
-                batch.observations,
-            )
-            .map_err(failure)?;
-            if batch.request_id != prepared.request_id {
-                return Err(AdmissionFailure::Conflict);
-            }
-            match store.commit_batch(&prepared).map_err(failure)? {
-                CommitOutcome::Committed { inserted } => Ok(AdmissionReply::Committed { inserted }),
-                CommitOutcome::Replay => Ok(AdmissionReply::Replay),
-            }
+            let prepared = prepare(batch)?;
+            committed(store.commit_batch(&prepared))
         }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn admit_telemetry(
+    store: &mut Store,
+    binding: &TelemetryBinding,
+    batch: ObservationBatch,
+    records: &[TelemetryPayloadRecord],
+) -> Result<AdmissionReply, AdmissionFailure> {
+    let prepared = prepare(batch)?;
+    committed(store.commit_telemetry_batch(&prepared, binding, records))
+}
+
+fn prepare(batch: ObservationBatch) -> Result<ObservationBatch, AdmissionFailure> {
+    let prepared = ObservationBatch::new_deterministic(
+        batch.source_id,
+        batch.expected_cursor,
+        batch.next_cursor,
+        batch.observations,
+    )
+    .map_err(failure)?;
+    if batch.request_id != prepared.request_id {
+        return Err(AdmissionFailure::Conflict);
+    }
+    Ok(prepared)
+}
+
+fn committed(
+    result: agenturm_store::Result<CommitOutcome>,
+) -> Result<AdmissionReply, AdmissionFailure> {
+    match result.map_err(failure)? {
+        CommitOutcome::Committed { inserted } => Ok(AdmissionReply::Committed { inserted }),
+        CommitOutcome::Replay => Ok(AdmissionReply::Replay),
     }
 }
 
