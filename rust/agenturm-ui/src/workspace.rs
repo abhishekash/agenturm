@@ -1010,6 +1010,9 @@ impl Workspace {
             return false;
         }
 
+        if view.page.ui.evidence_key(code) {
+            return false;
+        }
         if let Some(table) = view.page.operation_table.active(&view.page.ui)
             && table.key(code)
         {
@@ -1501,6 +1504,20 @@ pub fn run_workspace(
     })
 }
 
+fn pending_evidence_titles(selection: &HistorySelection) -> Option<(&'static str, &'static str)> {
+    match selection {
+        HistorySelection::All(WorkspaceView::Activity)
+        | HistorySelection::Session(_, SessionView::Activity) => Some(("Activity", "Event detail")),
+        HistorySelection::All(WorkspaceView::Findings) => Some(("Findings", "Evidence inspector")),
+        HistorySelection::All(WorkspaceView::Host) => Some(("Host now", "Collection status")),
+        HistorySelection::All(WorkspaceView::Usage)
+        | HistorySelection::Session(_, SessionView::Usage) => Some(("Usage", "Metric inspector")),
+        HistorySelection::All(WorkspaceView::Traces)
+        | HistorySelection::Session(_, SessionView::Traces) => Some(("Traces", "Execution tree")),
+        _ => None,
+    }
+}
+
 fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
     frame.render_widget(Block::default().style(surface(CANVAS)), frame.area());
     if let Some(prompt) = &workspace.prompt {
@@ -1520,6 +1537,15 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
         return;
     }
     let area = frame.area();
+    if workspace.history.is_empty()
+        && frame.area().width >= MIN_WIDTH
+        && frame.area().height >= MIN_HEIGHT
+        && let Some(Change::Open(selection)) = &workspace.pending
+        && let Some((title, inspector)) = pending_evidence_titles(selection)
+    {
+        evidence_view::loading(frame, title, inspector);
+        return;
+    }
     if let Some(view) = workspace.history.last_mut() {
         if area.width >= MIN_WIDTH
             && area.height >= MIN_HEIGHT
@@ -1694,6 +1720,8 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
                 error
             } else if workspace.pending.is_some() {
                 "Loading history…"
+            } else if view.page.ui.evidence_inspection.is_some() {
+                ""
             } else if evaluation_details(view) && telemetry_details(view) {
                 "E evaluations · d captured text · Esc back · [ ] pages"
             } else if evaluation_details(view) {
@@ -2310,6 +2338,144 @@ mod tests {
     }
 
     #[test]
+    fn scoped_evidence_views_keep_the_selected_inspector_on_pending_and_error() {
+        for kind in [
+            WorkspaceView::Activity,
+            WorkspaceView::Findings,
+            WorkspaceView::Host,
+            WorkspaceView::Usage,
+            WorkspaceView::Traces,
+        ] {
+            let selection = HistorySelection::All(kind);
+            let (title, inspector) = pending_evidence_titles(&selection).unwrap();
+            let spec = EvidenceSpec {
+                title,
+                inspector,
+                columns: &[("Type", 1), ("Recorded value", 2)],
+                empty: "No recorded evidence on this page.",
+            };
+            let id = ExtensionId::parse("fixture.evidence").unwrap();
+            for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+                let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+                let mut workspace = Workspace::new();
+                let mut draw = |workspace: &mut Workspace| {
+                    terminal
+                        .draw(|frame| draw_workspace(frame, workspace))
+                        .unwrap();
+                    terminal
+                        .backend()
+                        .buffer()
+                        .content()
+                        .chunks(usize::from(width))
+                        .map(|line| line.iter().map(|cell| cell.symbol()).collect::<String>())
+                        .collect::<Vec<_>>()
+                };
+                let build_page = |table| HistoryPage {
+                    snapshot: Snapshot {
+                        observations_truncated: true,
+                        panes: [(
+                            id.clone(),
+                            agenturm_kernel::PaneModel {
+                                title: title.into(),
+                                rows: Vec::new(),
+                            },
+                        )]
+                        .into(),
+                        ..Snapshot::default()
+                    },
+                    turns: Vec::new(),
+                    initial_pane: Some(id.clone()),
+                    review_pane: None,
+                    operation_details: Vec::new(),
+                    private_telemetry_history: None,
+                    operation_tables: Default::default(),
+                    evidence_tables: [(id.clone(), table)].into(),
+                };
+                workspace.pending = Some(Change::Open(selection.clone()));
+                let loading = draw(&mut workspace).join("\n");
+                assert!(loading.contains("Loading history…"));
+                assert!(loading.contains(inspector));
+                assert!(!loading.contains("No recorded evidence"));
+
+                workspace.finish(Ok(WorkspaceResponse::History(build_page(
+                    spec.table(Vec::new()),
+                ))));
+                let empty = draw(&mut workspace).join("\n");
+                assert!(empty.contains("No recorded evidence"));
+                assert!(empty.contains(inspector));
+
+                workspace.history.clear();
+                workspace.pending = Some(Change::Open(selection.clone()));
+                let rows = (0..24)
+                    .map(|index| EvidenceRow {
+                        cells: vec!["Fixture".into(), format!("Observation {index}")],
+                        details: std::iter::once(MetricRow {
+                            label: "Selected identity".into(),
+                            value: format!("Scoped event {index}"),
+                        })
+                        .chain((0..39).map(|detail| MetricRow {
+                            label: "Detail".into(),
+                            value: format!("Field {detail} on event {index}"),
+                        }))
+                        .collect(),
+                    })
+                    .collect();
+                workspace.finish(Ok(WorkspaceResponse::History(build_page(spec.table(rows)))));
+                let initial = draw(&mut workspace);
+                let detail_top = initial
+                    .iter()
+                    .position(|line| line.contains(inspector))
+                    .unwrap();
+                assert_eq!(detail_top == 2, width >= 96);
+                assert!(initial[0].contains("partial page"));
+                let model = &mut workspace.history.last_mut().unwrap().page.ui;
+                for _ in 0..28 {
+                    model.scroll_down();
+                }
+                let populated = draw(&mut workspace).join("\n");
+                assert!(populated.contains("› Fixture"));
+                assert!(populated.contains("Observation 23"));
+                assert!(populated.contains("Scoped event 23"));
+                assert!(!populated.contains("Scoped event 0"));
+
+                let (sender, _) = mpsc::channel();
+                let key = |workspace: &mut Workspace, code| {
+                    assert!(
+                        !workspace.key(&sender, event::KeyEvent::new(code, KeyModifiers::NONE))
+                    );
+                };
+                key(&mut workspace, KeyCode::Enter);
+                let expanded = draw(&mut workspace).join("\n");
+                assert!(expanded.contains("Scoped event 23"));
+                assert!(expanded.contains("PgUp/PgDn"));
+                assert!(!expanded.contains("Observation 23"));
+                for _ in 0..5 {
+                    key(&mut workspace, KeyCode::PageDown);
+                }
+                let last = draw(&mut workspace).join("\n");
+                assert!(last.contains("Field 38 on event 23"));
+                assert!(!last.contains("Scoped event 23"));
+                for _ in 0..5 {
+                    key(&mut workspace, KeyCode::PageUp);
+                }
+                assert!(draw(&mut workspace).join("\n").contains("Scoped event 23"));
+                key(&mut workspace, KeyCode::Esc);
+                assert_eq!(draw(&mut workspace).join("\n"), populated);
+
+                workspace.pending = Some(Change::OlderHistory);
+                let pending = draw(&mut workspace).join("\n");
+                assert!(pending.contains("Loading history…"));
+                assert!(pending.contains("Scoped event 23"));
+                workspace.finish(Err("History unavailable · Fixture read failed".into()));
+                let error = draw(&mut workspace).join("\n");
+                assert!(error.contains("Fixture read failed"));
+                assert!(error.contains("Scoped event 23"));
+                assert!(error.contains(inspector));
+            }
+        }
+    }
+
+    #[test]
     fn escape_closes_help_without_losing_agent_or_inspector_focus() {
         for (width, height) in [(120, 32), (60, 18)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -2384,6 +2550,7 @@ mod tests {
                 operation_details: Vec::new(),
                 private_telemetry_history: None,
                 operation_tables: Default::default(),
+                evidence_tables: Default::default(),
             })));
             let _ = frame(&mut workspace);
             assert!(!press(&mut workspace, KeyCode::Right));

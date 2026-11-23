@@ -2185,17 +2185,18 @@ fn load_workspace_history(
                         history_snapshot_id: page.snapshot_id,
                         ..Snapshot::default()
                     };
-                    let pane = session_evidence::add_session_trace_pane(
+                    let (pane, evidence) = session_evidence::add_session_trace_pane(
                         &mut snapshot,
                         &session.harness_id,
                         &session.session_id,
                     );
                     let mut page = inspector_activity::overview_page(snapshot);
+                    page.evidence_tables.insert(pane.clone(), evidence);
                     page.initial_pane = Some(pane);
                     return Ok(page);
                 }
             };
-            let mut snapshot = app.refresh_history_query(store, query);
+            let mut snapshot = workspace_history_snapshot(app.refresh_history_query(store, query))?;
             let mut panes = session_evidence::add_session_panes(
                 &mut snapshot,
                 &session.harness_id,
@@ -2206,17 +2207,21 @@ fn load_workspace_history(
                 page.review_pane = Some(panes.review.clone());
             }
             page.operation_tables = std::mem::take(&mut panes.tables);
+            page.evidence_tables = std::mem::take(&mut panes.evidence);
             page.initial_pane = Some(select_pane(panes));
             Ok(page)
         }
         HistorySelection::All(view) => {
-            let mut snapshot = app.refresh_history_query(store, query);
-            let ids = session_evidence::add_workspace_panes(&mut snapshot);
-            let host = store
-                .local_host_data()
-                .then(|| cockpit_host::add_host_pane(&mut snapshot));
+            let mut snapshot = workspace_history_snapshot(app.refresh_history_query(store, query))?;
+            let mut ids = session_evidence::add_workspace_panes(&mut snapshot);
+            let host = store.local_host_data().then(|| {
+                let (id, evidence) = cockpit_host::add_host_pane(&mut snapshot);
+                ids.evidence.insert(id.clone(), evidence);
+                id
+            });
             let mut page = inspector_activity::overview_page(snapshot);
             page.operation_tables = ids.tables;
+            page.evidence_tables = ids.evidence;
             page.initial_pane = match view {
                 WorkspaceView::Overview => Some(
                     ExtensionId::parse("pane.overview").expect("built-in overview ID is valid"),
@@ -2225,9 +2230,7 @@ fn load_workspace_history(
                 WorkspaceView::Mcp => Some(ids.mcp),
                 WorkspaceView::Operations => Some(ids.operations),
                 WorkspaceView::Findings => Some(ids.findings),
-                WorkspaceView::Host => {
-                    Some(host.ok_or("Host data is unavailable from this receiver")?)
-                }
+                WorkspaceView::Host => Some(host.ok_or("Host data is unavailable from this receiver")?),
                 WorkspaceView::Usage => Some(ids.usage),
                 WorkspaceView::Traces => Some(ids.traces),
                 WorkspaceView::Metrics => None,
@@ -2235,6 +2238,16 @@ fn load_workspace_history(
             Ok(page)
         }
     }
+}
+
+fn workspace_history_snapshot(snapshot: Snapshot) -> Result<Snapshot, String> {
+    if let Some(failure) = snapshot.failures.iter().find(|failure| {
+        failure.extension_id.as_str() == "kernel.store"
+            && failure.stage == agenturm_kernel::ExtensionStage::AdmissionRead
+    }) {
+        return Err(format!("History unavailable · {}", failure.message));
+    }
+    Ok(snapshot)
 }
 
 /// Executes one bounded read-only history query and returns a stable cursor

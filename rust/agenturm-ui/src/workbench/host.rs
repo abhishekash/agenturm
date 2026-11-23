@@ -1,9 +1,11 @@
 //! Recorded Host drill-down with exact process identity within a retained page.
 
-use super::{WorkCommand, WorkInput, visible_text, workspace};
-use agenturm_kernel::{HostProcess, HostSample, Observation, ObservationKind, ObservationPage};
+use super::{WorkCommand, WorkInput, workspace};
+use crate::{EvidenceRow, EvidenceSpec, EvidenceTable};
+use agenturm_kernel::{
+    HostProcess, HostSample, MetricRow, Observation, ObservationKind, ObservationPage,
+};
 use ratatui::crossterm::event::KeyCode;
-use ratatui::text::Line;
 use ratatui::widgets::ListState;
 
 #[derive(Default)]
@@ -18,12 +20,41 @@ pub(super) enum HostLevel {
 }
 
 pub(super) struct Presentation {
-    pub title: &'static str,
+    pub table: EvidenceTable,
     pub keys: &'static str,
-    pub options: Vec<String>,
-    pub details: Vec<Line<'static>>,
-    pub empty: &'static str,
 }
+
+const SAMPLES: EvidenceSpec = EvidenceSpec {
+    title: "Host history",
+    inspector: "Collection status",
+    columns: &[
+        ("Sample", 3),
+        ("Source", 5),
+        ("Processes", 3),
+        ("Coverage", 3),
+    ],
+    empty: "No recorded host samples. Run agenturm host record.",
+};
+
+const PROCESSES: EvidenceSpec = EvidenceSpec {
+    title: "Host processes",
+    inspector: "Process inspector",
+    columns: &[
+        ("Process", 3),
+        ("PID", 2),
+        ("State", 3),
+        ("RAM", 3),
+        ("CPU ticks", 3),
+    ],
+    empty: "No known same-user processes were sampled.",
+};
+
+const PROCESS_HISTORY: EvidenceSpec = EvidenceSpec {
+    title: "Process history · loaded samples",
+    inspector: "Process inspector",
+    columns: &[("Sample", 3), ("RAM", 3), ("CPU ticks", 3)],
+    empty: "No samples for this exact process.",
+};
 
 impl HostLevel {
     pub fn len(&self, page: &ObservationPage) -> usize {
@@ -72,86 +103,93 @@ impl HostLevel {
         WorkInput::None
     }
 
-    pub fn present(&self, page: &ObservationPage, selected: usize) -> Presentation {
+    pub fn present(&self, page: &ObservationPage) -> Presentation {
         match *self {
             Self::Samples => Presentation {
-                title: "Host history",
+                table: SAMPLES.table(
+                    page.observations
+                        .iter()
+                        .rev()
+                        .map(|row| {
+                            let (processes, coverage, mut details) = match &row.kind {
+                                ObservationKind::HostSample(data) => (
+                                    data.processes.len().to_string(),
+                                    sample_coverage(data).into(),
+                                    sample_details(data),
+                                ),
+                                _ => (
+                                    "Unknown".into(),
+                                    "Unknown".into(),
+                                    vec![detail("Sample", "Unavailable")],
+                                ),
+                            };
+                            details.push(detail("Source", row.harness_id.as_str()));
+                            EvidenceRow {
+                                cells: vec![
+                                    workspace::age(row.observed_at_unix_ns),
+                                    row.harness_id.as_str().into(),
+                                    processes,
+                                    coverage,
+                                ],
+                                details,
+                            }
+                        })
+                        .collect(),
+                ),
                 keys: if page.has_more {
                     "Enter processes · ] older · l latest · Esc back"
                 } else {
                     "Enter processes · R refresh · Esc back"
                 },
-                options: page
-                    .observations
-                    .iter()
-                    .rev()
-                    .map(|row| {
-                        format!(
-                            "{}  {}",
-                            workspace::age(row.observed_at_unix_ns),
-                            visible_text(row.harness_id.as_str())
-                        )
-                    })
-                    .collect(),
-                details: sample(page, selected)
-                    .map_or_else(Vec::new, |(_, data)| sample_details(data)),
-                empty: "No recorded host samples. Run agenturm host record.",
             },
             Self::Processes(index) => {
                 let data = sample(page, index).map(|(_, data)| data);
+                let mut spec = PROCESSES;
+                if data.is_some_and(|data| data.processes_partial) {
+                    spec.title = "Host processes · partial";
+                }
                 Presentation {
-                    title: if data.is_some_and(|data| data.processes_partial) {
-                        "Host processes · partial"
-                    } else {
-                        "Host processes"
-                    },
+                    table: spec.table(
+                        data.into_iter()
+                            .flat_map(|sample| {
+                                sample.processes.iter().map(|process| EvidenceRow {
+                                    cells: vec![
+                                        process.runtime.label().into(),
+                                        process.pid.to_string(),
+                                        process
+                                            .state
+                                            .map_or("Unknown", |state| state.label())
+                                            .into(),
+                                        memory(process.resident_bytes),
+                                        total_ticks(process),
+                                    ],
+                                    details: process_details(process, sample),
+                                })
+                            })
+                            .collect(),
+                    ),
                     keys: "Enter process history · Esc samples",
-                    options: data
-                        .into_iter()
-                        .flat_map(|sample| &sample.processes)
-                        .map(|row| {
-                            format!(
-                                "{}  PID {}  {}",
-                                row.runtime.label(),
-                                row.pid,
-                                memory(row.resident_bytes)
-                            )
+                }
+            }
+            Self::ProcessHistory { sample, process } => Presentation {
+                table: PROCESS_HISTORY.table(
+                    occurrences(page, sample, process)
+                        .map(|(row, data, process)| {
+                            let mut details = process_details(process, data);
+                            details.push(detail("Boot", &data.boot_id));
+                            EvidenceRow {
+                                cells: vec![
+                                    workspace::age(row.observed_at_unix_ns),
+                                    memory(process.resident_bytes),
+                                    total_ticks(process),
+                                ],
+                                details,
+                            }
                         })
                         .collect(),
-                    details: data
-                        .and_then(|data| {
-                            data.processes
-                                .get(selected)
-                                .map(|process| process_details(process, data))
-                        })
-                        .unwrap_or_default(),
-                    empty: "No known same-user processes were sampled.",
-                }
-            }
-            Self::ProcessHistory { sample, process } => {
-                let mut details = Vec::new();
-                let options = occurrences(page, sample, process)
-                    .enumerate()
-                    .map(|(index, (row, data, process))| {
-                        if index == selected {
-                            details = process_details(process, data);
-                            details.push(Line::from(format!("Boot {}", data.boot_id)));
-                        }
-                        format!(
-                            "{}  {}",
-                            workspace::age(row.observed_at_unix_ns),
-                            memory(process.resident_bytes)
-                        )
-                    })
-                    .collect();
-                Presentation {
-                    title: "Process history · loaded samples",
-                    keys: "Esc processes",
-                    options,
-                    details,
-                    empty: "No samples for this exact process.",
-                }
-            }
+                ),
+                keys: "Esc processes",
+            },
         }
     }
 }
@@ -192,7 +230,15 @@ fn occurrences(
     })
 }
 
-fn sample_details(sample: &HostSample) -> Vec<Line<'static>> {
+fn sample_coverage(sample: &HostSample) -> &'static str {
+    if sample.processes_partial {
+        "Partial"
+    } else {
+        "Sampled"
+    }
+}
+
+fn sample_details(sample: &HostSample) -> Vec<MetricRow> {
     let load = |amount: Option<u64>| {
         amount.map_or_else(
             || "unknown".into(),
@@ -200,62 +246,94 @@ fn sample_details(sample: &HostSample) -> Vec<Line<'static>> {
         )
     };
     vec![
-        Line::from(format!(
-            "Load 1m {} · 5m {} · 15m {}",
-            load(sample.load_1m_milli),
-            load(sample.load_5m_milli),
-            load(sample.load_15m_milli)
-        )),
-        Line::from(format!(
-            "Memory available {} / {}",
-            memory(sample.memory_available_bytes),
-            memory(sample.memory_total_bytes)
-        )),
-        Line::from(sample.cpu.map_or_else(
-            || "Host CPU counters unknown".into(),
-            |cpu| {
-                format!(
-                    "CPU user {} · idle {} ticks",
-                    counter(cpu.user_ticks),
-                    counter(cpu.idle_ticks)
-                )
-            },
-        )),
-        Line::from(format!(
-            "{} processes{}",
-            sample.processes.len(),
-            if sample.processes_partial {
-                " · partial"
-            } else {
-                ""
-            }
-        )),
+        detail(
+            "Process coverage",
+            format!(
+                "{} rows · {}",
+                sample.processes.len(),
+                sample_coverage(sample)
+            ),
+        ),
+        detail(
+            "Memory available",
+            format!(
+                "{} / {}",
+                memory(sample.memory_available_bytes),
+                memory(sample.memory_total_bytes)
+            ),
+        ),
+        detail(
+            "Load",
+            format!(
+                "1m {} · 5m {} · 15m {}",
+                load(sample.load_1m_milli),
+                load(sample.load_5m_milli),
+                load(sample.load_15m_milli)
+            ),
+        ),
+        detail(
+            "CPU",
+            sample.cpu.map_or_else(
+                || "counters unknown".into(),
+                |cpu| {
+                    format!(
+                        "user {} · idle {} ticks",
+                        counter(cpu.user_ticks),
+                        counter(cpu.idle_ticks)
+                    )
+                },
+            ),
+        ),
     ]
 }
 
-fn process_details(process: &HostProcess, sample: &HostSample) -> Vec<Line<'static>> {
+fn process_details(process: &HostProcess, sample: &HostSample) -> Vec<MetricRow> {
     vec![
-        Line::from(format!(
-            "{} · PID {} · {}",
-            process.runtime.label(),
-            process.pid,
-            process.state.map_or("Unknown state", |state| state.label())
-        )),
-        Line::from(format!(
-            "RSS {} · start {} ticks",
-            memory(process.resident_bytes),
-            process.start_ticks
-        )),
-        Line::from(format!(
-            "CPU user {} · system {} ticks",
-            counter(process.user_ticks),
-            counter(process.system_ticks)
-        )),
-        Line::from(format!(
-            "Clock {} ticks/sec",
-            counter(sample.clock_ticks_per_second)
-        )),
+        detail(
+            "Process",
+            format!(
+                "{} · PID {} · {}",
+                process.runtime.label(),
+                process.pid,
+                process.state.map_or("Unknown state", |state| state.label())
+            ),
+        ),
+        detail(
+            "RSS",
+            format!(
+                "{} · start {} ticks",
+                memory(process.resident_bytes),
+                process.start_ticks
+            ),
+        ),
+        detail(
+            "CPU",
+            format!(
+                "user {} · system {} ticks",
+                counter(process.user_ticks),
+                counter(process.system_ticks)
+            ),
+        ),
+        detail(
+            "Clock",
+            format!("{} ticks/sec", counter(sample.clock_ticks_per_second)),
+        ),
     ]
+}
+
+fn detail(label: &str, value: impl Into<String>) -> MetricRow {
+    MetricRow {
+        label: label.into(),
+        value: value.into(),
+    }
+}
+
+fn total_ticks(process: &HostProcess) -> String {
+    let total = process
+        .user_ticks
+        .zip(process.system_ticks)
+        .and_then(|(user, system)| user.checked_add(system));
+    counter(total)
 }
 
 fn counter(value: Option<u64>) -> String {
@@ -327,10 +405,10 @@ mod tests {
             sample: 0,
             process: 0,
         }
-        .present(&page, 0);
+        .present(&page);
         assert!(
-            view.details[2]
-                .to_string()
+            view.table.rows[0].details[2]
+                .value
                 .contains("user 0 · system unknown ticks")
         );
     }

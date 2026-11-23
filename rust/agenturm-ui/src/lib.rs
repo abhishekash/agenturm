@@ -6,12 +6,14 @@
 
 #![forbid(unsafe_code)]
 
+mod evidence_view;
 mod keymap;
 mod live_receiver;
 mod loaded_view;
 mod operation_table;
 mod workbench;
 mod workspace;
+pub use evidence_view::{EvidenceRow, EvidenceSpec, EvidenceTable, EvidenceTables};
 pub use operation_table::{OperationRow, OperationTables};
 
 pub use live_receiver::{LiveOwner, LivePage, LiveRow, run_live_receiver};
@@ -58,6 +60,8 @@ struct Pane {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct UiModel {
     panes: Vec<Pane>,
+    evidence: EvidenceTables,
+    evidence_inspection: Option<evidence_view::Inspection>,
     selected: usize,
     scroll: usize,
     scroll_limit: usize,
@@ -128,6 +132,8 @@ impl UiModel {
         }
         Self {
             panes,
+            evidence: EvidenceTables::new(),
+            evidence_inspection: None,
             selected: 0,
             scroll: 0,
             scroll_limit: 0,
@@ -155,6 +161,7 @@ impl UiModel {
     fn select_title(&mut self, title: &str) {
         if let Some(index) = self.panes.iter().position(|pane| pane.title == title) {
             self.selected = index;
+            self.evidence_inspection = None;
             self.scroll = 0;
             self.update_scroll_limit();
         }
@@ -163,6 +170,7 @@ impl UiModel {
     pub fn select_next(&mut self) {
         if !self.panes.is_empty() {
             self.selected = (self.selected + 1) % self.panes.len();
+            self.evidence_inspection = None;
             self.scroll = 0;
             self.update_scroll_limit();
         }
@@ -171,18 +179,70 @@ impl UiModel {
     pub fn select_previous(&mut self) {
         if !self.panes.is_empty() {
             self.selected = self.selected.checked_sub(1).unwrap_or(self.panes.len() - 1);
+            self.evidence_inspection = None;
             self.scroll = 0;
             self.update_scroll_limit();
         }
     }
 
     pub fn set_viewport(&mut self, width: u16, height: u16) {
+        let resized = (width, height) != (self.viewport_width, self.viewport_height);
         self.viewport_width = width;
         self.viewport_height = height;
         self.update_scroll_limit();
+        if resized && self.evidence_inspection.is_some() {
+            let (_, limit) = self.evidence_inspection_bounds();
+            if let Some(inspection) = &mut self.evidence_inspection {
+                inspection.clamp(limit);
+            }
+        }
+    }
+
+    fn selected_evidence(&self) -> Option<&EvidenceTable> {
+        let id = self.panes.get(self.selected)?.id.as_ref()?;
+        self.evidence.get(id)
+    }
+
+    /// Routes input to the active metadata inspector before regular history keys.
+    fn evidence_key(&mut self, key: KeyCode) -> bool {
+        if self.help {
+            return false;
+        }
+        if self.evidence_inspection.is_none() {
+            if key == KeyCode::Enter {
+                self.evidence_inspection = self
+                    .selected_evidence()
+                    .and_then(|table| table.open_inspection(self.scroll));
+            }
+            return self.evidence_inspection.is_some();
+        }
+        match key {
+            KeyCode::Esc => self.evidence_inspection = None,
+            KeyCode::Char('q' | '?') | KeyCode::F(1) => return false,
+            _ => {
+                let (page, limit) = self.evidence_inspection_bounds();
+                if let Some(inspection) = &mut self.evidence_inspection {
+                    inspection.key(key, page, limit);
+                }
+            }
+        }
+        true
+    }
+
+    fn evidence_inspection_bounds(&self) -> (usize, usize) {
+        let page = usize::from(self.viewport_height.saturating_sub(6).max(1));
+        let limit = self.selected_evidence().map_or(0, |table| {
+            table.inspection_limit(self.scroll, self.viewport_width, page)
+        });
+        (page, limit)
     }
 
     fn update_scroll_limit(&mut self) {
+        if let Some(table) = self.selected_evidence() {
+            self.scroll_limit = table.rows.len().saturating_sub(1);
+            self.scroll = self.scroll.min(self.scroll_limit);
+            return;
+        }
         let Some(pane) = self.panes.get(self.selected) else {
             self.scroll = 0;
             self.scroll_limit = 0;
@@ -278,6 +338,7 @@ pub struct HistoryPage {
     pub operation_details: Vec<OperationDetailEntry>,
     pub private_telemetry_history: Option<String>,
     pub operation_tables: OperationTables,
+    pub evidence_tables: EvidenceTables,
 }
 
 struct PageView {
@@ -326,6 +387,7 @@ impl PageView {
         };
         let evaluation_traces = workbench::evaluation::trace_entries(&page.snapshot);
         let mut ui = UiModel::from_snapshot(page.snapshot);
+        ui.evidence = page.evidence_tables;
         if let Some(selected) = selected {
             ui.selected = selected;
         }
@@ -368,6 +430,7 @@ pub fn run_with_history(
         operation_details: Vec::new(),
         private_telemetry_history: None,
         operation_tables: Default::default(),
+        evidence_tables: Default::default(),
     };
     run_with_turn_activity(initial, |_, before| {
         let Some(cursor) = before else {
@@ -381,6 +444,7 @@ pub fn run_with_history(
             operation_details: Vec::new(),
             private_telemetry_history: None,
             operation_tables: Default::default(),
+            evidence_tables: Default::default(),
         }))
     })
 }
@@ -455,6 +519,9 @@ pub fn run_with_turn_activity(
                     }
                     continue;
                 }
+                if page.ui.evidence_key(code) {
+                    continue;
+                }
                 match code {
                     keymap::OLDER if !page.ui.help => {
                         if let Some(cursor) = page.ui.older_cursor()
@@ -522,6 +589,29 @@ fn draw(
         return;
     }
 
+    if !model.help
+        && turn_picker.is_none()
+        && let Some(table) = model.selected_evidence()
+    {
+        let [head, body, foot] = Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .areas(area);
+        frame.render_widget(Block::default().style(surface(CANVAS)), area);
+        evidence_view::header(frame, model, head);
+        let keys = if let Some(inspection) = &model.evidence_inspection {
+            table.draw_expanded(frame, body, model.scroll, inspection);
+            "↑↓ scroll · PgUp/PgDn page · Esc back"
+        } else {
+            table.draw_with_inspector(frame, body, model.scroll, true);
+            "↑↓ select · Enter inspect · ←/→ panes · ? help"
+        };
+        frame.render_widget(Paragraph::new(keys), foot);
+        return;
+    }
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -571,7 +661,19 @@ fn draw(
 
     let footer = if picking_turn {
         "↑/↓ select · Enter open · Esc back"
-    } else if model.help {
+    } else {
+        history_keys(model, has_newer_page)
+    };
+    frame.render_widget(
+        Paragraph::new(footer)
+            .style(Style::default().fg(Color::DarkGray))
+            .centered(),
+        rows[2],
+    );
+}
+
+fn history_keys(model: &UiModel, has_newer_page: bool) -> &'static str {
+    if model.help {
         HELP_CLOSE_HINT
     } else if model.older_cursor.is_some() && has_newer_page {
         " ←/→ panes · ↑/↓ scroll · ] older · [ newer · ? help · q quit "
@@ -581,13 +683,7 @@ fn draw(
         " ←/→ panes · ↑/↓ scroll · [ newer · ? help · q quit "
     } else {
         " ←/→ or Tab switch panes · ↑/↓ scroll · ? help · q quit "
-    };
-    frame.render_widget(
-        Paragraph::new(footer)
-            .style(Style::default().fg(Color::DarkGray))
-            .centered(),
-        rows[2],
-    );
+    }
 }
 
 fn render_turn_picker(

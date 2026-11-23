@@ -849,6 +849,17 @@ impl Workbench {
             return;
         }
         let selected = self.cursor.selected().unwrap_or_default();
+        if let WorkResult::HostHistory(page) = &self.data {
+            let view = self.host_level.present(page);
+            frame.render_widget(
+                Paragraph::new(format!(" Agenturm / {}", view.table.spec.title))
+                    .style(heading_style()),
+                header,
+            );
+            view.table.draw(frame, body, selected);
+            draw_footer(frame, footer, view.keys, pending, status);
+            return;
+        }
         let (title, keys, options, details, empty) = match &self.data {
             WorkResult::Evaluations(page) => (
                 page.title(),
@@ -857,16 +868,6 @@ impl Workbench {
                 page.details(selected),
                 page.empty(),
             ),
-            WorkResult::HostHistory(page) => {
-                let view = self.host_level.present(page, selected);
-                (
-                    view.title,
-                    view.keys,
-                    view.options,
-                    view.details,
-                    view.empty,
-                )
-            }
             WorkResult::ReviewNotes { session, items } => (
                 "Review decisions",
                 "e new · ↑↓ select · PgUp/PgDn read · Esc review",
@@ -1013,7 +1014,7 @@ impl Workbench {
                     .unwrap_or_default(),
                 "No spans in the loaded trace page",
             ),
-            WorkResult::Seen(_) | WorkResult::Status(_) => return,
+            WorkResult::HostHistory(_) | WorkResult::Seen(_) | WorkResult::Status(_) => return,
         };
         frame.render_widget(Paragraph::new(format!(" Agenturm / {title}")), header);
         let [list, detail] =
