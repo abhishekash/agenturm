@@ -37,16 +37,17 @@ pub use workbench::investigation::{
 };
 pub use workbench::workflow_resume::{ResumeRuntime, WorkflowResume};
 
+pub use agenturm_kernel::workflow_notifications::WorkflowDelivery;
 pub use workbench::{
     CurrentHostSample, HandoffEntry, OperationDetailEntry, OperationDetailKind, PromptDelivery,
     PromptEntry, RequestEntry, RequestProof, ReviewNoteEntry, TaskEntry, TelemetrySpanEntry,
-    WorkAnchor, WorkCommand, WorkResult,
+    WorkAnchor, WorkCommand, WorkResult, WorkflowAlertInbox,
 };
 
 pub use workspace::{
     HistorySelection, McpSearchScope, NativeSessionContext, ProjectOrigin, RecordedSession,
     ReviewVersion, SessionCatalog, SessionCursor, SessionView, WorkspaceRequest, WorkspaceResponse,
-    WorkspaceView, run_workspace,
+    WorkspaceView, run_workspace, run_workspace_with_stop,
 };
 
 use agenturm_kernel::ReadSnapshot;

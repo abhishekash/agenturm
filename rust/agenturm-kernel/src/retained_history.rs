@@ -26,6 +26,8 @@ pub enum HistoryProjection {
     },
     Usage,
     Relationships,
+    /// Current exact-session native lifecycle and threshold evidence.
+    WorkflowAlerts,
 }
 
 impl HistoryProjection {

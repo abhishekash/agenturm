@@ -9,7 +9,8 @@ use agenturm_kernel::retained_history::{
 use agenturm_kernel::{ExtensionId, ObservationPage, ObservationQuery};
 use agenturm_kernel::{ObservationKind, is_host_source};
 use agenturm_store::native_attention::{
-    NativeAttentionPage, NativeAttentionQuery, is_attention_event_id,
+    ExecutionClockPage, ExecutionClockQuery, NativeAttentionPage, NativeAttentionQuery,
+    is_attention_event_id,
 };
 use agenturm_store::{
     EvalInventory, EvalInventoryQuery, McpTraceQuery, ResolvedTraceReview, SelectedEvalPage,
@@ -51,6 +52,9 @@ pub enum ReaderHistoryRequest {
     NativeAttention {
         query: NativeAttentionQuery,
     },
+    ExecutionClocks {
+        query: ExecutionClockQuery,
+    },
     SelectedEvals {
         source_id: ExtensionId,
         query: SelectedEvalQuery,
@@ -86,6 +90,7 @@ pub enum ReaderHistoryReply {
     MetricHistory(MetricHistoryPage),
     UsageHistory(Box<UsageHistoryPage>),
     NativeAttention(NativeAttentionPage),
+    ExecutionClocks(ExecutionClockPage),
     SelectedEvals(Option<SelectedEvalPage>),
     EvalInventory(EvalInventory),
     Contains(bool),
@@ -163,6 +168,10 @@ pub(crate) fn dispatch(
         ReaderHistoryRequest::NativeAttention { query } => {
             native_read::query_native_attention(store, allowed, &query)
                 .map(ReaderHistoryReply::NativeAttention)
+        }
+        ReaderHistoryRequest::ExecutionClocks { query } => {
+            native_read::query_execution_clocks(store, allowed, &query)
+                .map(ReaderHistoryReply::ExecutionClocks)
         }
         ReaderHistoryRequest::SelectedEvals { source_id, query } => {
             native_read::query_selected_evals(store, allowed, &source_id, &query)

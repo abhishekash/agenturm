@@ -62,9 +62,29 @@ pub(super) fn selection(projection: &HistoryProjection) -> (Option<&'static str>
         HistoryProjection::Mcp { query } => ("mcp", query.as_deref()),
         HistoryProjection::Usage => ("usage", None),
         HistoryProjection::Relationships => ("relationships", None),
+        HistoryProjection::WorkflowAlerts => ("workflow_alerts", None),
     };
     (Some(name), filter)
 }
+
+/// Shared between page selection and cursor verification. Both queries bind
+/// the authorized read watermark to parameter 1.
+pub(super) const WORKFLOW_ALERTS_FILTER: &str = "
+    observation.scope='session'
+    AND substr(observation.source_id,1,5)<>'otlp.'
+    AND json_extract(observation.kind_json,'$.kind') IN ('lifecycle','usage','reported_cost')
+    AND NOT EXISTS (
+        SELECT 1 FROM agenturm_observations correction
+        JOIN agenturm_history_batches correction_batch
+          ON correction_batch.request_id=correction.request_id
+        WHERE correction.source_id=observation.source_id AND correction.event_id=observation.event_id
+          AND correction.revision>observation.revision AND correction_batch.sequence<=?1
+    )
+    AND NOT EXISTS (
+        SELECT 1 FROM agenturm_retired_observations retired
+        WHERE retired.source_id=observation.source_id AND retired.event_id=observation.event_id
+          AND retired.revision>observation.revision
+    )";
 
 pub(super) fn require_cursor(
     connection: &Connection,
@@ -90,28 +110,40 @@ pub(super) fn require_cursor(
     {
         return Err(INVALID);
     }
-    let kind_json = connection.query_row(
+    let workflow_filter = match projection {
+        HistoryProjection::WorkflowAlerts => WORKFLOW_ALERTS_FILTER,
+        _ => "1",
+    };
+    let sql = format!(
         "SELECT observation.kind_json
            FROM agenturm_observations AS observation
            JOIN agenturm_history_batches AS history_batch ON history_batch.request_id=observation.request_id
-          WHERE observation.source_id=?1 AND observation.event_id=?2 AND observation.revision=?3
-            AND observation.observed_at_unix_ns=?4 AND history_batch.sequence<=?5
+          WHERE history_batch.sequence<=?1
+            AND observation.source_id=?2 AND observation.event_id=?3 AND observation.revision=?4
+            AND observation.observed_at_unix_ns=?5
             AND (?6 IS NULL OR observation.session_id=?6)
             AND (?7 IS NULL OR observation.turn_id=?7)
-            AND (?8=0 OR observation.worker_id IS ?9)",
-        params![
-            position.harness_id,
-            position.event_id,
-            i64::from(position.revision),
-            position.observed_at_unix_ns as i64,
-            receipt_watermark,
-            query.session_id,
-            turn_id,
-            worker_filter.is_some(),
-            worker_filter.flatten(),
-        ],
-        |row| row.get::<_, String>(0),
-    ).optional()?.ok_or(INVALID)?;
+            AND (?8=0 OR observation.worker_id IS ?9)
+            AND ({workflow_filter})",
+    );
+    let kind_json = connection
+        .query_row(
+            &sql,
+            params![
+                receipt_watermark,
+                position.harness_id,
+                position.event_id,
+                i64::from(position.revision),
+                position.observed_at_unix_ns as i64,
+                query.session_id,
+                turn_id,
+                worker_filter.is_some(),
+                worker_filter.flatten(),
+            ],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .ok_or(INVALID)?;
     let kind = serde_json::from_str::<ObservationKind>(&kind_json)?;
     if !matches_projection(&kind, projection) {
         return Err(INVALID);
@@ -160,6 +192,12 @@ fn matches_projection(kind: &ObservationKind, projection: &HistoryProjection) ->
             HistoryProjection::Usage,
         ) => true,
         (ObservationKind::Relationship { .. }, HistoryProjection::Relationships) => true,
+        (
+            ObservationKind::Lifecycle { .. }
+            | ObservationKind::Usage { .. }
+            | ObservationKind::ReportedCost(_),
+            HistoryProjection::WorkflowAlerts,
+        ) => true,
         _ => false,
     }
 }
@@ -227,6 +265,158 @@ mod tests {
                 }),
             ),
         ]
+    }
+
+    fn lifecycle(source: &ExtensionId, id: &str, stamp: u64, state: &str) -> Observation {
+        let mut row = event(
+            source,
+            id,
+            stamp,
+            KernelObservationKind::Lifecycle {
+                state: state.into(),
+                reason_code: None,
+            },
+        );
+        row.identity.turn_id = Some("turn-one".into());
+        row
+    }
+
+    #[test]
+    fn workflow_projection_checks_corrections_before_scope_and_limit() {
+        let mut store = Store::open(":memory:").unwrap();
+        let source = ExtensionId::parse("harness.fixture").unwrap();
+        let denied = ExtensionId::parse("harness.denied").unwrap();
+        let prior = lifecycle(&source, "turn-outcome", 1000, "failed");
+        let mut sibling = lifecycle(&source, "sibling", 900, "completed");
+        sibling.identity.worker_id = Some("sibling-worker".into());
+        commit(
+            &mut store,
+            &source,
+            &[prior.clone(), sibling.clone()],
+            None,
+            "first",
+        );
+        commit(
+            &mut store,
+            &denied,
+            &[lifecycle(&denied, "foreign", 5000, "failed")],
+            None,
+            "denied",
+        );
+        let query = ObservationQuery::latest(1);
+        let projection = HistoryProjection::WorkflowAlerts;
+        let allowed = [source.clone()].into_iter().collect();
+        let old = store
+            .query_projected_history(&query, &projection, None, None, Some(&allowed))
+            .unwrap();
+        assert_eq!(old.observations.as_slice(), std::slice::from_ref(&prior));
+        let mut corrected = lifecycle(&source, "turn-outcome", 42, "completed");
+        corrected.revision = 1;
+        corrected.identity.worker_id = Some("corrected-worker".into());
+        commit(
+            &mut store,
+            &source,
+            &[corrected.clone()],
+            Some("first"),
+            "correction",
+        );
+
+        let page = store
+            .query_projected_history(&query, &projection, None, None, Some(&allowed))
+            .unwrap();
+        assert_eq!(page.observations, [sibling]);
+        let cursor = page.older_position().unwrap();
+        let older = ObservationQuery {
+            before: Some(cursor),
+            snapshot_id: Some(page.snapshot_id),
+            ..query.clone()
+        };
+        assert_eq!(
+            store
+                .query_projected_history(&older, &projection, None, None, Some(&allowed))
+                .unwrap()
+                .observations,
+            [corrected],
+        );
+        let scope = ObservationQuery {
+            harness_id: Some(source.as_str().into()),
+            session_id: Some("fixture".into()),
+            ..query.clone()
+        };
+        let main = store
+            .query_projected_history(
+                &scope,
+                &projection,
+                Some("turn-one"),
+                Some(None),
+                Some(&allowed),
+            )
+            .unwrap();
+        assert!(main.observations.is_empty());
+        let pinned = ObservationQuery {
+            snapshot_id: Some(old.snapshot_id),
+            ..scope
+        };
+        assert_eq!(
+            store
+                .query_projected_history(
+                    &pinned,
+                    &projection,
+                    Some("turn-one"),
+                    Some(None),
+                    Some(&allowed)
+                )
+                .unwrap()
+                .observations,
+            [prior],
+        );
+        let forged = ObservationQuery {
+            before: Some(agenturm_kernel::ObservationPosition {
+                snapshot_id: page.snapshot_id,
+                ..old.older_position().unwrap()
+            }),
+            snapshot_id: Some(page.snapshot_id),
+            ..query
+        };
+        assert!(
+            store
+                .query_projected_history(&forged, &projection, None, None, Some(&allowed))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn workflow_projection_cannot_revive_a_superseded_retired_occurrence() {
+        let mut store = Store::open(":memory:").unwrap();
+        let source = ExtensionId::parse("harness.fixture").unwrap();
+        let prior = lifecycle(&source, "turn-outcome", 200, "failed");
+        commit(&mut store, &source, &[prior], None, "initial");
+        let prune = store
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)
+            .unwrap();
+        retention::prune_in(&prune, 150).unwrap();
+        prune.commit().unwrap();
+        let mut corrected = lifecycle(&source, "turn-outcome", 100, "completed");
+        corrected.revision = 1;
+        commit(
+            &mut store,
+            &source,
+            &[corrected],
+            Some("initial"),
+            "correction",
+        );
+        let page = store
+            .query_projected_history(
+                &ObservationQuery::latest(1),
+                &HistoryProjection::WorkflowAlerts,
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert!(page.observations.is_empty());
+        assert!(!page.has_more);
     }
 
     #[test]

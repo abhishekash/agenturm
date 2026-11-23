@@ -2874,6 +2874,8 @@ mod tests {
 }
 
 pub mod retained_history;
+pub mod workflow_alerts;
+pub mod workflow_notifications;
 
 pub use agenturm_protocol::native_review;
 

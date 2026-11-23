@@ -698,13 +698,15 @@ pub fn execute(options: &BrokerOptions) -> Result<ExitCode, BrokerExecutionError
             let mut app = AgenturmApp::default_composition();
             install_process_extensions(&mut app, &options.extensions)?;
             let (store, workspace) = open_workspace(&config, &store)?;
-            agenturm_ui::run_workspace(move |request| {
+            let ui_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+            let loader_stop = std::sync::Arc::clone(&ui_stop);
+            agenturm_ui::run_workspace_with_stop(move |request| {
                 if matches!(&request, WorkspaceRequest::Work(command) if cockpit_workflows::is_prompt_command(command))
                     && let WorkspaceRequest::Work(command) = request {
                     return execute_private_cockpit(&store, &workspace, command).map(WorkspaceResponse::Work);
                 }
-                workspace_response(&mut app, &store, &workspace, request, || None)
-            }).map_err(|error| error.to_string())?;
+                workspace_response(&mut app, &store, &workspace, request, || None, &loader_stop)
+            }, ui_stop).map_err(|error| error.to_string())?;
         }
         _ => return Err(USAGE.into()),
     }

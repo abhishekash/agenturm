@@ -238,6 +238,192 @@ fn desktop_attention_claims_only_fresh_exact_requests_once_across_processes() {
     }
 }
 
+#[cfg(target_os = "linux")]
+#[test]
+fn workflow_policy_delivers_only_proven_native_threshold_crossings() {
+    use agenturm_kernel::native_attention::{
+        NativeAttentionCapture, NativeAttentionKind, NativeAttentionScope,
+    };
+    use agenturm_kernel::workflow_notifications::{
+        WorkflowNotificationAuthority, WorkflowPolicyChange, WorkflowThresholds,
+    };
+    use agenturm_kernel::{NativeCostBasis, ObservationQuery, ReportedCost};
+    use std::os::unix::fs::PermissionsExt;
+
+    let scratch = Scratch::new();
+    let database = scratch.0.join("history.sqlite");
+    let log = scratch.0.join("notification-argv");
+    let notifier = scratch.0.join("notify-send");
+    std::fs::write(&notifier, b"#!/bin/sh\nprintf '%s\\n' \"$*\" >> \"$AGENTURM_TEST_NOTIFICATION_LOG\"\nexit \"$AGENTURM_TEST_NOTIFY_STATUS\"\n").unwrap();
+    std::fs::set_permissions(&notifier, std::fs::Permissions::from_mode(0o700)).unwrap();
+    let mut writer = Store::open(&database).unwrap();
+    let ledger = WorkspaceLedger::open(&database).unwrap();
+    let source = ExtensionId::parse("harness.codex").unwrap();
+    let bridge = ExtensionId::parse("otlp.fixture-clock").unwrap();
+    let now = || {
+        SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos() as u64
+    };
+    let point = |store: &Store| WorkflowNotificationAuthority {
+        history_identity: store.history_identity().unwrap(),
+        snapshot_id: store
+            .query_observations(&ObservationQuery::latest(1))
+            .unwrap()
+            .snapshot_id,
+    };
+    let notify_poll = |exit: &str| {
+        let result = attention(&database, &["watch", "--once", "--desktop"])
+            .env("PATH", &scratch.0)
+            .env("AGENTURM_TEST_NOTIFICATION_LOG", &log)
+            .env("AGENTURM_TEST_NOTIFY_STATUS", exit)
+            .output()
+            .unwrap();
+        assert!(
+            result.status.success(),
+            "{}",
+            String::from_utf8_lossy(&result.stderr)
+        );
+        serde_json::from_slice::<Value>(&result.stdout).unwrap()
+    };
+    let budget_rows = |event: &str, amount, at| {
+        let base = lifecycle(&source, event, "running", None, at);
+        let cost_id = format!("{event}:cost");
+        let mut cost_identity = base.identity.clone();
+        cost_identity.operation_id = Some(event.into());
+        [
+            Observation {
+                kind: ObservationKind::Message {
+                    role: "assistant".into(),
+                },
+                ..base.clone()
+            },
+            Observation {
+                identity: cost_identity,
+                event_id: cost_id,
+                kind: ObservationKind::ReportedCost(
+                    ReportedCost::native_amount(
+                        "USD",
+                        NativeCostBasis::ProviderReported,
+                        &serde_json::value::RawValue::from_string(format!("0.{amount:09}"))
+                            .unwrap(),
+                    )
+                    .unwrap(),
+                ),
+                ..base.clone()
+            },
+            Observation {
+                event_id: format!("{event}:usage"),
+                kind: ObservationKind::Usage {
+                    input_tokens: Some(amount),
+                    output_tokens: Some(0),
+                    cache_read_tokens: None,
+                    cache_write_tokens: None,
+                    total_tokens: None,
+                },
+                ..base
+            },
+        ]
+    };
+    let start_bridge = |store: &mut Store, turn: &str, sender: u64| {
+        let capture = NativeAttentionCapture {
+            history_binding: store.history_identity().unwrap(),
+            scope: NativeAttentionScope {
+                source_id: source.as_str().into(),
+                session_id: "session".into(),
+                turn_id: turn.into(),
+                worker_id: None,
+            },
+            sender_id: format!("{sender:032x}"),
+            event_id: "start".into(),
+            sequence: 1,
+            kind: NativeAttentionKind::TurnStarted,
+            request_id: None,
+            source_time_unix_ns: None,
+        };
+        store
+            .admit_native_attention(&bridge, &capture, None)
+            .unwrap();
+    };
+    let started = lifecycle(&source, "running", "running", None, now());
+    let mut initial = vec![started];
+    initial.extend(budget_rows("message-zero", 0, now()));
+    ObservationStore::commit(&mut writer, source.as_str(), None, "first", &initial).unwrap();
+    ledger
+        .change_workflow_notification_policy(
+            &point(&writer),
+            0,
+            now(),
+            WorkflowPolicyChange::SetThresholds(WorkflowThresholds {
+                tokens: 10,
+                usd_nanos: 100,
+                duration_ns: 0,
+            }),
+            || Ok(()),
+        )
+        .unwrap();
+    ledger
+        .change_workflow_notification_policy(
+            &point(&writer),
+            1,
+            now(),
+            WorkflowPolicyChange::SetDesktop(true),
+            || Ok(()),
+        )
+        .unwrap();
+    assert!(notify_poll("0")["desktop_delivery"].is_null());
+    assert!(!log.exists());
+    start_bridge(&mut writer, "turn", 1);
+    assert!(notify_poll("0")["desktop_delivery"].is_null());
+    assert!(!log.exists());
+    let above = budget_rows("message-above", 200, now());
+    ObservationStore::commit(&mut writer, source.as_str(), Some("first"), "above", &above).unwrap();
+    assert_eq!(notify_poll("1")["desktop_delivery"], "failed");
+    assert!(notify_poll("0")["desktop_delivery"].is_null());
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap(),
+        "--app-name=Agenturm -- Agenturm attention 2 recorded attention item(s). Open Agenturm Workflow to inspect.\n"
+    );
+
+    ledger
+        .change_workflow_notification_policy(
+            &point(&writer),
+            2,
+            now(),
+            WorkflowPolicyChange::SetThresholds(WorkflowThresholds {
+                tokens: 0,
+                usd_nanos: 0,
+                duration_ns: 2_000_000_000,
+            }),
+            || Ok(()),
+        )
+        .unwrap();
+    let old = lifecycle(&source, "done", "completed", None, now());
+    let mut running = lifecycle(&source, "timed-running", "running", None, now());
+    running.identity.turn_id = Some("timed".into());
+    ObservationStore::commit(
+        &mut writer,
+        source.as_str(),
+        Some("above"),
+        "timed",
+        &[old, running],
+    )
+    .unwrap();
+    start_bridge(&mut writer, "timed", 2);
+    assert!(notify_poll("0")["desktop_delivery"].is_null());
+    std::thread::sleep(Duration::from_millis(2_025));
+    assert_eq!(notify_poll("0")["desktop_delivery"], "delivered");
+    assert!(notify_poll("0")["desktop_delivery"].is_null());
+    assert_eq!(
+        std::fs::read_to_string(&log).unwrap().lines().last(),
+        Some(
+            "--app-name=Agenturm -- Agenturm attention 1 recorded attention item(s). Open Agenturm Workflow to inspect."
+        )
+    );
+    assert_eq!(std::fs::read_to_string(log).unwrap().lines().count(), 2);
+}
+
 fn lifecycle(
     source: &ExtensionId,
     event: &str,

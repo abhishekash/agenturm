@@ -114,6 +114,36 @@ pub(super) fn renew_read_incarnation(connection: &Connection) -> Result<()> {
          ON CONFLICT(key) DO UPDATE SET value = excluded.value",
         [],
     )?;
+    set_execution_clock_floor(connection, receipt_head(connection)?)
+}
+
+pub(super) fn execution_clock_floor(connection: &Connection) -> Result<Option<i64>> {
+    if read_incarnation(connection)?.is_none() {
+        return Ok(Some(0));
+    }
+    connection
+        .query_row(
+            "SELECT value FROM agenturm_store_meta WHERE key='execution_clock_floor'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|value| {
+            value
+                .parse::<i64>()
+                .ok()
+                .filter(|floor| *floor >= 0)
+                .ok_or(StoreError::Invalid("invalid execution clock floor"))
+        })
+        .transpose()
+}
+
+pub(super) fn set_execution_clock_floor(connection: &Connection, floor: i64) -> Result<()> {
+    connection.execute(
+        "INSERT INTO agenturm_store_meta(key,value) VALUES ('execution_clock_floor',?1)
+         ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+        [floor.to_string()],
+    )?;
     Ok(())
 }
 

@@ -2,12 +2,16 @@
 
 mod continuity;
 mod desktop_attention;
+mod workflow_notifications;
 pub use continuity::{
     ApprovedTaskDraft, ApprovedTaskSource, LegacyActivityId, LegacyTaskOccurrence,
     LegacyTaskOccurrenceAuthority, LegacyTaskScope, LegacyTaskSourceProof, TaskDraftApproval,
     TaskSourceProof,
 };
 pub use desktop_attention::{DesktopAttentionRequest, LegacyDesktopAttentionRequest};
+pub use workflow_notifications::{
+    WorkflowAlertCandidate, WorkflowDeliveryAttempt, WorkflowNotificationRead,
+};
 
 use crate::{MAX_EVENT_ID_BYTES, MAX_SESSION_KEY_BYTES, Store, StoreError, validate_identifier};
 use agenturm_kernel::{ExtensionId, ReadSnapshot};

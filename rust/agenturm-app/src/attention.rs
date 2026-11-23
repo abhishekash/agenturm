@@ -2,6 +2,12 @@
 
 mod desktop;
 
+pub(crate) use desktop::workflow::{
+    alert_deliveries as workflow_alert_deliveries, change_settings as change_workflow_settings,
+    deliveries as workflow_deliveries, poll as poll_workflow_delivery,
+    retry as retry_workflow_delivery, settings as workflow_settings,
+};
+
 use crate::{WatchSignalRegistrations, cockpit_workflows::pending_requests_with_seen};
 use agenturm_store::{Store, WorkspaceLedger};
 use serde::Serialize;

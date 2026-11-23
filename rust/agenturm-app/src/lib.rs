@@ -53,6 +53,7 @@ mod trace_receiver;
 mod trace_run;
 mod usage_history;
 mod view_export;
+mod workflow_alerts;
 mod workflow_route;
 
 #[cfg(target_os = "linux")]
@@ -1811,44 +1812,52 @@ pub fn execute_cockpit_with_extensions(
     };
     install_process_extensions(&mut app, &extensions)?;
     let mut store = None;
-    agenturm_ui::run_workspace(move |request| {
-        if startup.is_none() {
-            startup = Some(cockpit_startup::prepare_cockpit_store(None)?);
-        }
-        let startup = startup.as_ref().expect("cockpit store prepared");
-        if store.is_none() {
-            store = Some(
-                Store::open_read_only(&startup.db)
-                    .map_err(|error| format!("Open history failed: {error}"))?,
-            );
-        }
-        let store = store.as_ref().expect("history opened");
-        match request {
-            WorkspaceRequest::Work(command) if cockpit_workflows::is_prompt_command(&command) => {
-                startup.prompt(command).map(WorkspaceResponse::Work)
+    let ui_stop = Arc::new(AtomicBool::new(false));
+    let loader_stop = Arc::clone(&ui_stop);
+    agenturm_ui::run_workspace_with_stop(
+        move |request| {
+            if startup.is_none() {
+                startup = Some(cockpit_startup::prepare_cockpit_store(None)?);
             }
-            request => {
-                let native_sources = matches!(
-                    request,
-                    WorkspaceRequest::Sessions(_) | WorkspaceRequest::History { .. }
-                )
-                .then(|| {
-                    startup
-                        .source_authority()
-                        .or_else(|| native_session_context::configured_sources(&startup.db))
-                })
-                .flatten();
-                workspace_response_with_sources(
-                    &mut app,
-                    store,
-                    &startup.db,
-                    request,
-                    || startup.notice(),
-                    native_sources.as_ref(),
-                )
+            let startup = startup.as_ref().expect("cockpit store prepared");
+            if store.is_none() {
+                store = Some(
+                    Store::open_read_only(&startup.db)
+                        .map_err(|error| format!("Open history failed: {error}"))?,
+                );
             }
-        }
-    })
+            let store = store.as_ref().expect("history opened");
+            match request {
+                WorkspaceRequest::Work(command)
+                    if cockpit_workflows::is_prompt_command(&command) =>
+                {
+                    startup.prompt(command).map(WorkspaceResponse::Work)
+                }
+                request => {
+                    let native_sources = matches!(
+                        request,
+                        WorkspaceRequest::Sessions(_) | WorkspaceRequest::History { .. }
+                    )
+                    .then(|| {
+                        startup
+                            .source_authority()
+                            .or_else(|| native_session_context::configured_sources(&startup.db))
+                    })
+                    .flatten();
+                    workspace_response_with_sources(
+                        &mut app,
+                        store,
+                        &startup.db,
+                        request,
+                        || startup.notice(),
+                        native_sources.as_ref(),
+                        &loader_stop,
+                    )
+                }
+            }
+        },
+        ui_stop,
+    )
     .map_err(|error| error.to_string())
 }
 
@@ -1858,19 +1867,25 @@ pub fn execute_inspect_ui(options: &InspectOptions) -> Result<(), String> {
     let store = Store::open_read_only(&options.db)
         .map_err(|error| format!("open store failed: {error}"))?;
     let db = options.db.clone();
-    agenturm_ui::run_workspace(move |request| {
-        let native_sources = matches!(request, WorkspaceRequest::Sessions(_))
-            .then(|| native_session_context::configured_sources(&db))
-            .flatten();
-        workspace_response_with_sources(
-            &mut app,
-            &store,
-            &db,
-            request,
-            || None,
-            native_sources.as_ref(),
-        )
-    })
+    let ui_stop = Arc::new(AtomicBool::new(false));
+    let loader_stop = Arc::clone(&ui_stop);
+    agenturm_ui::run_workspace_with_stop(
+        move |request| {
+            let native_sources = matches!(request, WorkspaceRequest::Sessions(_))
+                .then(|| native_session_context::configured_sources(&db))
+                .flatten();
+            workspace_response_with_sources(
+                &mut app,
+                &store,
+                &db,
+                request,
+                || None,
+                native_sources.as_ref(),
+                &loader_stop,
+            )
+        },
+        ui_stop,
+    )
     .map_err(|error| error.to_string())
 }
 
@@ -1916,8 +1931,9 @@ fn workspace_response(
     db: &std::path::Path,
     request: WorkspaceRequest,
     notice: impl FnOnce() -> Option<String>,
+    stop: &AtomicBool,
 ) -> Result<WorkspaceResponse, String> {
-    workspace_response_with_sources(app, store, db, request, notice, None)
+    workspace_response_with_sources(app, store, db, request, notice, None, stop)
 }
 
 fn workspace_response_with_sources(
@@ -1927,7 +1943,27 @@ fn workspace_response_with_sources(
     request: WorkspaceRequest,
     notice: impl FnOnce() -> Option<String>,
     native_sources: Option<&discovery::SourceAuthority>,
+    stop: &AtomicBool,
 ) -> Result<WorkspaceResponse, String> {
+    #[cfg(target_os = "linux")]
+    let notification_unavailable = if matches!(
+        &request,
+        WorkspaceRequest::Sessions(None)
+            | WorkspaceRequest::History { before: None, .. }
+            | WorkspaceRequest::MetricHistory(_)
+            | WorkspaceRequest::Work(
+                agenturm_ui::WorkCommand::Workflow | agenturm_ui::WorkCommand::WorkflowAlerts
+            )
+    ) {
+        attention::poll_workflow_delivery(store, db, stop).is_err()
+    } else {
+        false
+    };
+    #[cfg(not(target_os = "linux"))]
+    let notification_unavailable = {
+        let _ = stop;
+        false
+    };
     match request {
         WorkspaceRequest::Sessions(before) => {
             let mut catalog = if let Some(native_sources) = native_sources {
@@ -1935,6 +1971,14 @@ fn workspace_response_with_sources(
             } else {
                 load_session_catalog(store, db, before)?
             };
+            if notification_unavailable {
+                let status = "Workflow notification check unavailable";
+                catalog.notice = Some(
+                    catalog
+                        .notice
+                        .map_or_else(|| status.into(), |prior| format!("{prior} · {status}")),
+                );
+            }
             catalog.notice = match (notice(), catalog.notice) {
                 (Some(startup), Some(coverage)) if startup != coverage => {
                     Some(format!("{startup} · {coverage}"))
@@ -1944,7 +1988,7 @@ fn workspace_response_with_sources(
             Ok(WorkspaceResponse::Sessions(catalog))
         }
         WorkspaceRequest::Work(command) => {
-            cockpit_workflows::execute(store, db, command).map(WorkspaceResponse::Work)
+            cockpit_workflows::execute(store, db, command, stop).map(WorkspaceResponse::Work)
         }
         WorkspaceRequest::MarkReviewed(session) => {
             cockpit_workflows::verify_review_snapshot(store, &session)?;
@@ -2197,6 +2241,10 @@ trait HistoryReader: ObservationStore {
     fn session_title_store(&self) -> Option<&Store> {
         None
     }
+    fn query_execution_clocks(
+        &self,
+        query: &agenturm_store::native_attention::ExecutionClockQuery,
+    ) -> Result<agenturm_store::native_attention::ExecutionClockPage, String>;
     fn query_native_attention(
         &self,
         query: &agenturm_store::native_attention::NativeAttentionQuery,
@@ -2271,6 +2319,12 @@ impl HistoryReader for Store {
         marker: &std::path::Path,
     ) -> Result<agenturm_store::WorkspaceLedger, String> {
         agenturm_store::WorkspaceLedger::open(marker).map_err(|error| error.to_string())
+    }
+    fn query_execution_clocks(
+        &self,
+        query: &agenturm_store::native_attention::ExecutionClockQuery,
+    ) -> Result<agenturm_store::native_attention::ExecutionClockPage, String> {
+        Store::query_execution_clocks(self, query, None).map_err(|error| error.to_string())
     }
     fn query_native_attention(
         &self,
@@ -2368,6 +2422,13 @@ impl HistoryReader for agenturm_storage_service::NativeStore {
         marker: &std::path::Path,
     ) -> Result<agenturm_store::WorkspaceLedger, String> {
         agenturm_store::WorkspaceLedger::open_with_history(marker, self.clone())
+            .map_err(|error| error.to_string())
+    }
+    fn query_execution_clocks(
+        &self,
+        query: &agenturm_store::native_attention::ExecutionClockQuery,
+    ) -> Result<agenturm_store::native_attention::ExecutionClockPage, String> {
+        self.query_execution_clocks(query)
             .map_err(|error| error.to_string())
     }
     fn query_native_attention(

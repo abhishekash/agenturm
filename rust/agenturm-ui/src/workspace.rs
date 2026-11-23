@@ -4,11 +4,16 @@ use super::*;
 use crate::keymap::{self, Destination};
 use crate::workbench::investigation::{Investigation, InvestigationInput};
 use crate::workbench::{PromptKind, PromptReceiver, WorkInput, Workbench, prompt_channel};
+use agenturm_kernel::workflow_notifications::WorkflowNotificationAuthority;
 use agenturm_kernel::{ReadSnapshot, RelationshipKind};
 use ratatui::buffer::CellWidth;
 use ratatui::widgets::{Row, Table, TableState};
 use std::collections::{BTreeSet, HashMap, VecDeque};
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod analytics;
@@ -630,13 +635,32 @@ enum Change {
     SessionMode(HistorySelection),
     OlderHistory,
     LatestHistory,
-    MetricHistory { cancelled: bool },
+    MetricHistory {
+        cancelled: bool,
+    },
     ReviewVisibility,
     MarkReviewed(RecordedSession),
     Work(Option<WorkAnchor>),
     WorkflowResume(Box<RequestEntry>),
-    FindingSource { cancelled: bool },
+    WorkflowRetry {
+        authority: WorkflowNotificationAuthority,
+        key: [u8; 32],
+        revision: u64,
+        attempt: u64,
+    },
+    FindingSource {
+        cancelled: bool,
+    },
     Investigation,
+}
+
+impl Change {
+    fn is_work(&self) -> bool {
+        matches!(
+            self,
+            Self::Work(_) | Self::WorkflowResume(_) | Self::WorkflowRetry { .. }
+        )
+    }
 }
 
 struct Workspace {
@@ -709,9 +733,7 @@ impl Workspace {
             return;
         };
         self.refresh_after = Instant::now() + REFRESH_INTERVAL;
-        if matches!(change, Change::Work(_) | Change::WorkflowResume(_))
-            && std::mem::take(&mut self.discard_work_result)
-        {
+        if change.is_work() && std::mem::take(&mut self.discard_work_result) {
             return;
         }
         if let Change::MetricHistory { cancelled } = change {
@@ -879,6 +901,34 @@ impl Workspace {
                     }
                     Err(error) => self.message = Some(error),
                 }
+            }
+            (
+                Change::WorkflowRetry {
+                    authority,
+                    key,
+                    revision,
+                    attempt,
+                },
+                Ok(WorkspaceResponse::Work(WorkResult::WorkflowDeliveryUpdated(updated))),
+            ) => {
+                let result = self
+                    .work
+                    .as_mut()
+                    .filter(|_| {
+                        updated.authority == authority
+                            && updated.key == key
+                            && updated.policy_revision == revision
+                            && attempt.checked_add(1) == Some(updated.attempt)
+                    })
+                    .ok_or("The workflow delivery receipt changed")
+                    .and_then(|work| work.accept_delivery(&updated));
+                self.message = Some(match result {
+                    Ok(state) => format!("Notification retry · {state}"),
+                    Err(error) => error.into(),
+                });
+            }
+            (_, Ok(WorkspaceResponse::Work(WorkResult::WorkflowDeliveryUpdated(_)))) => {
+                self.message = Some("No matching workflow retry was requested".into());
             }
             (Change::Work(_), Ok(WorkspaceResponse::Work(WorkResult::Seen(entry)))) => {
                 if let Some(work) = &mut self.work {
@@ -1185,7 +1235,7 @@ impl Workspace {
             if self.pending.is_some() && work.editing() {
                 return false;
             }
-            if code == KeyCode::Char('p') && work.follows_requests() && !work.editing() {
+            if code == KeyCode::Char('p') && work.workflow_refresh().is_some() && !work.editing() {
                 self.toggle_pause();
                 return false;
             }
@@ -1250,17 +1300,11 @@ impl Workspace {
                 WorkInput::RevealEvaluation(_) => {}
                 WorkInput::None => {}
                 WorkInput::Back => {
-                    self.discard_work_result = matches!(
-                        self.pending,
-                        Some(Change::Work(_) | Change::WorkflowResume(_))
-                    );
+                    self.discard_work_result = self.pending.as_ref().is_some_and(Change::is_work);
                     self.message = None;
                 }
                 WorkInput::Close => {
-                    self.discard_work_result = matches!(
-                        self.pending,
-                        Some(Change::Work(_) | Change::WorkflowResume(_))
-                    );
+                    self.discard_work_result = self.pending.as_ref().is_some_and(Change::is_work);
                     self.prompt_receiver = None;
                     self.queued_prompt = None;
                     self.work = None;
@@ -1272,6 +1316,28 @@ impl Workspace {
                         sender,
                         WorkspaceRequest::Work(WorkCommand::WorkflowResume(item)),
                         Change::WorkflowResume(expected),
+                    );
+                }
+                WorkInput::Command(WorkCommand::RetryWorkflow {
+                    authority,
+                    key,
+                    expected_revision,
+                    expected_attempt,
+                }) => {
+                    self.request(
+                        sender,
+                        WorkspaceRequest::Work(WorkCommand::RetryWorkflow {
+                            authority: authority.clone(),
+                            key,
+                            expected_revision,
+                            expected_attempt,
+                        }),
+                        Change::WorkflowRetry {
+                            authority,
+                            key,
+                            revision: expected_revision,
+                            attempt: expected_attempt,
+                        },
                     );
                 }
                 WorkInput::Command(command) => {
@@ -1929,7 +1995,37 @@ fn push_cached<T>(cache: &mut VecDeque<T>, page: T) {
 /// Run the interactive session workspace. All database and extension work
 /// runs on the loader thread while the terminal handles input and resize.
 pub fn run_workspace(
+    load: impl FnMut(WorkspaceRequest) -> Result<WorkspaceResponse, String> + Send,
+) -> io::Result<()> {
+    run_workspace_with_stop(load, Arc::new(AtomicBool::new(false)))
+}
+
+struct StopWorkspaceLoader<'a>(&'a AtomicBool);
+
+impl Drop for StopWorkspaceLoader<'_> {
+    fn drop(&mut self) {
+        self.0.store(true, Ordering::Release);
+    }
+}
+
+fn load_workspace_requests(
+    requests: mpsc::Receiver<WorkspaceRequest>,
+    send: mpsc::Sender<Result<WorkspaceResponse, String>>,
+    stop: &AtomicBool,
+    mut load: impl FnMut(WorkspaceRequest) -> Result<WorkspaceResponse, String>,
+) {
+    while let Ok(request) = requests.recv() {
+        if stop.load(Ordering::Acquire) || send.send(load(request)).is_err() {
+            break;
+        }
+    }
+}
+
+/// Signal cancellation on terminal exit before waiting for the loader.
+/// Long-running readers can observe the shared flag during a request.
+pub fn run_workspace_with_stop(
     mut load: impl FnMut(WorkspaceRequest) -> Result<WorkspaceResponse, String> + Send,
+    stop: Arc<AtomicBool>,
 ) -> io::Result<()> {
     let review_preferences = review_visibility::path();
     let include_reviews = review_preferences
@@ -1938,20 +2034,17 @@ pub fn run_workspace(
     std::thread::scope(|scope| {
         let (request, requests) = mpsc::channel();
         let (send, results) = mpsc::channel();
+        let loader_stop = Arc::clone(&stop);
         scope.spawn(move || {
-            while let Ok(request) = requests.recv() {
-                let result = match request {
-                    WorkspaceRequest::ReviewVisibility(include) => {
-                        review_visibility::update(review_preferences.as_deref(), include)
-                            .map(|()| WorkspaceResponse::ReviewVisibility(include))
-                    }
-                    request => load(request),
-                };
-                if send.send(result).is_err() {
-                    break;
+            load_workspace_requests(requests, send, &loader_stop, |request| match request {
+                WorkspaceRequest::ReviewVisibility(include) => {
+                    review_visibility::update(review_preferences.as_deref(), include)
+                        .map(|()| WorkspaceResponse::ReviewVisibility(include))
                 }
-            }
+                request => load(request),
+            });
         });
+        let stop_on_exit = StopWorkspaceLoader(&stop);
         let terminal_result = ratatui::run(|terminal| {
             let mut workspace = Workspace::new();
             workspace.include_reviews = include_reviews;
@@ -1984,18 +2077,18 @@ pub fn run_workspace(
                     }
                     dirty = true;
                 }
-                if workspace
-                    .work
-                    .as_ref()
-                    .is_some_and(Workbench::follows_requests)
-                    && workspace.pending.is_none()
+                if workspace.pending.is_none()
                     && !workspace.agents.paused
                     && Instant::now() >= workspace.refresh_after
+                    && let Some(refresh) = workspace
+                        .work
+                        .as_ref()
+                        .and_then(Workbench::workflow_refresh)
                 {
                     workspace.refresh_after = Instant::now() + REFRESH_INTERVAL;
                     workspace.request(
                         &request,
-                        WorkspaceRequest::Work(WorkCommand::Workflow),
+                        WorkspaceRequest::Work(refresh),
                         Change::Work(None),
                     );
                     dirty = true;
@@ -2061,6 +2154,7 @@ pub fn run_workspace(
                                 continue;
                             }
                             if workspace.key(&request, key) {
+                                stop.store(true, Ordering::Release);
                                 // Keep the proof fence until a flushed non-private
                                 // frame replaces the modal, including q and Ctrl-C.
                                 if workspace.dismiss_prompt()
@@ -2084,6 +2178,7 @@ pub fn run_workspace(
                 }
             }
         });
+        drop(stop_on_exit);
         drop(request);
         terminal_result
     })
@@ -2794,6 +2889,176 @@ mod tests {
     }
 
     #[test]
+    fn shutdown_signals_an_active_load_and_skips_queued_requests() {
+        let stop = AtomicBool::new(false);
+        let (request, requests) = mpsc::channel();
+        let (send, results) = mpsc::channel();
+        let (started, first_started) = mpsc::channel();
+        let (release, wait_for_exit) = mpsc::channel();
+        request.send(WorkspaceRequest::Sessions(None)).unwrap();
+        request.send(WorkspaceRequest::Sessions(None)).unwrap();
+        drop(request);
+        std::thread::scope(|scope| {
+            let stop = &stop;
+            scope.spawn(move || {
+                load_workspace_requests(requests, send, stop, |_| {
+                    started.send(()).unwrap();
+                    if wait_for_exit.recv_timeout(Duration::from_secs(5)).is_err() {
+                        return Err("test exit signal not received".into());
+                    }
+                    assert!(stop.load(Ordering::Acquire));
+                    Ok(WorkspaceResponse::ReviewSaved)
+                });
+            });
+            first_started.recv_timeout(Duration::from_secs(5)).unwrap();
+            drop(StopWorkspaceLoader(stop));
+            release.send(()).unwrap();
+        });
+        assert!(matches!(
+            results.try_recv(),
+            Ok(Ok(WorkspaceResponse::ReviewSaved))
+        ));
+        assert!(matches!(
+            results.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+        assert!(matches!(
+            first_started.try_recv(),
+            Err(mpsc::TryRecvError::Disconnected)
+        ));
+    }
+
+    #[test]
+    fn retry_changes_only_the_requested_receipt_without_moving_the_workflow_cursor() {
+        use agenturm_kernel::workflow_notifications::{WorkflowDelivery, WorkflowDeliveryState};
+
+        let selected = RequestEntry {
+            owner: WorkAnchor {
+                source: "harness.codex.fixture".into(),
+                session: "fixture-session".into(),
+                worker: None,
+                turn: Some("fixture-turn".into()),
+            },
+            event_id: "selected-approval".into(),
+            revision: 3,
+            timestamp: 1,
+            reason: "approval".into(),
+            seen: false,
+            proof: RequestProof {
+                snapshot_id: 99.into(),
+                history_identity: Some("fixture-history".into()),
+            },
+        };
+        let mut sibling = selected.clone();
+        sibling.event_id = "sibling-approval".into();
+        let delivery = WorkflowDelivery {
+            authority: WorkflowNotificationAuthority {
+                history_identity: "fixture-history".into(),
+                snapshot_id: 99.into(),
+            },
+            key: [1; 32],
+            policy_revision: 7,
+            attempt: 1,
+            state: WorkflowDeliveryState::Failed,
+        };
+        let mut sibling_delivery = delivery.clone();
+        sibling_delivery.key = [2; 32];
+        let mut workspace = Workspace::new();
+        workspace.work = Some(Workbench::new(
+            WorkResult::Workflow {
+                items: vec![sibling.clone(), selected.clone()],
+                partial: false,
+                deliveries: vec![
+                    (sibling, sibling_delivery.clone()),
+                    (selected, delivery.clone()),
+                ],
+            },
+            None,
+        ));
+        let (sender, requests) = mpsc::channel();
+        let retry = |workspace: &mut Workspace| {
+            press(workspace, &sender, KeyCode::Char('T'));
+            match requests.try_recv() {
+                Ok(WorkspaceRequest::Work(WorkCommand::RetryWorkflow {
+                    authority,
+                    key,
+                    expected_revision,
+                    expected_attempt,
+                })) => Some((authority, key, expected_revision, expected_attempt)),
+                Err(mpsc::TryRecvError::Empty) => None,
+                _ => panic!("unexpected request"),
+            }
+        };
+        let response = |delivery: WorkflowDelivery| {
+            Ok(WorkspaceResponse::Work(
+                WorkResult::WorkflowDeliveryUpdated(delivery),
+            ))
+        };
+        let expected = |attempt| {
+            Some((
+                delivery.authority.clone(),
+                delivery.key,
+                delivery.policy_revision,
+                attempt,
+            ))
+        };
+        press(&mut workspace, &sender, KeyCode::Down);
+        workspace.pending = Some(Change::Work(None));
+        let mut compact = Terminal::new(TestBackend::new(60, 18)).unwrap();
+        compact
+            .draw(|frame| draw_workspace(frame, &mut workspace))
+            .unwrap();
+        assert!(compact.backend().to_string().contains("Delivery Failed"));
+        workspace.finish(response(delivery.clone()));
+        assert_eq!(retry(&mut workspace), expected(1));
+        sibling_delivery.attempt = 2;
+        workspace.finish(response(sibling_delivery.clone()));
+        assert_eq!(retry(&mut workspace), expected(1));
+        let mut next_failure = delivery.clone();
+        next_failure.attempt = 2;
+        let mut stale = next_failure.clone();
+        stale.authority.snapshot_id = 98.into();
+        workspace.finish(response(stale));
+        assert_eq!(retry(&mut workspace), expected(1));
+        let mut stale = next_failure.clone();
+        stale.policy_revision -= 1;
+        workspace.finish(response(stale));
+        assert_eq!(retry(&mut workspace), expected(1));
+        workspace.finish(response(delivery.clone()));
+        assert_eq!(retry(&mut workspace), expected(1));
+        let mut ahead = next_failure.clone();
+        ahead.attempt += 1;
+        workspace.finish(response(ahead));
+        assert_eq!(retry(&mut workspace), expected(1));
+        workspace.finish(response(next_failure.clone()));
+        assert_eq!(retry(&mut workspace), expected(2));
+        workspace.finish(response(next_failure.clone()));
+        assert_eq!(retry(&mut workspace), expected(2));
+        next_failure.attempt = 3;
+        next_failure.state = WorkflowDeliveryState::Delivered;
+        workspace.finish(response(next_failure));
+        assert_eq!(
+            workspace.message.as_deref(),
+            Some("Notification retry · Delivered")
+        );
+        assert_eq!(retry(&mut workspace), None);
+        compact
+            .draw(|frame| draw_workspace(frame, &mut workspace))
+            .unwrap();
+        assert!(compact.backend().to_string().contains("Delivery Delivered"));
+        press(&mut workspace, &sender, KeyCode::Up);
+        assert_eq!(
+            retry(&mut workspace),
+            Some((
+                sibling_delivery.authority,
+                sibling_delivery.key,
+                sibling_delivery.policy_revision,
+                1,
+            ))
+        );
+    }
+
+    #[test]
     fn workflow_resume_copies_only_the_exact_requested_row_and_preserves_selection() {
         let selected = RequestEntry {
             owner: WorkAnchor {
@@ -2840,6 +3105,7 @@ mod tests {
                 WorkResult::Workflow {
                     items: vec![sibling.clone(), selected.clone()],
                     partial: false,
+                    deliveries: Vec::new(),
                 },
                 None,
             ));

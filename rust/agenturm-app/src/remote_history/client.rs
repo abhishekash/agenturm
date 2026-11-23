@@ -80,7 +80,9 @@ pub fn execute_remote_cockpit(options: &RemoteHistoryOptions) -> Result<(), Stri
     }
     let (store, marker) = open_workspace(options)?;
     let mut app = AgenturmApp::default_composition();
-    agenturm_ui::run_workspace(move |request| {
+    let ui_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let loader_stop = std::sync::Arc::clone(&ui_stop);
+    agenturm_ui::run_workspace_with_stop(move |request| {
         if let WorkspaceRequest::Work(command) = &request {
             if cockpit_workflows::is_prompt_command(command) {
                 return Err("This receiver supplies metadata only. Use a local or broker content reader for protected evidence.".into());
@@ -89,8 +91,8 @@ pub fn execute_remote_cockpit(options: &RemoteHistoryOptions) -> Result<(), Stri
                 return Err("The native terminal belongs to the receiver host.".into());
             }
         }
-        workspace_response(&mut app, &store, &marker, request, || None)
-    })
+        workspace_response(&mut app, &store, &marker, request, || None, &loader_stop)
+    }, ui_stop)
     .map_err(|error| error.to_string())
 }
 
@@ -150,6 +152,18 @@ impl RemoteStore {
 
     pub(crate) fn read_binding(&self) -> &str {
         &self.read_binding
+    }
+
+    pub(crate) fn query_execution_clocks(
+        &self,
+        query: &agenturm_store::native_attention::ExecutionClockQuery,
+    ) -> Result<agenturm_store::native_attention::ExecutionClockPage, String> {
+        match self.request(ReaderHistoryRequest::ExecutionClocks {
+            query: query.clone(),
+        })? {
+            ReaderHistoryReply::ExecutionClocks(page) => Ok(page),
+            _ => Err("History gateway returned the wrong execution clock reply".into()),
+        }
     }
 
     pub(crate) fn query_native_attention(
@@ -414,6 +428,12 @@ impl HistoryReader for RemoteStore {
         }
     }
 
+    fn query_execution_clocks(
+        &self,
+        query: &agenturm_store::native_attention::ExecutionClockQuery,
+    ) -> Result<agenturm_store::native_attention::ExecutionClockPage, String> {
+        RemoteStore::query_execution_clocks(self, query)
+    }
     fn query_native_attention(
         &self,
         query: &agenturm_store::native_attention::NativeAttentionQuery,

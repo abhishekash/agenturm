@@ -74,6 +74,7 @@ pub(super) fn execute(
     store: &impl super::HistoryReader,
     db: &Path,
     command: WorkCommand,
+    stop: &std::sync::atomic::AtomicBool,
 ) -> Result<WorkResult, String> {
     match command {
         WorkCommand::HostNow => {
@@ -223,9 +224,75 @@ pub(super) fn execute(
                 destination.display()
             )))
         }
-        WorkCommand::Workflow => {
-            let (items, partial) = pending_requests_with_seen(store, &store.workspace_ledger(db)?)?;
-            Ok(WorkResult::Workflow { items, partial })
+        WorkCommand::Workflow => workflow(store, db),
+        #[cfg(target_os = "linux")]
+        WorkCommand::WorkflowSettings => {
+            let (policy, authority) = crate::attention::workflow_settings(store, db)?;
+            Ok(WorkResult::WorkflowSettings {
+                policy: Box::new(policy),
+                authority,
+            })
+        }
+        #[cfg(target_os = "linux")]
+        WorkCommand::ChangeWorkflowSettings {
+            authority,
+            expected_revision,
+            change,
+        } => {
+            let (policy, authority) = crate::attention::change_workflow_settings(
+                store,
+                db,
+                &authority,
+                expected_revision,
+                change,
+            )?;
+            Ok(WorkResult::WorkflowSettings {
+                policy: Box::new(policy),
+                authority,
+            })
+        }
+        #[cfg(target_os = "linux")]
+        WorkCommand::RetryWorkflow {
+            authority,
+            expected_revision,
+            key,
+            expected_attempt,
+        } => {
+            let state = crate::attention::retry_workflow_delivery(
+                store,
+                db,
+                &authority,
+                expected_revision,
+                key,
+                expected_attempt,
+                stop,
+            )?;
+            Ok(WorkResult::WorkflowDeliveryUpdated(
+                agenturm_kernel::workflow_notifications::WorkflowDelivery {
+                    authority,
+                    key,
+                    policy_revision: expected_revision,
+                    attempt: expected_attempt
+                        .checked_add(1)
+                        .ok_or("Invalid delivery attempt")?,
+                    state,
+                },
+            ))
+        }
+        #[cfg(target_os = "linux")]
+        WorkCommand::WorkflowAlerts => {
+            let (policy, _) = crate::attention::workflow_settings(store, db)?;
+            let (page, deliveries) = if policy.thresholds == Default::default() {
+                (
+                    crate::workflow_alerts::load(store, &policy.thresholds)?,
+                    Vec::new(),
+                )
+            } else {
+                crate::attention::workflow_alert_deliveries(store, db)?
+            };
+            Ok(WorkResult::WorkflowAlerts(Box::new(
+                agenturm_ui::WorkflowAlertInbox { page, deliveries },
+            )))
         }
         WorkCommand::SessionAttention(session) => session_attention(store, db, session),
         WorkCommand::Seen(item) => mark_seen(store, db, item),
@@ -252,6 +319,19 @@ pub(super) fn execute(
         }
         command => execute_prompt(db, None, command),
     }
+}
+
+fn workflow(store: &impl super::HistoryReader, db: &Path) -> Result<WorkResult, String> {
+    let (items, partial) = pending_requests_with_seen(store, &store.workspace_ledger(db)?)?;
+    #[cfg(target_os = "linux")]
+    let deliveries = crate::attention::workflow_deliveries(store, db, &items).unwrap_or_default();
+    #[cfg(not(target_os = "linux"))]
+    let deliveries = Vec::new();
+    Ok(WorkResult::Workflow {
+        items,
+        partial,
+        deliveries,
+    })
 }
 
 pub(super) fn is_prompt_command(command: &WorkCommand) -> bool {
@@ -826,6 +906,19 @@ fn event_position(event_id: &str) -> (&str, u64, &str) {
 mod tests {
     use super::*;
     use agenturm_kernel::ObservationIdentity;
+
+    fn execute(
+        store: &impl crate::HistoryReader,
+        db: &Path,
+        command: WorkCommand,
+    ) -> Result<WorkResult, String> {
+        super::execute(
+            store,
+            db,
+            command,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+    }
 
     #[test]
     fn a_stale_cockpit_task_cannot_overwrite_an_intervening_cli_edit() {

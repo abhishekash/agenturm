@@ -9,6 +9,11 @@ use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::time::{SystemTime, UNIX_EPOCH};
 
+mod execution_clock;
+pub use execution_clock::{
+    ExecutionClockPage, ExecutionClockQuery, ExecutionClockStart, MAX_EXECUTION_CLOCK_SCOPES,
+};
+
 pub use agenturm_kernel::native_attention::{
     NativeAttentionCapture, NativeAttentionKind, NativeAttentionReceipt, NativeAttentionScope,
     is_attention_event_id,
@@ -330,6 +335,12 @@ impl Store {
             return Err(StoreError::Invalid(
                 "native attention receipt is outside retention",
             ));
+        }
+        // A restored pre-clock history has no saved incarnation floor. Its
+        // first new authenticated admission establishes a floor before any
+        // new event becomes eligible. Replays return before this write.
+        if retention::execution_clock_floor(&transaction)?.is_none() {
+            retention::set_execution_clock_floor(&transaction, watermark)?;
         }
 
         let sequence = retention::next_receipt_sequence(&transaction)?;

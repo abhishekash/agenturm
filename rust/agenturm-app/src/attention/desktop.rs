@@ -6,6 +6,9 @@ use crate::{
     cockpit_workflows::{project_requests, request_key},
 };
 use agenturm_kernel::native_review::{NativeRequestKind, NativeRequestState};
+use agenturm_kernel::workflow_notifications::{
+    WorkflowDeliveryState, WorkflowNotificationAuthority,
+};
 use agenturm_kernel::{
     Observation, ObservationKind, ObservationPage, ObservationQuery, ReadSnapshot,
 };
@@ -13,8 +16,7 @@ use agenturm_store::{DesktopAttentionRequest, MAX_WORKSPACE_PAGE_SIZE, Workspace
 use agenturm_ui::{RequestEntry, RequestProof};
 use serde::Serialize;
 use std::collections::HashMap;
-use std::sync::atomic::{AtomicBool, Ordering};
-use std::time::{SystemTime, UNIX_EPOCH};
+use std::sync::atomic::AtomicBool;
 
 const HISTORY_PAGE_SIZE: usize = 5_000;
 const FRESHNESS_NS: u64 = 15_000_000_000;
@@ -25,6 +27,8 @@ mod legacy;
 pub(super) use legacy::watch_legacy;
 #[cfg(target_os = "linux")]
 mod native_http;
+
+pub(super) mod workflow;
 #[cfg(target_os = "linux")]
 pub(super) use native_http::snapshot_remote;
 
@@ -34,9 +38,11 @@ pub(super) enum Delivery {
     DeferredIncomplete,
     DeferredSourceClock,
     DeferredHistoryChanged,
+    DeferredPolicyChanged,
     Delivered,
     Unavailable,
     Failed,
+    Uncertain,
 }
 
 struct Inventory {
@@ -67,38 +73,18 @@ pub(super) fn snapshot(
     stop: &AtomicBool,
     current: impl Fn() -> Result<(String, ReadSnapshot), String>,
 ) -> Result<Snapshot, String> {
-    let identity = store
-        .workspace_history_identity()
-        .ok_or("Desktop attention requires an established history identity")?;
-    let page = store.query_observations(&ObservationQuery::latest(HISTORY_PAGE_SIZE))?;
-    let now: u64 = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .ok()
-        .and_then(|time| time.as_nanos().try_into().ok())
-        .ok_or("Desktop attention requires a valid local clock")?;
-    let inventory = project_inventory(&page, ledger, &identity, now)?;
-    let candidates = match &inventory.candidates {
-        Ok(candidates) => candidates,
-        Err(deferred) => {
-            let deferred = *deferred;
-            return Ok(inventory.report(Some(deferred)));
+    workflow::observe(store, ledger, stop, true, None, |expected| {
+        let (history_identity, snapshot_id) = current()?;
+        if !(WorkflowNotificationAuthority {
+            history_identity,
+            snapshot_id,
+        })
+        .includes(expected)
+        {
+            return Err("Workflow history changed. Refresh Workflow.".into());
         }
-    };
-    let expected = (identity, page.snapshot_id);
-    if stop.load(Ordering::Relaxed) || current()? != expected {
-        return Ok(inventory.report(Some(Delivery::DeferredHistoryChanged)));
-    }
-    let claimed = ledger
-        .claim_desktop_attention(&expected.0, expected.1, now, candidates)
-        .map_err(|error| format!("Desktop attention claim failed: {error}"))?;
-    let delivered = if claimed == 0 || stop.load(Ordering::Relaxed) {
-        None
-    } else if current()? != expected {
-        Some(Delivery::DeferredHistoryChanged)
-    } else {
-        Some(notify(claimed, stop))
-    };
-    Ok(inventory.report(delivered))
+        Ok(())
+    })
 }
 
 fn project_inventory(
@@ -214,47 +200,110 @@ fn has_comparable_clock(
         })
 }
 
+struct Notifier {
+    #[cfg(target_os = "linux")]
+    child: Option<std::process::Child>,
+    outcome: Option<(Delivery, WorkflowDeliveryState)>,
+}
+
+impl Notifier {
+    fn completed(delivery: Delivery, state: WorkflowDeliveryState) -> Self {
+        Self {
+            #[cfg(target_os = "linux")]
+            child: None,
+            outcome: Some((delivery, state)),
+        }
+    }
+
+    fn wait(self, stop: &AtomicBool) -> (Delivery, WorkflowDeliveryState) {
+        self.outcome.unwrap_or_else(|| self.wait_child(stop))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn wait_child(mut self, stop: &AtomicBool) -> (Delivery, WorkflowDeliveryState) {
+        use std::{
+            sync::atomic::Ordering,
+            time::{Duration, Instant},
+        };
+
+        let deadline = Instant::now() + Duration::from_secs(3);
+        let child = self.child.as_mut().expect("started notifier child");
+        loop {
+            match child.try_wait() {
+                Ok(Some(status)) => {
+                    self.child.take();
+                    return if status.success() {
+                        (Delivery::Delivered, WorkflowDeliveryState::Delivered)
+                    } else if status.code().is_some() {
+                        (Delivery::Failed, WorkflowDeliveryState::Failed)
+                    } else {
+                        (Delivery::Uncertain, WorkflowDeliveryState::Uncertain)
+                    };
+                }
+                Ok(None) if Instant::now() < deadline && !stop.load(Ordering::Relaxed) => {
+                    std::thread::sleep(Duration::from_millis(20));
+                }
+                _ => return (Delivery::Uncertain, WorkflowDeliveryState::Uncertain),
+            }
+        }
+    }
+
+    #[cfg(not(target_os = "linux"))]
+    fn wait_child(self, _stop: &AtomicBool) -> (Delivery, WorkflowDeliveryState) {
+        (Delivery::Unavailable, WorkflowDeliveryState::Unavailable)
+    }
+}
+
 #[cfg(target_os = "linux")]
-fn notify(claimed: usize, stop: &AtomicBool) -> Delivery {
+impl Drop for Notifier {
+    fn drop(&mut self) {
+        if let Some(child) = self.child.as_mut() {
+            let _ = child.kill();
+            let _ = child.wait();
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+fn start_notifier(claimed: usize, includes_alerts: bool) -> Notifier {
     use std::{
         io::ErrorKind,
         process::{Command, Stdio},
-        time::{Duration, Instant},
     };
 
-    let body = format!(
-        "{claimed} recorded attention request(s). Open Agenturm to inspect and respond in your agent terminal."
-    );
-    let mut child = match Command::new("notify-send")
+    let body = if includes_alerts {
+        format!("{claimed} recorded attention item(s). Open Agenturm Workflow to inspect.")
+    } else {
+        format!(
+            "{claimed} recorded attention request(s). Open Agenturm to inspect and respond in your agent terminal."
+        )
+    };
+    match Command::new("notify-send")
         .args(["--app-name=Agenturm", "--", "Agenturm attention", &body])
         .stdin(Stdio::null())
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn()
     {
-        Ok(child) => child,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Delivery::Unavailable,
-        Err(_) => return Delivery::Failed,
-    };
-    let deadline = Instant::now() + Duration::from_secs(3);
-    loop {
-        match child.try_wait() {
-            Ok(Some(status)) if status.success() => return Delivery::Delivered,
-            Ok(None) if Instant::now() < deadline && !stop.load(Ordering::Relaxed) => {
-                std::thread::sleep(Duration::from_millis(20));
-            }
-            _ => {
-                let _ = child.kill();
-                let _ = child.wait();
-                return Delivery::Failed;
-            }
+        Ok(child) => Notifier {
+            child: Some(child),
+            outcome: None,
+        },
+        Err(error) if error.kind() == ErrorKind::NotFound => {
+            Notifier::completed(Delivery::Unavailable, WorkflowDeliveryState::Unavailable)
         }
+        Err(_) => Notifier::completed(Delivery::Failed, WorkflowDeliveryState::Failed),
     }
 }
 
 #[cfg(not(target_os = "linux"))]
-fn notify(_claimed: usize, _stop: &AtomicBool) -> Delivery {
-    Delivery::Unavailable
+fn start_notifier(_claimed: usize, _includes_alerts: bool) -> Notifier {
+    Notifier::completed(Delivery::Unavailable, WorkflowDeliveryState::Unavailable)
+}
+
+#[cfg(target_os = "linux")]
+fn notify(claimed: usize, stop: &AtomicBool) -> Delivery {
+    start_notifier(claimed, false).wait(stop).0
 }
 
 #[cfg(test)]

@@ -19,8 +19,8 @@ use agenturm_kernel::{
 use agenturm_kernel::{ReadIncarnation, ReadSnapshot};
 use agenturm_storage_service_contract::{ContractError, ServerPolicy, native};
 use agenturm_store::native_attention::{
-    NativeAttentionCapture, NativeAttentionPage, NativeAttentionQuery, NativeAttentionReceipt,
-    canonical_event_id, is_attention_event_id,
+    ExecutionClockPage, ExecutionClockQuery, NativeAttentionCapture, NativeAttentionPage,
+    NativeAttentionQuery, NativeAttentionReceipt, canonical_event_id, is_attention_event_id,
 };
 use agenturm_store::{
     AutomaticRetentionPolicy, AutomaticRetentionStatus, EvalDetailRecord, EvalDetailSelection,
@@ -99,6 +99,10 @@ pub(crate) enum NativeOperation {
     },
     QueryNativeAttention {
         query: NativeAttentionQuery,
+        expected_history_identity: String,
+    },
+    QueryExecutionClocks {
+        query: ExecutionClockQuery,
         expected_history_identity: String,
     },
     ImportEvalOutcomes {
@@ -284,6 +288,7 @@ pub(crate) enum NativeReply {
     UsageHistory(Result<Box<UsageHistoryPage>, ReadFailure>),
     NativeAttentionAdmission(Result<NativeAttentionReceipt, AdmissionFailure>),
     NativeAttention(Result<NativeAttentionPage, ReadFailure>),
+    ExecutionClocks(Result<ExecutionClockPage, ReadFailure>),
     EvalImported(Result<EvalImportReport, ReadFailure>),
     EvalOutcome(Result<Option<RetainedEvalOutcome>, ReadFailure>),
     EvalPage(Result<EvalPage, ReadFailure>),
@@ -546,6 +551,15 @@ pub(crate) fn dispatch(
             return NativeReply::NativeAttention(
                 authorize_read(store, role, Some(&expected_history_identity))
                     .and_then(|()| native_read::query_native_attention(store, allowed, &query)),
+            );
+        }
+        NativeOperation::QueryExecutionClocks {
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::ExecutionClocks(
+                authorize_read(store, role, Some(&expected_history_identity))
+                    .and_then(|()| native_read::query_execution_clocks(store, allowed, &query)),
             );
         }
         NativeOperation::QueryUsageHistory {
@@ -1643,6 +1657,19 @@ impl NativeStore {
     ) -> Result<NativeAttentionPage, NativeClientError> {
         self.exchange::<Result<NativeAttentionPage, ReadFailure>>(
             NativeOperation::QueryNativeAttention {
+                query: query.clone(),
+                expected_history_identity: self.require_read_binding()?,
+            },
+        )?
+        .map_err(NativeClientError::Read)
+    }
+
+    pub fn query_execution_clocks(
+        &self,
+        query: &ExecutionClockQuery,
+    ) -> Result<ExecutionClockPage, NativeClientError> {
+        self.exchange::<Result<ExecutionClockPage, ReadFailure>>(
+            NativeOperation::QueryExecutionClocks {
                 query: query.clone(),
                 expected_history_identity: self.require_read_binding()?,
             },

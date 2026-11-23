@@ -77,9 +77,9 @@ pub use workspace_ledger::{
     LegacyDesktopAttentionRequest, LegacyTaskOccurrence, LegacyTaskOccurrenceAuthority,
     LegacyTaskScope, LegacyTaskSourceProof, MAX_WORKSPACE_GIT_DIFF_BYTES, MAX_WORKSPACE_PAGE_SIZE,
     SavedHandoff, SavedTask, SavedTaskDecision, TaskBrief, TaskBriefUpdate, TaskDecisionInput,
-    TaskDecisionKind, TaskDraftApproval, TaskHandoff, TaskSourceProof, WorkspaceAnchor,
-    WorkspaceError, WorkspaceGitDiff, WorkspaceGitSnapshot, WorkspaceHistory, WorkspaceLedger,
-    WorkspacePage,
+    TaskDecisionKind, TaskDraftApproval, TaskHandoff, TaskSourceProof, WorkflowAlertCandidate,
+    WorkflowDeliveryAttempt, WorkflowNotificationRead, WorkspaceAnchor, WorkspaceError,
+    WorkspaceGitDiff, WorkspaceGitSnapshot, WorkspaceHistory, WorkspaceLedger, WorkspacePage,
 };
 
 use agenturm_kernel::ReadSnapshot;
@@ -1931,7 +1931,12 @@ impl Store {
                 receipt_watermark,
             )?;
         }
-        let mut statement = connection.prepare(
+        let workflow_filter = if projection == Some("workflow_alerts") {
+            history_projection::WORKFLOW_ALERTS_FILTER
+        } else {
+            "1"
+        };
+        let observation_sql = format!(
             "SELECT observation.source_id, observation.event_id, observation.revision,
                     observation.scope, observation.session_id, observation.worker_id, observation.turn_id,
                     observation.operation_id, observation.observed_at_unix_ns,
@@ -1987,6 +1992,7 @@ impl Store {
                    WHEN 'usage' THEN json_extract(observation.kind_json,'$.kind') IN (
                        'usage','credit_usage','reported_cost','span_token_usage')
                    WHEN 'relationships' THEN json_extract(observation.kind_json,'$.kind')='relationship'
+                   WHEN 'workflow_alerts' THEN ({workflow_filter})
                    ELSE ?16 IS NULL
                END
                AND (?4 IS NULL OR
@@ -1996,7 +2002,8 @@ impl Store {
              ORDER BY observation.observed_at_unix_ns DESC, observation.source_id DESC,
                       observation.event_id DESC, observation.revision DESC
              LIMIT ?8",
-        )?;
+        );
+        let mut statement = connection.prepare(&observation_sql)?;
         let read_limit = i64::try_from(query.limit + 1)
             .map_err(|_| StoreError::Invalid("observation page limit is invalid"))?;
         let before = query.before.as_ref();

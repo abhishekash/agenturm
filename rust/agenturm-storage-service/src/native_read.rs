@@ -7,7 +7,9 @@ use agenturm_kernel::retained_history::{
 use agenturm_kernel::{
     ExtensionId, MAX_DURABLE_SNAPSHOT_OBSERVATIONS, ObservationPage, ObservationQuery,
 };
-use agenturm_store::native_attention::{NativeAttentionPage, NativeAttentionQuery};
+use agenturm_store::native_attention::{
+    ExecutionClockPage, ExecutionClockQuery, NativeAttentionPage, NativeAttentionQuery,
+};
 use agenturm_store::{
     EvalInventory, EvalInventoryQuery, McpTraceQuery, ResolvedTraceReview, SessionPage,
     SessionQuery, StandaloneTraceQuery, Store, StoreError, TraceReviewQuery,
@@ -256,6 +258,19 @@ pub fn query_native_attention(
     )?;
     store
         .query_native_attention(query, Some(allowed_sources))
+        .map_err(failure)
+}
+
+pub fn query_execution_clocks(
+    store: &Store,
+    allowed_sources: &BTreeSet<ExtensionId>,
+    query: &ExecutionClockQuery,
+) -> Result<ExecutionClockPage, ReadFailure> {
+    for scope in &query.scopes {
+        authorize(allowed_sources, Some(scope.source_id.as_str()))?;
+    }
+    store
+        .query_execution_clocks(query, Some(allowed_sources))
         .map_err(failure)
 }
 

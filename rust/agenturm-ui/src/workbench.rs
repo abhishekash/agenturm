@@ -3,6 +3,11 @@
 use super::*;
 use crate::workspace::{RecordedSession, ReviewVersion};
 use agenturm_kernel::ReadSnapshot;
+use agenturm_kernel::workflow_alerts::WorkflowAlertPage;
+use agenturm_kernel::workflow_notifications::{
+    WorkflowDelivery, WorkflowDeliveryState, WorkflowNotificationAuthority,
+    WorkflowNotificationPolicy, WorkflowPolicyChange,
+};
 use std::sync::{
     Arc, Mutex,
     atomic::{AtomicBool, Ordering},
@@ -293,7 +298,9 @@ impl io::Write for PromptDelivery {
 pub(crate) mod evaluation;
 mod host;
 pub(crate) mod investigation;
+mod workflow_alerts;
 pub(crate) mod workflow_resume;
+mod workflow_settings;
 use workflow_resume::WorkflowResume;
 
 pub enum WorkCommand {
@@ -353,6 +360,19 @@ pub enum WorkCommand {
         note: String,
     },
     Workflow,
+    WorkflowAlerts,
+    WorkflowSettings,
+    ChangeWorkflowSettings {
+        authority: WorkflowNotificationAuthority,
+        expected_revision: u64,
+        change: WorkflowPolicyChange,
+    },
+    RetryWorkflow {
+        authority: WorkflowNotificationAuthority,
+        key: [u8; 32],
+        expected_revision: u64,
+        expected_attempt: u64,
+    },
     WorkflowResume(RequestEntry),
     SessionAttention(RecordedSession),
     Seen(RequestEntry),
@@ -374,6 +394,47 @@ pub struct ReviewNoteEntry {
 pub struct CurrentHostSample {
     pub captured_at_unix_ns: u64,
     pub sample: agenturm_kernel::HostSample,
+}
+
+fn delivery_label(state: WorkflowDeliveryState) -> &'static str {
+    match state {
+        WorkflowDeliveryState::Claimed => "Claimed",
+        WorkflowDeliveryState::Delivered => "Delivered",
+        WorkflowDeliveryState::Failed => "Failed",
+        WorkflowDeliveryState::Unavailable => "Unavailable",
+        WorkflowDeliveryState::Uncertain => "Uncertain",
+    }
+}
+
+fn retry_command(delivery: &WorkflowDelivery) -> Option<WorkCommand> {
+    delivery
+        .state
+        .retryable()
+        .then(|| WorkCommand::RetryWorkflow {
+            authority: delivery.authority.clone(),
+            key: delivery.key,
+            expected_revision: delivery.policy_revision,
+            expected_attempt: delivery.attempt,
+        })
+}
+
+fn replace_delivery_state(stored: &mut WorkflowDelivery, updated: &WorkflowDelivery) -> bool {
+    if stored.authority != updated.authority
+        || stored.key != updated.key
+        || stored.policy_revision != updated.policy_revision
+        || stored.attempt.checked_add(1) != Some(updated.attempt)
+        || !stored.state.retryable()
+    {
+        return false;
+    }
+    stored.attempt = updated.attempt;
+    stored.state = updated.state;
+    true
+}
+
+pub struct WorkflowAlertInbox {
+    pub page: WorkflowAlertPage,
+    pub deliveries: Vec<(String, WorkflowDelivery)>,
 }
 
 pub enum WorkResult {
@@ -405,8 +466,15 @@ pub enum WorkResult {
     Workflow {
         items: Vec<RequestEntry>,
         partial: bool,
+        deliveries: Vec<(RequestEntry, WorkflowDelivery)>,
+    },
+    WorkflowAlerts(Box<WorkflowAlertInbox>),
+    WorkflowSettings {
+        policy: Box<WorkflowNotificationPolicy>,
+        authority: WorkflowNotificationAuthority,
     },
     WorkflowResume(Box<WorkflowResume>),
+    WorkflowDeliveryUpdated(WorkflowDelivery),
     AttentionRequests(Vec<RequestEntry>),
     Prompts(Vec<PromptEntry>),
     TelemetrySpans(Vec<TelemetrySpanEntry>),
@@ -472,6 +540,9 @@ pub(super) struct Workbench {
     host_inspection_bounds: (usize, usize),
     evaluation_return: Option<EvaluationReturn>,
     resume_preview: Option<(Box<WorkflowResume>, String)>,
+    workflow_settings: Option<workflow_settings::Settings>,
+    workflow_alerts: Option<workflow_alerts::Alerts>,
+    show_workflow_alerts: bool,
 }
 
 impl Workbench {
@@ -489,12 +560,36 @@ impl Workbench {
             host_inspection_bounds: (1, 0),
             evaluation_return: None,
             resume_preview: None,
+            workflow_settings: None,
+            workflow_alerts: None,
+            show_workflow_alerts: false,
         };
         work.reset_cursor();
         work
     }
 
     pub(super) fn apply(&mut self, data: WorkResult) {
+        let data = match data {
+            WorkResult::WorkflowSettings { policy, authority } => {
+                if let Some(settings) = &mut self.workflow_settings {
+                    settings.apply(policy, authority);
+                } else {
+                    self.workflow_settings =
+                        Some(workflow_settings::Settings::new(policy, authority));
+                }
+                return;
+            }
+            WorkResult::WorkflowAlerts(inbox) => {
+                if let Some(alerts) = &mut self.workflow_alerts {
+                    alerts.apply(inbox);
+                } else {
+                    self.workflow_alerts = Some(workflow_alerts::Alerts::new(inbox));
+                }
+                self.show_workflow_alerts = true;
+                return;
+            }
+            data => data,
+        };
         let previous = self.selected_task().map(|item| item.id);
         let selected_process = self.current_process_identity();
         let selected_request = match &self.data {
@@ -560,10 +655,20 @@ impl Workbench {
         }
     }
 
-    pub(super) fn follows_requests(&self) -> bool {
-        matches!(self.data, WorkResult::Workflow { .. })
+    pub(super) fn workflow_refresh(&self) -> Option<WorkCommand> {
+        if matches!(self.data, WorkResult::Workflow { .. })
             && !self.help
             && self.resume_preview.is_none()
+            && self.workflow_settings.is_none()
+        {
+            Some(if self.show_workflow_alerts {
+                WorkCommand::WorkflowAlerts
+            } else {
+                WorkCommand::Workflow
+            })
+        } else {
+            None
+        }
     }
 
     pub(super) fn accept_resume(
@@ -583,6 +688,35 @@ impl Workbench {
             .ok_or("Native resume is unavailable for this request")?;
         self.resume_preview = Some((receipt, command.clone()));
         Ok(command)
+    }
+
+    pub(super) fn accept_delivery(
+        &mut self,
+        updated: &WorkflowDelivery,
+    ) -> Result<&'static str, &'static str> {
+        let applied = if self.show_workflow_alerts {
+            self.workflow_alerts
+                .as_mut()
+                .is_some_and(|alerts| alerts.accept_delivery(updated))
+        } else if let WorkResult::Workflow {
+            items, deliveries, ..
+        } = &mut self.data
+        {
+            deliveries.iter_mut().any(|(request, stored)| {
+                request.proof.history_identity.as_deref()
+                    == Some(updated.authority.history_identity.as_str())
+                    && request.proof.snapshot_id == updated.authority.snapshot_id
+                    && items.contains(request)
+                    && replace_delivery_state(stored, updated)
+            })
+        } else {
+            false
+        };
+        if applied {
+            Ok(delivery_label(updated.state))
+        } else {
+            Err("The workflow delivery receipt changed")
+        }
     }
 
     pub(super) fn note_seen(&mut self, recorded: &RequestEntry) {
@@ -621,7 +755,10 @@ impl Workbench {
             WorkResult::Prompts(items) => items.len(),
             WorkResult::TelemetrySpans(spans) => spans.len(),
             WorkResult::Investigation(_)
+            | WorkResult::WorkflowAlerts(_)
+            | WorkResult::WorkflowSettings { .. }
             | WorkResult::WorkflowResume(_)
+            | WorkResult::WorkflowDeliveryUpdated(_)
             | WorkResult::Seen(_)
             | WorkResult::Status(_) => 0,
         }
@@ -632,6 +769,25 @@ impl Workbench {
             WorkResult::Tasks { items, .. } => items.get(self.cursor.selected()?),
             _ => None,
         }
+    }
+
+    fn workflow_delivery(&self, index: usize) -> Option<&WorkflowDelivery> {
+        let WorkResult::Workflow {
+            items, deliveries, ..
+        } = &self.data
+        else {
+            return None;
+        };
+        let selected = items.get(index)?;
+        deliveries
+            .iter()
+            .find(|(request, delivery)| {
+                request == selected
+                    && selected.proof.history_identity.as_deref()
+                        == Some(delivery.authority.history_identity.as_str())
+                    && selected.proof.snapshot_id == delivery.authority.snapshot_id
+            })
+            .map(|(_, delivery)| delivery)
     }
 
     fn current_process_identity(&self) -> Option<(String, u32, u64)> {
@@ -689,6 +845,13 @@ impl Workbench {
                 WorkInput::None
             };
         }
+        if let Some(settings) = &mut self.workflow_settings {
+            let input = settings.key(key);
+            if matches!(input, WorkInput::Back) {
+                self.workflow_settings = None;
+            }
+            return input;
+        }
         if key.code == KeyCode::F(1) || (self.help && key.code == KeyCode::Esc) {
             self.help = !self.help;
             return WorkInput::None;
@@ -704,6 +867,38 @@ impl Workbench {
             return WorkInput::None;
         }
         let selected = self.cursor.selected().unwrap_or_default();
+        if matches!(self.data, WorkResult::Workflow { .. }) {
+            if key.code == KeyCode::Char('S') {
+                return WorkInput::Command(WorkCommand::WorkflowSettings);
+            }
+            if self.show_workflow_alerts
+                && let Some(alerts) = &mut self.workflow_alerts
+            {
+                if alerts.inspecting() {
+                    return alerts.key(key.code);
+                }
+                match key.code {
+                    KeyCode::Esc | KeyCode::Tab => {
+                        self.show_workflow_alerts = false;
+                        return WorkInput::Back;
+                    }
+                    KeyCode::Char('R') => return WorkInput::Command(WorkCommand::WorkflowAlerts),
+                    KeyCode::Char('T') => {
+                        return alerts.retry().map_or(WorkInput::None, WorkInput::Command);
+                    }
+                    _ => return alerts.key(key.code),
+                }
+            }
+            if key.code == KeyCode::Tab {
+                return WorkInput::Command(WorkCommand::WorkflowAlerts);
+            }
+            if key.code == KeyCode::Char('T') {
+                return self
+                    .workflow_delivery(selected)
+                    .and_then(retry_command)
+                    .map_or(WorkInput::None, WorkInput::Command);
+            }
+        }
         if let WorkResult::HostNow(capture) = &self.data {
             if let Some(inspection) = &mut self.host_inspection {
                 if key.code == KeyCode::Esc {
@@ -1057,7 +1252,7 @@ impl Workbench {
     }
 
     pub(super) fn editing(&self) -> bool {
-        self.draft.is_some()
+        self.draft.is_some() || self.workflow_settings.is_some()
     }
 
     fn scrollable_details(&self) -> bool {
@@ -1076,10 +1271,26 @@ impl Workbench {
             );
             return;
         }
+        if let Some(settings) = &self.workflow_settings {
+            settings.draw(frame, pending, status);
+            return;
+        }
+        if self.show_workflow_alerts
+            && !self.help
+            && let Some(alerts) = &mut self.workflow_alerts
+        {
+            alerts.draw(frame, pending, status);
+            return;
+        }
+        let footer_height = if matches!(self.data, WorkResult::Workflow { .. }) {
+            3
+        } else {
+            2
+        };
         let [header, body, footer] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(1),
-            Constraint::Length(2),
+            Constraint::Length(footer_height),
         ])
         .areas(area);
         if let Some((receipt, command)) = &self.resume_preview {
@@ -1108,7 +1319,7 @@ impl Workbench {
         if self.help {
             frame.render_widget(Paragraph::new(" Workbench keys"), header);
             frame.render_widget(
-                Paragraph::new("Tasks · n new linked · N blank · e edit · c done\nl link selected session or turn · r links · Del delete\nG capture Git · g saved Git · h new handoff · o handoffs\nHandoffs · e edit · x export MD+HTML · Del delete · b tasks\nWorkflow · r seen · l locate · c copy resume · R refresh\nPrompts · Enter reveal · m activity details · Esc close\nHost history · Enter drill down · ] older · Esc back")
+                Paragraph::new("Tasks · n new linked · N blank · e edit · c done\nl link selected session or turn · r links · Del delete\nG capture Git · g saved Git · h new handoff · o handoffs\nHandoffs · e edit · x export MD+HTML · Del delete · b tasks\nWorkflow · r seen · l locate · c copy resume · R refresh\nTab incidents · S settings · T retry eligible delivery\nPrompts · Enter reveal · m activity details · Esc close\nHost history · Enter drill down · ] older · Esc back")
                     .wrap(Wrap { trim: false }).block(panel("")),
                 body,
             );
@@ -1329,13 +1540,20 @@ impl Workbench {
                 items.get(selected).map(request_details).unwrap_or_default(),
                 "No eligible pending requests",
             ),
-            WorkResult::Workflow { items, partial } => (
+            WorkResult::Workflow { items, partial, .. } => (
                 if *partial {
                     "Workflow · recent history"
                 } else {
                     "Workflow"
                 },
-                "r seen · l locate · c copy resume · R refresh · Esc back",
+                if self
+                    .workflow_delivery(selected)
+                    .is_some_and(|delivery| delivery.state.retryable())
+                {
+                    "r seen · l locate · c copy resume · R refresh · Esc back\nTab incidents · S settings · T retry delivery"
+                } else {
+                    "r seen · l locate · c copy resume · R refresh · Esc back\nTab incidents · S settings"
+                },
                 items
                     .iter()
                     .map(|item| {
@@ -1403,7 +1621,10 @@ impl Workbench {
             WorkResult::HostHistory(_)
             | WorkResult::HostNow(_)
             | WorkResult::Investigation(_)
+            | WorkResult::WorkflowAlerts(_)
+            | WorkResult::WorkflowSettings { .. }
             | WorkResult::WorkflowResume(_)
+            | WorkResult::WorkflowDeliveryUpdated(_)
             | WorkResult::Seen(_)
             | WorkResult::Status(_) => return,
         };
@@ -1451,7 +1672,13 @@ impl Workbench {
             } else {
                 Paragraph::new(details).wrap(Wrap { trim: false })
             };
-            frame.render_widget(paragraph.block(panel("Details")), detail);
+            let title = self
+                .workflow_delivery(selected)
+                .map(|delivery| format!("Details · Delivery {}", delivery_label(delivery.state)));
+            frame.render_widget(
+                paragraph.block(panel(title.as_deref().unwrap_or("Details"))),
+                detail,
+            );
         }
         draw_footer(frame, footer, keys, pending, status);
     }
@@ -1479,10 +1706,12 @@ fn draw_footer(frame: &mut Frame, area: Rect, keys: &str, pending: bool, status:
             "↑↓ select · q quit".into()
         }
     });
-    frame.render_widget(
-        Paragraph::new(vec![Line::from(keys), Line::from(status)]).style(theme::footer()),
-        area,
-    );
+    let lines = keys
+        .lines()
+        .map(Line::from)
+        .chain([Line::from(status)])
+        .collect::<Vec<_>>();
+    frame.render_widget(Paragraph::new(lines).style(theme::footer()), area);
 }
 
 fn task_details(task: &TaskEntry) -> Vec<Line<'static>> {
