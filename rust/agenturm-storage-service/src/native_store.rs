@@ -16,9 +16,9 @@ use agenturm_kernel::{
 use agenturm_kernel::{ReadIncarnation, ReadSnapshot};
 use agenturm_storage_service_contract::{ContractError, ServerPolicy, native};
 use agenturm_store::{
-    AutomaticRetentionPolicy, AutomaticRetentionStatus, EvalImportReport, EvalOutcome,
-    ObservationBatch, ResolvedTraceReview, RetainedEvalOutcome, RetentionOutcome, SessionPage,
-    SessionQuery, Store, TelemetryBinding, TelemetryPayload, TelemetryPayloadRecord,
+    AutomaticRetentionPolicy, AutomaticRetentionStatus, EvalImportReport, EvalOutcome, EvalPage,
+    EvalQuery, ObservationBatch, ResolvedTraceReview, RetainedEvalOutcome, RetentionOutcome,
+    SessionPage, SessionQuery, Store, TelemetryBinding, TelemetryPayload, TelemetryPayloadRecord,
     TelemetryPayloadSelection, TraceReviewQuery, WorkspaceAnchor, WorkspaceHistory,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
@@ -67,6 +67,11 @@ pub(crate) enum NativeOperation {
     ImportEvalOutcomes {
         source_id: ExtensionId,
         outcomes: Vec<EvalOutcome>,
+    },
+    EvalPage {
+        source_id: ExtensionId,
+        query: EvalQuery,
+        expected_history_identity: Option<String>,
     },
     EvalOutcome {
         source_id: ExtensionId,
@@ -166,6 +171,7 @@ pub(crate) enum NativeReply {
     TraceReview(Result<Option<ResolvedTraceReview>, ReadFailure>),
     EvalImported(Result<EvalImportReport, ReadFailure>),
     EvalOutcome(Result<Option<RetainedEvalOutcome>, ReadFailure>),
+    EvalPage(Result<EvalPage, ReadFailure>),
     Identity(Result<String, ReadFailure>),
     ReadBinding(Result<String, ReadFailure>),
     ReaderHistory(Result<ReaderHistoryReply, ReadFailure>),
@@ -374,6 +380,21 @@ pub(crate) fn dispatch(
                     Err(ReadFailure::Unauthorized)
                 },
             );
+        }
+        NativeOperation::EvalPage {
+            source_id,
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::EvalPage(if allowed.contains(&source_id) {
+                authorize_read(store, role, expected_history_identity.as_deref()).and_then(|()| {
+                    store
+                        .query_eval_outcomes(&source_id, &query)
+                        .map_err(native_read::failure)
+                })
+            } else {
+                Err(ReadFailure::Unauthorized)
+            });
         }
         NativeOperation::EvalOutcome {
             source_id,
@@ -693,6 +714,19 @@ impl NativeStore {
                 outcomes: outcomes.to_vec(),
             },
         )?
+        .map_err(NativeClientError::Read)
+    }
+
+    pub fn query_eval_outcomes(
+        &self,
+        source_id: &ExtensionId,
+        query: &EvalQuery,
+    ) -> Result<EvalPage, NativeClientError> {
+        self.exchange::<Result<EvalPage, ReadFailure>>(NativeOperation::EvalPage {
+            source_id: source_id.clone(),
+            query: query.clone(),
+            expected_history_identity: self.read_binding.clone(),
+        })?
         .map_err(NativeClientError::Read)
     }
 
@@ -1343,6 +1377,25 @@ mod tests {
             (Role::Reader, &sibling_source),
             (Role::GrantAdministrator, &allowed_source),
         ] {
+            assert!(matches!(
+                dispatch(
+                    &mut store,
+                    &allowed,
+                    role,
+                    NativeOperation::EvalPage {
+                        source_id: source.clone(),
+                        query: EvalQuery::Latest {
+                            after_trace_id: None,
+                            limit: 1
+                        },
+                        expected_history_identity: None,
+                    },
+                    None,
+                    None
+                ),
+                NativeReply::EvalPage(Err(ReadFailure::Unauthorized))
+            ));
+
             assert!(matches!(
                 dispatch(&mut store, &allowed, role, read(source), None, None),
                 NativeReply::EvalOutcome(Err(ReadFailure::Unauthorized))

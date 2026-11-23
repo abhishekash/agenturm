@@ -33,7 +33,8 @@ pub use content_grant::{
     UserTextEvidence,
 };
 pub use eval_outcome::{
-    EvalImportReport, EvalOutcome, EvalScore, MAX_EVAL_OUTCOMES, RetainedEvalOutcome,
+    EvalImportReport, EvalOutcome, EvalPage, EvalQuery, EvalScore, MAX_EVAL_OUTCOMES,
+    RetainedEvalOutcome,
 };
 pub use linked_trace::{ResolvedTraceReview, ResolvedTraceTurn, TraceReviewQuery, TraceTurnQuery};
 pub use private_text::bounded_text_preview;

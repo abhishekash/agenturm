@@ -125,6 +125,39 @@ fn evaluation_import_reopens_exact_retained_trace_and_preserves_execution_status
     assert!(checked(import(SIBLING, vec![original.clone()])).contains("Imported 1"));
     assert_eq!(eval(&db, SIBLING)["revision"], 1);
 
+    let browse = |flags: &[&str]| {
+        let mut args = vec!["evals", "--source-id", PRIMARY, "--json"];
+        args.extend_from_slice(flags);
+        serde_json::from_str::<Value>(&checked(run(&db, &args))).unwrap()
+    };
+    let history = browse(&["--trace-id", TRACE, "--history", "--limit", "1"]);
+    assert_eq!(history["page"]["outcomes"][0]["revision"], 2);
+    assert_eq!(history["page"]["next_before_revision"], 2);
+    let older = browse(&["--trace-id", TRACE, "--history", "--before-revision", "2"]);
+    assert_eq!(older["page"]["outcomes"][0]["revision"], 1);
+    assert_eq!(older["page"]["outcomes"][0]["outcome"]["passed"], false);
+    assert!(older["page"]["next_before_revision"].is_null());
+    import_traces(PRIMARY, vec![span(SIBLING_ONLY, "2222222222222222", 400)]);
+    assert!(
+        checked(import(
+            PRIMARY,
+            vec![json!({"trace_id": SIBLING_ONLY, "passed":false})]
+        ))
+        .contains("Imported 1")
+    );
+    let summary = browse(&["--summary", "--limit", "1"]);
+    assert_eq!(summary["passed"], 1);
+    assert_eq!(summary["failed"], 0);
+    assert_eq!(summary["page"]["next_trace_id"], TRACE);
+    let next = browse(&["--summary", "--after-trace-id", TRACE]);
+    assert_eq!(next["page"]["outcomes"].as_array().unwrap().len(), 1);
+    assert_eq!(
+        next["page"]["outcomes"][0]["outcome"]["trace_id"],
+        SIBLING_ONLY
+    );
+    assert_eq!(next["failed"], 1);
+    assert!(next["page"]["next_trace_id"].is_null());
+
     let backup = scratch.0.join("backup.sqlite");
     checked(run(&db, &["backup", "--output", path(&backup)]));
     assert_eq!(eval(&backup, PRIMARY), corrected);
@@ -164,6 +197,12 @@ fn evaluation_import_reopens_exact_retained_trace_and_preserves_execution_status
     assert_eq!(latest["outcome"]["scores"][0]["score"], 0.75);
     assert!(checked(import(PRIMARY, vec![original])).contains("Replayed 1"));
     assert_eq!(eval(&db, PRIMARY), latest);
+    let after_expiry = browse(&["--trace-id", TRACE, "--history"]);
+    assert_eq!(
+        after_expiry["page"]["outcomes"].as_array().unwrap().len(),
+        1
+    );
+    assert_eq!(after_expiry["page"]["outcomes"][0]["revision"], 3);
 }
 
 #[test]

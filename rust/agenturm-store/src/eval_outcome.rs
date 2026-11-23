@@ -45,6 +45,29 @@ pub struct RetainedEvalOutcome {
     pub outcome: EvalOutcome,
 }
 
+/// Bounded current-state metadata browsing. Each call reads one SQLite snapshot.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "view", rename_all = "snake_case", deny_unknown_fields)]
+pub enum EvalQuery {
+    Latest {
+        after_trace_id: Option<String>,
+        limit: usize,
+    },
+    History {
+        trace_id: String,
+        before_revision: Option<u64>,
+        limit: usize,
+    },
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvalPage {
+    pub outcomes: Vec<RetainedEvalOutcome>,
+    pub next_trace_id: Option<String>,
+    pub next_before_revision: Option<u64>,
+}
+
 impl EvalOutcome {
     pub fn validate(&self) -> Result<()> {
         if !valid_trace_id(&self.trace_id)
@@ -129,6 +152,90 @@ impl Store {
         }
         transaction.commit()?;
         Ok(report)
+    }
+
+    pub fn query_eval_outcomes(&self, source: &ExtensionId, query: &EvalQuery) -> Result<EvalPage> {
+        let (trace, before, after, limit) = match query {
+            EvalQuery::Latest {
+                after_trace_id,
+                limit,
+            } => (None, None, after_trace_id.as_deref(), *limit),
+            EvalQuery::History {
+                trace_id,
+                before_revision,
+                limit,
+            } => (Some(trace_id.as_str()), *before_revision, None, *limit),
+        };
+        if !source.as_str().starts_with("otlp.")
+            || !(1..=256).contains(&limit)
+            || trace.is_some_and(|id| !valid_trace_id(id))
+            || after.is_some_and(|id| !valid_trace_id(id))
+            || before.is_some_and(|revision| revision == 0 || revision > i64::MAX as u64)
+        {
+            return Err(StoreError::Invalid("invalid evaluation page selection"));
+        }
+        let transaction = self.connection.unchecked_transaction()?;
+        let mut page = EvalPage {
+            outcomes: Vec::new(),
+            next_trace_id: None,
+            next_before_revision: None,
+        };
+        let schema: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        if schema < 15 {
+            return Ok(page);
+        }
+        let mut statement = transaction.prepare(
+            "SELECT e.trace_id,e.revision,e.outcome_json FROM agenturm_eval_outcomes e
+             WHERE e.trace_source_id=?1 AND e.outcome_json IS NOT NULL
+               AND (?2 IS NULL OR e.trace_id=?2)
+               AND (?3 IS NULL OR e.revision<?3)
+               AND (?4 IS NULL OR e.trace_id>?4)
+               AND (?2 IS NOT NULL OR e.revision=(SELECT MAX(newest.revision)
+                    FROM agenturm_eval_outcomes newest
+                    WHERE newest.trace_source_id=e.trace_source_id AND newest.trace_id=e.trace_id))
+               AND EXISTS(SELECT 1 FROM agenturm_observations o
+                    WHERE o.source_id=e.trace_source_id AND o.scope='session'
+                    AND json_extract(o.kind_json,'$.kind')='trace_span'
+                    AND json_extract(o.kind_json,'$.trace_id')=e.trace_id)
+             ORDER BY e.trace_id ASC,e.revision DESC LIMIT ?5",
+        )?;
+        let rows = statement.query_map(
+            params![source.as_str(), trace, before, after, limit + 1],
+            |row| {
+                Ok((
+                    row.get::<_, String>(0)?,
+                    row.get::<_, u64>(1)?,
+                    row.get::<_, String>(2)?,
+                ))
+            },
+        )?;
+        for row in rows {
+            let (trace_id, revision, content) = row?;
+            if page.outcomes.len() == limit {
+                if let Some(last) = page.outcomes.last() {
+                    if trace.is_some() {
+                        page.next_before_revision = Some(last.revision);
+                    } else {
+                        page.next_trace_id = Some(last.outcome.trace_id.clone());
+                    }
+                }
+                break;
+            }
+            let outcome: EvalOutcome = serde_json::from_str(&content)
+                .map_err(|_| StoreError::Invalid("stored evaluation metadata is invalid"))?;
+            outcome.validate()?;
+            if outcome.trace_id != trace_id {
+                return Err(StoreError::Invalid(
+                    "stored evaluation trace identity differs",
+                ));
+            }
+            page.outcomes.push(RetainedEvalOutcome {
+                trace_source_id: source.clone(),
+                revision,
+                outcome,
+            });
+        }
+        Ok(page)
     }
 
     /// Read the latest retained evaluation and its trace membership from one

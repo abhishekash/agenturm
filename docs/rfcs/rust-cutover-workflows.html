@@ -38,7 +38,7 @@ migration of Python-era databases remains outside the Rust-only product scope.</
 </tr>
 <tr>
 <td><code>import-evals</code></td>
-<td>Import bounded <code>agent-evals</code> result metadata into an exact retained OTLP trace source. Use <code>evals</code> to read the current outcome in text or JSON. Aggregate views, historical revision queries, and private result detail remain open.</td>
+<td>Import bounded <code>agent-evals</code> result metadata into an exact retained OTLP trace source. Use <code>evals</code> to read the current outcome in text or JSON. <code>evals --history</code> pages retained revisions and <code>evals --summary</code> reports current source outcomes with page counts. Private result detail and richer aggregation remain open.</td>
 </tr>
 <tr>
 <td><code>migrate-db</code></td>
@@ -127,8 +127,16 @@ SQLite backups preserve outcomes and replay receipts. Pruning removes
 outcome metadata when the trace loses its last retained span in that source.
 Retained digests and revision numbers prevent an old import from reviving
 the outcome if a new span arrives under the same trace ID.
-Aggregate evaluation views, revision browsing, and private result detail
-remain outside this implementation.</p>
+Read retained revisions with <code>evals --trace-id &lt;id&gt; --history</code>. Use
+<code>--limit 1..256</code> and the returned <code>--before-revision</code> cursor to continue.
+<code>evals --summary</code> lists the latest outcome per retained trace in the selected
+source and counts passes and failures on that page. Its <code>--after-trace-id</code>
+cursor continues in trace-ID order. JSON includes the page and continuation
+fields. These views read current state on each invocation; concurrent changes
+can change a later page. Counts describe the displayed page, not a whole-history
+total. Pruned bodies stay absent from both views even if a trace ID reappears.
+The same options work through the broker and keep its source allowlist.
+Private result detail and cross-source/provider/scorer aggregation remain open.</p>
 <h3>Task Git patches</h3>
 <p>Save a patch from the Linux checkout attached to a task. The optional revision
 checks which version of the task receives the capture. The command reports
