@@ -355,7 +355,14 @@ Agenturm CLI can query or inspect the database after uninstall.</p>
 release tag. The Linux CI workflow accepts Rust tags in the form
 <code>rust-v&lt;version&gt;</code>. The version comes from <code>rust/agenturm-app/Cargo.toml</code>.
 The workflow verifies the tag matches the version in the archive and retains
-the qualified archive and checksum as workflow artifacts. Python releases use
+the qualified archive and checksum as workflow artifacts. The arm64 job runs
+on native Ubuntu 24.04 arm64 and checks install, restart, upgrade from Rust
+0.2.0, backup and uninstall through a systemd user service. On Rust tags,
+a separate job attaches that exact arm64 archive and checksum only after
+both architectures pass. Existing release assets are never overwritten. If
+the release does not exist yet, that job creates a draft for the release owner.
+A candidate workflow run alone does not advertise a published arm64 asset.
+Python releases use
 the separate <code>v&lt;version&gt;</code> tag family.</p>
 <pre><code class="language-sh">scripts/verify-rust-linux-bundle.sh &quot;./dist/$archive&quot;
 </code></pre>
