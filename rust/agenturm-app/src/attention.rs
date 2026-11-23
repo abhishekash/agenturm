@@ -265,6 +265,7 @@ pub(super) fn execute_broker(
     use crate::HistoryReader;
     let ledger = store.workspace_ledger(workspace)?;
     match options {
+        AttentionOptions::Native(_) => Err("Native delivery uses explicit receiver bindings. Use attention native without the broker prefix.".into()),
         AttentionOptions::Status { .. } => {
             emit(&mut output, "snapshot", &snapshot_from(store, &ledger)?)
                 .map_err(|error| format!("write attention snapshot failed: {error}"))

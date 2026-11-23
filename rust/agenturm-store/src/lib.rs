@@ -19,11 +19,11 @@ mod eval_inventory;
 mod eval_outcome;
 mod linked_trace;
 pub mod metric_history;
+pub mod native_attention;
 #[cfg(target_os = "linux")]
 mod native_codex_metadata;
 #[cfg(target_os = "linux")]
 pub mod native_outbox;
-pub mod native_attention;
 mod private_text;
 mod retention;
 mod review_ledger;
@@ -591,7 +591,15 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         usage_history::validate_index(connection)?;
     }
     if version >= 19 {
-        expected.extend([("table".into(), "agenturm_native_attention_senders".into()), ("table".into(), "agenturm_native_attention_events".into()), ("index".into(), "agenturm_native_attention_by_request".into()), ("index".into(), "agenturm_native_attention_by_target".into())]);
+        expected.extend([
+            ("table".into(), "agenturm_native_attention_senders".into()),
+            ("table".into(), "agenturm_native_attention_events".into()),
+            (
+                "index".into(),
+                "agenturm_native_attention_by_request".into(),
+            ),
+            ("index".into(), "agenturm_native_attention_by_target".into()),
+        ]);
         native_attention::validate_schema(connection)?;
     }
     expected.sort();
@@ -1395,9 +1403,13 @@ impl Store {
             validate_marked_shape(&connection, 18)?;
         }
         if (2..19).contains(&schema_version) {
-            let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             native_attention::create_schema(&transaction)?;
-            transaction.execute("UPDATE agenturm_store_meta SET value=?1 WHERE key='format'", [STORE_MARKER])?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER],
+            )?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             transaction.commit()?;
             validate_marked_shape(&connection, SCHEMA_VERSION)?;

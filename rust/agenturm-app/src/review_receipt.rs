@@ -69,18 +69,43 @@ pub(super) fn render(
         "trace_id": scope.trace_id,
         "worker_id": scope.worker_id,
     });
-    if scope.turn_id.is_none() { page["scope"].as_object_mut().unwrap().remove("turn_id"); }
-    if scope.trace_id.is_none() { page["scope"].as_object_mut().unwrap().remove("trace_id"); }
-    page["scope"]["worker_scope"] = json!(if scope.worker_id.is_some() { "exact" } else if scope.trace_id.is_some() && scope.turn_id.is_none() { "all_recorded" } else { "workerless" });
+    if scope.turn_id.is_none() {
+        page["scope"].as_object_mut().unwrap().remove("turn_id");
+    }
+    if scope.trace_id.is_none() {
+        page["scope"].as_object_mut().unwrap().remove("trace_id");
+    }
+    page["scope"]["worker_scope"] = json!(if scope.worker_id.is_some() {
+        "exact"
+    } else if scope.trace_id.is_some() && scope.turn_id.is_none() {
+        "all_recorded"
+    } else {
+        "workerless"
+    });
     if output.format == Some(ReviewFormat::Json) && output.directory.is_none() {
         return encode(&page);
     }
-    let worker = scope.worker_id.map_or_else(|| {
-        if scope.trace_id.is_some() && scope.turn_id.is_none() { "All recorded workers".into() } else { "Workerless".into() }
-    }, |id| json!(id).to_string());
-    let mut scope_summary = format!("Source   {}\nSession  {}", json!(scope.harness_id), json!(scope.session_id));
-    if let Some(turn) = scope.turn_id { scope_summary.push_str(&format!("\nTurn     {}", json!(turn))); }
-    if let Some(trace) = scope.trace_id { scope_summary.push_str(&format!("\nTrace    {}", json!(trace))); }
+    let worker = scope.worker_id.map_or_else(
+        || {
+            if scope.trace_id.is_some() && scope.turn_id.is_none() {
+                "All recorded workers".into()
+            } else {
+                "Workerless".into()
+            }
+        },
+        |id| json!(id).to_string(),
+    );
+    let mut scope_summary = format!(
+        "Source   {}\nSession  {}",
+        json!(scope.harness_id),
+        json!(scope.session_id)
+    );
+    if let Some(turn) = scope.turn_id {
+        scope_summary.push_str(&format!("\nTurn     {}", json!(turn)));
+    }
+    if let Some(trace) = scope.trace_id {
+        scope_summary.push_str(&format!("\nTrace    {}", json!(trace)));
+    }
     scope_summary.push_str(&format!("\nWorker   {worker}\nSnapshot {snapshot_id}"));
     let mut sections = vec![("Scope", scope_summary)];
     if !page["next_before"].is_null() {

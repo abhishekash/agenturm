@@ -1396,8 +1396,10 @@ fn contains_event_in(
 ) -> Result<bool> {
     validate_request_key(anchor, event_id)?;
     if crate::native_attention::is_attention_event_id(event_id) {
-        return crate::native_attention::contains_event_in(connection, anchor, event_id, revision, None)
-            .map_err(WorkspaceError::History);
+        return crate::native_attention::contains_event_in(
+            connection, anchor, event_id, revision, None,
+        )
+        .map_err(WorkspaceError::History);
     }
 
     Ok(connection.query_row(

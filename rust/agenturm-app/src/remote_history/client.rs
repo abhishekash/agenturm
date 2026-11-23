@@ -414,7 +414,10 @@ impl HistoryReader for RemoteStore {
         }
     }
 
-    fn query_native_attention(&self, query: &agenturm_store::native_attention::NativeAttentionQuery) -> Result<agenturm_store::native_attention::NativeAttentionPage, String> {
+    fn query_native_attention(
+        &self,
+        query: &agenturm_store::native_attention::NativeAttentionQuery,
+    ) -> Result<agenturm_store::native_attention::NativeAttentionPage, String> {
         RemoteStore::query_native_attention(self, query)
     }
     fn query_standalone_trace(

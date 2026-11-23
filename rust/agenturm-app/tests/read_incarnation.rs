@@ -114,7 +114,7 @@ fn page(db: &Path) -> Value {
         "--harness-id",
         SOURCE,
         "--limit",
-        "1",
+        "2",
     ])))
     .unwrap()
 }
@@ -127,7 +127,7 @@ fn older(db: &Path, cursor: &Value) -> Output {
         "--harness-id",
         SOURCE,
         "--limit",
-        "1",
+        "2",
         "--snapshot-id",
         cursor["snapshot_id"].as_str().unwrap(),
         "--before-timestamp-ns",

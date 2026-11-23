@@ -280,7 +280,7 @@ def main():
             assert error[0] == 503 and INPUT not in str(error)
             metadata = run(reader, *command("query", "--harness-id", SOURCE)).stdout
             observations = json.loads(metadata)["observations"]
-            assert len(observations) == 2, observations
+            assert len(observations) == 3, observations
             cost, = (row["observation"] for row in observations
                      if row["observation"]["kind"] == "reported_cost")
             assert cost["currency"] == "USD"
@@ -305,7 +305,7 @@ def main():
             status, page = post(address, parameters, viewer_token, path)
             assert status == 200
             assert {row["kind"]["kind"] for row in page["result"]["Ok"]["value"]["observations"]} == {
-                "trace_span", "reported_cost",
+                "trace_span", "reported_cost", "trace_span_summary",
             }
             assert all(text not in json.dumps(page) for text in [INPUT, OUTPUT, UNRELATED])
             parameters["request"] = {"op": "reveal_telemetry"}

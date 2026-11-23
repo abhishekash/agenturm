@@ -135,7 +135,7 @@ def run_packaged(binaries):
                 assert page()["observations"] == []
 
                 receipt = cli(collector, "import-traces", "--file", source_file, "--source-id", SOURCE)
-                assert "Imported 3072 observations" in receipt, receipt
+                assert "Imported 4096 observations" in receipt, receipt
                 first = observed = page()
                 snapshot = first["next_before"]["snapshot_id"]
                 seen = {}
@@ -168,13 +168,15 @@ def run_packaged(binaries):
                         "--before-revision", str(position["revision"]),
                     )
                 assert Counter(kind for kind, _ in seen) == {
-                    "trace_span": 1024, "span_token_usage": 1024, "reported_cost": 1024,
+                    "trace_span": 1024, "span_token_usage": 1024, "reported_cost": 1024, "trace_span_summary": 1024,
                 }
                 for (_, span), fact in seen.items():
                     if fact["kind"] == "trace_span":
                         assert fact["target_source_id"] == TARGET
                     elif fact["kind"] == "reported_cost":
                         assert (fact["currency"], fact["nanounits"]) == ("USD", "0")
+                    elif fact["kind"] == "trace_span_summary":
+                        assert fact["agent_run"] is False and fact["reported_error"] is False
                     else:
                         assert fact["target_source_id"] == TARGET
                         assert fact["input_tokens"] == 0

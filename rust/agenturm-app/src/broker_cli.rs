@@ -264,6 +264,7 @@ pub(super) fn parse_os(args: &[OsString]) -> Result<BrokerOptions, String> {
                 | "inspect"
                 | "cockpit"
                 | "task"
+                | "attention"
                 | "import-traces"
                 | "import-jsonl"
                 | "import-evals"
@@ -662,8 +663,10 @@ pub fn execute(options: &BrokerOptions) -> Result<ExitCode, BrokerExecutionError
             output,
         } => {
             let store = if selection.linked_traces
-                || matches!(selection.anchor, ReviewAnchor::Trace { .. })
-            {
+                || matches!(
+                    selection.anchor,
+                    ReviewAnchor::Trace { .. } | ReviewAnchor::StandaloneTrace { .. }
+                ) {
                 let identity = store
                     .history_identity()
                     .map_err(|error| error.to_string())?;
@@ -674,6 +677,15 @@ pub fn execute(options: &BrokerOptions) -> Result<ExitCode, BrokerExecutionError
                 store
             };
             println!("{}", review_from_store(&store, query, selection, output)?);
+        }
+        Command::Attention(options) => {
+            let (store, workspace) = open_workspace(&config, &store)?;
+            super::attention::execute_broker(
+                options,
+                &store,
+                &workspace,
+                std::io::stdout().lock(),
+            )?;
         }
         Command::Task(options) => {
             let (store, workspace) = open_workspace(&config, &store)?;
