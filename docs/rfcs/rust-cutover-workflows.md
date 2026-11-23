@@ -18,7 +18,7 @@ migration of Python-era databases remains outside the Rust-only product scope.
 | `serve` | Keep local OTLP collection and source watch through `serve-traces`, `discover --follow` and `collect --watch` or the Linux user service. `broker serve-history` serves the native broker's retained metadata on loopback through a dedicated reader. The Python `/api/*` wire surface, direct remote TLS and arbitrary legacy JSONL tail remain open. |
 | `run` | Keep command launch, exit status, local trace delivery and exact source/session linkage. Rust `run` configures OTLP for an instrumented producer. Python-specific script and module injection requires a product decision. |
 | `import-jsonl` | Use `import-jsonl` for supported native span exports and `import-traces` for OTLP JSON. Both retain structural trace metadata with exact session scope. Legacy payload and cost import parity remains open. |
-| `import-evals` | Import bounded `agent-evals` result metadata into an exact retained OTLP trace source. Use `evals` to read the current outcome in text or JSON. `evals --history` pages retained revisions and `evals --summary` reports current source outcomes with page counts. Private result detail and richer aggregation remain open. |
+| `import-evals` | Import bounded `agent-evals` result metadata into an exact retained OTLP trace source. Use `evals` to read the current outcome in text or JSON. `evals --history` pages retained revisions and `evals --summary` reports current source outcomes with page counts. In the cockpit, `E` opens evaluations from Traces. Private result detail and richer aggregation remain open. |
 | `migrate-db` | Retired by the Rust-only product decision. Rust `backup` and `restore` operate on Rust-owned state. |
 | `prune` | Keep explicit age-based retention. Rust `prune --before-unix-ns` and persisted `retention set\|disable\|run\|status` are available. New default cockpit histories use 14 days; existing histories retain their policy. Collector, cockpit, local receiver and broker writer ticks apply it, while receipts and checkpoints survive cleanup. Broker policy changes require maintenance authority. |
 | `attention status`, `attention watch` | Rust reads local history or an attached Rust receiver and keeps seen state in the user's workspace. Remote watch emits a snapshot and changes from retained native lifecycle evidence. Python receiver observation and cross-host terminal routing remain open. |
@@ -146,6 +146,22 @@ can change a later page. Counts describe the displayed page, not a whole-history
 total. Pruned bodies stay absent from both views even if a trace ID reappears.
 The same options work through the broker and keep its source allowlist.
 Private result detail and cross-source/provider/scorer aggregation remain open.
+
+In the cockpit, press `E` from global or session Traces to choose a trace on
+the loaded page. The picker preserves its selection by exact OTLP source and
+trace ID, including when two sources report the same trace ID. Enter opens
+the retained revisions and marks the current one. The detail shows the
+execution status counts for the loaded spans alongside the separate evaluation
+verdict. Page Up and Page Down scroll task, model and scorer metadata. Missing
+score values appear as unknown.
+
+Press `s` for the source's current outcomes, or `]` to continue when another
+page is available. Escape returns to the revision, trace selection and Traces
+views in order. The loaded trace snapshot establishes its identity. Each
+evaluation request reads current retained metadata from that history and
+fails when the selected snapshot has expired or the receiver has restored a
+different branch. This metadata view also works through the broker and the
+authenticated HTTP reader for allowed OTLP sources.
 
 ### Task Git patches
 

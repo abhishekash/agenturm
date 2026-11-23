@@ -18,8 +18,9 @@ use agenturm_storage_service_contract::{ContractError, ServerPolicy, native};
 use agenturm_store::{
     AutomaticRetentionPolicy, AutomaticRetentionStatus, EvalImportReport, EvalOutcome, EvalPage,
     EvalQuery, ObservationBatch, ResolvedTraceReview, RetainedEvalOutcome, RetentionOutcome,
-    SessionPage, SessionQuery, Store, TelemetryBinding, TelemetryPayload, TelemetryPayloadRecord,
-    TelemetryPayloadSelection, TraceReviewQuery, WorkspaceAnchor, WorkspaceHistory,
+    SelectedEvalPage, SelectedEvalQuery, SessionPage, SessionQuery, Store, TelemetryBinding,
+    TelemetryPayload, TelemetryPayloadRecord, TelemetryPayloadSelection, TraceReviewQuery,
+    WorkspaceAnchor, WorkspaceHistory,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeSet;
@@ -76,6 +77,11 @@ pub(crate) enum NativeOperation {
         source_id: ExtensionId,
         query: EvalQuery,
         expected_history_identity: Option<String>,
+    },
+    SelectedEvalPage {
+        source_id: ExtensionId,
+        query: SelectedEvalQuery,
+        expected_history_identity: String,
     },
     EvalOutcome {
         source_id: ExtensionId,
@@ -176,6 +182,7 @@ pub(crate) enum NativeReply {
     EvalImported(Result<EvalImportReport, ReadFailure>),
     EvalOutcome(Result<Option<RetainedEvalOutcome>, ReadFailure>),
     EvalPage(Result<EvalPage, ReadFailure>),
+    SelectedEvalPage(Result<Option<SelectedEvalPage>, ReadFailure>),
     Identity(Result<String, ReadFailure>),
     ReadBinding(Result<String, ReadFailure>),
     ReaderHistory(Result<ReaderHistoryReply, ReadFailure>),
@@ -408,6 +415,17 @@ pub(crate) fn dispatch(
             } else {
                 Err(ReadFailure::Unauthorized)
             });
+        }
+        NativeOperation::SelectedEvalPage {
+            source_id,
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::SelectedEvalPage(
+                authorize_read(store, role, Some(&expected_history_identity)).and_then(|()| {
+                    native_read::query_selected_evals(store, allowed, &source_id, &query)
+                }),
+            );
         }
         NativeOperation::EvalOutcome {
             source_id,
@@ -740,6 +758,25 @@ impl NativeStore {
             query: query.clone(),
             expected_history_identity: self.read_binding.clone(),
         })?
+        .map_err(NativeClientError::Read)
+    }
+
+    pub fn query_selected_eval_outcomes(
+        &self,
+        source_id: &ExtensionId,
+        query: &SelectedEvalQuery,
+    ) -> Result<Option<SelectedEvalPage>, NativeClientError> {
+        let expected_history_identity = self
+            .read_binding
+            .clone()
+            .ok_or(NativeClientError::InvalidHistoryIdentity)?;
+        self.exchange::<Result<Option<SelectedEvalPage>, ReadFailure>>(
+            NativeOperation::SelectedEvalPage {
+                source_id: source_id.clone(),
+                query: query.clone(),
+                expected_history_identity,
+            },
+        )?
         .map_err(NativeClientError::Read)
     }
 

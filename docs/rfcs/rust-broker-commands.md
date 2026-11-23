@@ -198,11 +198,20 @@ Restart the gateway and reconnect after offline history restoration.
 The version 1 read API accepts one bearer-authenticated JSON `POST` to
 `/v1/history/read` per connection. First send `{"version":1,"request":{"op":"identity"}}`.
 Use the returned `history_identity` in subsequent requests and the returned
-snapshot ID when traversing a page. Session, observation, exact trace Review
-and workspace anchor checks follow the broker's source and history rules.
+snapshot ID when traversing a page. Session, observation, exact trace Review,
+trace-selected evaluation metadata and workspace anchor checks follow the
+broker's source and history rules. An evaluation request uses the selected
+trace's snapshot to verify membership, then returns current retained outcome
+metadata for the requested OTLP source.
 Headers are limited to 8 KiB, request bodies to 16 KiB and replies to 4 MiB.
 The gateway applies five-second HTTP input and output budgets and disables
 response caching.
+
+From Traces in either cockpit, press `E` to choose a loaded trace, then Enter
+for its evaluation revisions. `s` shows current outcomes for the same source
+with counts for the displayed page. Escape returns to the previous view with
+the selected revision or trace intact. The disposable Linux fixture is
+`python3 scripts/validate_rust_eval_cockpit.py --bin-dir /opt/agenturm/bin`.
 
 Protected content, broker administration and observation admission use
 their own native broker commands. Receiver host inspection and native

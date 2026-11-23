@@ -78,6 +78,7 @@ pub(super) fn execute(
     command: WorkCommand,
 ) -> Result<WorkResult, String> {
     match command {
+        WorkCommand::Evaluations(request) => crate::eval_import::workspace_evals(store, *request),
         WorkCommand::HostHistory(before) => store
             .query_host_history(&ObservationQuery {
                 snapshot_id: before.as_ref().map(|position| position.snapshot_id),

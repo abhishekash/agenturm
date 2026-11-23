@@ -1956,6 +1956,11 @@ fn load_session_catalog(
 }
 
 trait HistoryReader: ObservationStore {
+    fn query_selected_evals(
+        &self,
+        source: &ExtensionId,
+        query: &agenturm_store::SelectedEvalQuery,
+    ) -> Result<Option<agenturm_store::SelectedEvalPage>, String>;
     fn allows_private_telemetry(&self) -> bool {
         cfg!(target_os = "linux")
     }
@@ -1991,6 +1996,14 @@ trait HistoryReader: ObservationStore {
 }
 
 impl HistoryReader for Store {
+    fn query_selected_evals(
+        &self,
+        source: &ExtensionId,
+        query: &agenturm_store::SelectedEvalQuery,
+    ) -> Result<Option<agenturm_store::SelectedEvalPage>, String> {
+        self.query_selected_eval_outcomes(source, query)
+            .map_err(|error| error.to_string())
+    }
     fn query_host_history(
         &self,
         query: &ObservationQuery,
@@ -2031,6 +2044,14 @@ impl HistoryReader for Store {
 
 #[cfg(target_os = "linux")]
 impl HistoryReader for agenturm_storage_service::NativeStore {
+    fn query_selected_evals(
+        &self,
+        source: &ExtensionId,
+        query: &agenturm_store::SelectedEvalQuery,
+    ) -> Result<Option<agenturm_store::SelectedEvalPage>, String> {
+        self.query_selected_eval_outcomes(source, query)
+            .map_err(|error| error.to_string())
+    }
     fn local_host_data(&self) -> bool {
         false
     }
@@ -3488,7 +3509,7 @@ pub fn render(command: Command) -> String {
             "       agenturm import-traces --file <otlp-json-path|-> --db <path> --source-id otlp.<id>\n",
             "       agenturm import-jsonl --file <span-jsonl-path|-> --db <path> --source-id otlp.<id> [--session-id <id>]\n",
             "       agenturm import-evals --file <results.json|-> --db <path> --source-id otlp.<id>\n",
-            "       agenturm evals --db <path> --source-id otlp.<id> --trace-id <id> [--json]\n",
+            "       agenturm evals --db <path> --source-id otlp.<id> [--trace-id <id> [--history [--before-revision <n>]] | --summary [--after-trace-id <id>]] [--limit <1..256>] [--json]\n",
             "       agenturm attention status --db <path>\n",
             "       agenturm attention watch --db <path> [--once | --max-polls <1..10000>] [--interval-ms <100..60000>]\n",
             "       agenturm attention <status|watch> --endpoint http://<loopback-IP:port> --token-file <path> [watch options]\n",

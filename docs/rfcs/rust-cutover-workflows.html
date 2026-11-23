@@ -38,7 +38,7 @@ migration of Python-era databases remains outside the Rust-only product scope.</
 </tr>
 <tr>
 <td><code>import-evals</code></td>
-<td>Import bounded <code>agent-evals</code> result metadata into an exact retained OTLP trace source. Use <code>evals</code> to read the current outcome in text or JSON. <code>evals --history</code> pages retained revisions and <code>evals --summary</code> reports current source outcomes with page counts. Private result detail and richer aggregation remain open.</td>
+<td>Import bounded <code>agent-evals</code> result metadata into an exact retained OTLP trace source. Use <code>evals</code> to read the current outcome in text or JSON. <code>evals --history</code> pages retained revisions and <code>evals --summary</code> reports current source outcomes with page counts. In the cockpit, <code>E</code> opens evaluations from Traces. Private result detail and richer aggregation remain open.</td>
 </tr>
 <tr>
 <td><code>migrate-db</code></td>
@@ -96,9 +96,21 @@ window. The cockpit exits in the new window.</p>
 <p>A span needs an exact session ID from its <code>attributes</code> or the explicit <code>--session-id</code> argument. Span-level session aliases must agree, including <code>session.id</code>, <code>gen_ai.conversation.id</code>, and the legacy session, conversation and thread aliases. The argument fills missing session IDs and must match any IDs carried by the file. A native turn link requires <code>agenturm.source.id</code> and <code>agenturm.turn.id</code>. A worker link adds <code>agenturm.worker.id</code>.</p>
 <p>Imports retain trace structure, timing, status, exact scope, and explicitly reported cost and token usage. Import discards span names, payloads, events, links, and eval results. Those legacy fields and workflows have separate cutover coverage. Exact structural replays deduplicate across JSONL and OTLP JSON under the same source ID. Conflicting retained identities reject the entire import.</p>
 <h3>Reported token usage</h3>
-<p>OTLP JSON, OTLP protobuf and native JSONL retain explicit input, output, total, cache-read input, cache-write input, and reasoning-output token counts. The projector accepts supported <code>gen_ai.usage.*</code>, <code>llm.usage.*</code> and OpenInference <code>llm.token_count.*</code> fields, including the legacy explicit cache and reasoning aliases. The Python and Node producers forward the supported scalar counters.</p>
-<p>Each counter accepts a nonnegative integer through the signed 64-bit limit. Zero is a reported value. Missing or invalid values and conflicting aliases leave that counter absent. Each breakdown keeps its originally reported units. The projector preserves the producer's input and output counts and records total only when supplied. A batch can contain up to 1,024 spans with cost and token usage evidence recorded beside each span in the same commit.</p>
-<p>Workspace Usage and the originating OTLP session's Usage show the individual reports. <code>query</code> includes the source, exact session, trace and span, and any reported turn, worker and target harness. Aggregate usage views remain open for traces where multiple instrumentation layers report the same usage.</p>
+<p>OTLP JSON, OTLP protobuf and native JSONL retain explicit input, output, total,
+cache-read input, cache-write input, and reasoning-output token counts. The
+projector accepts supported <code>gen_ai.usage.*</code>, <code>llm.usage.*</code> and OpenInference
+<code>llm.token_count.*</code> fields, including the legacy explicit cache and reasoning
+aliases. The Python and Node producers forward the supported scalar counters.</p>
+<p>Each counter accepts a nonnegative integer through the signed 64-bit limit.
+Zero is a reported value. Missing or invalid values and conflicting aliases
+leave that counter absent. Each breakdown keeps its originally reported units.
+The projector preserves the producer's input and output counts and records total
+only when supplied. A batch can contain up to 1,024 spans with cost and token
+usage evidence recorded beside each span in the same commit.</p>
+<p>Workspace Usage and the originating OTLP session's Usage show the individual
+reports. <code>query</code> includes the source, exact session, trace and span, and
+any reported turn, worker and target harness. Aggregate usage views remain
+open for traces where multiple instrumentation layers report the same usage.</p>
 <h3>Reported cost</h3>
 <p>OTLP and native JSONL spans can carry <code>agenturm.reported_cost.amount</code> and
 <code>agenturm.reported_cost.currency</code>. The Rust-compatible Python and Node
@@ -154,6 +166,20 @@ can change a later page. Counts describe the displayed page, not a whole-history
 total. Pruned bodies stay absent from both views even if a trace ID reappears.
 The same options work through the broker and keep its source allowlist.
 Private result detail and cross-source/provider/scorer aggregation remain open.</p>
+<p>In the cockpit, press <code>E</code> from global or session Traces to choose a trace on
+the loaded page. The picker preserves its selection by exact OTLP source and
+trace ID, including when two sources report the same trace ID. Enter opens
+the retained revisions and marks the current one. The detail shows the
+execution status counts for the loaded spans alongside the separate evaluation
+verdict. Page Up and Page Down scroll task, model and scorer metadata. Missing
+score values appear as unknown.</p>
+<p>Press <code>s</code> for the source's current outcomes, or <code>]</code> to continue when another
+page is available. Escape returns to the revision, trace selection and Traces
+views in order. The loaded trace snapshot establishes its identity. Each
+evaluation request reads current retained metadata from that history and
+fails when the selected snapshot has expired or the receiver has restored a
+different branch. This metadata view also works through the broker and the
+authenticated HTTP reader for allowed OTLP sources.</p>
 <h3>Task Git patches</h3>
 <p>Save a patch from the Linux checkout attached to a task. The optional revision
 checks which version of the task receives the capture. The command reports

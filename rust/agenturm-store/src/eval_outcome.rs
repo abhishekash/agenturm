@@ -68,6 +68,24 @@ pub struct EvalPage {
     pub next_before_revision: Option<u64>,
 }
 
+/// Reads current evaluation metadata for a trace selected in durable history.
+/// The snapshot identifies the trace evidence and its branch. Evaluation
+/// revisions themselves are read from the database's current retained state.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectedEvalQuery {
+    pub trace_id: String,
+    pub evidence_snapshot: ReadSnapshot,
+    pub view: EvalQuery,
+}
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SelectedEvalPage {
+    pub current_revision: Option<u64>,
+    pub page: EvalPage,
+}
+
 impl EvalOutcome {
     pub fn validate(&self) -> Result<()> {
         if !valid_trace_id(&self.trace_id)
@@ -155,6 +173,15 @@ impl Store {
     }
 
     pub fn query_eval_outcomes(&self, source: &ExtensionId, query: &EvalQuery) -> Result<EvalPage> {
+        let transaction = self.connection.unchecked_transaction()?;
+        Self::query_eval_outcomes_in(&transaction, source, query)
+    }
+
+    fn query_eval_outcomes_in(
+        connection: &Connection,
+        source: &ExtensionId,
+        query: &EvalQuery,
+    ) -> Result<EvalPage> {
         let (trace, before, after, limit) = match query {
             EvalQuery::Latest {
                 after_trace_id,
@@ -174,30 +201,29 @@ impl Store {
         {
             return Err(StoreError::Invalid("invalid evaluation page selection"));
         }
-        let transaction = self.connection.unchecked_transaction()?;
         let mut page = EvalPage {
             outcomes: Vec::new(),
             next_trace_id: None,
             next_before_revision: None,
         };
-        let schema: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let schema: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
         if schema < 15 {
             return Ok(page);
         }
-        let mut statement = transaction.prepare(
+        let mut statement = connection.prepare(
             "SELECT e.trace_id,e.revision,e.outcome_json FROM agenturm_eval_outcomes e
-             WHERE e.trace_source_id=?1 AND e.outcome_json IS NOT NULL
-               AND (?2 IS NULL OR e.trace_id=?2)
-               AND (?3 IS NULL OR e.revision<?3)
-               AND (?4 IS NULL OR e.trace_id>?4)
-               AND (?2 IS NOT NULL OR e.revision=(SELECT MAX(newest.revision)
-                    FROM agenturm_eval_outcomes newest
-                    WHERE newest.trace_source_id=e.trace_source_id AND newest.trace_id=e.trace_id))
-               AND EXISTS(SELECT 1 FROM agenturm_observations o
-                    WHERE o.source_id=e.trace_source_id AND o.scope='session'
-                    AND json_extract(o.kind_json,'$.kind')='trace_span'
-                    AND json_extract(o.kind_json,'$.trace_id')=e.trace_id)
-             ORDER BY e.trace_id ASC,e.revision DESC LIMIT ?5",
+                 WHERE e.trace_source_id=?1 AND e.outcome_json IS NOT NULL
+                   AND (?2 IS NULL OR e.trace_id=?2)
+                   AND (?3 IS NULL OR e.revision<?3)
+                   AND (?4 IS NULL OR e.trace_id>?4)
+                   AND (?2 IS NOT NULL OR e.revision=(SELECT MAX(newest.revision)
+                        FROM agenturm_eval_outcomes newest
+                        WHERE newest.trace_source_id=e.trace_source_id AND newest.trace_id=e.trace_id))
+                   AND EXISTS(SELECT 1 FROM agenturm_observations o
+                        WHERE o.source_id=e.trace_source_id AND o.scope='session'
+                        AND json_extract(o.kind_json,'$.kind')='trace_span'
+                        AND json_extract(o.kind_json,'$.trace_id')=e.trace_id)
+                 ORDER BY e.trace_id ASC,e.revision DESC LIMIT ?5",
         )?;
         let rows = statement.query_map(
             params![source.as_str(), trace, before, after, limit + 1],
@@ -236,6 +262,50 @@ impl Store {
             });
         }
         Ok(page)
+    }
+
+    pub fn query_selected_eval_outcomes(
+        &self,
+        source: &ExtensionId,
+        query: &SelectedEvalQuery,
+    ) -> Result<Option<SelectedEvalPage>> {
+        if !source.as_str().starts_with("otlp.")
+            || !valid_trace_id(&query.trace_id)
+            || matches!(&query.view, EvalQuery::History { trace_id, .. } if trace_id != &query.trace_id)
+        {
+            return Err(StoreError::Invalid("invalid selected evaluation trace"));
+        }
+        let transaction = self.connection.unchecked_transaction()?;
+        let (_, watermark) =
+            retention::resolve_read_snapshot(&transaction, Some(query.evidence_snapshot))?;
+        let retained: bool = transaction.query_row(
+            "SELECT EXISTS(SELECT 1 FROM agenturm_observations o
+                JOIN agenturm_history_batches b ON b.request_id=o.request_id
+                WHERE o.source_id=?1 AND o.scope='session'
+                  AND json_extract(o.kind_json,'$.kind')='trace_span'
+                  AND json_extract(o.kind_json,'$.trace_id')=?2 AND b.sequence<=?3)",
+            params![source.as_str(), query.trace_id, watermark],
+            |row| row.get(0),
+        )?;
+        if !retained {
+            return Ok(None);
+        }
+        let page = Self::query_eval_outcomes_in(&transaction, source, &query.view)?;
+        let schema: i64 = transaction.pragma_query_value(None, "user_version", |row| row.get(0))?;
+        let current_revision = if schema < 15 {
+            None
+        } else {
+            transaction.query_row(
+                "SELECT MAX(revision) FROM agenturm_eval_outcomes
+                 WHERE trace_source_id=?1 AND trace_id=?2 AND outcome_json IS NOT NULL",
+                params![source.as_str(), query.trace_id],
+                |row| row.get(0),
+            )?
+        };
+        Ok(Some(SelectedEvalPage {
+            current_revision,
+            page,
+        }))
     }
 
     /// Read the latest retained evaluation and its trace membership from one

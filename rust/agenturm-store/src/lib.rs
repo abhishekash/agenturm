@@ -34,7 +34,7 @@ pub use content_grant::{
 };
 pub use eval_outcome::{
     EvalImportReport, EvalOutcome, EvalPage, EvalQuery, EvalScore, MAX_EVAL_OUTCOMES,
-    RetainedEvalOutcome,
+    RetainedEvalOutcome, SelectedEvalPage, SelectedEvalQuery,
 };
 pub use linked_trace::{ResolvedTraceReview, ResolvedTraceTurn, TraceReviewQuery, TraceTurnQuery};
 pub use private_text::bounded_text_preview;
@@ -2566,6 +2566,143 @@ mod tests {
                  PRAGMA user_version=9;",
             )
             .unwrap();
+    }
+
+    #[test]
+    fn selected_evaluations_use_current_metadata_for_the_exact_trace_branch() {
+        use agenturm_kernel::{TraceSpan, TraceStatus};
+
+        let db = TempDb::new();
+        let backup = TempDb::new();
+        let restored_path = TempDb::new();
+        let left = ExtensionId::parse("otlp.left").unwrap();
+        let right = ExtensionId::parse("otlp.right").unwrap();
+        let trace_id = "11111111111111111111111111111111";
+        let span_id = "2222222222222222";
+        let append = |store: &mut Store, source: &ExtensionId, timestamp| {
+            store
+                .commit(
+                    source.as_str(),
+                    None,
+                    "trace",
+                    &[Observation {
+                        harness_id: source.clone(),
+                        event_id: format!("otlp:{trace_id}:{span_id}"),
+                        revision: 0,
+                        identity: agenturm_kernel::ObservationIdentity::session("session"),
+                        observed_at_unix_ns: timestamp,
+                        kind: KernelObservationKind::TraceSpan(TraceSpan {
+                            trace_id: trace_id.into(),
+                            span_id: span_id.into(),
+                            parent_span_id: None,
+                            target_source_id: None,
+                            started_at_unix_ns: 1,
+                            status: TraceStatus::Error,
+                        }),
+                    }],
+                )
+                .unwrap();
+        };
+        let outcome = |task: &str, passed| EvalOutcome {
+            trace_id: trace_id.into(),
+            passed,
+            task_id: Some(task.into()),
+            provider_model: None,
+            scores: Vec::new(),
+        };
+        let mut store = Store::open(&db.0).unwrap();
+        append(&mut store, &left, 2);
+        store.backup_to(&backup.0).unwrap();
+        let first = store.observation_page(1).unwrap().snapshot_id;
+        let query = |evidence_snapshot, before_revision| SelectedEvalQuery {
+            trace_id: trace_id.into(),
+            evidence_snapshot,
+            view: EvalQuery::History {
+                trace_id: trace_id.into(),
+                before_revision,
+                limit: 1,
+            },
+        };
+        let empty = store
+            .query_selected_eval_outcomes(&left, &query(first, None))
+            .unwrap()
+            .unwrap();
+        assert!(empty.page.outcomes.is_empty());
+        assert_eq!(empty.current_revision, None);
+        append(&mut store, &right, 30);
+        let second = store.observation_page(1).unwrap().snapshot_id;
+        assert_eq!(
+            store
+                .query_selected_eval_outcomes(&right, &query(first, None))
+                .unwrap(),
+            None
+        );
+        store
+            .import_eval_outcomes(&left, &[outcome("left-first", false)])
+            .unwrap();
+        store
+            .import_eval_outcomes(&left, &[outcome("left-current", true)])
+            .unwrap();
+        store
+            .import_eval_outcomes(&right, &[outcome("right", false)])
+            .unwrap();
+        let page = store
+            .query_selected_eval_outcomes(&left, &query(first, None))
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.current_revision, Some(2));
+        assert_eq!(page.page.next_before_revision, Some(2));
+        assert_eq!(page.page.outcomes[0].outcome, outcome("left-current", true));
+        let older = store
+            .query_selected_eval_outcomes(&left, &query(first, Some(2)))
+            .unwrap()
+            .unwrap();
+        assert_eq!(older.current_revision, Some(2));
+        assert_eq!(older.page.outcomes[0].outcome, outcome("left-first", false));
+        let summary = SelectedEvalQuery {
+            view: EvalQuery::Latest {
+                after_trace_id: None,
+                limit: 8,
+            },
+            ..query(second, None)
+        };
+        assert_eq!(
+            store
+                .query_selected_eval_outcomes(&right, &summary)
+                .unwrap()
+                .unwrap()
+                .page
+                .outcomes[0]
+                .outcome,
+            outcome("right", false)
+        );
+
+        store.prune_observations_before(3).unwrap();
+        assert!(matches!(
+            store.query_selected_eval_outcomes(&left, &query(second, None)),
+            Err(StoreError::ExpiredHistorySnapshot { .. })
+        ));
+        Store::open_read_only(&backup.0)
+            .unwrap()
+            .backup_to(&restored_path.0)
+            .unwrap();
+        let mut restored = Store::open(&restored_path.0).unwrap();
+        append(&mut restored, &right, 30);
+        let regrown = restored.observation_page(1).unwrap().snapshot_id;
+        assert_eq!(regrown.watermark(), second.watermark());
+        assert_ne!(regrown.incarnation(), second.incarnation());
+        restored
+            .import_eval_outcomes(&left, &[outcome("restored", false)])
+            .unwrap();
+        assert!(matches!(
+            restored.query_selected_eval_outcomes(&left, &query(second, None)),
+            Err(StoreError::SnapshotReplaced)
+        ));
+        let page = restored
+            .query_selected_eval_outcomes(&left, &query(regrown, None))
+            .unwrap()
+            .unwrap();
+        assert_eq!(page.page.outcomes[0].outcome, outcome("restored", false));
     }
 
     #[test]

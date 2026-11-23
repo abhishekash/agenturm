@@ -341,3 +341,85 @@ fn display_page(page: EvalPage, query: &EvalQuery, json: bool) -> Result<String,
     }
     Ok(text)
 }
+
+pub(super) fn workspace_evals(
+    store: &impl crate::HistoryReader,
+    request: agenturm_ui::EvaluationRead,
+) -> Result<agenturm_ui::WorkResult, String> {
+    use agenturm_ui::{EvaluationPage, EvaluationRow, EvaluationView, WorkResult};
+    const PAGE_SIZE: usize = 32;
+    let view = match &request.view {
+        EvaluationView::Revisions { before } => EvalQuery::History {
+            trace_id: request.trace.trace_id.clone(),
+            before_revision: *before,
+            limit: PAGE_SIZE,
+        },
+        EvaluationView::SourceSummary { after } => EvalQuery::Latest {
+            after_trace_id: after.clone(),
+            limit: PAGE_SIZE,
+        },
+    };
+    let query = agenturm_store::SelectedEvalQuery {
+        trace_id: request.trace.trace_id.clone(),
+        evidence_snapshot: request.trace.snapshot_id,
+        view,
+    };
+    let selected = store
+        .query_selected_evals(&request.trace.source_id, &query)?
+        .ok_or("The selected trace is no longer available. Reopen Traces to refresh.")?;
+    let continuation = match &request.view {
+        EvaluationView::Revisions { .. } => {
+            selected
+                .page
+                .next_before_revision
+                .map(|before| EvaluationView::Revisions {
+                    before: Some(before),
+                })
+        }
+        EvaluationView::SourceSummary { .. } => selected
+            .page
+            .next_trace_id
+            .map(|after| EvaluationView::SourceSummary { after: Some(after) }),
+    };
+    let rows = selected
+        .page
+        .outcomes
+        .into_iter()
+        .map(|row| {
+            let mut details = vec![
+                format!(
+                    "Task {}",
+                    row.outcome.task_id.as_deref().unwrap_or("unknown")
+                ),
+                format!(
+                    "Model {}",
+                    row.outcome.provider_model.as_deref().unwrap_or("unknown")
+                ),
+            ];
+            details.extend(row.outcome.scores.iter().map(|score| {
+                let verdict = match score.passed {
+                    Some(true) => "passed",
+                    Some(false) => "failed",
+                    None => "verdict unknown",
+                };
+                let value = score
+                    .score
+                    .as_ref()
+                    .map_or_else(|| "score unknown".into(), |score| format!("score {score}"));
+                format!("{} · {verdict} · {value}", score.scorer)
+            }));
+            EvaluationRow {
+                trace_id: row.outcome.trace_id,
+                revision: row.revision,
+                passed: row.outcome.passed,
+                details,
+            }
+        })
+        .collect();
+    Ok(WorkResult::Evaluations(Box::new(EvaluationPage {
+        request,
+        current_revision: selected.current_revision,
+        rows,
+        continuation,
+    })))
+}
