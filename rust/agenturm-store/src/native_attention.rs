@@ -76,6 +76,8 @@ pub struct NativeAttentionQuery {
     pub session_id: Option<String>,
     pub snapshot_id: Option<ReadSnapshot>,
     pub limit: usize,
+    #[serde(default, skip_serializing_if = "std::ops::Not::not")]
+    pub include_receiver_clock: bool,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -96,6 +98,17 @@ pub struct NativeAttentionPage {
     pub snapshot_id: ReadSnapshot,
     pub pending: Vec<NativeAttentionPending>,
     pub truncated: bool,
+    /// Time of the authenticated latest-snapshot read on the receiver host.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub receiver_time_unix_ns: Option<u64>,
+}
+
+fn receiver_time_unix_ns() -> Option<i64> {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|time| i64::try_from(time.as_nanos()).ok())
+        .filter(|at| *at > 0)
 }
 
 pub(super) fn create_schema(connection: &Connection) -> Result<()> {
@@ -310,14 +323,9 @@ impl Store {
         if let Some(request) = request_digest {
             validate_request(&transaction, collector, capture, request)?;
         }
-        let timestamp = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .and_then(|time| i64::try_from(time.as_nanos()).ok())
-            .filter(|at| *at > 0)
-            .ok_or(StoreError::Invalid(
-                "native attention receipt clock is unavailable",
-            ))?;
+        let timestamp = receiver_time_unix_ns().ok_or(StoreError::Invalid(
+            "native attention receipt clock is unavailable",
+        ))?;
         if timestamp < retention::read_state(&transaction)?.cutoff_unix_ns {
             return Err(StoreError::Invalid(
                 "native attention receipt is outside retention",
@@ -430,6 +438,11 @@ impl Store {
             snapshot_id,
             pending,
             truncated,
+            receiver_time_unix_ns: if query.include_receiver_clock && query.snapshot_id.is_none() {
+                receiver_time_unix_ns().map(|time| time as u64)
+            } else {
+                None
+            },
         })
     }
 
@@ -573,7 +586,43 @@ mod tests {
             session_id: None,
             snapshot_id,
             limit: 16,
+            include_receiver_clock: false,
         }
+    }
+
+    #[test]
+    fn the_clock_is_opt_in_and_bound_to_the_latest_read_transaction() {
+        let (store, _, _, _) = setup();
+        let default_query = query(None);
+        let plain = store.query_native_attention(&default_query, None).unwrap();
+        assert_eq!(plain.receiver_time_unix_ns, None);
+        let wire = serde_json::to_value(&plain).unwrap();
+        assert!(wire.get("receiver_time_unix_ns").is_none());
+        assert_eq!(
+            serde_json::from_value::<NativeAttentionPage>(wire).unwrap(),
+            plain
+        );
+
+        let clock_query = NativeAttentionQuery {
+            include_receiver_clock: true,
+            ..default_query
+        };
+        let started = receiver_time_unix_ns().unwrap() as u64;
+        let timed = store.query_native_attention(&clock_query, None).unwrap();
+        let finished = receiver_time_unix_ns().unwrap() as u64;
+        assert!((started..=finished).contains(&timed.receiver_time_unix_ns.unwrap()));
+        assert_eq!(timed.snapshot_id, plain.snapshot_id);
+        let historical = NativeAttentionQuery {
+            snapshot_id: Some(timed.snapshot_id),
+            ..clock_query
+        };
+        assert_eq!(
+            store
+                .query_native_attention(&historical, None)
+                .unwrap()
+                .receiver_time_unix_ns,
+            None
+        );
     }
 
     #[test]

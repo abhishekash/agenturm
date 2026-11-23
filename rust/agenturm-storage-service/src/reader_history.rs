@@ -264,6 +264,7 @@ mod tests {
                 session_id: None,
                 snapshot_id: Some(snapshot),
                 limit: 1,
+                include_receiver_clock: false,
             },
         };
         let trace = |source_id, snapshot_id| ReaderHistoryRequest::StandaloneTrace {
@@ -295,7 +296,18 @@ mod tests {
         );
 
         assert!(matches!(dispatch_reader(attention(Some(native.clone()))),
-            Ok(ReaderHistoryReply::NativeAttention(page)) if page.snapshot_id == snapshot && page.pending.is_empty()));
+            Ok(ReaderHistoryReply::NativeAttention(page)) if page.snapshot_id == snapshot && page.pending.is_empty() && page.receiver_time_unix_ns.is_none()));
+        let clock = || ReaderHistoryRequest::NativeAttention {
+            query: NativeAttentionQuery {
+                source_id: Some(native.clone()),
+                session_id: None,
+                snapshot_id: None,
+                limit: 1,
+                include_receiver_clock: true,
+            },
+        };
+        assert!(matches!(dispatch_reader(clock()),
+            Ok(ReaderHistoryReply::NativeAttention(page)) if page.snapshot_id == snapshot && page.receiver_time_unix_ns.is_some_and(|time| time > 0)));
 
         let outside_cursor = MetricSeriesPosition {
             series: MetricSeriesKey {
@@ -322,6 +334,7 @@ mod tests {
             metrics(None, Some(snapshot), None),
             usage(None),
             attention(None),
+            clock(),
             trace(source.clone(), Some(snapshot)),
         ] {
             assert!(matches!(

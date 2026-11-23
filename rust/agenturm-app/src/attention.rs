@@ -20,7 +20,7 @@ const USAGE: &str = concat!(
     "       agenturm attention native <bind|send|hook|retry> (explicit receiver binding)\n",
     "       agenturm attention <status|watch> --endpoint http://<loopback-IP:port> ",
     "--token-file <path> [--receiver-protocol python-v0.2.8] [watch options]\n",
-    "Desktop delivery over HTTP requires explicit --receiver-protocol python-v0.2.8.\n",
+    "Desktop delivery over HTTP requires a receiver that supplies an authenticated clock.\n",
 );
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -166,12 +166,8 @@ fn parse_remote(args: &[String]) -> Result<AttentionOptions, String> {
         }
         _ => return Err(USAGE.into()),
     };
-    let receiver = crate::remote_history::parse_attach(&receiver)?;
-    if desktop && !receiver.is_python() {
-        return Err("Desktop attention over HTTP requires an explicit Python v0.2.8 receiver with a comparable clock".into());
-    }
     Ok(AttentionOptions::Remote {
-        receiver,
+        receiver: crate::remote_history::parse_attach(&receiver)?,
         watch,
         desktop,
     })
@@ -254,7 +250,13 @@ pub fn execute_attention(options: &AttentionOptions, mut output: impl Write) -> 
             let ledger = store.workspace_ledger(&marker)?;
             let read = || snapshot_from(&store, &ledger);
             if let Some((interval, limit)) = polling {
-                watch(*interval, *limit, output, |_| read())
+                watch(*interval, *limit, output, |stop| {
+                    if *send_desktop {
+                        desktop::snapshot_remote(&store, &ledger, stop)
+                    } else {
+                        read()
+                    }
+                })
             } else {
                 emit(&mut output, "snapshot", &read()?)
                     .map_err(|error| format!("write attention snapshot failed: {error}"))

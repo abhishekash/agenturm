@@ -6,7 +6,9 @@ use crate::{
     cockpit_workflows::{project_requests, request_key},
 };
 use agenturm_kernel::native_review::{NativeRequestKind, NativeRequestState};
-use agenturm_kernel::{Observation, ObservationKind, ObservationQuery, ReadSnapshot};
+use agenturm_kernel::{
+    Observation, ObservationKind, ObservationPage, ObservationQuery, ReadSnapshot,
+};
 use agenturm_store::{DesktopAttentionRequest, MAX_WORKSPACE_PAGE_SIZE, WorkspaceLedger};
 use agenturm_ui::{RequestEntry, RequestProof};
 use serde::Serialize;
@@ -21,8 +23,12 @@ const FRESHNESS_NS: u64 = 15_000_000_000;
 mod legacy;
 #[cfg(target_os = "linux")]
 pub(super) use legacy::watch_legacy;
+#[cfg(target_os = "linux")]
+mod native_http;
+#[cfg(target_os = "linux")]
+pub(super) use native_http::snapshot_remote;
 
-#[derive(Debug, Eq, PartialEq, Serialize)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Delivery {
     DeferredIncomplete,
@@ -31,6 +37,18 @@ pub(super) enum Delivery {
     Delivered,
     Unavailable,
     Failed,
+}
+
+struct Inventory {
+    requests: Vec<RequestEntry>,
+    partial: bool,
+    candidates: Result<Vec<DesktopAttentionRequest>, Delivery>,
+}
+
+impl Inventory {
+    fn report(self, delivery: Option<Delivery>) -> Snapshot {
+        snapshot_report(self.requests, self.partial, delivery)
+    }
 }
 
 pub(super) fn current_position(
@@ -53,16 +71,47 @@ pub(super) fn snapshot(
         .workspace_history_identity()
         .ok_or("Desktop attention requires an established history identity")?;
     let page = store.query_observations(&ObservationQuery::latest(HISTORY_PAGE_SIZE))?;
-    let proof = RequestProof {
-        snapshot_id: page.snapshot_id,
-        history_identity: Some(identity.clone()),
-    };
-    let mut requests = project_requests(&page.observations, &proof);
     let now: u64 = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .ok()
         .and_then(|time| time.as_nanos().try_into().ok())
         .ok_or("Desktop attention requires a valid local clock")?;
+    let inventory = project_inventory(&page, ledger, &identity, now)?;
+    let candidates = match &inventory.candidates {
+        Ok(candidates) => candidates,
+        Err(deferred) => {
+            let deferred = *deferred;
+            return Ok(inventory.report(Some(deferred)));
+        }
+    };
+    let expected = (identity, page.snapshot_id);
+    if stop.load(Ordering::Relaxed) || current()? != expected {
+        return Ok(inventory.report(Some(Delivery::DeferredHistoryChanged)));
+    }
+    let claimed = ledger
+        .claim_desktop_attention(&expected.0, expected.1, now, candidates)
+        .map_err(|error| format!("Desktop attention claim failed: {error}"))?;
+    let delivered = if claimed == 0 || stop.load(Ordering::Relaxed) {
+        None
+    } else if current()? != expected {
+        Some(Delivery::DeferredHistoryChanged)
+    } else {
+        Some(notify(claimed, stop))
+    };
+    Ok(inventory.report(delivered))
+}
+
+fn project_inventory(
+    page: &ObservationPage,
+    ledger: &WorkspaceLedger,
+    identity: &str,
+    now: u64,
+) -> Result<Inventory, String> {
+    let proof = RequestProof {
+        snapshot_id: page.snapshot_id,
+        history_identity: Some(identity.to_owned()),
+    };
+    let mut requests = project_requests(&page.observations, &proof);
     let cutoff = now.saturating_sub(FRESHNESS_NS);
     let fresh_overflow = requests
         .get(MAX_WORKSPACE_PAGE_SIZE)
@@ -87,11 +136,11 @@ pub(super) fn snapshot(
             cutoff,
         );
     if !complete {
-        return Ok(snapshot_report(
+        return Ok(Inventory {
             requests,
             partial,
-            Some(Delivery::DeferredIncomplete),
-        ));
+            candidates: Err(Delivery::DeferredIncomplete),
+        });
     }
 
     let native_requests = page
@@ -111,11 +160,11 @@ pub(super) fn snapshot(
         .filter(|row| !row.seen && row.timestamp >= cutoff)
     {
         if row.timestamp > now || !has_comparable_clock(row, &native_requests) {
-            return Ok(snapshot_report(
+            return Ok(Inventory {
                 requests,
                 partial,
-                Some(Delivery::DeferredSourceClock),
-            ));
+                candidates: Err(Delivery::DeferredSourceClock),
+            });
         }
         let (anchor, event_id, revision) = request_key(row)?;
         candidates.push(DesktopAttentionRequest {
@@ -126,25 +175,11 @@ pub(super) fn snapshot(
         });
     }
 
-    let expected = (identity, page.snapshot_id);
-    if stop.load(Ordering::Relaxed) || current()? != expected {
-        return Ok(snapshot_report(
-            requests,
-            partial,
-            Some(Delivery::DeferredHistoryChanged),
-        ));
-    }
-    let claimed = ledger
-        .claim_desktop_attention(&expected.0, expected.1, now, &candidates)
-        .map_err(|error| format!("Desktop attention claim failed: {error}"))?;
-    let delivered = if claimed == 0 || stop.load(Ordering::Relaxed) {
-        None
-    } else if current()? != expected {
-        Some(Delivery::DeferredHistoryChanged)
-    } else {
-        Some(notify(claimed, stop))
-    };
-    Ok(snapshot_report(requests, partial, delivered))
+    Ok(Inventory {
+        requests,
+        partial,
+        candidates: Ok(candidates),
+    })
 }
 
 fn covers_clock_window(has_older_rows: bool, last_timestamp: Option<u64>, cutoff: u64) -> bool {
