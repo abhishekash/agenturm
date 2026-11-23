@@ -143,11 +143,11 @@ pub(super) fn execute_with_store(
 }
 
 fn report(inserted: usize, observations: &[Observation]) -> String {
-    if let Some(evidence) = trace_import::metadata_evidence_summary(observations) {
-        format!("Imported {inserted} observations from {evidence}.\n")
+    let (summary, projected) = trace_import::import_summary(inserted, observations);
+    if summary.ends_with(" spans") {
+        format!("{summary}. Projected {projected} structural spans.\n")
     } else {
-        let projected = observations.len();
-        format!("Imported {inserted} spans. Projected {projected} structural spans.\n")
+        format!("{summary}.\n")
     }
 }
 
@@ -366,6 +366,12 @@ struct JsonlSpan {
     end_unix_nano: Timestamp,
     #[serde(default)]
     status: JsonlStatus,
+    #[serde(
+        default,
+        rename = "name",
+        deserialize_with = "trace_import::classify_span_name"
+    )]
+    agent_run: bool,
     attributes: Option<JsonlAttributes>,
 }
 
@@ -384,6 +390,7 @@ impl JsonlSpan {
             status: Some(Status {
                 code: Some(self.status as u8),
             }),
+            agent_run: self.agent_run,
             attributes,
         }
     }

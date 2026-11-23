@@ -1,5 +1,6 @@
-//! Loopback-only HTTP ingestion for bounded OTLP trace and metric exports.
+//! Loopback-only HTTP ingestion for bounded OTLP trace, metric and activity log exports.
 
+mod logs;
 mod metrics;
 
 use crate::trace_import::{
@@ -300,6 +301,10 @@ fn execute_with_maintenance(
         "Listening for OTLP metrics at http://{}/v1/metrics",
         receiver.address()
     );
+    println!(
+        "Listening for OTLP activity logs at http://{}/v1/logs",
+        receiver.address()
+    );
     receiver.serve_with_payloads(&stop, commit)
 }
 
@@ -450,6 +455,8 @@ fn handle(
             Encoding::ProgressJson => trace_progress::decode(&body, source, launch_session)
                 .map(|row| (vec![row], 0, Vec::new()))
                 .map_err(str::to_owned),
+            Encoding::LogsJson => logs::decode_json(&body, source),
+            Encoding::LogsProtobuf => logs::decode_protobuf(&body, source),
             Encoding::MetricsJson => {
                 metrics::decode_json(&body, source).map(|rows| (rows, 0, Vec::new()))
             }
@@ -470,6 +477,8 @@ fn handle(
             .to_string()
             .into_bytes(),
             Encoding::Protobuf => protobuf_response(skipped),
+            Encoding::LogsJson => logs::json_response(skipped),
+            Encoding::LogsProtobuf => logs::protobuf_response(skipped),
             Encoding::ProgressJson | Encoding::MetricsJson => b"{}".to_vec(),
             Encoding::MetricsProtobuf => Vec::new(),
         };
@@ -505,13 +514,17 @@ enum Encoding {
     ProgressJson,
     MetricsJson,
     MetricsProtobuf,
+    LogsJson,
+    LogsProtobuf,
 }
 
 impl Encoding {
     fn media_type(self) -> &'static str {
         match self {
-            Self::Json | Self::ProgressJson | Self::MetricsJson => "application/json",
-            Self::Protobuf | Self::MetricsProtobuf => "application/x-protobuf",
+            Self::Json | Self::ProgressJson | Self::MetricsJson | Self::LogsJson => {
+                "application/json"
+            }
+            Self::Protobuf | Self::MetricsProtobuf | Self::LogsProtobuf => "application/x-protobuf",
         }
     }
 }
@@ -577,7 +590,10 @@ fn parse_headers(
     if !matches!(version, "HTTP/1.0" | "HTTP/1.1") {
         return Err("404 Not Found");
     }
-    if !matches!(path, "/v1/traces" | "/v1/metrics" | trace_progress::PATH) {
+    if !matches!(
+        path,
+        "/v1/traces" | "/v1/metrics" | "/v1/logs" | trace_progress::PATH
+    ) {
         return Err("404 Not Found");
     }
     let mut host = false;
@@ -644,6 +660,8 @@ fn parse_headers(
         (trace_progress::PATH, _) => return Err("415 Unsupported Media Type"),
         ("/v1/metrics", Encoding::Json) => Encoding::MetricsJson,
         ("/v1/metrics", Encoding::Protobuf) => Encoding::MetricsProtobuf,
+        ("/v1/logs", Encoding::Json) => Encoding::LogsJson,
+        ("/v1/logs", Encoding::Protobuf) => Encoding::LogsProtobuf,
         (_, encoding) => encoding,
     };
     let length = length.ok_or("411 Length Required")?;
@@ -661,6 +679,33 @@ fn parse_headers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn log_formats_use_the_same_authenticated_route() {
+        let address = "127.0.0.1:4318".parse().unwrap();
+        let token = ProducerToken("ab".repeat(32));
+        let authorized = format!("Authorization: Bearer {}\r\n", token.0);
+        let head = |media: &str, authorization: &str| {
+            format!(
+                "POST /v1/logs HTTP/1.1\r\nHost: 127.0.0.1:4318\r\nContent-Type: {media}\r\nContent-Length: 32\r\n{authorization}\r\n"
+            )
+        };
+        for encoding in [Encoding::LogsJson, Encoding::LogsProtobuf] {
+            let headers = |authorization| head(encoding.media_type(), authorization);
+            assert_eq!(
+                parse_headers(&headers(&authorized), address, Some(&token)),
+                Ok((encoding, 32))
+            );
+            assert_eq!(
+                parse_headers(&headers(""), address, Some(&token)),
+                Err("401 Unauthorized")
+            );
+            assert_eq!(
+                parse_headers(&headers(&authorized.repeat(2)), address, Some(&token)),
+                Err("401 Unauthorized")
+            );
+        }
+    }
 
     #[test]
     fn metrics_requires_existing_producer_authorization_and_exports_replay_once() {

@@ -4,6 +4,7 @@ pub(super) mod cost;
 pub(crate) mod proto;
 pub(super) mod token_usage;
 
+use agenturm_kernel::telemetry_summary::TraceSpanSummary;
 use agenturm_kernel::{
     ExtensionId, Observation, ObservationIdentity, ObservationKind, ObservationStore, ReportedCost,
     TraceSpan, TraceSpanIdentity, TraceStatus,
@@ -91,37 +92,50 @@ pub(super) fn execute_with_store(
 }
 
 fn report(inserted: usize, unscoped: usize, observations: &[Observation]) -> String {
-    if let Some(evidence) = metadata_evidence_summary(observations) {
-        format!(
-            "Imported {inserted} observations from {evidence}. Skipped {unscoped} without session identity.\n"
-        )
-    } else {
-        format!("Imported {inserted} spans. Skipped {unscoped} without session identity.\n")
-    }
+    let (summary, _) = import_summary(inserted, observations);
+    format!("{summary}. Skipped {unscoped} without session identity.\n")
 }
 
-pub(super) fn metadata_evidence_summary(observations: &[Observation]) -> Option<String> {
+pub(super) fn import_summary(inserted: usize, observations: &[Observation]) -> (String, usize) {
+    let mut spans = 0;
+    let mut classifications = 0;
     let mut cost = 0;
     let mut usage = 0;
     for row in observations {
         match row.kind {
+            ObservationKind::TraceSpan(_) => spans += 1,
+            ObservationKind::TraceSpanSummary(_) => classifications += 1,
             ObservationKind::ReportedCost(_) => cost += 1,
             ObservationKind::SpanTokenUsage(_) => usage += 1,
             _ => {}
         }
     }
     if cost == 0 && usage == 0 {
-        return None;
+        if inserted == 0 {
+            return ("Imported 0 spans".into(), spans);
+        }
+        if inserted == observations.len() {
+            return (format!("Imported {spans} spans"), spans);
+        }
     }
-    let mut labels = vec![format!("{} spans", observations.len() - cost - usage)];
+    let mut labels = vec![format!("{spans} spans")];
     if cost > 0 {
         labels.push(format!("{cost} reported cost records"));
     }
     if usage > 0 {
         labels.push(format!("{usage} token usage records"));
     }
+    if classifications > 0 {
+        labels.push(format!("{classifications} span classifications"));
+    }
     let last = labels.pop().expect("a metadata label exists");
-    Some(format!("{} and {last}", labels.join(", ")))
+    (
+        format!(
+            "Imported {inserted} observations from {} and {last}",
+            labels.join(", ")
+        ),
+        spans,
+    )
 }
 
 fn prepare_export(options: &TraceImportOptions) -> Result<(Vec<Observation>, usize), String> {
@@ -279,6 +293,20 @@ fn import_cursor(observations: &[Observation]) -> Result<String, String> {
                 row.observed_at_unix_ns,
                 point,
             )),
+            ObservationKind::TraceSpanSummary(summary) => serde_json::to_vec(&(
+                "trace_span_summary",
+                &row.event_id,
+                &row.identity,
+                row.observed_at_unix_ns,
+                summary,
+            )),
+            ObservationKind::OtlpActivityLog(log) => serde_json::to_vec(&(
+                "otlp_activity_log",
+                &row.event_id,
+                &row.identity,
+                row.observed_at_unix_ns,
+                log,
+            )),
             _ => return Err("invalid trace import observation".into()),
         }
         .map_err(|_| "cannot encode trace import metadata".to_owned())?;
@@ -351,7 +379,7 @@ pub(super) fn decode_protobuf(
 }
 
 pub(super) fn protobuf_response(rejected: usize) -> Vec<u8> {
-    proto::response(rejected)
+    proto::partial_success(rejected, b"Span lacks an explicit session identity")
 }
 
 pub(super) fn project_payloads(
@@ -473,6 +501,19 @@ pub(super) fn project_payloads(
                 None,
             )?;
         }
+        let summary = Observation {
+            harness_id: source_id.clone(),
+            event_id: format!("{event_id}:summary"),
+            revision: 0,
+            identity: identity.clone(),
+            observed_at_unix_ns: ended_at,
+            kind: ObservationKind::TraceSpanSummary(TraceSpanSummary {
+                trace_id: native.trace_id.clone(),
+                span_id: native.span_id.clone(),
+                agent_run: span.agent_run,
+                reported_error: native.status == TraceStatus::Error,
+            }),
+        };
         let observation = Observation {
             harness_id: source_id.clone(),
             event_id: event_id.clone(),
@@ -491,6 +532,7 @@ pub(super) fn project_payloads(
                 }
             }
         }
+        insert_projected(&mut observations, summary, None)?;
     }
     let mut rows = Vec::with_capacity(observations.len());
     let mut payloads = Vec::new();
@@ -522,17 +564,17 @@ fn insert_projected(
 }
 
 #[derive(Default)]
-struct TraceScope {
-    session_id: Option<String>,
-    target_source_id: Option<String>,
-    turn_id: Option<String>,
-    worker_id: Option<String>,
+pub(super) struct TraceScope {
+    pub(super) session_id: Option<String>,
+    pub(super) target_source_id: Option<String>,
+    pub(super) turn_id: Option<String>,
+    pub(super) worker_id: Option<String>,
     operation_id: Option<String>,
     input: Option<String>,
     output: Option<String>,
 }
 
-fn trace_scope(attributes: &[Attribute]) -> Result<TraceScope, String> {
+pub(super) fn trace_scope(attributes: &[Attribute]) -> Result<TraceScope, String> {
     let mut scope = TraceScope::default();
     for attribute in attributes {
         let (slot, valid, error): (_, fn(&str) -> bool, _) = match attribute.key.as_str() {
@@ -637,8 +679,20 @@ pub(super) struct OtlpSpan {
     pub(super) start_time_unix_nano: Timestamp,
     pub(super) end_time_unix_nano: Timestamp,
     pub(super) status: Option<Status>,
+    #[serde(default, rename = "name", deserialize_with = "classify_span_name")]
+    pub(super) agent_run: bool,
     #[serde(default)]
     pub(super) attributes: Vec<Attribute>,
+}
+
+pub(super) fn classify_span_name<'de, D: serde::Deserializer<'de>>(
+    deserializer: D,
+) -> Result<bool, D::Error> {
+    let value = <&RawValue>::deserialize(deserializer)?;
+    Ok(
+        serde_json::from_str::<std::borrow::Cow<'_, str>>(value.get())
+            .is_ok_and(|name| name == "agent.run"),
+    )
 }
 
 #[derive(Deserialize)]
@@ -649,7 +703,7 @@ pub(super) enum Timestamp {
 }
 
 impl Timestamp {
-    fn value(self) -> Option<u64> {
+    pub(super) fn value(self) -> Option<u64> {
         match self {
             Self::Decimal(value) if value.bytes().all(|byte| byte.is_ascii_digit()) => {
                 value.parse().ok()
@@ -667,8 +721,8 @@ pub(super) struct Status {
 
 #[derive(Deserialize)]
 pub(super) struct Attribute {
-    key: String,
-    value: Option<AttributeValue>,
+    pub(super) key: String,
+    pub(super) value: Option<AttributeValue>,
 }
 
 impl Attribute {
@@ -702,9 +756,9 @@ impl Attribute {
 
 #[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct AttributeValue {
+pub(super) struct AttributeValue {
     #[serde(default)]
-    string_value: serde_json::Value,
+    pub(super) string_value: serde_json::Value,
     int_value: Option<Box<RawValue>>,
     double_value: Option<Box<RawValue>>,
     #[serde(default)]
@@ -746,7 +800,7 @@ mod tests {
         unscoped["attributes"] = json!([]);
         let (observations, skipped) = from_spans(vec![fixture(), fixture(), unscoped]).unwrap();
         assert_eq!(skipped, 1);
-        assert_eq!(observations.len(), 1);
+        assert_eq!(observations.len(), 2);
         let row = &observations[0];
         assert_eq!(row.identity.session_id.as_deref(), Some("turn-session"));
         assert_eq!(row.observed_at_unix_ns, 1_795_300_000_005_000_000);
@@ -762,7 +816,51 @@ mod tests {
                 status: TraceStatus::Error,
             })
         );
+        assert!(matches!(
+            &observations[1].kind,
+            ObservationKind::TraceSpanSummary(summary)
+                if summary.reported_error && !summary.agent_run
+                    && summary.matches_event(&observations[1].event_id)
+        ));
+        assert_eq!(row.identity, observations[1].identity);
+        assert_eq!(row.observed_at_unix_ns, observations[1].observed_at_unix_ns);
         assert!(!format!("{observations:?}").contains("private"));
+    }
+
+    #[test]
+    fn classifies_exact_agent_run_names_and_rejects_divergent_duplicate_metadata() {
+        let ordinary = fixture();
+        let mut run = ordinary.clone();
+        run["name"] = json!("agent.run");
+        run["status"]["code"] = json!(1);
+        assert!(matches!(
+            &from_spans(vec![run.clone()]).unwrap().0[1].kind,
+            ObservationKind::TraceSpanSummary(summary)
+                if summary.agent_run && !summary.reported_error
+        ));
+        let mut conflicting = run.clone();
+        conflicting["name"] = json!("agent.run.child");
+        assert!(from_spans(vec![run, conflicting]).is_err());
+    }
+
+    #[test]
+    fn newly_classified_export_replays_legacy_span_without_counting_a_second_span() {
+        let mut store = Store::open(":memory:").unwrap();
+        let source = ExtensionId::parse("otlp.synthetic").unwrap();
+        let (rows, _) = from_spans(vec![fixture()]).unwrap();
+        assert!(matches!(rows[0].kind, ObservationKind::TraceSpan(_)));
+        assert_eq!(commit_with_store(&mut store, &source, &rows[..1]), Ok(1));
+        let mut classified = fixture();
+        classified["name"] = json!("agent.run");
+        let (rows, _) = from_spans(vec![classified]).unwrap();
+        assert_eq!(commit_with_store(&mut store, &source, &rows), Ok(1));
+        assert_eq!(commit_with_store(&mut store, &source, &rows), Ok(0));
+        let (summary, spans) = import_summary(1, &rows);
+        assert_eq!(
+            summary,
+            "Imported 1 observations from 1 spans and 1 span classifications"
+        );
+        assert_eq!(spans, 1);
     }
 
     #[test]
@@ -872,7 +970,7 @@ mod tests {
                 ..query("otlp.synthetic", None)
             })
             .unwrap();
-        assert_eq!(imported.observations.len(), 4);
+        assert_eq!(imported.observations.len(), 8);
         assert!(imported.observations.iter().any(|row| matches!(
             &row.kind,
             ObservationKind::TraceSpan(span) if span.target_source_id.is_none()
@@ -934,8 +1032,9 @@ mod tests {
                 None,
             )?
             .0
-            .pop()
-            .ok_or("No observation".into())
+            .into_iter()
+            .find(|row| matches!(row.kind, ObservationKind::TraceSpan(_)))
+            .ok_or("No span observation".into())
         }
 
         let attribute = |key: &str, value: &str| json!({"key":key,"value":{"stringValue":value}});

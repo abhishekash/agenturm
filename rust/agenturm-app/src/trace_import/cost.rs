@@ -26,7 +26,7 @@ pub(crate) fn is_cost_key(key: &str) -> bool {
     )
 }
 
-pub(super) fn reported_amount(attributes: &[Attribute]) -> Option<(String, u64)> {
+pub(crate) fn reported_amount(attributes: &[Attribute]) -> Option<(String, u64)> {
     let has = |key| attributes.iter().any(|attribute| attribute.key == key);
     for (amount, currency) in [
         (AMOUNT, CURRENCY),

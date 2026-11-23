@@ -36,8 +36,19 @@ fn import_preserves_linked_evidence_reopens_and_replays_across_formats() {
     let queried = check(run(&db, &["query", "--harness-id", SOURCE]));
     assert!(!queried.contains(PRIVATE));
     let page: Value = serde_json::from_str(&queried).unwrap();
-    let rows = page["observations"].as_array().unwrap();
+    let observed = page["observations"].as_array().unwrap();
+    let rows: Vec<_> = observed
+        .iter()
+        .filter(|row| row["observation"]["kind"] == "trace_span")
+        .collect();
     assert_eq!(rows.len(), 2);
+    let classification: Vec<_> = observed
+        .iter()
+        .filter(|row| row["observation"]["kind"] == "trace_span_summary")
+        .collect();
+    assert_eq!(classification.len(), 2);
+    assert_eq!(classification[0]["observation"]["reported_error"], false);
+    assert_eq!(classification[1]["observation"]["reported_error"], true);
     assert_eq!(rows[0]["observed_at_unix_ns"], END.to_string());
     assert_eq!(rows[0]["observation"]["trace_id"], TRACE);
     assert_eq!(rows[0]["observation"]["span_id"], ROOT);
@@ -290,13 +301,13 @@ fn reported_cost_admits_explicit_zero_and_currency_without_changing_span_replay(
     write_jsonl(&file, &batch);
     assert_eq!(
         check(import_file(&db, &file, &[])),
-        "Imported 9 observations from 9 spans and 2 reported cost records.\n"
+        "Imported 16 observations from 9 spans, 2 reported cost records and 9 span classifications.\n"
     );
     let queried = check(run(&db, &["query", "--harness-id", SOURCE]));
     assert!(!queried.contains(PRIVATE));
     let page: Value = serde_json::from_str(&queried).unwrap();
     let rows = page["observations"].as_array().unwrap();
-    assert_eq!(rows.len(), 11);
+    assert_eq!(rows.len(), 20);
     for first in baseline["observations"].as_array().unwrap() {
         assert!(rows.contains(first));
     }
@@ -379,16 +390,15 @@ fn span_token_usage_keeps_reported_units_and_stable_structural_replay() {
     child["attributes"]["gen_ai.usage.reasoning_tokens"] = json!(1);
     child["attributes"]["gen_ai.usage.total_tokens"] = json!(25);
     write_jsonl(&file, &[root.clone(), child]);
-    assert!(
-        check(import_file(&db, &file, &[]))
-            .contains("Imported 2 observations from 2 spans and 2 token usage records")
-    );
+    assert!(check(import_file(&db, &file, &[])).contains(
+        "Imported 2 observations from 2 spans, 2 token usage records and 2 span classifications"
+    ));
     assert!(check(import_file(&db, &file, &[])).contains("Imported 0 observations"));
     let raw = check(run(&db, &["query", "--harness-id", SOURCE]));
     assert!(!raw.contains(PRIVATE));
     let page: Value = serde_json::from_str(&raw).unwrap();
     let rows = page["observations"].as_array().unwrap();
-    assert_eq!(rows.len(), 4);
+    assert_eq!(rows.len(), 6);
     let usage: Vec<_> = rows
         .iter()
         .filter(|row| row["observation"]["kind"] == "span_token_usage")
@@ -466,7 +476,7 @@ fn maximum_export_commits_span_cost_and_usage_atomically() {
     write_jsonl(&file, &rows);
     let receipt = check(import_file(&db, &file, &[]));
     assert!(
-        receipt.contains("Imported 3072 observations from 1024 spans"),
+        receipt.contains("Imported 4096 observations from 1024 spans"),
         "{receipt}"
     );
     assert!(check(import_file(&db, &file, &[])).contains("Imported 0 observations"));
@@ -476,7 +486,12 @@ fn maximum_export_commits_span_cost_and_usage_atomically() {
     ));
     let page: Value = serde_json::from_str(&raw).unwrap();
     let observations = page["observations"].as_array().unwrap();
-    for kind in ["trace_span", "reported_cost", "span_token_usage"] {
+    for kind in [
+        "trace_span",
+        "trace_span_summary",
+        "reported_cost",
+        "span_token_usage",
+    ] {
         assert_eq!(
             observations
                 .iter()
@@ -679,7 +694,7 @@ fn agent_harness_profile_maps_only_selected_payload_slots() {
     ];
     assert_eq!(
         check(import_file(&db, &file, &options)),
-        "Imported 5 observations from 3 spans, 1 reported cost records and 1 token usage records.\n"
+        "Imported 8 observations from 3 spans, 1 reported cost records, 1 token usage records and 3 span classifications.\n"
     );
     grant_payloads(&db, "standalone");
     for (span_id, input, output) in [
