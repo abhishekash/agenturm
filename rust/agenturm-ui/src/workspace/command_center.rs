@@ -52,14 +52,57 @@ pub(super) fn provider(row: &RecordedSession) -> &str {
     }
 }
 
-pub(super) fn name(row: &RecordedSession) -> &str {
-    row.task_title
+pub(super) fn name(row: &RecordedSession) -> std::borrow::Cow<'_, str> {
+    if let Some(title) = row
+        .task_title
         .as_deref()
-        .filter(|name| !name.trim().is_empty())
-        .unwrap_or("Name unavailable")
+        .filter(|value| !value.trim().is_empty())
+    {
+        return title.into();
+    }
+    if let Some(nickname) = row
+        .native_context
+        .as_deref()
+        .and_then(|context| context.agent_name.as_deref())
+        .filter(|value| !value.trim().is_empty())
+    {
+        return nickname.into();
+    }
+    let mut label = format!("{} session", provider(row));
+    if let Some(role) = row
+        .native_context
+        .as_deref()
+        .and_then(|context| context.agent_role.as_deref())
+        .filter(|value| !value.trim().is_empty())
+    {
+        label.push_str(&format!(" · {role}"));
+    }
+    if row.project_origin.is_some() {
+        if let Some(project) = row
+            .project_path
+            .as_deref()
+            .and_then(|path| std::path::Path::new(path).file_name())
+            .and_then(|name| name.to_str())
+        {
+            label.push_str(&format!(" · {project}"));
+        }
+    }
+    label.into()
 }
 
 fn supporting_context(row: &RecordedSession, grouping: Grouping, duplicate: bool) -> String {
+    if row
+        .task_title
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+        && row
+            .native_context
+            .as_deref()
+            .and_then(|context| context.agent_name.as_deref())
+            .is_none_or(|value| value.trim().is_empty())
+    {
+        return String::new();
+    }
     let mut parts = vec![provider(row).to_owned()];
     if let Some(value) = row
         .native_context
@@ -67,7 +110,9 @@ fn supporting_context(row: &RecordedSession, grouping: Grouping, duplicate: bool
         .and_then(|context| context.agent_name.as_deref())
         .filter(|value| !value.is_empty())
     {
-        parts.push(visible_text(value));
+        if name(row).as_ref() != value {
+            parts.push(visible_text(value));
+        }
     }
     if duplicate {
         parts.push("Same name".into());
@@ -235,7 +280,7 @@ pub(super) fn draw(
     if agents.help {
         let help = format!(
             "{}\n{} · H live Host · U Usage\nTab / Shift+Tab Status filter · / Search · a Reset\nCtrl+F Investigate retained evidence\nEnter Inspect · Esc Back · Ctrl+R / V Review · P Prompts\nX Mark request seen · v Internal reviews\nF2 Themes · Ctrl+P Appearance
-G Group project/source/none · f Tree/flat · o Sort\n←/→ Collapse/expand · p Pause · Y To review\nAlt+↑/↓ Parent/child · Alt+→ Needs attention\n[ Newer · ] Show more · l Latest · R Refresh\nb Tasks · w Workflow · c Copy · x Export · q Quit",
+G Group project/source/none · f Tree/flat · newest first\n←/→ Collapse/expand · p Pause · Y To review\nAlt+↑/↓ Parent/child · Alt+→ Needs attention\n[ Newer · ] Show more · l Latest · R Refresh\nb Tasks · w Workflow · c Copy · x Export · q Quit",
             keymap::navigation_hints(&keymap::NAVIGATION[..5]),
             keymap::navigation_hints(&keymap::NAVIGATION[5..])
         );
@@ -301,7 +346,7 @@ G Group project/source/none · f Tree/flat · o Sort\n←/→ Collapse/expand ·
             "○"
         };
         let indent = "  ".repeat(item.depth.min(4));
-        let text = format!("{indent}{marker} {}", visible_text(name(row)));
+        let text = format!("{indent}{marker} {}", visible_text(&name(row)));
         let duplicate = row.task_title.as_ref().is_some_and(|title| {
             agents
                 .visible
@@ -358,7 +403,7 @@ G Group project/source/none · f Tree/flat · o Sort\n←/→ Collapse/expand ·
                 Constraint::Length(9),
             ],
         )
-        .header(Row::new([" Tasks", "Status", "Updated"]).style(heading_style()))
+        .header(Row::new([" Tasks", "Status", "Updated↓"]).style(heading_style()))
         .column_spacing(1)
         .highlight_symbol("› ")
         .row_highlight_style(selection_style()),
@@ -394,7 +439,7 @@ G Group project/source/none · f Tree/flat · o Sort\n←/→ Collapse/expand ·
         |row| {
             format!(
                 "{} · {} · recorded {}",
-                visible_text(name(row)),
+                visible_text(&name(row)),
                 supporting_context(row, agents.grouping, false),
                 visible_text(recorded_state(row))
             )

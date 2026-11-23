@@ -42,6 +42,13 @@ pub struct RecordedSession {
 }
 
 /// Explicit display metadata, separate from stable source/session identity.
+impl RecordedSession {
+    /// Human-readable primary label; stable identity stays in details and links.
+    pub fn display_name(&self) -> std::borrow::Cow<'_, str> {
+        command_center::name(self)
+    }
+}
+
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct NativeSessionContext {
     pub agent_name: Option<Box<str>>,
@@ -233,7 +240,6 @@ struct AgentList {
     editing: bool,
     flat: bool,
     help: bool,
-    sort_by_state: bool,
     show_more_selected: bool,
     display_offset: usize,
     paused: bool,
@@ -260,7 +266,7 @@ impl AgentList {
     fn apply_filters(&mut self, identity: Option<&(String, String)>) {
         let query = self.search.to_ascii_lowercase();
         self.visible = self.catalog.as_ref().map_or_else(Vec::new, |catalog| {
-            let mut matching = catalog
+            let matching = catalog
                 .sessions
                 .iter()
                 .enumerate()
@@ -297,22 +303,29 @@ impl AgentList {
                     matches.then_some(index)
                 })
                 .collect::<Vec<_>>();
-            if self.sort_by_state {
-                matching.sort_by_key(|&index| {
-                    let row = &catalog.sessions[index];
-                    (
-                        !Filter::Attention.accepts(row),
-                        !Filter::Active.accepts(row),
-                    )
-                });
-            }
             agent_rows(&catalog.sessions, &matching, self.flat, &self.collapsed)
         });
         if let Some(catalog) = &self.catalog {
+            let mut newest = std::collections::BTreeMap::<&str, u64>::new();
+            for item in &self.visible {
+                let row = &catalog.sessions[item.index];
+                newest
+                    .entry(command_center::group(row, self.grouping))
+                    .and_modify(|time| *time = (*time).max(row.updated_at_unix_ns))
+                    .or_insert(row.updated_at_unix_ns);
+            }
             self.visible.sort_by(|a, b| {
-                command_center::group(&catalog.sessions[a.index], self.grouping).cmp(
-                    command_center::group(&catalog.sessions[b.index], self.grouping),
-                )
+                let left = &catalog.sessions[a.index];
+                let right = &catalog.sessions[b.index];
+                let left_group = command_center::group(left, self.grouping);
+                let right_group = command_center::group(right, self.grouping);
+                newest[right_group]
+                    .cmp(&newest[left_group])
+                    .then_with(|| left_group.cmp(right_group))
+                    .then_with(|| right.updated_at_unix_ns.cmp(&left.updated_at_unix_ns))
+                    .then_with(|| a.depth.cmp(&b.depth))
+                    .then_with(|| left.harness_id.cmp(&right.harness_id))
+                    .then_with(|| left.session_id.cmp(&right.session_id))
             });
         }
         self.show_more_selected = false;
@@ -1556,11 +1569,6 @@ impl Workspace {
             KeyCode::Char('G') => {
                 let identity = self.agents.current().map(session_key);
                 self.agents.grouping = self.agents.grouping.next();
-                self.agents.apply_filters(identity.as_ref());
-            }
-            KeyCode::Char('o') => {
-                let identity = self.agents.current().map(session_key);
-                self.agents.sort_by_state = !self.agents.sort_by_state;
                 self.agents.apply_filters(identity.as_ref());
             }
             KeyCode::Left => self.agents.expand(false),
@@ -2919,7 +2927,7 @@ mod tests {
                 assert!(text.contains('…'), "{text}");
             }
             assert!(text.contains("Codex"), "{text}");
-            assert!(text.contains("Name unavailable"), "{text}");
+            assert!(text.contains("Pi session"), "{text}");
         }
     }
 
@@ -3043,7 +3051,64 @@ mod tests {
     }
 
     #[test]
-    fn native_context_search_does_not_relabel_missing_names_with_activity_or_ids() {
+    fn primary_names_prefer_tasks_then_native_nicknames_then_human_context() {
+        let mut row = session("harness.codex", "opaque-id", "running", None);
+        row.native_context = Some(Box::new(NativeSessionContext {
+            agent_name: Some("Nash".into()),
+            agent_role: Some("worker".into()),
+            ..NativeSessionContext::default()
+        }));
+        assert_eq!(row.display_name(), "Nash");
+        row.task_title = Some("Finish migration".into());
+        assert_eq!(row.display_name(), "Finish migration");
+        row.task_title = None;
+        row.native_context.as_mut().unwrap().agent_name = None;
+        assert_eq!(row.display_name(), "Codex session · worker");
+        assert!(!row.display_name().contains("opaque-id"));
+    }
+
+    #[test]
+    fn recency_orders_groups_and_rows_without_status_or_hierarchy_priority() {
+        let mut parent = session("harness.codex", "parent", "failed", None);
+        parent.updated_at_unix_ns = 10;
+        parent.project_path = Some("/work/older-name".into());
+        parent.project_origin = Some(ProjectOrigin::NativeRecordedWorkspace);
+        let mut child = parent.clone();
+        child.session_id = "child".into();
+        child.parent_session_id = Some("parent".into());
+        child.relationship_kind = Some(RelationshipKind::Delegated);
+        child.updated_at_unix_ns = 100;
+        child.state = Some("running".into());
+        let mut other = session("harness.pi", "other", "completed", None);
+        other.updated_at_unix_ns = 50;
+        other.project_path = Some("/work/alphabetically-first".into());
+        other.project_origin = Some(ProjectOrigin::NativeRecordedWorkspace);
+        let mut agents = AgentList::default();
+        agents.update(catalog(vec![parent.clone(), other.clone(), child.clone()]));
+        let ids = |agents: &AgentList| {
+            agents
+                .visible
+                .iter()
+                .map(|item| {
+                    agents.catalog.as_ref().unwrap().sessions[item.index]
+                        .session_id
+                        .clone()
+                })
+                .collect::<Vec<_>>()
+        };
+        assert_eq!(ids(&agents), ["child", "parent", "other"]);
+        let identity = session_key(&child);
+        agents.grouping = command_center::Grouping::None;
+        agents.apply_filters(Some(&identity));
+        assert_eq!(ids(&agents), ["child", "other", "parent"]);
+        assert_eq!(agents.current().unwrap().session_id, "child");
+        agents.update(catalog(vec![other, child, parent]));
+        assert_eq!(ids(&agents), ["child", "other", "parent"]);
+        assert_eq!(agents.current().unwrap().session_id, "child");
+    }
+
+    #[test]
+    fn native_context_search_uses_nicknames_without_activity_or_ids() {
         let mut row = session("harness.claude.selected", "opaque-id", "completed", None);
         row.project_path = Some("/work/alpha-project".into());
         row.project_origin = Some(ProjectOrigin::NativeRecordedWorkspace);
@@ -3060,10 +3125,7 @@ mod tests {
             agents.search = query.into();
             agents.apply_filters(None);
             assert_eq!(agents.visible.len(), 1, "{query}");
-            assert_eq!(
-                command_center::name(agents.current().unwrap()),
-                "Name unavailable"
-            );
+            assert_eq!(command_center::name(agents.current().unwrap()), "Mira");
         }
         agents.search = "absent".into();
         agents.apply_filters(None);
@@ -3326,7 +3388,15 @@ mod tests {
         let press = |workspace: &mut Workspace, code| {
             workspace.key(&sender, event::KeyEvent::new(code, KeyModifiers::NONE))
         };
-        assert!(!press(&mut workspace, KeyCode::Down));
+        let position = workspace
+            .agents
+            .visible
+            .iter()
+            .position(|item| {
+                workspace.agents.catalog.as_ref().unwrap().sessions[item.index] == selected
+            })
+            .unwrap();
+        workspace.agents.selection.select(Some(position));
         assert_eq!(workspace.agents.current(), Some(&selected));
         assert!(!press(&mut workspace, KeyCode::Char('/')));
         for ch in "d3-main".chars() {
@@ -3363,7 +3433,7 @@ mod tests {
                 .iter()
                 .map(|row| (row.index, row.depth))
                 .collect::<Vec<_>>(),
-            [(1, 0), (0, 1), (2, 0)]
+            [(1, 0), (2, 0), (0, 1)]
         );
         agents.expand(false);
         assert_eq!(
@@ -3421,7 +3491,7 @@ mod tests {
                 .collect::<String>();
             for text in [
                 "Agenturm command center",
-                "Name unavailable",
+                "Codex session",
                 "interrupted",
                 "Enter inspect",
             ] {
@@ -3590,7 +3660,7 @@ mod tests {
                 .iter()
                 .map(|c| c.symbol())
                 .collect::<String>();
-            assert!(text.contains("Name unavailable"));
+            assert!(text.contains("Codex session"));
             assert!(text.contains("Receiver disconnected"));
         }
     }
