@@ -430,8 +430,8 @@ def select_human_row(cockpit, row, max_matches):
     hint = row["title"]
     if hint == "Name unavailable":
         hint = row.get("agent") or Path(row["project"]).name
-    query = hint[:28]
-    require(all(char.isprintable() for char in query), "Expected title is not a single printable line")
+    query = hint[:28].strip()
+    require(query and all(char.isprintable() for char in query), "Expected title is not a single printable line")
     cockpit.key(b"a/" + query.encode() + b"\r")
     cockpit.until(lambda frame: roster_selection(frame, query) is not None,
                   f"named roster search for {session}")
