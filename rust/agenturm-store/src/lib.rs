@@ -1374,16 +1374,28 @@ impl Store {
         let validating_telemetry_replay =
             !payloads.is_empty() && current_cursor.as_deref() == Some(batch.next_cursor.as_str());
         let retention_cutoff = retention::read_state(&transaction)?.cutoff_unix_ns;
+        let mut prior_event_digest = transaction.prepare(
+            "SELECT COALESCE(
+                (SELECT event_digest FROM agenturm_observations
+                 WHERE source_id = ?1 AND event_id = ?2 AND revision = ?3),
+                (SELECT event_digest FROM agenturm_retired_observations
+                 WHERE source_id = ?1 AND event_id = ?2 AND revision = ?3))",
+        )?;
+        let mut insert_retired = transaction.prepare(
+            "INSERT INTO agenturm_retired_observations
+                (source_id, event_id, revision, event_digest) VALUES (?1, ?2, ?3, ?4)",
+        )?;
+        let mut insert_observation = transaction.prepare(
+            "INSERT INTO agenturm_observations
+                (source_id, event_id, revision, request_id, event_digest, scope,
+                 session_id, worker_id, turn_id, operation_id, observed_at_unix_ns, kind_json)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
+        )?;
         let mut inserted = 0;
         for observation in &batch.observations {
             let payload = payloads.get(observation.event_id.as_str());
             let event_hash = event_digest(&batch.source_id, observation)?;
-            let prior_digest: Option<String> = transaction.query_row(
-                "SELECT COALESCE(
-                    (SELECT event_digest FROM agenturm_observations
-                     WHERE source_id = ?1 AND event_id = ?2 AND revision = ?3),
-                    (SELECT event_digest FROM agenturm_retired_observations
-                     WHERE source_id = ?1 AND event_id = ?2 AND revision = ?3))",
+            let prior_digest: Option<String> = prior_event_digest.query_row(
                 params![batch.source_id, observation.event_id, observation.revision],
                 |row| row.get(0),
             )?;
@@ -1416,38 +1428,28 @@ impl Store {
                 )?;
             }
             if timestamp < retention_cutoff {
-                transaction.execute(
-                    "INSERT INTO agenturm_retired_observations
-                        (source_id, event_id, revision, event_digest) VALUES (?1, ?2, ?3, ?4)",
-                    params![
-                        batch.source_id,
-                        observation.event_id,
-                        observation.revision,
-                        event_hash
-                    ],
-                )?;
-                continue;
-            }
-            transaction.execute(
-                "INSERT INTO agenturm_observations
-                    (source_id, event_id, revision, request_id, event_digest, scope,
-                     session_id, worker_id, turn_id, operation_id, observed_at_unix_ns, kind_json)
-                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12)",
-                params![
+                insert_retired.execute(params![
                     batch.source_id,
                     observation.event_id,
-                    i64::from(observation.revision),
-                    batch.request_id,
-                    event_hash,
-                    observation.identity.scope.as_str(),
-                    observation.identity.session_id,
-                    observation.identity.worker_id,
-                    observation.identity.turn_id,
-                    observation.identity.operation_id,
-                    timestamp,
-                    serde_json::to_string(&observation.kind)?,
-                ],
-            )?;
+                    observation.revision,
+                    event_hash
+                ])?;
+                continue;
+            }
+            insert_observation.execute(params![
+                batch.source_id,
+                observation.event_id,
+                i64::from(observation.revision),
+                batch.request_id,
+                event_hash,
+                observation.identity.scope.as_str(),
+                observation.identity.session_id,
+                observation.identity.worker_id,
+                observation.identity.turn_id,
+                observation.identity.operation_id,
+                timestamp,
+                serde_json::to_string(&observation.kind)?,
+            ])?;
             inserted += 1;
             if fail_after_insert == Some(inserted) {
                 return Err(StoreError::InjectedFailure);
@@ -1456,6 +1458,7 @@ impl Store {
         if validating_telemetry_replay {
             return Ok(CommitOutcome::Replay);
         }
+        drop((prior_event_digest, insert_retired, insert_observation));
         transaction.execute(
             "INSERT INTO agenturm_ingest_receipts (request_id, source_id, batch_digest, event_count)
              VALUES (?1, ?2, ?3, ?4)",
