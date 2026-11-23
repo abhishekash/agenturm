@@ -110,7 +110,10 @@ fn evaluation_import_reopens_exact_retained_trace_and_preserves_execution_status
     );
     let execution = checked(run(&db, &["query", "--harness-id", PRIMARY]));
     let execution: Value = serde_json::from_str(&execution).unwrap();
-    for row in execution["observations"].as_array().unwrap() {
+    let spans = execution["observations"].as_array().unwrap().iter()
+        .filter(|row| row["observation"]["kind"] == "trace_span").collect::<Vec<_>>();
+    assert!(!spans.is_empty());
+    for row in spans {
         assert_eq!(row["observation"]["status"], "ok");
     }
 

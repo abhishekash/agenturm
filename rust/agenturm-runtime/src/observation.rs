@@ -80,7 +80,11 @@ fn project_record(record: ObservationRecord, source_id: &str) -> Result<Option<R
                 operation_id: identity.operation_id,
             }
         }
-        None if matches!(record.fact, ObservationFact::Diagnostic(_) | ObservationFact::InternalReview(_)) => {
+        None if matches!(
+            record.fact,
+            ObservationFact::Diagnostic(_) | ObservationFact::InternalReview(_)
+        ) =>
+        {
             ObservationIdentity::source()
         }
         None => return Err(RuntimeError::new("source fact identity is missing")),
@@ -203,14 +207,24 @@ fn project_record(record: ObservationRecord, source_id: &str) -> Result<Option<R
             ObservationKind::TraceSpan(span)
         }
         ObservationFact::InternalReview(review) => {
-            if identity.scope != ObservationScope::Source || !agenturm_protocol::native_review::is_codex_review_source(source_id) || !review.is_valid() {
-                return Err(RuntimeError::new("source internal review metadata is invalid"));
+            if identity.scope != ObservationScope::Source
+                || !agenturm_protocol::native_review::is_codex_review_source(source_id)
+                || !review.is_valid()
+            {
+                return Err(RuntimeError::new(
+                    "source internal review metadata is invalid",
+                ));
             }
             ObservationKind::InternalReview(review)
         }
         ObservationFact::NativeRequest(request) => {
-            if identity.scope != ObservationScope::Session || identity.turn_id.is_none() || !request.is_valid() {
-                return Err(RuntimeError::new("source native request metadata is invalid"));
+            if identity.scope != ObservationScope::Session
+                || identity.turn_id.is_none()
+                || !request.is_valid()
+            {
+                return Err(RuntimeError::new(
+                    "source native request metadata is invalid",
+                ));
             }
             ObservationKind::NativeRequest(request)
         }

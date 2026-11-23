@@ -245,12 +245,26 @@ fn native_otlp_producer() {
     ] {
         assert!(std::env::var_os(key).is_none());
     }
-    assert_eq!(std::env::var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT").unwrap(), format!("http://{address}/v1/metrics"));
-    assert_eq!(std::env::var("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL").unwrap(), "http/protobuf");
+    assert_eq!(
+        std::env::var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT").unwrap(),
+        format!("http://{address}/v1/metrics")
+    );
+    assert_eq!(
+        std::env::var("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL").unwrap(),
+        "http/protobuf"
+    );
+    assert_eq!(
+        std::env::var("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT").unwrap(),
+        format!("http://{address}/v1/logs")
+    );
+    assert_eq!(
+        std::env::var("OTEL_EXPORTER_OTLP_LOGS_PROTOCOL").unwrap(),
+        "http/protobuf"
+    );
     assert_eq!(std::env::var("OTEL_SDK_DISABLED").unwrap(), "false");
     assert_eq!(std::env::var("OTEL_TRACES_EXPORTER").unwrap(), "otlp");
     assert_eq!(std::env::var("OTEL_METRICS_EXPORTER").unwrap(), "otlp");
-    assert_eq!(std::env::var("OTEL_LOGS_EXPORTER").unwrap(), "none");
+    assert_eq!(std::env::var("OTEL_LOGS_EXPORTER").unwrap(), "otlp");
     for key in ["NO_PROXY", "no_proxy"] {
         let value = std::env::var(key).unwrap();
         assert!(value.split(',').any(|item| item == "127.0.0.1"));

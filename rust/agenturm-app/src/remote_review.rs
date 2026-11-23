@@ -40,10 +40,20 @@ pub(crate) fn parse(args: &[String]) -> Result<Command, String> {
         index += 2;
     }
     let receiver = remote_history::parse_attach(&remote)?;
-    let Command::Review { query, selection, output } = crate::parse_query_options(&local, true)? else {
+    let Command::Review {
+        query,
+        selection,
+        output,
+    } = crate::parse_query_options(&local, true)?
+    else {
         return Err(usage.into());
     };
-    Ok(Command::RemoteReview(RemoteReviewOptions { receiver, query, selection, output }))
+    Ok(Command::RemoteReview(RemoteReviewOptions {
+        receiver,
+        query,
+        selection,
+        output,
+    }))
 }
 
 pub fn execute_remote_review(options: &RemoteReviewOptions) -> Result<String, String> {
@@ -56,23 +66,51 @@ mod tests {
     use super::*;
 
     fn args() -> Vec<String> {
-        ["--endpoint", "http://127.0.0.1:8765", "--token-file", "/private/token", "--harness-id", "harness.codex", "--session-id", "exact-session", "--turn-id", "exact-turn", "--linked-traces", "--format", "json", "--limit", "8"]
-            .map(str::to_owned).into()
+        [
+            "--endpoint",
+            "http://127.0.0.1:8765",
+            "--token-file",
+            "/private/token",
+            "--harness-id",
+            "harness.codex",
+            "--session-id",
+            "exact-session",
+            "--turn-id",
+            "exact-turn",
+            "--linked-traces",
+            "--format",
+            "json",
+            "--limit",
+            "8",
+        ]
+        .map(str::to_owned)
+        .into()
     }
 
     #[test]
     fn remote_review_preserves_exact_scope_without_opening_a_local_history() {
-        let Command::RemoteReview(options) = parse(&args()).unwrap() else { panic!("remote receipt"); };
+        let Command::RemoteReview(options) = parse(&args()).unwrap() else {
+            panic!("remote receipt");
+        };
         assert_eq!(options.query.session_id.as_deref(), Some("exact-session"));
         assert_eq!(options.query.limit, 8);
         assert!(options.selection.linked_traces);
-        assert!(matches!(options.selection.anchor, crate::ReviewAnchor::Turn { ref turn_id, worker_id: None } if turn_id == "exact-turn"));
-        assert_eq!(options.output.format, Some(crate::review_receipt::ReviewFormat::Json));
+        assert!(
+            matches!(options.selection.anchor, crate::ReviewAnchor::Turn { ref turn_id, worker_id: None } if turn_id == "exact-turn")
+        );
+        assert_eq!(
+            options.output.format,
+            Some(crate::review_receipt::ReviewFormat::Json)
+        );
     }
 
     #[test]
     fn remote_review_rejects_ambiguous_local_and_legacy_receivers() {
-        for extra in [["--db", "history.sqlite"], ["--receiver-protocol", "python-v0.2.8"], ["--endpoint", "http://127.0.0.1:8766"]] {
+        for extra in [
+            ["--db", "history.sqlite"],
+            ["--receiver-protocol", "python-v0.2.8"],
+            ["--endpoint", "http://127.0.0.1:8766"],
+        ] {
             let mut args = args();
             args.extend(extra.map(str::to_owned));
             assert!(parse(&args).is_err());

@@ -161,8 +161,12 @@ impl<'de> Deserialize<'de> for ObservationRecord {
             FactKind::FileEdit => serde_json::from_str(payload).map(ObservationFact::FileEdit),
             FactKind::McpCall => serde_json::from_str(payload).map(ObservationFact::McpCall),
             FactKind::TraceSpan => serde_json::from_str(payload).map(ObservationFact::TraceSpan),
-            FactKind::InternalReview => serde_json::from_str(payload).map(ObservationFact::InternalReview),
-            FactKind::NativeRequest => serde_json::from_str(payload).map(ObservationFact::NativeRequest),
+            FactKind::InternalReview => {
+                serde_json::from_str(payload).map(ObservationFact::InternalReview)
+            }
+            FactKind::NativeRequest => {
+                serde_json::from_str(payload).map(ObservationFact::NativeRequest)
+            }
             FactKind::Lifecycle => serde_json::from_str(payload).map(ObservationFact::Lifecycle),
             FactKind::Check => serde_json::from_str(payload).map(ObservationFact::Check),
             FactKind::PullRequestRaised => {

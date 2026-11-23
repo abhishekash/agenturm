@@ -23,7 +23,6 @@ mod inspector_activity;
 mod investigate_cli;
 mod mcp_inventory;
 mod metric_history;
-mod usage_history;
 mod native_session_context;
 #[cfg(target_os = "linux")]
 mod new_window;
@@ -38,6 +37,7 @@ mod session_display;
 mod session_evidence;
 mod session_projects;
 mod session_titles;
+mod span_jsonl_follow;
 mod span_jsonl_import;
 mod summary_cli;
 mod task_cli;
@@ -47,6 +47,7 @@ mod trace_import;
 mod trace_progress;
 mod trace_receiver;
 mod trace_run;
+mod usage_history;
 mod view_export;
 mod workflow_route;
 
@@ -68,10 +69,11 @@ pub use new_window::{WindowOptions, execute as execute_new_window};
 pub use private_output::with_private_stdout;
 #[cfg(target_os = "linux")]
 pub use remote_history::{RemoteHistoryOptions, execute_remote_cockpit};
-pub use retention_cli::{RetentionOptions, execute_retention};
-pub use review_receipt::ReviewOutput;
 #[cfg(target_os = "linux")]
 pub use remote_review::{RemoteReviewOptions, execute_remote_review};
+pub use retention_cli::{RetentionOptions, execute_retention};
+pub use review_receipt::ReviewOutput;
+pub use span_jsonl_follow::{SpanJsonlFollowOptions, execute_span_jsonl_follow};
 pub use span_jsonl_import::{SpanJsonlImportOptions, execute_span_jsonl_import};
 pub use summary_cli::{SummaryOptions, execute_summary};
 pub use task_cli::{TaskOptions, execute_task, execute_task_stdout};
@@ -277,6 +279,7 @@ pub enum Command {
     Ingest(IngestOptions),
     ImportTraces(TraceImportOptions),
     ImportJsonl(SpanJsonlImportOptions),
+    WatchJsonl(SpanJsonlFollowOptions),
     Evals(EvalOptions),
     ServeTraces(TraceReceiverOptions),
     Run(TraceRunOptions),
@@ -931,6 +934,7 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         )
         .map(Command::Run),
         Some("import-traces") => trace_import::parse(&args[1..]).map(Command::ImportTraces),
+        Some("watch-jsonl") => span_jsonl_follow::parse(&args[1..]).map(Command::WatchJsonl),
         Some("import-jsonl") => span_jsonl_import::parse(&args[1..]).map(Command::ImportJsonl),
         Some("import-evals") => eval_import::parse(&args[1..], true).map(Command::Evals),
         Some("evals") => eval_import::parse(&args[1..], false).map(Command::Evals),
@@ -1948,8 +1952,14 @@ fn workspace_response_with_sources(
             Ok(WorkspaceResponse::ReviewSaved)
         }
         WorkspaceRequest::ReviewVisibility(value) => Ok(WorkspaceResponse::ReviewVisibility(value)),
-        WorkspaceRequest::MetricHistory(query) => store.query_metric_history(&query).map(WorkspaceResponse::MetricHistory),
-        WorkspaceRequest::History { selection, before, include_reviews } => {
+        WorkspaceRequest::MetricHistory(query) => store
+            .query_metric_history(&query)
+            .map(WorkspaceResponse::MetricHistory),
+        WorkspaceRequest::History {
+            selection,
+            before,
+            include_reviews,
+        } => {
             let mut page = load_workspace_history(app, store, selection, before, include_reviews)?;
             page.history_identity = store.workspace_history_identity();
             page.private_telemetry_history = store.private_telemetry_history();
@@ -2161,9 +2171,18 @@ trait HistoryReader: ObservationStore {
     fn session_title_store(&self) -> Option<&Store> {
         None
     }
-    fn query_mcp_traces(&self, query: &agenturm_store::McpTraceQuery) -> Result<Option<agenturm_kernel::ObservationPage>, String>;
-    fn query_metric_history(&self, query: &agenturm_kernel::retained_history::MetricHistoryQuery) -> Result<agenturm_kernel::retained_history::MetricHistoryPage, String>;
-    fn query_usage_history(&self, query: &agenturm_kernel::retained_history::UsageHistoryQuery) -> Result<agenturm_kernel::retained_history::UsageHistoryPage, String>;
+    fn query_mcp_traces(
+        &self,
+        query: &agenturm_store::McpTraceQuery,
+    ) -> Result<Option<agenturm_kernel::ObservationPage>, String>;
+    fn query_metric_history(
+        &self,
+        query: &agenturm_kernel::retained_history::MetricHistoryQuery,
+    ) -> Result<agenturm_kernel::retained_history::MetricHistoryPage, String>;
+    fn query_usage_history(
+        &self,
+        query: &agenturm_kernel::retained_history::UsageHistoryQuery,
+    ) -> Result<agenturm_kernel::retained_history::UsageHistoryPage, String>;
     fn query_sessions(&self, query: &SessionQuery) -> Result<agenturm_store::SessionPage, String>;
     fn query_linked_traces(
         &self,
@@ -2212,13 +2231,22 @@ impl HistoryReader for Store {
     ) -> Result<agenturm_store::WorkspaceLedger, String> {
         agenturm_store::WorkspaceLedger::open(marker).map_err(|error| error.to_string())
     }
-    fn query_mcp_traces(&self, query: &agenturm_store::McpTraceQuery) -> Result<Option<agenturm_kernel::ObservationPage>, String> {
+    fn query_mcp_traces(
+        &self,
+        query: &agenturm_store::McpTraceQuery,
+    ) -> Result<Option<agenturm_kernel::ObservationPage>, String> {
         Store::query_mcp_traces(self, query, None).map_err(|error| error.to_string())
     }
-    fn query_metric_history(&self, query: &agenturm_kernel::retained_history::MetricHistoryQuery) -> Result<agenturm_kernel::retained_history::MetricHistoryPage, String> {
+    fn query_metric_history(
+        &self,
+        query: &agenturm_kernel::retained_history::MetricHistoryQuery,
+    ) -> Result<agenturm_kernel::retained_history::MetricHistoryPage, String> {
         Store::query_metric_history(self, query, None).map_err(|error| error.to_string())
     }
-    fn query_usage_history(&self, query: &agenturm_kernel::retained_history::UsageHistoryQuery) -> Result<agenturm_kernel::retained_history::UsageHistoryPage, String> {
+    fn query_usage_history(
+        &self,
+        query: &agenturm_kernel::retained_history::UsageHistoryQuery,
+    ) -> Result<agenturm_kernel::retained_history::UsageHistoryPage, String> {
         Store::query_usage_history(self, query, None).map_err(|error| error.to_string())
     }
     fn query_sessions(&self, query: &SessionQuery) -> Result<agenturm_store::SessionPage, String> {
@@ -2279,14 +2307,26 @@ impl HistoryReader for agenturm_storage_service::NativeStore {
         agenturm_store::WorkspaceLedger::open_with_history(marker, self.clone())
             .map_err(|error| error.to_string())
     }
-    fn query_mcp_traces(&self, query: &agenturm_store::McpTraceQuery) -> Result<Option<agenturm_kernel::ObservationPage>, String> {
-        self.query_mcp_traces(query).map_err(|error| error.to_string())
+    fn query_mcp_traces(
+        &self,
+        query: &agenturm_store::McpTraceQuery,
+    ) -> Result<Option<agenturm_kernel::ObservationPage>, String> {
+        self.query_mcp_traces(query)
+            .map_err(|error| error.to_string())
     }
-    fn query_metric_history(&self, query: &agenturm_kernel::retained_history::MetricHistoryQuery) -> Result<agenturm_kernel::retained_history::MetricHistoryPage, String> {
-        self.query_metric_history(query).map_err(|error| error.to_string())
+    fn query_metric_history(
+        &self,
+        query: &agenturm_kernel::retained_history::MetricHistoryQuery,
+    ) -> Result<agenturm_kernel::retained_history::MetricHistoryPage, String> {
+        self.query_metric_history(query)
+            .map_err(|error| error.to_string())
     }
-    fn query_usage_history(&self, query: &agenturm_kernel::retained_history::UsageHistoryQuery) -> Result<agenturm_kernel::retained_history::UsageHistoryPage, String> {
-        self.query_usage_history(query).map_err(|error| error.to_string())
+    fn query_usage_history(
+        &self,
+        query: &agenturm_kernel::retained_history::UsageHistoryQuery,
+    ) -> Result<agenturm_kernel::retained_history::UsageHistoryPage, String> {
+        self.query_usage_history(query)
+            .map_err(|error| error.to_string())
     }
     fn query_sessions(&self, query: &SessionQuery) -> Result<agenturm_store::SessionPage, String> {
         self.query_sessions(query)
@@ -2326,7 +2366,11 @@ fn load_workspace_history(
 ) -> Result<agenturm_ui::HistoryPage, String> {
     let (source, session, pinned) = match &selection {
         HistorySelection::All(_) => (None, None, None),
-        HistorySelection::McpTraces { source_id, snapshot_id, .. } => (Some(source_id.as_str()), None, Some(*snapshot_id)),
+        HistorySelection::McpTraces {
+            source_id,
+            snapshot_id,
+            ..
+        } => (Some(source_id.as_str()), None, Some(*snapshot_id)),
         HistorySelection::Session(session, _) => (
             Some(session.harness_id.as_str()),
             Some(&session.session_id),
@@ -2346,13 +2390,27 @@ fn load_workspace_history(
         limit: INSPECT_PAGE_SIZE,
     };
     match selection {
-        HistorySelection::McpTraces { source_id, event_id, revision, snapshot_id } => {
-            let page = store.query_mcp_traces(&agenturm_store::McpTraceQuery {
-                source_id, event_id, revision, snapshot_id, limit: INSPECT_PAGE_SIZE, before: query.before,
-            })?.ok_or("Selected MCP call is unavailable at this history snapshot")?;
+        HistorySelection::McpTraces {
+            source_id,
+            event_id,
+            revision,
+            snapshot_id,
+        } => {
+            let page = store
+                .query_mcp_traces(&agenturm_store::McpTraceQuery {
+                    source_id,
+                    event_id,
+                    revision,
+                    snapshot_id,
+                    limit: INSPECT_PAGE_SIZE,
+                    before: query.before,
+                })?
+                .ok_or("Selected MCP call is unavailable at this history snapshot")?;
             let mut snapshot = Snapshot {
-                observations: page.observations, observations_truncated: page.has_more,
-                history_snapshot_id: page.snapshot_id, ..Snapshot::default()
+                observations: page.observations,
+                observations_truncated: page.has_more,
+                history_snapshot_id: page.snapshot_id,
+                ..Snapshot::default()
             };
             let mut ids = session_evidence::add_workspace_panes(&mut snapshot);
             let mut page = inspector_activity::overview_page(snapshot);
@@ -2399,7 +2457,10 @@ fn load_workspace_history(
                     return Ok(page);
                 }
             };
-            let (mut snapshot, continuation) = visible_workspace_history(app.refresh_history_query(store, query), include_reviews)?;
+            let (mut snapshot, continuation) = visible_workspace_history(
+                app.refresh_history_query(store, query),
+                include_reviews,
+            )?;
             let mut panes = session_evidence::add_session_panes(
                 &mut snapshot,
                 &session.harness_id,
@@ -2414,13 +2475,24 @@ fn load_workspace_history(
             page.operation_tables = std::mem::take(&mut panes.tables);
             page.evidence_tables = std::mem::take(&mut panes.evidence);
             if matches!(view, SessionView::Usage) {
-                page.features.usage_history = Some(Box::new(usage_history::load(store, Some(ExtensionId::parse(session.harness_id.clone()).map_err(|e| e.to_string())?), Some(session.session_id.clone()), page.snapshot.history_snapshot_id)?));
+                page.features.usage_history = Some(Box::new(usage_history::load(
+                    store,
+                    Some(
+                        ExtensionId::parse(session.harness_id.clone())
+                            .map_err(|e| e.to_string())?,
+                    ),
+                    Some(session.session_id.clone()),
+                    page.snapshot.history_snapshot_id,
+                )?));
             }
             page.initial_pane = Some(select_pane(panes));
             Ok(page)
         }
         HistorySelection::All(view) => {
-            let (mut snapshot, continuation) = visible_workspace_history(app.refresh_history_query(store, query), include_reviews)?;
+            let (mut snapshot, continuation) = visible_workspace_history(
+                app.refresh_history_query(store, query),
+                include_reviews,
+            )?;
             let mut ids = session_evidence::add_workspace_panes(&mut snapshot);
             let host = store.local_host_data().then(|| {
                 let (id, evidence) = cockpit_host::add_host_pane(&mut snapshot);
@@ -2430,10 +2502,18 @@ fn load_workspace_history(
             let mut page = inspector_activity::overview_page(snapshot);
             page.features.continuation = continuation.map(Box::new);
             if view == WorkspaceView::Metrics {
-                page.features.metric_history = Some(Box::new(metric_history::initial(store, page.snapshot.history_snapshot_id)?));
+                page.features.metric_history = Some(Box::new(metric_history::initial(
+                    store,
+                    page.snapshot.history_snapshot_id,
+                )?));
             }
             if view == WorkspaceView::Usage {
-                page.features.usage_history = Some(Box::new(usage_history::load(store, None, None, page.snapshot.history_snapshot_id)?));
+                page.features.usage_history = Some(Box::new(usage_history::load(
+                    store,
+                    None,
+                    None,
+                    page.snapshot.history_snapshot_id,
+                )?));
             }
             page.features.findings =
                 Some((ids.findings.clone(), findings::project(&page.snapshot)));
@@ -2459,14 +2539,31 @@ fn load_workspace_history(
     }
 }
 
-fn visible_workspace_history(snapshot: Snapshot, include_reviews: bool) -> Result<(Snapshot, Option<ObservationPosition>), String> {
+fn visible_workspace_history(
+    snapshot: Snapshot,
+    include_reviews: bool,
+) -> Result<(Snapshot, Option<ObservationPosition>), String> {
     let mut snapshot = workspace_history_snapshot(snapshot)?;
-    let continuation = snapshot.observations_truncated.then(|| snapshot.observations.first().map(|row| ObservationPosition {
-        observed_at_unix_ns: row.observed_at_unix_ns, harness_id: row.harness_id.as_str().into(), event_id: row.event_id.clone(), revision: row.revision, snapshot_id: snapshot.history_snapshot_id,
-    })).flatten();
-    if !include_reviews {
-        snapshot.observations.retain(|row| !agenturm_kernel::native_review::is_codex_review_source(row.harness_id.as_str()));
-    }
+    let continuation = snapshot
+        .observations_truncated
+        .then(|| {
+            snapshot
+                .observations
+                .first()
+                .map(|row| ObservationPosition {
+                    observed_at_unix_ns: row.observed_at_unix_ns,
+                    harness_id: row.harness_id.as_str().into(),
+                    event_id: row.event_id.clone(),
+                    revision: row.revision,
+                    snapshot_id: snapshot.history_snapshot_id,
+                })
+        })
+        .flatten();
+    snapshot.observations.retain(|row| {
+        !matches!(row.kind, ObservationKind::TraceSpanSummary(_))
+            && (include_reviews
+                || !agenturm_kernel::native_review::is_codex_review_source(row.harness_id.as_str()))
+    });
     Ok((snapshot, continuation))
 }
 
@@ -3851,6 +3948,7 @@ pub fn render(command: Command) -> String {
             "       agenturm trace-payload <binding|grant|revoke|snapshot|preview> [options]\n",
             "       agenturm eval-detail <binding|grant|revoke|preview> [options]\n",
             "       agenturm import-traces --file <otlp-json-path|-> --db <path> --source-id otlp.<id>\n",
+            "       agenturm watch-jsonl --file <span-jsonl-path> --db <path> --source-id otlp.<id> [--session-id <id>] [--interval-ms <100..60000>] [payload options]\n",
             "       agenturm import-jsonl --file <span-jsonl-path|-> --db <path> --source-id otlp.<id> [--session-id <id>] [--payload-scope <standalone|harness-id> [--payload-format agent-harness]]\n",
             "       agenturm import-evals --file <results.json|-> --db <path> --source-id otlp.<id> [--include-detail]\n",
             "       agenturm evals --db <path> --source-id otlp.<id> [--trace-id <id> [--history [--before-revision <n>]] | --summary [--after-trace-id <id>]] [--limit <1..256>] [--json]\n",
@@ -3909,7 +4007,7 @@ pub fn render(command: Command) -> String {
         Command::Query(_) | Command::Review { .. } | Command::Attention(_) | Command::Task(_) | Command::Investigate(_) => {
             String::new()
         }
-        Command::Ingest(_) | Command::ImportTraces(_) | Command::ImportJsonl(_) | Command::Evals(_) | Command::ServeTraces(_) | Command::Run(_) => String::new(),
+        Command::Ingest(_) | Command::ImportTraces(_) | Command::ImportJsonl(_) | Command::WatchJsonl(_) | Command::Evals(_) | Command::ServeTraces(_) | Command::Run(_) => String::new(),
         Command::Collect(_) => String::new(),
         Command::Service(_) => String::new(),
     }

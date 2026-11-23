@@ -19,7 +19,6 @@ mod eval_inventory;
 mod eval_outcome;
 mod linked_trace;
 pub mod metric_history;
-pub mod usage_history;
 #[cfg(target_os = "linux")]
 mod native_codex_metadata;
 mod private_text;
@@ -27,6 +26,7 @@ mod retention;
 mod review_ledger;
 mod session_catalog;
 mod telemetry_payload;
+pub mod usage_history;
 mod workspace_ledger;
 
 pub use automatic_retention::{
@@ -51,7 +51,9 @@ pub use eval_outcome::{
     RetainedEvalOutcome, SelectedEvalPage, SelectedEvalQuery, deserialize_eval_batch,
 };
 use linked_trace::TraceLink;
-pub use linked_trace::{McpTraceQuery, ResolvedTraceReview, ResolvedTraceTurn, TraceReviewQuery, TraceTurnQuery};
+pub use linked_trace::{
+    McpTraceQuery, ResolvedTraceReview, ResolvedTraceTurn, TraceReviewQuery, TraceTurnQuery,
+};
 #[cfg(target_os = "linux")]
 pub use native_codex_metadata::{CodexThreadMetadata, read_codex_thread_metadata};
 pub use private_text::bounded_text_preview;
@@ -320,10 +322,18 @@ impl ObservationBatch {
                     KernelObservationKind::TraceProgress(progress) => {
                         ObservationKind::TraceProgress(progress.clone())
                     }
-                    KernelObservationKind::InternalReview(review) => ObservationKind::InternalReview(review.clone()),
-                    KernelObservationKind::NativeRequest(request) => ObservationKind::NativeRequest(request.clone()),
-                    KernelObservationKind::TraceSpanSummary(summary) => ObservationKind::TraceSpanSummary(summary.clone()),
-                    KernelObservationKind::OtlpActivityLog(log) => ObservationKind::OtlpActivityLog(log.clone()),
+                    KernelObservationKind::InternalReview(review) => {
+                        ObservationKind::InternalReview(review.clone())
+                    }
+                    KernelObservationKind::NativeRequest(request) => {
+                        ObservationKind::NativeRequest(request.clone())
+                    }
+                    KernelObservationKind::TraceSpanSummary(summary) => {
+                        ObservationKind::TraceSpanSummary(summary.clone())
+                    }
+                    KernelObservationKind::OtlpActivityLog(log) => {
+                        ObservationKind::OtlpActivityLog(log.clone())
+                    }
                     KernelObservationKind::MetricPoint(point) => {
                         ObservationKind::MetricPoint(point.clone())
                     }
@@ -1347,20 +1357,28 @@ impl Store {
             validate_marked_shape(&connection, 16)?;
         }
         if (2..17).contains(&schema_version) {
-            let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             content_grant::migrate_grant_schema(&transaction, 17)?;
             eval_detail::create_schema(&transaction)?;
             initialize_history_identity(&transaction)?;
-            transaction.execute("UPDATE agenturm_store_meta SET value=?1 WHERE key='format'", [STORE_MARKER_V17])?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V17],
+            )?;
             transaction.pragma_update(None, "user_version", 17)?;
             transaction.commit()?;
             validate_marked_shape(&connection, 17)?;
         }
         if (2..18).contains(&schema_version) {
-            let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             metric_history::create_index(&transaction)?;
             usage_history::create_index(&transaction)?;
-            transaction.execute("UPDATE agenturm_store_meta SET value=?1 WHERE key='format'", [STORE_MARKER])?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER],
+            )?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             transaction.commit()?;
             validate_marked_shape(&connection, SCHEMA_VERSION)?;
@@ -1800,7 +1818,11 @@ impl Store {
             query,
             turn_id,
             worker_filter,
-            if linked_traces { TraceLink::Session } else { TraceLink::Unlinked },
+            if linked_traces {
+                TraceLink::Session
+            } else {
+                TraceLink::Unlinked
+            },
             allowed_sources,
             false,
         )
@@ -2025,10 +2047,18 @@ impl Store {
                     ObservationKind::TraceProgress(progress) => {
                         KernelObservationKind::TraceProgress(progress)
                     }
-                    ObservationKind::InternalReview(review) => KernelObservationKind::InternalReview(review),
-                    ObservationKind::NativeRequest(request) => KernelObservationKind::NativeRequest(request),
-                    ObservationKind::TraceSpanSummary(summary) => KernelObservationKind::TraceSpanSummary(summary),
-                    ObservationKind::OtlpActivityLog(log) => KernelObservationKind::OtlpActivityLog(log),
+                    ObservationKind::InternalReview(review) => {
+                        KernelObservationKind::InternalReview(review)
+                    }
+                    ObservationKind::NativeRequest(request) => {
+                        KernelObservationKind::NativeRequest(request)
+                    }
+                    ObservationKind::TraceSpanSummary(summary) => {
+                        KernelObservationKind::TraceSpanSummary(summary)
+                    }
+                    ObservationKind::OtlpActivityLog(log) => {
+                        KernelObservationKind::OtlpActivityLog(log)
+                    }
                     ObservationKind::MetricPoint(point) => {
                         KernelObservationKind::MetricPoint(point)
                     }
@@ -2284,21 +2314,49 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
             return Err(StoreError::Invalid("trace summary requires its exact structural span in the same batch"));
         }
         if let ObservationKind::OtlpActivityLog(log) = &observation.kind
-            && (observation.identity.scope != StoredScope::Session || !batch.source_id.starts_with("otlp.") || observation.revision != 0 || observation.identity.operation_id.is_some() || !log.is_valid() || !log.matches_event(&observation.event_id)
-                || (observation.identity.turn_id.is_some() && log.target_source_id.is_none()) || (observation.identity.worker_id.is_some() && observation.identity.turn_id.is_none())) {
-            return Err(StoreError::Invalid("activity log requires exact OTLP session scope and safe metadata"));
+            && (observation.identity.scope != StoredScope::Session
+                || !batch.source_id.starts_with("otlp.")
+                || observation.revision != 0
+                || observation.identity.operation_id.is_some()
+                || !log.is_valid()
+                || !log.matches_event(&observation.event_id)
+                || (observation.identity.turn_id.is_some() && log.target_source_id.is_none())
+                || (observation.identity.worker_id.is_some()
+                    && observation.identity.turn_id.is_none()))
+        {
+            return Err(StoreError::Invalid(
+                "activity log requires exact OTLP session scope and safe metadata",
+            ));
         }
-        let review_source = agenturm_kernel::native_review::is_codex_review_source(&batch.source_id);
-        if review_source && !matches!(observation.kind, ObservationKind::InternalReview(_) | ObservationKind::Diagnostic { .. }) {
-            return Err(StoreError::Invalid("internal review sources may emit only review metadata"));
+        let review_source =
+            agenturm_kernel::native_review::is_codex_review_source(&batch.source_id);
+        if review_source
+            && !matches!(
+                observation.kind,
+                ObservationKind::InternalReview(_) | ObservationKind::Diagnostic { .. }
+            )
+        {
+            return Err(StoreError::Invalid(
+                "internal review sources may emit only review metadata",
+            ));
         }
         if let ObservationKind::InternalReview(review) = &observation.kind
-            && (!review_source || observation.identity.scope != StoredScope::Source || !review.is_valid()) {
-            return Err(StoreError::Invalid("internal review metadata requires a valid reserved source"));
+            && (!review_source
+                || observation.identity.scope != StoredScope::Source
+                || !review.is_valid())
+        {
+            return Err(StoreError::Invalid(
+                "internal review metadata requires a valid reserved source",
+            ));
         }
         if let ObservationKind::NativeRequest(request) = &observation.kind
-            && (observation.identity.scope != StoredScope::Session || observation.identity.turn_id.is_none() || !request.is_valid()) {
-            return Err(StoreError::Invalid("native requests require a session, turn and opaque request ID"));
+            && (observation.identity.scope != StoredScope::Session
+                || observation.identity.turn_id.is_none()
+                || !request.is_valid())
+        {
+            return Err(StoreError::Invalid(
+                "native requests require a session, turn and opaque request ID",
+            ));
         }
         if let ObservationKind::Activity { category } = &observation.kind
             && (category.is_empty()
@@ -2817,20 +2875,37 @@ mod tests {
     fn v17_upgrade_preserves_existing_eval_tables_and_pinned_history() {
         let db = TempDb::new();
         let mut store = Store::open(&db.0).unwrap();
-        store.commit_batch(&batch("prior", vec![event("prior", "session", 10)])).unwrap();
+        store
+            .commit_batch(&batch("prior", vec![event("prior", "session", 10)]))
+            .unwrap();
         let query = ObservationQuery::latest(1);
         let snapshot = store.query_observations(&query).unwrap().snapshot_id;
         let identity = store.history_identity().unwrap();
         store.connection.execute_batch("DROP INDEX agenturm_metric_series_points; DROP INDEX agenturm_usage_history_by_time;").unwrap();
-        store.connection.execute("UPDATE agenturm_store_meta SET value=?1 WHERE key='format'", [STORE_MARKER_V17]).unwrap();
-        store.connection.pragma_update(None, "user_version", 17).unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V17],
+            )
+            .unwrap();
+        store
+            .connection
+            .pragma_update(None, "user_version", 17)
+            .unwrap();
         drop(store);
         let reader = Store::open_read_only(&db.0).unwrap();
-        assert_eq!(reader.query_observations(&query).unwrap().snapshot_id, snapshot);
+        assert_eq!(
+            reader.query_observations(&query).unwrap().snapshot_id,
+            snapshot
+        );
         drop(reader);
         let upgraded = Store::open(&db.0).unwrap();
         assert_eq!(upgraded.history_identity().unwrap(), identity);
-        assert_eq!(upgraded.query_observations(&query).unwrap().snapshot_id, snapshot);
+        assert_eq!(
+            upgraded.query_observations(&query).unwrap().snapshot_id,
+            snapshot
+        );
         validate_marked_shape(&upgraded.connection, 18).unwrap();
     }
 
@@ -3332,6 +3407,59 @@ mod tests {
             next_cursor: "cursor-1".into(),
             observations,
         }
+    }
+
+    #[test]
+    fn telemetry_summaries_and_logs_require_exact_structural_scope() {
+        use agenturm_kernel::telemetry_summary::{OtlpActivityLog, TraceSpanSummary};
+        let mut store = Store::open(":memory:").unwrap();
+        let mut log = event(&format!("otlp-log:{}", "a".repeat(64)), "session", 10);
+        log.identity.worker_id = None;
+        log.identity.turn_id = None;
+        log.identity.operation_id = None;
+        log.kind = ObservationKind::OtlpActivityLog(OtlpActivityLog {
+            reported_error: true,
+            target_source_id: None,
+            usage: None,
+            cost: None,
+        });
+        let mut logged = batch("log", vec![log.clone()]);
+        assert!(store.commit_batch(&logged).is_err());
+        logged.source_id = "otlp.fixture".into();
+        assert!(store.commit_batch(&logged).is_ok());
+        let mut malformed = logged.clone();
+        malformed.request_id = "malformed".into();
+        malformed.expected_cursor = Some(logged.next_cursor.clone());
+        malformed.observations[0].identity.turn_id = Some("turn-without-target".into());
+        assert!(store.commit_batch(&malformed).is_err());
+        let trace_id = "11".repeat(16);
+        let span_id = "22".repeat(8);
+        let mut summary = event(&format!("otlp:{trace_id}:{span_id}:summary"), "session", 10);
+        summary.identity = log.identity.clone();
+        summary.kind = ObservationKind::TraceSpanSummary(TraceSpanSummary {
+            trace_id: trace_id.clone(),
+            span_id: span_id.clone(),
+            agent_run: false,
+            reported_error: false,
+        });
+        let mut missing = batch("missing", vec![summary.clone()]);
+        missing.source_id = "otlp.other".into();
+        assert!(store.commit_batch(&missing).is_err());
+        let mut anchor = summary.clone();
+        anchor.event_id = format!("otlp:{trace_id}:{span_id}");
+        anchor.kind = ObservationKind::TraceSpan(agenturm_kernel::TraceSpan {
+            trace_id,
+            span_id,
+            parent_span_id: None,
+            started_at_unix_ns: 1,
+            status: agenturm_kernel::TraceStatus::Ok,
+            target_source_id: None,
+            target_operation_id: None,
+        });
+        missing.observations.push(anchor);
+        assert!(store.commit_batch(&missing).is_ok());
+        missing.observations[0].identity.session_id = Some("sibling".into());
+        assert!(store.commit_batch(&missing).is_err());
     }
 
     #[test]

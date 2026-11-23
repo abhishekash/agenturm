@@ -1496,20 +1496,39 @@ fn validate_raw_observation_slice(
             return Err("trace summary requires its exact structural span in the same batch".into());
         }
         if let ObservationKind::OtlpActivityLog(log) = &row.kind
-            && (row.identity.scope != ObservationScope::Session || !source.as_str().starts_with("otlp.") || row.revision != 0 || row.identity.operation_id.is_some() || !log.is_valid() || !log.matches_event(&row.event_id)
-                || (row.identity.turn_id.is_some() && log.target_source_id.is_none()) || (row.identity.worker_id.is_some() && row.identity.turn_id.is_none())) {
+            && (row.identity.scope != ObservationScope::Session
+                || !source.as_str().starts_with("otlp.")
+                || row.revision != 0
+                || row.identity.operation_id.is_some()
+                || !log.is_valid()
+                || !log.matches_event(&row.event_id)
+                || (row.identity.turn_id.is_some() && log.target_source_id.is_none())
+                || (row.identity.worker_id.is_some() && row.identity.turn_id.is_none()))
+        {
             return Err("activity log requires exact OTLP session scope and safe metadata".into());
         }
-        let review_source = agenturm_protocol::native_review::is_codex_review_source(source.as_str());
-        if review_source && !matches!(row.kind, ObservationKind::InternalReview(_) | ObservationKind::Diagnostic { .. }) {
+        let review_source =
+            agenturm_protocol::native_review::is_codex_review_source(source.as_str());
+        if review_source
+            && !matches!(
+                row.kind,
+                ObservationKind::InternalReview(_) | ObservationKind::Diagnostic { .. }
+            )
+        {
             return Err("internal review sources may emit only review metadata".into());
         }
         if let ObservationKind::InternalReview(review) = &row.kind
-            && (!review_source || row.identity.scope != ObservationScope::Source || !review.is_valid()) {
+            && (!review_source
+                || row.identity.scope != ObservationScope::Source
+                || !review.is_valid())
+        {
             return Err("internal review metadata requires a valid reserved source".into());
         }
         if let ObservationKind::NativeRequest(request) = &row.kind
-            && (row.identity.scope != ObservationScope::Session || row.identity.turn_id.is_none() || !request.is_valid()) {
+            && (row.identity.scope != ObservationScope::Session
+                || row.identity.turn_id.is_none()
+                || !request.is_valid())
+        {
             return Err("native requests require a session, turn and opaque request ID".into());
         }
         if let ObservationKind::Activity { category } = &row.kind

@@ -26,8 +26,14 @@ pub(super) fn create_index(connection: &Connection) -> Result<()> {
 }
 
 pub(super) fn validate_index(connection: &Connection) -> Result<()> {
-    let sql: String = connection.query_row("SELECT sql FROM sqlite_schema WHERE type='index' AND name='agenturm_metric_series_points'", [], |row| row.get(0))?;
-    if sql != INDEX_SQL.trim_end_matches(';') { return Err(StoreError::UnrecognizedDatabase); }
+    let sql: String = connection.query_row(
+        "SELECT sql FROM sqlite_schema WHERE type='index' AND name='agenturm_metric_series_points'",
+        [],
+        |row| row.get(0),
+    )?;
+    if sql != INDEX_SQL.trim_end_matches(';') {
+        return Err(StoreError::UnrecognizedDatabase);
+    }
     Ok(())
 }
 
