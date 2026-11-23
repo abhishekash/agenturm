@@ -221,6 +221,8 @@ def main():
                     "agenturm.turn.id": "turn-fixture", "agenturm.worker.id": "worker-fixture",
                     "agenturm.payload.input": INPUT, "agenturm.payload.output": OUTPUT,
                     "input.value": UNRELATED,
+                    "gen_ai.usage.cost": "0.002",
+                    "gen_ai.usage.cost.currency": "USD",
                 }.items()
             ],
         }
@@ -243,7 +245,9 @@ def main():
             assert post(intake, export)[0] == 401
             assert post(intake, export, "f" * 64)[0] == 401
             assert post(intake, export, producer_token)[0] == 200
+            original_snapshot = snapshot()
             assert post(intake, export, producer_token)[0] == 200
+            assert snapshot() == original_snapshot
             unsafe = json.loads(json.dumps(export))
             unsafe["resourceSpans"][0]["scopeSpans"][0]["spans"][0]["attributes"][4]["value"] = {
                 "stringValue": "Authorization: Bearer synthetic secret",
@@ -257,7 +261,14 @@ def main():
             error = post(intake, changed, producer_token)
             assert error[0] == 503 and INPUT not in str(error)
             metadata = run(reader, *command("query", "--harness-id", SOURCE)).stdout
-            assert len(json.loads(metadata)["observations"]) == 1
+            observations = json.loads(metadata)["observations"]
+            assert len(observations) == 2, observations
+            cost, = (row["observation"] for row in observations
+                     if row["observation"]["kind"] == "reported_cost")
+            assert cost["currency"] == "USD"
+            assert cost["nanounits"] == "2000000"
+            assert cost["span"] == {"trace_id": TRACE, "span_id": SPAN}
+            assert snapshot() == original_snapshot
             assert all(text not in metadata for text in [INPUT, OUTPUT, UNRELATED])
 
             gateway = subprocess.Popen(command(
@@ -271,10 +282,13 @@ def main():
                 "version": 1,
                 "history_identity": identity["history_identity"],
                 "request": {"op": "history", "selection": {"kind": "observations"},
-                            "query": {"harness_id": SOURCE, "session_id": SESSION, "limit": 1}},
+                            "query": {"harness_id": SOURCE, "session_id": SESSION, "limit": 8}},
             }
             status, page = post(address, parameters, viewer_token, path)
-            assert status == 200 and page["result"]["Ok"]["value"]["observations"]
+            assert status == 200
+            assert {row["kind"]["kind"] for row in page["result"]["Ok"]["value"]["observations"]} == {
+                "trace_span", "reported_cost",
+            }
             assert all(text not in json.dumps(page) for text in [INPUT, OUTPUT, UNRELATED])
             parameters["request"] = {"op": "reveal_telemetry"}
             assert post(address, parameters, viewer_token, path)[0] == 400
@@ -352,7 +366,7 @@ def main():
             for process in (receiver, gateway, service):
                 if process is not None:
                     stop(process)
-        print("PASS payload admission, private CLI and cockpit, disclosure ACK, gateway, restore and retention",
+        print("PASS private payload and exact reported cost, stable replay, all disclosure exits, broker fencing and restore",
               flush=True)
 
 
