@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Synchronized migration progress</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-tasks.md">Markdown source ↗</a></nav><h1>Rust-only execution tasks</h1>
+</style></head><body><main><nav><strong>Agenturm / Remaining feature development</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-tasks.md">Markdown source ↗</a></nav><h1>Rust-only execution tasks</h1>
 <p>Progress updated 23 November 2026 against merged native PR #379 (<code>52ec13b</code>), Findings PR #380 (<code>ef3d647</code>) and the joined Host/Metrics development baseline. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md">detailed remaining-work plan</a>: <strong>F = feature development, I = integration, Q = tests/qualification</strong>. The status column below supersedes old scheduling labels such as “Start now”; dependencies and original acceptance criteria remain for traceability.</p>
 <ul>
 <li><strong>Merged native baseline:</strong> 813 tests / 96 suites, strict Clippy, exact optimized archive install/upgrade and 12 separate-UID KVM cases passed.</li>
@@ -64,6 +64,66 @@ a separate agent owns broad test execution. Follow the
 </table></div>
 <p>Feature developers run focused checks needed for implementation. Q1–Q10 and
 release qualification remain delegated; no broad campaign is duplicated here.</p>
+<h2>Current feature backlog and audit</h2>
+<p>Use FD1–FD7 and AP1 in the
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md#remaining-feature-development--current-scheduling">implementation plan</a>
+for new assignments. The older A–E IDs retain their original acceptance criteria.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Track</th>
+<th>Current assignment</th>
+<th>Category</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FD1 / A1–A3</td>
+<td>Remaining attributable Pi worker, Claude async and native check/turn shapes; require positive native evidence.</td>
+<td>Core feature development</td>
+</tr>
+<tr>
+<td>FD2 / B3–B4</td>
+<td>Private edit/MCP detail beyond the implemented Codex paths.</td>
+<td>Core feature development</td>
+</tr>
+<tr>
+<td>FD3 / B6</td>
+<td>Provenance-aware, duplicate-safe combined usage/cost totals.</td>
+<td>Core feature development</td>
+</tr>
+<tr>
+<td>FD4 / B6</td>
+<td>Authenticated cross-host terminal routing to one exact current owner.</td>
+<td>Core feature development</td>
+</tr>
+<tr>
+<td>FD5 / B8</td>
+<td>Remote package discovery/download and additional decoder formats; local lifecycle is complete.</td>
+<td>Separate extension development</td>
+</tr>
+<tr>
+<td>FD6 / C6–C8</td>
+<td>Additional provider transports, credential provisioning and architecture isolation profiles.</td>
+<td>Separate connector development</td>
+</tr>
+<tr>
+<td>FD7 / D2-Mac</td>
+<td>Mac artifacts/install/paths/launchd/signing; Apple Silicon and Intel separate.</td>
+<td>Separate platform development</td>
+</tr>
+<tr>
+<td>AP1 / B1, B5–B6</td>
+<td>Map SDK/CLI/keyboard inventory to implemented, test-only, genuinely missing, unavailable native evidence or scope decision.</td>
+<td>Audit; do not count all rows as missing features</td>
+</tr>
+<tr>
+<td>CF1–CF5 / Q1–Q10</td>
+<td>Qualify completed source, artifact, UI and authority behavior; obtain real Kiro/production/Mac evidence as applicable.</td>
+<td>Separate test agent; not feature development</td>
+</tr>
+</tbody>
+</table></div>
 <h2>Review of the existing plan</h2>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -181,7 +241,7 @@ release qualification remain delegated; no broad campaign is duplicated here.</p
 </tr>
 <tr>
 <td>B3</td>
-<td>Partial — exact Codex e/edit preview, codex.edit_detail and version-linked notes implemented; other source/shape coverage F2/Q6.</td>
+<td>Exact Codex e/edit preview, whole-session browser and version-linked notes implemented; non-Codex source/shape work FD2, installed acceptance Q6.</td>
 <td>Add detailed edit evidence to Review</td>
 <td>Start now with a source that provides edit evidence</td>
 <td>A recorded edit appears on the correct run and evidence version. Existing decision notes survive reopen. Content-bearing detail follows the applicable grant.</td>
@@ -216,7 +276,7 @@ release qualification remain delegated; no broad campaign is duplicated here.</p
 </tr>
 <tr>
 <td>B8</td>
-<td>Local trusted install/replace already implemented; CF3 list/show/pin-CAS removal in progress. Remote package discovery and new formats remain separate.</td>
+<td>Supported local install/replace/list/show/pin-CAS removal implemented and merged; installed acceptance delegated. Remote package discovery/new formats remain FD5.</td>
 <td>Define and implement automatic decoder installation</td>
 <td>Start design now. Activation depends on the approved trust model.</td>
 <td>An independent supported decoder can be installed, selected and verified through the declared format and pin. Unsupported formats or changed artifacts fail closed. Keep untrusted activation behind its isolation gate.</td>
@@ -336,7 +396,7 @@ release qualification remain delegated; no broad campaign is duplicated here.</p
 </tbody>
 </table></div>
 <h2>Pending issue — running sessions missing from the command center</h2>
-<p>Historical diagnosis recorded from the user's Rust 0.3.8 screenshot. Later authorization superseded the original diagnosis-only restriction. E1–E5 have an implemented, checked native baseline; header-only roster behavior, actual simultaneous Claude coverage and final combined-artifact acceptance remain open. The findings below describe the published source at diagnosis time, not the current native implementation.</p>
+<p>Historical diagnosis recorded from the user's Rust 0.3.8 screenshot. Later authorization superseded the original diagnosis-only restriction. E1–E5 have an implemented, checked native baseline; supported header-only presence is implemented; actual simultaneous Claude and final combined-artifact acceptance remain with the test owner. The findings below describe the published source at diagnosis time, not the current native implementation.</p>
 <p><strong>Confirmed findings from the published source</strong></p>
 <ul>
 <li>Default discovery selects four newest-modified transcript files per harness, within a 16-source global limit. It uses recent file modification time without an active-session inventory. A running session outside the selected files can be omitted from collection.</li>
@@ -359,7 +419,7 @@ release qualification remain delegated; no broad campaign is duplicated here.</p
 <tbody>
 <tr>
 <td>E1</td>
-<td>Partial — Codex actual cohort passed; header-only roster behavior F1, simultaneous Claude and installed Q6 remain.</td>
+<td>Supported header-only presence implemented via CF1; actual concurrency/installed Q6 remain qualification, unsupported native shapes FD1.</td>
 <td>Diagnose the selected history and cover running sessions in discovery</td>
 <td>Implemented; retain runtime diagnosis/coverage criteria for Q6 installed regression.</td>
 <td>Record the actual executable/version, command, selected database, collector ownership and coverage notice. Compare expected session IDs against discovered files, selected adapters, committed cursors and roster rows. Exercise more than four concurrent sessions, idle-but-running sessions, source turnover, cold catch-up, restart and intentionally excluded review files. Show collection coverage and distinguish recorded lifecycle from current liveness.</td>

@@ -77,6 +77,64 @@ assigns all broader execution to the other agent. This development session
 performed only the narrow corrective regression, Store lint and fixture help
 checks. No release/default switch or complete migration claim follows.
 
+## Remaining feature development — current scheduling
+
+The five CF1–CF5 slices are implemented and merged in PR #382 (`3135060`);
+PR #383 (`2fea865`) synchronizes baseline test evidence and fixes the reported
+lint/upgrade-identity coverage gap. The rows below describe development still
+open. The SDK/CLI audit and test qualification are separate work categories.
+
+### Core Linux features
+
+| ID | Priority / owner | Feature still to implement | Dependency and completion condition |
+| --- | --- | --- | --- |
+| FD1 | Core / harness adapters | Remaining attributable native evidence: Pi same-session worker relationships, Claude asynchronous workers, and additional supported check/turn shapes. | Obtain positive native records for each shape, then add exact typed attribution through admission/reopen and the evidence UI. Missing exit codes or parent evidence stay unknown; fixtures or output prose cannot invent facts. Completed Claude worker spawning and neutral presence are not reopened. |
+| FD2 | Core / private evidence and UI | Provider-specific private edit and MCP detail beyond the implemented Codex routes. | Define each provider's exact retained/source proof and separate content approval. Implement scoped selection/reveal/revocation and clear unavailable cases. Existing whole-session Codex Review edits, MCP preview and linked-trace paths remain implemented. |
+| FD3 | Core / usage and cost | Combined usage/cost totals that safely handle overlapping producer reports. | Define provenance and deduplication for native, OTLP and multiple instrumentation layers. Keep currencies distinct and ambiguous totals unreported. Implement only totals with attributable nonduplicated evidence. Existing seven-day and per-currency views remain implemented. |
+| FD4 | Core / remote workflow | Cross-host terminal routing to the exact recorded remote owner/session. | Use an explicitly configured authenticated host/session route and current request evidence. Resolve a unique target or report unavailable. Preserve return selection; routing never answers or approves the agent request. Existing local routing/resume and native/attached receiver reads are not missing features. |
+
+FD1–FD4 can progress independently after agreeing on any shared DTO, grant or
+transport contracts. An unavailable native witness is a dependency, not proof
+that the producer records the desired fact.
+
+### Separate platform and extension development
+
+| ID | Owner | Feature still open | Existing baseline and boundary |
+| --- | --- | --- | --- |
+| FD5 | Extension runtime | Remote adapter package discovery/download and support for additional decoder formats. | Trusted local install/replace/list/show/pin-CAS remove is complete. Define trusted origin, integrity, version/format and update selection before remote acquisition. Activation remains explicit and subject to the supported trust/isolation profile. |
+| FD6 | Connector runtime | HTTPS/general provider transport, production credential provisioning and sandbox support beyond the current architecture/profile. | Static Linux x86-64 isolated_linux and host-mediated unix_status_v1 are implemented. Select and implement the additional profile before its deployed acceptance; an approved production endpoint is a qualification dependency, not this transport implementation. |
+| FD7 | Platform/distribution | macOS artifacts, installation/update/uninstall, native paths and service integration, signing/notarization and normal Gatekeeper behavior. | Apple Silicon and Intel are separate targets. Define minimum OS and foreground/launchd support. Native testing follows implementation; macOS is unsupported until D2-Mac passes. Linux qualification can proceed under its own declared support. |
+
+These are independent delivery/support tracks. Do not advertise them complete
+because a Linux build ships, and do not silently retire them or expand the
+Linux release scope without an explicit product decision.
+
+### AP1 — SDK/CLI parity audit, not a blanket missing-feature list
+
+Reconcile every retained Python 0.2.8 CLI/keyboard journey and selected SDK
+integration with its actual Rust code path. Cover OpenAI, Anthropic,
+LangChain/LangGraph, Google ADK and Pydantic AI as applicable to the retained
+inventory. Record each row as **implemented**, **test-only acceptance pending**,
+**confirmed missing feature**, **native evidence unavailable**, or **scope
+decision needed**. Include the owner, source anchor and acceptance journey.
+
+Only confirmed missing behavior becomes a new FD development task. Passing
+selected SDK jobs on an older source is not complete instrumentation coverage;
+unexecuted tests are not evidence that implementation is absent. Complete this
+audit before claiming feature development or default cutover complete. No
+workflow is retired by this documentation update.
+
+### Implemented code and qualification ownership
+
+CF1 neutral Claude/Pi presence and admission-age retention, CF2 whole-session
+Review edits, CF3 adapter lifecycle, CF4 log failure investigation and CF5 exact
+Claude worker spawning are **implemented**. Their pending current-head tests,
+paired UI states, installers/upgrades, artifact/guest checks and CI belong to
+the separate test execution agent in
+[the core feature test plan](../validation/rust-core-feature-test-plan.md).
+Actual Kiro collection, the approved production endpoint and native Mac runs
+are evidence/platform gates. Comparative performance benchmarks stay deferred.
+
 ## 2. Feature development still open
 
 These items concern product behavior or platform support. Passing existing
@@ -104,24 +162,21 @@ invent check results, parent relationships, current liveness or cost totals.
   with explicit exits are implemented. Preserve session-only scope and unknown
   outcomes where boundaries or exits are absent; qualify further native shapes
   rather than treating every missing field as a decoder bug.
-- Header-only native recordings: Codex already admits neutral SessionDiscovered
-  from verified headers. Claude/Pi metadata-only presence needs the remaining
-  provider-specific support is implemented in the development branch (CF1),
-  including recognized timestamp-less Claude title/name metadata with explicit
-  unknown time 0. Implemented schema 22 admission-clock retention lets this
-  neutral identity survive managed retention without inventing source time.
-  Installed acceptance is delegated to the test owner. Preserve exact
-  source identity and neutral status; an open file must not invent a Working
-  lifecycle. This is an open behavior gap, not only an archive rerun.
+- Supported header-only presence is implemented: existing Codex discovery,
+  plus CF1 Claude/Pi openings and recognized timestamp-less Claude title/name
+  metadata with explicit unknown time 0. Schema 22 uses original admission age
+  for retention without inventing source timestamps. This is completed code
+  awaiting installed acceptance; unsupported native shapes remain FD1 evidence
+  work, and no open handle alone establishes Working or process liveness.
 - Kiro: native-format process fixtures cover failure, delegation and fractional
   credits. An actual transcript is required to determine any further decoder
   changes; obtaining it is a validation dependency, not evidence of a known
   missing implementation.
 
-**Done when:** the provider matrix identifies every supported and unsupported
-shape, attributable missing shapes are implemented, ambiguous cases remain
-explicit, and each required provider journey passes installed acceptance Q8.
-Land shared worker-identity contracts before parallel adapter changes.
+**Development complete when:** the provider matrix identifies supported and
+unsupported shapes, attributable missing shapes have typed implementations,
+and ambiguous cases remain explicit. Land shared contracts before parallel
+adapter changes. Installed acceptance is a separate Q8 test-owner gate.
 
 ### F2. Close the remaining required Python 0.2.8 workflow differences
 
@@ -135,7 +190,8 @@ Review. Do not reopen these as entirely absent features.
 
 Keep the following unresolved coverage explicit:
 
-1. Remaining provider/shape and whole-run edit evidence. The exact Codex `e`
+1. Remaining provider/shape edit evidence beyond Codex. Whole-session paged
+   Codex Review edit browsing is implemented in CF2. The exact Codex `e`
    Review/edit preview already supports paths, bounded diffs or contents under
    `codex.edit_detail`, with version-linked decision notes. Preserve those
    implemented guarantees while completing unsupported source/shape cases.
@@ -149,16 +205,18 @@ Keep the following unresolved coverage explicit:
 4. Remaining usage/cost aggregation differences where overlapping producers
    cannot be safely combined. Preserve distinct evidence cohorts, currencies
    and unreported totals until exact deduplication/attribution is established.
-5. Any remaining CLI and visual/keyboard differences in the retained workflow
-   inventory. Cross-host terminal routing is currently unavailable; retain it
-   as an explicit difference rather than reporting a successful route.
+5. FD4 cross-host terminal routing is a confirmed missing feature. Other CLI,
+   SDK and keyboard differences belong to AP1 until a concrete missing code
+   path is identified. Visual-state comparisons of implemented paths remain
+   qualification with the separate test agent.
 
-**Done when:** each difference is implemented and tested, or is recorded as
-unsupported with an explicit product decision about cutover. No workflow is
-silently retired. Native approval evidence must retain its exact source and
+**Development complete when:** each confirmed missing code path from AP1 has
+its implementation and scope controls, or an explicit product decision records
+its disposition. Installed/paired acceptance remains a separate test-owner
+gate. No workflow is silently retired. Native approval evidence must retain its exact source and
 default-off internal-review visibility; an internal review is not an approval.
 
-### F3. Automatic decoder installation and extension trust
+### F3. Local adapter lifecycle complete; remote extension work remains
 
 **Existing task:** B8. **Owner:** extension runtime.
 
@@ -170,10 +228,11 @@ automatic package discovery/download and new decoder formats remain separate;
 do not reimplement the existing supported local installer. Changed artifacts and unsupported formats
 must fail closed. Do not equate a checksum with an OS sandbox.
 
-**Done when:** an independent supported decoder installs through the declared
-flow, runs only when selected and verified, and fails closed on malformed or
-changed packages. Untrusted activation remains dependent on F4. This can ship
-separately from a qualified opt-in Linux bundle; keep the support claim precise.
+**Current development status:** the supported local manifest install,
+replacement, inspection and removal flow is implemented. Installed validation
+is delegated. FD5 covers additional remote package/format features; unsupported
+untrusted activation still depends on its defined trust/isolation profile.
+Keep these independent extension claims separate from Linux qualification.
 
 ### F4. Connector profiles beyond the qualified local boundary
 
@@ -195,8 +254,9 @@ unimplemented. Implement the profiles actually selected for production; do not
 claim arbitrary outbound permissions or portable isolation from the local proof.
 Existing C6/C7 behavior needs deployed acceptance, not reinvention.
 
-**Done when:** the selected supported configuration passes Q9 under least
-privilege, with any required new profile implemented first. An approved
+**Development complete when:** the selected new transport, credential and
+architecture profiles are implemented under the declared least-privilege
+contract. Deployed acceptance is separately owned by Q9. An approved
 production endpoint/configuration is still needed. Keep unsupported profiles
 and unqualified production activation disabled. See the
 [connector contract and profile limits](rust-connector-api.md).
@@ -212,9 +272,10 @@ configuration/state paths, supported harness roots and foreground versus
 assumptions from the advertised macOS path. Define signing/notarization and
 normal Gatekeeper behavior.
 
-**Done when:** each advertised architecture passes Q10 with the exact artifact.
-macOS remains unsupported until then. Its implementation and native tests are
-separate from Linux release acceptance.
+**Development complete when:** the selected macOS artifact, path, installer,
+service and signing configuration is implemented for each intended target.
+Native acceptance is separately owned by Q10. macOS remains unsupported until
+that gate passes; it is separate from Linux release acceptance.
 
 ## 3. Implemented code awaiting integration
 
@@ -395,8 +456,8 @@ directory or install/download tools unnecessarily.
 
 ## 6. Completion and release gates
 
-**Feature development complete:** required F1/F2 differences are closed with
-evidence and explicit scope decisions. F3–F5 retain their own delivery/support
+**Feature development complete:** core FD1–FD4 and confirmed AP1 gaps are closed with
+evidence and explicit scope decisions. FD5–FD7 retain their own delivery/support
 gates; do not advertise them complete merely because Linux ships.
 
 **Linux candidate qualified:** integrated source passes Q1–Q8 as applicable to

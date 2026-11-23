@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Synchronized migration progress</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md">Markdown source ↗</a></nav><h1>Rust-only Agenturm execution plan</h1>
+</style></head><body><main><nav><strong>Agenturm / Remaining feature development</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md">Markdown source ↗</a></nav><h1>Rust-only Agenturm execution plan</h1>
 <p>Status updated 23 November 2026. <strong>Migration and feature development remain incomplete; default cutover is gated.</strong> The Rust-only product decision dates from 21 November. This document supersedes the Python-bridge, compatibility, and migration portions of <code>rust-plugin-kernel-plan.md</code> for future implementation.</p>
 <h2>Current progress — 23 November 2026</h2>
 <p>Use this status and the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md">detailed remaining-work plan</a> for current scheduling. That separate plan distinguishes <strong>feature development (F1–F5)</strong>, <strong>integration (I1–I3)</strong> and <strong>tests/qualification (Q1–Q10)</strong>. Early milestone paragraphs below describe implementation history and must not override this progress record.</p>
@@ -23,7 +23,7 @@
 <tr>
 <td>Command center E1–E5</td>
 <td>Native human-readable titles, nickname fallback, project provenance, newest-update ordering and stable selection implemented. Twelve actual Codex transcript handles across two processes passed checks at 120×32, 80×24 and 60×18.</td>
-<td>Final installed and simultaneous Claude acceptance; header-only roster behavior remains open (F1). Recorded lifecycle is not process liveness.</td>
+<td>Supported header-only presence is implemented in CF1. Final installed/native concurrency acceptance remains with the test owner. Recorded lifecycle is not process liveness.</td>
 </tr>
 <tr>
 <td>Explicit receiver Findings</td>
@@ -33,7 +33,7 @@
 <tr>
 <td>Metric descriptions and full-catalog search</td>
 <td>Joined code passed <strong>833 tests / 96 suites</strong>, strict Clippy and all binaries. Real HTTP and all three terminal sizes passed search beyond the first page, descriptions, snapshot binding and exact return.</td>
-<td>Current-source CI and final optimized schema 21 upgrade/installed acceptance.</td>
+<td>Current-source CI and final optimized schema 21→22 upgrade/installed acceptance are qualification work.</td>
 </tr>
 <tr>
 <td>Remote Host inventory</td>
@@ -42,8 +42,8 @@
 </tr>
 <tr>
 <td>Remaining feature work</td>
-<td>Header-only roster and native relationship/check evidence gaps; required Review/edit, MCP and SDK/usage coverage differences; automatic decoder installation; additional connector profiles/deployed acceptance; macOS.</td>
-<td>Follow F1–F5. Some are independent support/extension gates rather than prerequisites for an opt-in Linux archive. No workflow is retired implicitly.</td>
+<td>Core FD1–FD4: attributable native shapes, private provider details beyond Codex, duplicate-safe usage/cost aggregation and cross-host terminal routing. Separate FD5–FD7: remote extension packages/formats, additional connector profiles and macOS.</td>
+<td>Use the FD registry below; AP1 resolves SDK/CLI audit items. Tests remain delegated. No workflow is retired implicitly.</td>
 </tr>
 <tr>
 <td>Release/default switch</td>
@@ -52,7 +52,107 @@
 </tr>
 </tbody>
 </table></div>
-<p>The 813, 819 and 833 test counts belong to successive source baselines and are <strong>not additive</strong>. The 833-test run predates the final Host chooser correction. No completion percentage is asserted while required workflow acceptance remains open. A real Kiro transcript and an approved production connector endpoint remain external inputs; macOS needs native runners and its D2-Mac checks. Comparative benchmarks remain deferred.</p>
+<p>The 813, 819 and 833 test counts belong to successive source baselines and are <strong>not additive</strong>. The 833-test baseline includes the final Host chooser correction and predates CF1–CF5/schema 22. No completion percentage is asserted while required workflow acceptance remains open. A real Kiro transcript and an approved production connector endpoint remain external inputs; macOS needs native runners and its D2-Mac checks. Comparative benchmarks remain deferred.</p>
+<h2>Remaining feature development — current scheduling</h2>
+<p>The five CF1–CF5 slices are implemented and merged in PR #382 (<code>3135060</code>);
+PR #383 (<code>2fea865</code>) synchronizes baseline test evidence and fixes the reported
+lint/upgrade-identity coverage gap. The rows below describe development still
+open. The SDK/CLI audit and test qualification are separate work categories.</p>
+<h3>Core Linux features</h3>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Priority / owner</th>
+<th>Feature still to implement</th>
+<th>Dependency and completion condition</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FD1</td>
+<td>Core / harness adapters</td>
+<td>Remaining attributable native evidence: Pi same-session worker relationships, Claude asynchronous workers, and additional supported check/turn shapes.</td>
+<td>Obtain positive native records for each shape, then add exact typed attribution through admission/reopen and the evidence UI. Missing exit codes or parent evidence stay unknown; fixtures or output prose cannot invent facts. Completed Claude worker spawning and neutral presence are not reopened.</td>
+</tr>
+<tr>
+<td>FD2</td>
+<td>Core / private evidence and UI</td>
+<td>Provider-specific private edit and MCP detail beyond the implemented Codex routes.</td>
+<td>Define each provider's exact retained/source proof and separate content approval. Implement scoped selection/reveal/revocation and clear unavailable cases. Existing whole-session Codex Review edits, MCP preview and linked-trace paths remain implemented.</td>
+</tr>
+<tr>
+<td>FD3</td>
+<td>Core / usage and cost</td>
+<td>Combined usage/cost totals that safely handle overlapping producer reports.</td>
+<td>Define provenance and deduplication for native, OTLP and multiple instrumentation layers. Keep currencies distinct and ambiguous totals unreported. Implement only totals with attributable nonduplicated evidence. Existing seven-day and per-currency views remain implemented.</td>
+</tr>
+<tr>
+<td>FD4</td>
+<td>Core / remote workflow</td>
+<td>Cross-host terminal routing to the exact recorded remote owner/session.</td>
+<td>Use an explicitly configured authenticated host/session route and current request evidence. Resolve a unique target or report unavailable. Preserve return selection; routing never answers or approves the agent request. Existing local routing/resume and native/attached receiver reads are not missing features.</td>
+</tr>
+</tbody>
+</table></div>
+<p>FD1–FD4 can progress independently after agreeing on any shared DTO, grant or
+transport contracts. An unavailable native witness is a dependency, not proof
+that the producer records the desired fact.</p>
+<h3>Separate platform and extension development</h3>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Owner</th>
+<th>Feature still open</th>
+<th>Existing baseline and boundary</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>FD5</td>
+<td>Extension runtime</td>
+<td>Remote adapter package discovery/download and support for additional decoder formats.</td>
+<td>Trusted local install/replace/list/show/pin-CAS remove is complete. Define trusted origin, integrity, version/format and update selection before remote acquisition. Activation remains explicit and subject to the supported trust/isolation profile.</td>
+</tr>
+<tr>
+<td>FD6</td>
+<td>Connector runtime</td>
+<td>HTTPS/general provider transport, production credential provisioning and sandbox support beyond the current architecture/profile.</td>
+<td>Static Linux x86-64 isolated_linux and host-mediated unix_status_v1 are implemented. Select and implement the additional profile before its deployed acceptance; an approved production endpoint is a qualification dependency, not this transport implementation.</td>
+</tr>
+<tr>
+<td>FD7</td>
+<td>Platform/distribution</td>
+<td>macOS artifacts, installation/update/uninstall, native paths and service integration, signing/notarization and normal Gatekeeper behavior.</td>
+<td>Apple Silicon and Intel are separate targets. Define minimum OS and foreground/launchd support. Native testing follows implementation; macOS is unsupported until D2-Mac passes. Linux qualification can proceed under its own declared support.</td>
+</tr>
+</tbody>
+</table></div>
+<p>These are independent delivery/support tracks. Do not advertise them complete
+because a Linux build ships, and do not silently retire them or expand the
+Linux release scope without an explicit product decision.</p>
+<h3>AP1 — SDK/CLI parity audit, not a blanket missing-feature list</h3>
+<p>Reconcile every retained Python 0.2.8 CLI/keyboard journey and selected SDK
+integration with its actual Rust code path. Cover OpenAI, Anthropic,
+LangChain/LangGraph, Google ADK and Pydantic AI as applicable to the retained
+inventory. Record each row as <strong>implemented</strong>, <strong>test-only acceptance pending</strong>,
+<strong>confirmed missing feature</strong>, <strong>native evidence unavailable</strong>, or <strong>scope
+decision needed</strong>. Include the owner, source anchor and acceptance journey.</p>
+<p>Only confirmed missing behavior becomes a new FD development task. Passing
+selected SDK jobs on an older source is not complete instrumentation coverage;
+unexecuted tests are not evidence that implementation is absent. Complete this
+audit before claiming feature development or default cutover complete. No
+workflow is retired by this documentation update.</p>
+<h3>Implemented code and qualification ownership</h3>
+<p>CF1 neutral Claude/Pi presence and admission-age retention, CF2 whole-session
+Review edits, CF3 adapter lifecycle, CF4 log failure investigation and CF5 exact
+Claude worker spawning are <strong>implemented</strong>. Their pending current-head tests,
+paired UI states, installers/upgrades, artifact/guest checks and CI belong to
+the separate test execution agent in
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md">the core feature test plan</a>.
+Actual Kiro collection, the approved production endpoint and native Mac runs
+are evidence/platform gates. Comparative performance benchmarks stay deferred.</p>
 <h2>Synchronized test progress</h2>
 <p>The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-migration-test-plan-results.md">independent Q1–Q10 run and review</a>
 qualifies the recorded <strong><code>18aa702</code> baseline</strong> with its exact artifact; it does
@@ -373,7 +473,7 @@ gated on OS isolation and credential control.</p>
 <tr>
 <td>Native harnesses</td>
 <td>Real Pi, Codex, Claude Code and OpenCode collection; Kiro native-format process fixtures.</td>
-<td>F1: attributable worker/check/turn evidence gaps. Q8: per-provider installed scenarios and an actual Kiro transcript.</td>
+<td>FD1: remaining attributable worker/check/turn evidence shapes. Q8: per-provider installed scenarios and an actual Kiro transcript.</td>
 </tr>
 <tr>
 <td>Cockpit/workflows</td>
@@ -393,7 +493,7 @@ gated on OS isolation and credential control.</p>
 <tr>
 <td>Extensions/connectors</td>
 <td>Explicit pinned catalog/capability loading and trusted connector replay/reconciliation implemented.</td>
-<td>F3 automatic decoder installation; F4 additional connector profiles; C6/C7 local isolated_linux and unix_status_v1 controls are implemented. Keep unsupported profiles/unqualified production activation disabled.</td>
+<td>FD5 remote package discovery/new formats; FD6 additional connector profiles; C6/C7 local isolated_linux and unix_status_v1 controls are implemented. Keep unsupported profiles/unqualified production activation disabled.</td>
 </tr>
 <tr>
 <td>Distribution</td>

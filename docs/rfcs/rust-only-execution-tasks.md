@@ -39,6 +39,24 @@ a separate agent owns broad test execution. Follow the
 Feature developers run focused checks needed for implementation. Q1–Q10 and
 release qualification remain delegated; no broad campaign is duplicated here.
 
+## Current feature backlog and audit
+
+Use FD1–FD7 and AP1 in the
+[implementation plan](rust-only-execution-plan.md#remaining-feature-development--current-scheduling)
+for new assignments. The older A–E IDs retain their original acceptance criteria.
+
+| Track | Current assignment | Category |
+| --- | --- | --- |
+| FD1 / A1–A3 | Remaining attributable Pi worker, Claude async and native check/turn shapes; require positive native evidence. | Core feature development |
+| FD2 / B3–B4 | Private edit/MCP detail beyond the implemented Codex paths. | Core feature development |
+| FD3 / B6 | Provenance-aware, duplicate-safe combined usage/cost totals. | Core feature development |
+| FD4 / B6 | Authenticated cross-host terminal routing to one exact current owner. | Core feature development |
+| FD5 / B8 | Remote package discovery/download and additional decoder formats; local lifecycle is complete. | Separate extension development |
+| FD6 / C6–C8 | Additional provider transports, credential provisioning and architecture isolation profiles. | Separate connector development |
+| FD7 / D2-Mac | Mac artifacts/install/paths/launchd/signing; Apple Silicon and Intel separate. | Separate platform development |
+| AP1 / B1, B5–B6 | Map SDK/CLI/keyboard inventory to implemented, test-only, genuinely missing, unavailable native evidence or scope decision. | Audit; do not count all rows as missing features |
+| CF1–CF5 / Q1–Q10 | Qualify completed source, artifact, UI and authority behavior; obtain real Kiro/production/Mac evidence as applicable. | Separate test agent; not feature development |
+
 ## Review of the existing plan
 
 | Plan area | Scheduling decision |
@@ -70,12 +88,12 @@ Each ID retains its original acceptance requirement. Assign only unfinished work
 | --- | --- | --- | --- | --- |
 | B1 | Inventory exists — required differences and cutover scope still need explicit closure (F2). | Inventory remaining user workflows and decide cutover scope | Start now | Map each Python CLI entry point and cockpit workflow to a Rust command, a missing behavior or an explicit retirement decision. Include SDK instrumentation, payload views, usage/cost and host history. List the required Python 0.2.8 keyboard journeys, their expected evidence and navigation results, and the owner of each open decision. |
 | B2 | Implemented/verified — older exact retained OpenCode proof path; final artifact regression Q5/Q6. | Extend OpenCode prompt proofs beyond the current sweep | Start now | An older retained SQLite event can be revealed under its current grant after a later sweep and reopen. Changed source bytes, expired evidence, source replacement, revocation and restore all deny reveal. |
-| B3 | Partial — exact Codex e/edit preview, codex.edit_detail and version-linked notes implemented; other source/shape coverage F2/Q6. | Add detailed edit evidence to Review | Start now with a source that provides edit evidence | A recorded edit appears on the correct run and evidence version. Existing decision notes survive reopen. Content-bearing detail follows the applicable grant. |
+| B3 | Exact Codex e/edit preview, whole-session browser and version-linked notes implemented; non-Codex source/shape work FD2, installed acceptance Q6. | Add detailed edit evidence to Review | Start now with a source that provides edit evidence | A recorded edit appears on the correct run and evidence version. Existing decision notes survive reopen. Content-bearing detail follows the applicable grant. |
 | B4 | Partial — current-grant exact Codex MCP preview/trace paths implemented; remaining source-specific detail F2/Q6. | Add scoped MCP payload detail | Start now with existing Codex MCP metadata | Opening a supported operation shows only authorized detail for that operation. Missing payload, mismatched identity and revoked access are covered. |
 | B5 | Selected jobs green — five SDK jobs passed on ef3d647; broader producer inventory F2 and final-head Q7. | Implement required SDK instrumentation | B1 selects SDKs. Parallel per SDK. | Each selected SDK can emit a real trace through the documented launch path and reopen a span linked to the correct source and session. |
 | B6 | Selected commands implemented — remaining workflow inventory F2 and installed Q5/Q6. | Close remaining required CLI workflows | B1. Parallel per independent command. | Each retained workflow has a Rust entry point and an installed end-to-end scenario. Record accepted retirements and any unresolved user-facing differences. |
 | B7 | Implemented/verified native baseline — packaged final combined artifact rerun Q5. | Qualify default cockpit capability loading | Start now | Launch the packaged bare cockpit with an explicitly enabled independent capability. Observe its pane and metric, then verify disabled and mismatched-pin cases. |
-| B8 | Local trusted install/replace already implemented; CF3 list/show/pin-CAS removal in progress. Remote package discovery and new formats remain separate. | Define and implement automatic decoder installation | Start design now. Activation depends on the approved trust model. | An independent supported decoder can be installed, selected and verified through the declared format and pin. Unsupported formats or changed artifacts fail closed. Keep untrusted activation behind its isolation gate. |
+| B8 | Supported local install/replace/list/show/pin-CAS removal implemented and merged; installed acceptance delegated. Remote package discovery/new formats remain FD5. | Define and implement automatic decoder installation | Start design now. Activation depends on the approved trust model. | An independent supported decoder can be installed, selected and verified through the declared format and pin. Unsupported formats or changed artifacts fail closed. Keep untrusted activation behind its isolation gate. |
 
 ### C. Storage authority and connector isolation
 
@@ -101,7 +119,7 @@ Each ID retains its original acceptance requirement. Assign only unfinished work
 
 ## Pending issue — running sessions missing from the command center
 
-Historical diagnosis recorded from the user's Rust 0.3.8 screenshot. Later authorization superseded the original diagnosis-only restriction. E1–E5 have an implemented, checked native baseline; header-only roster behavior, actual simultaneous Claude coverage and final combined-artifact acceptance remain open. The findings below describe the published source at diagnosis time, not the current native implementation.
+Historical diagnosis recorded from the user's Rust 0.3.8 screenshot. Later authorization superseded the original diagnosis-only restriction. E1–E5 have an implemented, checked native baseline; supported header-only presence is implemented; actual simultaneous Claude and final combined-artifact acceptance remain with the test owner. The findings below describe the published source at diagnosis time, not the current native implementation.
 
 **Confirmed findings from the published source**
 
@@ -115,7 +133,7 @@ The screenshot proves that the displayed roster and labels fail the user's expec
 
 | ID | Current status | Pending task | Dependencies and parallel work | Acceptance |
 | --- | --- | --- | --- | --- |
-| E1 | Partial — Codex actual cohort passed; header-only roster behavior F1, simultaneous Claude and installed Q6 remain. | Diagnose the selected history and cover running sessions in discovery | Implemented; retain runtime diagnosis/coverage criteria for Q6 installed regression. | Record the actual executable/version, command, selected database, collector ownership and coverage notice. Compare expected session IDs against discovered files, selected adapters, committed cursors and roster rows. Exercise more than four concurrent sessions, idle-but-running sessions, source turnover, cold catch-up, restart and intentionally excluded review files. Show collection coverage and distinguish recorded lifecycle from current liveness. |
+| E1 | Supported header-only presence implemented via CF1; actual concurrency/installed Q6 remain qualification, unsupported native shapes FD1. | Diagnose the selected history and cover running sessions in discovery | Implemented; retain runtime diagnosis/coverage criteria for Q6 installed regression. | Record the actual executable/version, command, selected database, collector ownership and coverage notice. Compare expected session IDs against discovered files, selected adapters, committed cursors and roster rows. Exercise more than four concurrent sessions, idle-but-running sessions, source turnover, cold catch-up, restart and intentionally excluded review files. Show collection coverage and distinguish recorded lifecycle from current liveness. |
 | E2 | Implemented/actual native naming/context checked — final installed rerun Q6. | Show exact native session titles and project context | Implemented; final joined-artifact native metadata checks Q6. | Preserve exact source/session identity and provenance when native display titles and project paths are available. Keep authorized content handling explicit. Ordinary native sessions display useful names and project groups. Missing or conflicting context has a visible fallback. Activity summaries remain separately identifiable. |
 | E3 | Partial — actual Codex cohort at all three sizes; historical Claude separate; simultaneous Claude and final installed Q6 remain. | Qualify the command center against actual concurrent agent sessions | Actual-transcript checks passed after E1/E2; final installed Q6 remains. | Run the installed cockpit against actual simultaneous sessions, compare exact identities and project groups with the native inventory, verify lifecycle changes and selection after refresh/restart, and capture 120×32, 80×24 and 60×18 screens. Account for every omitted session and show partial coverage. |
 
