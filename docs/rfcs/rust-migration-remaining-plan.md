@@ -52,6 +52,31 @@ The detailed source records for the merged batch are
 and the subsequent
 [Findings qualification](https://github.com/abhishekash/agenturm/blob/ef3d647309e8cd81ac32ba0ecd3ea0ad14f2c2f0/docs/validation/rust-python-findings.md).
 
+## Test execution synchronization — 23 November 2026
+
+The separate test agent ran Q1–Q10 on **`18aa702` / PR #381 / schema 21**.
+That baseline predates the five CF1–CF5 feature slices merged in PR #382 as
+`3135060`. The [consolidated results and review](../validation/rust-migration-test-plan-results.md)
+preserve exact source, artifact and interpreter evidence. Do not credit the
+baseline's 833 tests to the newer feature source.
+
+| Gate | Verified on baseline `18aa702` | Current feature source and follow-up |
+| --- | --- | --- |
+| Q1 | 833 tests / 96 suites, Clippy/fmt/build and Python syntax pass. The recorded shell glob checked only its first script. | PR #382 Rust CI stopped on an unused test import. Fixed in sync follow-up; scoped Store test Clippy passes. Whole current Rust run and per-script shell syntax remain with test owner. |
+| Q2 | Optimized HTTP/three-size catalog journeys pass. Existing upgrade assertion used generic Activity rather than a metric point. | New real-MetricPoint v20/read-only/v22 full-row identity regression passes. Current optimized metric/schema 22 acceptance still needs execution. |
+| Q3 | Executor blocked on separate-UID guest boundary; earlier source-specific development Host proof exists separately. | Exact current artifact Host/authorization/restore guest acceptance remains pending. Existing local KVM staging helpers are recorded in the results. |
+| Q4 | Debug/optimized under Python 3.12, and optimized reference suites under 3.11–3.14 pass. | New current-source and Review identity regressions remain delegated. Fixture help/import-path usability fixed and help checked. |
+| Q5 | Exact optimized archive checksum, foreground/reopen/upgrade, installer and retained-history uninstall pass. | Managed service/restore and exact current archive/12 guest cases are not certified by that run. |
+| Q6 | Named MCP, analytics/usage, Workflow and private reveal/return journeys pass with recorded widths. | Full paired state matrix, Host, CF1–CF5 and Review identity cases remain; denial widths must retain their exact evidence. |
+| Q7 | PR #381 and its tested merge are green under the documented event conditions. | Latest Rust job needs retry after lint fix. Dependent SDK jobs skipped on PR #382 are not passes. |
+| Q8 | Four named harness fixtures plus actual roster audit and disposable rename/restart checks pass. | Exact current per-provider/native concurrency and Kiro acceptance remain open. |
+| Q9/Q10 | Production endpoint and macOS execution were blocked. | External dependencies and support gates remain unchanged. |
+
+The synchronized [core test handoff](../validation/rust-core-feature-test-plan.md)
+assigns all broader execution to the other agent. This development session
+performed only the narrow corrective regression, Store lint and fixture help
+checks. No release/default switch or complete migration claim follows.
+
 ## 2. Feature development still open
 
 These items concern product behavior or platform support. Passing existing

@@ -7,6 +7,21 @@ Progress updated 23 November 2026 against merged native PR #379 (`52ec13b`), Fin
 - **Host/Metrics joined baseline:** 833 tests / 96 suites, strict Clippy and all binaries; real metric HTTP and three-size terminal checks passed. The final Host refresh/context correction passed its 14 focused tests and the joined 833-test / 96-suite run with strict workspace Clippy/all binaries; the updated separate-UID Host KVM/three-size fixture also passed. Final optimized artifact qualification remains.
 - **Full migration:** incomplete. Do not add successive test totals or equate implemented code with final artifact acceptance. Default cutover and one-release-per-24-hours rules remain in force.
 
+## Synchronized test progress
+
+The [independent Q1–Q10 run and review](../validation/rust-migration-test-plan-results.md)
+qualifies the recorded **`18aa702` baseline** with its exact artifact; it does
+not qualify newer CF1–CF5 source `3135060`. Baseline 833-test Rust checks and
+named optimized journeys passed; full shell syntax, genuine point-upgrade
+identity, guest/service/restore and paired-state scope require the distinctions
+recorded there. The new real-point upgrade regression passes in the sync fix.
+
+PR #382 current-source Rust CI stopped on an unused test import before Rust
+execution and dependent SDK jobs. The import is removed and scoped Store test
+Clippy passes in the corrective change. Broader current-head, schema 22 and
+CF1–CF5 qualification stays with the separate test agent. No release/default
+switch is implied by the baseline report.
+
 ## Core feature development and delegated testing
 
 Current user direction: this implementation session owns feature development;

@@ -1,0 +1,491 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Migration Test Plan Results</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / Test results and source review</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-migration-test-plan-results.md">Markdown source ↗</a></nav><h1>Rust migration remaining test plan — execution results</h1>
+<p>23 November 2026. This is the single consolidated record for executing
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md">the remaining test plan</a> section 4
+(Q1–Q10). It contains both the results and every test/feature follow-up found.</p>
+<ul>
+<li><strong>Source under test:</strong> <code>origin/main</code> at
+<code>18aa7026be1041b93a0b8517874f5b518da44777</code>
+(<code>Complete recorded Host inventory and retained metric catalog metadata (#381)</code>).</li>
+<li><strong>Worktree/branch:</strong> <code>/tmp/opencode/agenturm-q-tests</code>,
+<code>test/remaining-plan-q1</code> (detached from <code>origin/main</code>, no source changes).</li>
+<li><strong>Toolchain:</strong> Rust 1.100.0, Linux x86_64, offline locked Cargo cache.
+Python-dependent reference fixtures were rerun under four interpreters —
+<strong>3.11.18, 3.12.3, 3.13.18 and 3.14.10</strong> — against the same optimized binary.
+The upstream CI matrix on the tested head covers 3.11–3.14 and is recorded under Q7.</li>
+<li><strong>No release, tag, push or default cutover was created.</strong></li>
+</ul>
+<h2>Synchronization review — baseline and current source</h2>
+<p>Reviewed against merged PR #382, <code>3135060c79fa5b70ee60ef50e52872a161ec7996</code>.
+The run below used <strong>PR #381 / schema 21</strong>, not the newer five core feature
+slices or schema 22. Its passing checks remain valid for that frozen baseline.
+They must not be relabeled as acceptance of the current implementation.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Evidence scope</th>
+<th>Review result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Baseline <code>18aa702</code>, optimized App <code>027f29a…</code></td>
+<td>Logs reproduce 833 tests / 96 suites and the named HTTP/terminal/reference journeys; all nine executable hashes match the extracted bundle. The archive SHA-256 was independently recomputed and matches the recorded digest.</td>
+</tr>
+<tr>
+<td>Q1 fixture syntax</td>
+<td>Python compileall passed. <code>bash -n scripts/*.sh</code> parses only its first file; it does not prove all shell scripts. The test owner must use an explicit per-file loop.</td>
+</tr>
+<tr>
+<td>Q2 migration identity</td>
+<td>The old upgrade test inserts generic Activity, not a MetricPoint. Descriptor-ingestion identity checks within one schema do not close the real point/series identity upgrade case. A dedicated real-point v20/read-only/v22 regression now passes in the synchronization follow-up, comparing full typed records. This closes the narrow assertion gap on the corrective source, not the entire current artifact gate.</td>
+</tr>
+<tr>
+<td>Q4 interpreter scope</td>
+<td>Debug and optimized Findings/Review were checked under 3.12; the four-interpreter table covers the optimized artifact. Do not expand that to debug under every version.</td>
+</tr>
+<tr>
+<td>Q5/Q6/Q8 limits</td>
+<td>No managed service restart/restore or exact optimized guest qualification was demonstrated by this run. Four named bundled harness fixtures were exercised. Reveal/return covers three sizes, while log revocation and passing-eval-correction denial are specifically evidenced at 60×18.</td>
+</tr>
+<tr>
+<td>Current PR #382 CI</td>
+<td>Rust CI stopped at Clippy on an unused test import in <code>review_ledger.rs:676</code>; Rust tests and dependent SDK jobs did not run. The synchronization follow-up removes the import and scoped Store lib/test Clippy passes. Current-head CI and CF1–CF5 acceptance remain separate pending evidence.</td>
+</tr>
+</tbody>
+</table></div>
+<p><a href="https://github.com/abhishekash/agenturm/actions/runs/45236649459/job/137910022785">Failed current-source CI job</a>.
+The source-level changes and independent test-owner acceptance are tracked in
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md">the delegated core feature test plan</a>.
+No new full test campaign is claimed by this review.</p>
+<h2>Result summary</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Gate</th>
+<th>Result</th>
+<th>Basis</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Q1 Final joined workspace</td>
+<td><strong>PASS Rust / PARTIAL shell syntax</strong></td>
+<td>833 tests / 96 suites, strict Clippy/fmt/build and clean diff; Python syntax checked, full shell-script syntax not established</td>
+</tr>
+<tr>
+<td>Q2 Metric metadata, catalog and schema</td>
+<td><strong>PASS journeys / PARTIAL migration identity</strong></td>
+<td>JSON/protobuf descriptor journeys and three-size catalog navigation on the optimized archive; schema 20→21 unit coverage</td>
+</tr>
+<tr>
+<td>Q3 Recorded remote Host inventory</td>
+<td><strong>BLOCKED</strong></td>
+<td>Fixture requires a root guest with separate UIDs; no passwordless sudo and user namespaces are disabled on the test host</td>
+</tr>
+<tr>
+<td>Q4 Python receiver Findings/Review</td>
+<td><strong>PASS</strong></td>
+<td>Tagged Python 0.2.8 reference, all positive/fault cases and Review oracle, debug and optimized, under Python 3.11/3.12/3.13/3.14</td>
+</tr>
+<tr>
+<td>Q5 Linux archive/install/upgrade/recovery</td>
+<td><strong>PARTIAL</strong></td>
+<td>Archive, checksum, nine hashes, 0.3.8 upgrade, installer and uninstall-retained-history pass; 12 separate-UID KVM cases blocked as Q3</td>
+</tr>
+<tr>
+<td>Q6 Installed paired UI/workflow journeys</td>
+<td><strong>PARTIAL</strong></td>
+<td>MCP, analytics/usage, Workflow settings/retry, task continuity and investigations pass at the recorded sizes; Host paths blocked; full Python-vs-Rust state matrix not automated</td>
+</tr>
+<tr>
+<td>Q7 Tested-head Linux and SDK CI</td>
+<td><strong>PASS</strong></td>
+<td>PR #381 head <code>ebe19a92</code> fully green; merge commit <code>18aa702</code> Rust, Node, OTLP, SDK and Python 3.11–3.14 green; ARM64 passed on the PR head and was skipped on push</td>
+</tr>
+<tr>
+<td>Q8 Actual per-harness installed acceptance</td>
+<td><strong>PARTIAL</strong></td>
+<td>Four named bundled fixtures collect/reopen; actual roster audit and rename/restart mutation pass; Kiro transcript unavailable and per-provider exact acceptance remains open</td>
+</tr>
+<tr>
+<td>Q9 Production connector acceptance</td>
+<td><strong>BLOCKED</strong></td>
+<td>No approved production endpoint/configuration</td>
+</tr>
+<tr>
+<td>Q10 Native macOS acceptance</td>
+<td><strong>BLOCKED</strong></td>
+<td>No macOS runners/artifacts</td>
+</tr>
+</tbody>
+</table></div>
+<p>No product defect was reproduced on the tested <code>18aa702</code> baseline. Every executed check there passed; the later PR #382 Clippy failure is a separate current-source finding. The only
+implementation-adjacent gap found is a test-coverage gap in Q2, recorded in
+“Follow-up work” below.</p>
+<h2>Q1. Baseline Rust workspace — PASS; shell syntax — PARTIAL</h2>
+<ul>
+<li><code>cargo test --workspace --locked --offline</code>: <strong>833 passed, 0 failed,
+0 ignored, 96 suites</strong>. This reproduces the joined baseline count on the
+frozen <code>18aa702</code> baseline, not the subsequent current main commit.</li>
+<li><code>cargo fmt --all -- --check</code>: pass.</li>
+<li><code>cargo clippy --workspace --all-targets --locked --offline -- -D warnings</code>:
+pass, zero warnings.</li>
+<li><code>cargo build --workspace --bins --locked --offline</code>: all workspace binaries
+built, including the app, plugin host, connector, storage service and all five
+harness adapters.</li>
+<li>Fixture syntax: <code>python3 -m compileall -q scripts</code> passed. The recorded
+<code>bash -n scripts/*.sh</code> command checks only its first shell input; all-script
+shell syntax validation remains unproven by this command.</li>
+<li>Diff hygiene: clean worktree; <code>git diff --check</code> returned zero.</li>
+<li>Log: <code>/tmp/opencode/q1-tests.log</code>, <code>/tmp/opencode/q1-clippy-fmt.log</code>,
+<code>/tmp/opencode/q1-binaries.log</code>.</li>
+</ul>
+<p>The Host chooser correction’s focused tests are included in the 833; they are a
+subset, not an additional count.</p>
+<h2>Q2. Baseline metric journeys — PASS; point-upgrade identity — PARTIAL</h2>
+<p>Executed on both the debug build and the optimized extracted archive:</p>
+<ul>
+<li><code>validate_rust_metric_descriptions.py --app …</code>: authenticated JSON and
+protobuf ingestion, unauthenticated denial, descriptor-only admission, exact
+replay, revision handling and unsafe description omission. The seven old
+points retained identical IDs, serialized values, digests and receipt
+sequences; description companions never rewrote them.</li>
+<li><code>validate_rust_metric_catalog.py --app …</code>: at <strong>120×32, 80×24 and 60×18</strong>,
+found an older matching series beyond the first 32 catalog rows, opened its
+description, entered exact points, returned to the same series/search/snapshot
+and cleared the filter.</li>
+<li>Schema 20→21: <code>metric_description_upgrade_preserves_v20_grants_and_receipts</code>
+passed inside Q1. It drops the description index, marks v20, reopens read-only,
+upgrades and asserts the batch digest, history sequence, event digest, payload
+JSON and content grant are unchanged, and that replayed batches remain replay.</li>
+<li>Optimized app SHA-256: <code>027f29a15cd871d3dcfbae5b03906c182bb63295a5ce83fc75cb17bce4ed59a7</code>.</li>
+<li>Logs: <code>/tmp/opencode/q2-metrics.log</code>,
+<code>/tmp/opencode/q2-metrics-optimized.log</code>.</li>
+</ul>
+<p>Compatibility statement confirmed by the fixture: existing point wire format and
+cursors are unchanged; older source-scoped catalog cursors need a fresh first
+page.</p>
+<h2>Q3. Recorded remote Host inventory — BLOCKED</h2>
+<p><code>validate_rust_remote_host_history.py</code> was not executed. It requires
+<code>os.geteuid() == 0</code> and allocates UIDs 45000–45999 for broker, collector,
+reader, maintainer and viewer. This host has no passwordless <code>sudo</code> and
+<code>unshare -r</code> fails (<code>/proc/self/uid_map: Operation not permitted</code>), so the
+separate-UID fixture cannot run here.</p>
+<p>Static check only (not a pass): the corrected fixture asserts the history restore
+as HTTP <strong>200</strong> with the typed <code>snapshot_replaced</code> error
+(<code>scripts/validate_rust_remote_host_history.py:320</code>), while metadata GET with a
+stale binding asserts HTTP 409 (lines 239, 305, 313–318). The previous 409
+expectation for the restore POST is not present.</p>
+<p>The same block applies to the 12 separate-UID Q5 KVM cases. <code>execution_clocks</code>,
+<code>native_private_content</code> and <code>private_eval_details</code> also refused to run without
+root, consistent with their guest-only contract. They must be run on a
+disposable root/KVM guest; nothing in this record contradicts their earlier
+passing baseline.</p>
+<h2>Q4. Explicit receiver Findings and Review — PASS</h2>
+<p>Reference: immutable Python 0.2.8 at
+<code>2802d79930728bb331db1d4d718d6dea1c9c374d</code>.</p>
+<ul>
+<li><code>validate_rust_python_findings.py</code> passed on the debug build and again on the
+optimized archive, using Python 3.12: exact log
+and failed-evaluation source, source-only
+evidence, policy denial before fetch, revocation while visible, same-URL cache
+removal, owner and member substitution, payload drift, unknown and sensitive
+fields, same-URL receiver replacement, terminal backpressure, no private
+clipboard/export, exact selection return and terminal restoration at
+120×32, 80×24 and 60×18.</li>
+<li><code>validate_rust_python_receiver_review.py</code> passed on both: four verified
+step-member events counted separately from the two unspanned first-page user
+messages, with request, assistant, check, usage, file, policy-revocation,
+cursor and bearer assertions.</li>
+<li>Logs: <code>/tmp/opencode/q4-python-findings.log</code>,
+<code>/tmp/opencode/q4-review.log</code>, <code>/tmp/opencode/q4-optimized.log</code>.</li>
+</ul>
+<p>Guarantee remains as documented: a bounded, repeatedly checked private display.
+No remote server-held authorization transaction and no immutable historical
+evaluation claim is made.</p>
+<h3>Interpreter matrix</h3>
+<p>The same four Rust acceptance suites were run one interpreter at a time against
+the optimized archive (<code>027f29a…</code>). The Python version runs the reference
+receiver only; every assertion remains on Rust behavior.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Interpreter</th>
+<th>Findings</th>
+<th>Review membership</th>
+<th>Task continuity</th>
+<th>Investigations</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Python 3.11.18</td>
+<td>PASS</td>
+<td>PASS</td>
+<td>PASS</td>
+<td>PASS</td>
+</tr>
+<tr>
+<td>Python 3.12.3</td>
+<td>PASS</td>
+<td>PASS</td>
+<td>PASS</td>
+<td>PASS</td>
+</tr>
+<tr>
+<td>Python 3.13.18</td>
+<td>PASS</td>
+<td>PASS</td>
+<td>PASS</td>
+<td>PASS</td>
+</tr>
+<tr>
+<td>Python 3.14.10</td>
+<td>PASS</td>
+<td>PASS</td>
+<td>PASS</td>
+<td>PASS</td>
+</tr>
+</tbody>
+</table></div>
+<p>All runs exited 0 with no traceback and no incompatibility against the pinned
+0.2.8 reference. Logs: <code>/tmp/opencode/py311-*</code>, <code>/tmp/opencode/py313-*</code>,
+<code>/tmp/opencode/py314-*</code>, plus the earlier 3.12 logs
+<code>/tmp/opencode/q4-optimized.log</code> and <code>/tmp/opencode/q6-python-journeys.log</code>.</p>
+<h2>Q5. Linux archive, install, upgrade and recovery — PARTIAL</h2>
+<p>Built with <code>scripts/build-rust-linux-bundle.sh</code> from <code>18aa702</code>.</p>
+<ul>
+<li>Archive: <code>agenturm-0.3.9-linux-x86_64.tar.gz</code></li>
+<li>SHA-256:
+<code>1c5ba29cd726cea42440a9c44d08c9a421d21cb7e9dae06633f71ba9fa1e04d9</code></li>
+</ul>
+<p>Nine executable hashes:</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Executable</th>
+<th>SHA-256</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>agenturm</code></td>
+<td><code>027f29a15cd871d3dcfbae5b03906c182bb63295a5ce83fc75cb17bce4ed59a7</code></td>
+</tr>
+<tr>
+<td><code>agenturm-claude-harness</code></td>
+<td><code>7f4196dea29a852ebe9dc06358486e1997e65605ce3e7043f05d4317ef203070</code></td>
+</tr>
+<tr>
+<td><code>agenturm-codex-harness</code></td>
+<td><code>ca87ff23f54f841521743aa99c65e494821d82677286b38a653d3e24e2fe1c50</code></td>
+</tr>
+<tr>
+<td><code>agenturm-connector</code></td>
+<td><code>e0a2f1cfc38ed26553a045e3dbe9da316649d7d37788f7bcc0c5cc1a5981c2ee</code></td>
+</tr>
+<tr>
+<td><code>agenturm-kiro-harness</code></td>
+<td><code>6122b36580dcd38fdd4398fc48f1a2871c34e9fc7d341ff2c57b6adfcb713822</code></td>
+</tr>
+<tr>
+<td><code>agenturm-opencode-harness</code></td>
+<td><code>5cef66045794d05c7102518b596410a23531c3eb5f17b61337d68c701ffd8efe</code></td>
+</tr>
+<tr>
+<td><code>agenturm-pi-harness</code></td>
+<td><code>3292f6e2dd3b4736123cb18da43732f1e94a0614f9e086c17f532d2dc9d98c9f</code></td>
+</tr>
+<tr>
+<td><code>agenturm-plugin-host</code></td>
+<td><code>807646e23f686fa7cc843072ee20df5230396a61eef97a4396d42e2dbaf6feab</code></td>
+</tr>
+<tr>
+<td><code>agenturm-storage-service</code></td>
+<td><code>abd3e0f2a9e2b7a00f2b6b934b89390c214028f88dbc2c2c278d1024ba7f63ac</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><code>verify-rust-linux-bundle.sh</code> passed with the published 0.3.8 x86-64 archive as
+<code>--previous</code>:</p>
+<ul>
+<li>checksum and archive/executable version agreement;</li>
+<li>Python-free <code>--version</code> and startup under an empty <code>PATH</code>;</li>
+<li>discovery and collection of Codex and Pi fixtures;</li>
+<li>restart, exact replay and unchanged query output;</li>
+<li>inspector, backup, bare-cockpit empty start/collection/writer release;</li>
+<li>follow discovery without restart;</li>
+<li>bundled Claude Code and Kiro fixture discovery, collection and reopen;</li>
+<li>0.3.8 history and cursor still valid after opening with the 0.3.9 bundle.</li>
+</ul>
+<p><code>verify-rust-installer.sh</code> passed: offline install, checksum, five-plugin
+catalog hashes, <code>agenturm-rust</code> launcher, pre-existing binary preserved, JSONL
+import/replay and retained configuration/history after uninstall. Forbidden
+<code>sudo</code>, <code>systemctl</code>, <code>curl</code>, Python and network commands were never invoked.</p>
+<p>0.3.8 prior archive checksum:
+<code>528d4c7057d280258788d44e684505b7c552bc5f4dc8f730c9a24d568fc0d657</code>.</p>
+<p>Not run: the 12 separate-UID KVM cases (Q3 block).</p>
+<h2>Q6. Installed paired UI/workflow journeys — PARTIAL</h2>
+<p>Run against the optimized extracted archive (app SHA-256
+<code>027f29a…</code>, same as Q5):</p>
+<ul>
+<li>MCP inventory/filter/trace return: pass at 120×32, 80×24, 60×18.</li>
+<li>OTLP metric points, immutable replay, exemplars, distinct trace counts,
+per-currency reported costs and log overlap: pass at 120×32, 80×24, 60×18.</li>
+<li>Workflow settings, snooze/incidents, exact pending return and terminal
+restoration: pass at all three sizes.</li>
+<li>Exact Workflow retry: failed and unavailable attempts, single delivery,
+resolved-proof rejection and terminal restoration at 120×32 and 60×18.</li>
+<li>Tagged Python task continuity: private approval, replay, reveal and revocation
+pass.</li>
+<li>Error-log and failed-evaluation source: exact protected source and redacted
+return at all three sizes. Explicit log revocation and stale passing-evaluation
+correction denial are recorded at 60×18; wider denial cases are not claimed.</li>
+<li>Generic error logs: metadata-only witness and opt-in text witness pass.</li>
+<li>Tagged Python investigations: exact source, bounded cursor, policy and owner
+rechecks pass.</li>
+<li>Native attention against the tagged 0.2.8 receiver wheel: private binding,
+durable lost reply, replaced-receiver denial, ordered replay and metadata-only
+resolution pass.</li>
+<li>Concurrent Workflow retry compare-and-swap: two actual monitors cannot retry
+the same failed receipt after the attempt changes; three notification attempts
+were exercised and the secret never rendered.</li>
+<li>UI unit suite is included in Q1.</li>
+</ul>
+<p>Not run here: Host and remote-Host journeys (Q3 block), the full
+populated/empty/loading/unavailable/error matrix for every view, and a fresh
+side-by-side Python 0.2.8 capture. The parity document still lists the accepted
+differences, so Q6 is not claimed complete.</p>
+<h2>Q7. Tested-head Linux and SDK CI — PASS</h2>
+<p>PR #381 head <code>ebe19a92ad3fdbbb350b00360877f1bf7cefdca6</code> (same tree as the merge
+commit): every job succeeded; <code>Attach qualified arm64 release archive</code> skipped as
+expected for a non-release merge.</p>
+<ul>
+<li>Rust protocol and plugin adapters: success.</li>
+<li>Build and verify Linux x86_64 bundle: success.</li>
+<li>Qualify Linux arm64 candidate: success.</li>
+<li>Linux x86_64 Rust host wheel: success.</li>
+<li>Python 3.11, 3.12, 3.13, 3.14: success.</li>
+<li>Node.js 22, Node.js 24: success.</li>
+<li>OpenTelemetry OTLP end-to-end: success.</li>
+<li>Five selected SDK jobs: Pydantic AI, Google ADK, LangChain, OpenAI Agents and
+Automatic SDK capture through CLI: success.</li>
+</ul>
+<p>Merge commit <code>18aa702</code>: Rust protocol, x86-64 bundle, host wheel, Node, OTLP,
+all SDK jobs and Python 3.11–3.14 success; ARM64 candidate/attach skipped on the
+push event (the same ARM64 job passed on the PR head). CI for the tested <code>18aa702</code> head is green. Current PR #382 is tracked separately above.</p>
+<h2>Q8. Actual per-harness installed acceptance — PARTIAL</h2>
+<ul>
+<li>The extracted archive discovered, collected and reopened Codex, Pi, Claude
+Code and Kiro fixtures (Q5). Fixtures are labeled as fixtures, not native
+evidence.</li>
+<li>Actual local roster audit: discovered Codex sessions/reviews/subagents and
+Claude sessions/subagents; default retained 14 Codex records, explicit
+retained 4 Codex and 4 Claude records, one duplicate native ID across source
+keys was reported rather than merged.</li>
+<li>Human rename, two independent sources sharing one native ID, catch-up and
+restart passed in disposable state.</li>
+<li>Logs: <code>/tmp/opencode/q8-roster.log</code>.</li>
+</ul>
+<p>Still open: an actual Kiro transcript/host (A4), and the full per-provider
+installed acceptance of exact worker/turn attribution, missing evidence, later
+activity and view switching (Q8). Bundled fixtures cannot close those.</p>
+<h2>Q9. Production connector acceptance — BLOCKED</h2>
+<p>No approved production endpoint/configuration is available. Trusted pinned
+fixtures and separate-UID broker contracts are not a production boundary proof.
+The least-privilege launch, credential/egress restriction, revocation fencing,
+idempotent ambiguous-send reconciliation and inbound commit-before-ACK remain
+unqualified in production.</p>
+<h2>Q10. Native macOS acceptance — BLOCKED</h2>
+<p>No macOS runner or artifact exists. Apple Silicon/Intel install, Gatekeeper,
+<code>launchd</code>, discovery/collection and terminal journeys remain unsupported until
+qualified.</p>
+<h2>Follow-up work from the baseline run</h2>
+<ol>
+<li><strong>Q2 test gap — point IDs across schema 20→21.</strong> Add an explicit <code>event_id</code>
+and exact series-key equality across a genuine MetricPoint upgrade. The
+existing <code>metric_description_upgrade_preserves_v20_grants_and_receipts</code>
+test seeds generic Activity and proves generic digests/grants/receipts.
+The synchronization follow-up adds a separate real-point regression. No data loss was observed,
+so this is coverage, not a reproduced defect. Owner: store.</li>
+<li><strong>Q3/Q5 environment — separate-UID KVM.</strong> Run
+<code>validate_rust_remote_host_history.py</code> and the 12 guest cases on a disposable
+root/KVM host. This machine cannot: no passwordless sudo, user namespaces
+disabled. No code change is implied.</li>
+<li><strong>Q6 parity matrix — automate or record the full paired run.</strong> The repeatable
+journey scripts pass, but populated/empty/loading/unavailable/error and
+Python-vs-Rust captures are still manual. Keep the accepted differences in
+<code>rust-ui-journey-parity.md</code> explicit.</li>
+<li><strong>Q4 fixture usability — document <code>PYTHONPATH</code>.</strong> <code>validate_rust_python_receiver_review.py</code>
+imports <code>observatory</code> but its help does not say to set
+<code>PYTHONPATH=&lt;python-0.2.8-root&gt;</code>; CI already does. Add it to the script
+docstring/help. Owner: validation scripts.</li>
+<li><strong>Q8 — Kiro actual transcript.</strong> Keep A4 open until a real Kiro host can be
+discovered, collected, reopened and inspected. Fixtures alone cannot pass it.</li>
+<li><strong>Q9 — production connector.</strong> Requires an approved endpoint and the F4
+least-privilege boundary; local fakes cannot close it.</li>
+<li><strong>Q10 — macOS.</strong> Requires native runners and signed/notarized artifacts.</li>
+<li><strong>Q7 baseline — complete.</strong> PR #381 and its merge are green under the
+documented event conditions. Current PR #382 CI must be retried after the
+unused-import fix; skipped SDK jobs are not passes.</li>
+</ol>
+<h2>Reproduction commands</h2>
+<pre><code class="language-sh">export CARGO_HOME=/tmp/agenturm-cargo RUSTUP_HOME=/home/abhishekash/.rustup
+export PATH=/tmp/agenturm-cargo/bin:$PATH
+export CARGO_TARGET_DIR=/tmp/opencode/agenturm-q-target
+
+cargo test --workspace --locked --offline
+cargo fmt --all -- --check
+cargo clippy --workspace --all-targets --locked --offline -- -D warnings
+cargo build --workspace --bins --locked --offline
+
+APP=/tmp/opencode/agenturm-q-target/debug/agenturm
+python3 scripts/validate_rust_metric_descriptions.py --app &quot;$APP&quot;
+python3 scripts/validate_rust_metric_catalog.py --app &quot;$APP&quot;
+python3 scripts/validate_rust_python_findings.py \
+  --bin-dir /tmp/opencode/agenturm-q-target/debug \
+  --python-root /tmp/agenturm-python-028-reference
+PYTHONPATH=/tmp/agenturm-python-028-reference \
+  python3 scripts/validate_rust_python_receiver_review.py &quot;$APP&quot;
+</code></pre>
+<p>Q5/Q6 used the built archive in <code>/tmp/opencode/agenturm-q-bundle</code> and the
+extracted tree in <code>/tmp/opencode/agenturm-q-extracted</code>. All <code>/tmp/opencode</code>
+logs are working-session handles, not durable release artifacts.</p>
+<h2>Current test-owner handoff after review</h2>
+<p>Run CF1–CF5 and the related broker/local Review identity regressions on the
+current integrated source, including schema 21→22 admission-time retention and
+new typed WorkerSpawn evidence. Preserve all passing baseline results with
+source/artifact identifiers rather than repeating their old status on new code.</p>
+<p>The separate-UID block describes this executor's privilege context. Earlier
+source-specific Host guest results exist in
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-host-metric-metadata.md">Host/Metrics qualification</a>, on development App
+<code>a3fd5ae6…</code>; they do not certify optimized App <code>027f29a…</code> or current schema 22.
+Existing local guest staging helpers include
+<code>/tmp/agenturm-final-host-merge-kvm.sh</code> and
+<code>/tmp/agenturm-final-joined-guest.sh</code>. A test owner with KVM access can adapt
+those to its frozen checkout, exact binary hashes and retained image/kernel.
+Do not run fixture UID/host mutations directly on the workstation. If the
+executor cannot access that guest boundary, keep the case blocked and record it.</p>
+<p>Current broad Rust/SDK/installed/private/terminal acceptance remains delegated;
+this review performs only the targeted corrective checks recorded in the plan.</p>
+<h2>Corrective development checks from synchronization</h2>
+<ul>
+<li><code>cargo test --offline --locked -p agenturm-store --lib v20_metric_point_preserves_event_and_series_identity_through_upgrade</code>: <strong>1
+passed</strong>. The fixture uses a genuine gauge MetricPoint and compares the full
+<code>(source, StoredObservation)</code> before downgrade, during read-only schema 20,
+and after the writer's schema 22 upgrade, including point ID and series.</li>
+<li><code>cargo clippy --offline --locked -p agenturm-store --lib --tests -- -D warnings</code>:
+<strong>PASS</strong>, after removing the unused import that stopped PR #382 CI.</li>
+<li><code>python3 scripts/validate_rust_python_receiver_review.py --help</code>: <strong>PASS</strong>
+without the reference package installed on the import path. Help now shows
+the required <code>PYTHONPATH</code> setup; reference imports occur after argument parsing.
+Python syntax compilation also passed. Full tagged receiver behavior remains
+delegated to the test owner.</li>
+</ul>
+<p>Log: <code>/tmp/agenturm-test-sync-focused-checks.log</code>. These scoped checks are not a
+new whole-workspace, SDK, archive, terminal or separate-UID campaign.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

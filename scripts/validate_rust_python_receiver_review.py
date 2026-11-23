@@ -1,5 +1,10 @@
 #!/usr/bin/env python3
-"""Compare Rust Review with the tagged Python receiver using disposable evidence."""
+"""Compare Rust Review with the tagged Python receiver using disposable evidence.
+
+Run with the immutable Python 0.2.8 checkout on the import path, for example:
+    PYTHONPATH=/path/to/python-0.2.8 python3 scripts/validate_rust_python_receiver_review.py /path/to/agenturm
+The interpreter must provide the reference receiver's dependencies.
+"""
 
 import argparse
 import json
@@ -9,10 +14,6 @@ import stat
 import subprocess
 import threading
 
-from observatory.review_cli import collect_review
-from observatory.server import BoundedHTTPServer, handler_for
-from observatory.terminal import Api
-from tests.test_current_native_schema import CurrentOpenCodeBoundaryTests
 
 
 class Policy:
@@ -38,9 +39,14 @@ class Policy:
 
 
 def main():
-    parser = argparse.ArgumentParser(description=__doc__)
+    parser = argparse.ArgumentParser(description=__doc__, formatter_class=argparse.RawDescriptionHelpFormatter)
     parser.add_argument("binary", type=Path)
     args = parser.parse_args()
+    global collect_review, BoundedHTTPServer, handler_for, Api
+    from observatory.review_cli import collect_review
+    from observatory.server import BoundedHTTPServer, handler_for
+    from observatory.terminal import Api
+    from tests.test_current_native_schema import CurrentOpenCodeBoundaryTests
     fixture = CurrentOpenCodeBoundaryTests()
     fixture.setUp()
     try:

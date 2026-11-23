@@ -5,6 +5,26 @@ Updated 23 November 2026. The user assigned this implementation session to
 is the handoff contract. It supplements Q1–Q10 in the
 [remaining-work plan](../rfcs/rust-migration-remaining-plan.md).
 
+## Synchronized prior execution and current handoff
+
+The separate test agent's [Q1–Q10 execution report](rust-migration-test-plan-results.md)
+uses frozen `18aa702` (PR #381, schema 21). Its 833-test/optimized baseline
+passes are preserved and reviewed, but do not qualify the newer CF1–CF5 source
+`3135060` (PR #382, schema 22).
+
+Current PR #382 CI stopped before Rust tests/SDK follow-ups on an unused
+`ObservationStore` import in a Store test. The synchronization fix removes it;
+scoped Store lib/test Clippy and a genuine metric-point identity upgrade
+regression pass. The reference Review fixture's `--help` now documents and can
+show the required import-path setup without loading the reference first.
+
+For the next broad execution use the corrective PR's merged head, record its
+exact SHA and freeze artifacts. Keep this matrix pending until those actual
+CF1–CF5 and related Review identity scenarios run. Add an explicit shell loop
+(`for script in scripts/*.sh; do bash -n "$script" || exit; done`) rather than
+`bash -n scripts/*.sh`, which checks only one input. The separate-UID executor
+context and known staging helpers are documented in the results report.
+
 ## Ownership and execution
 
 - **Feature developers:** implement the feature slices below; run only focused
