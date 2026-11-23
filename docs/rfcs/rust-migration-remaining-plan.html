@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Remaining feature development</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md">Markdown source ↗</a></nav><h1>Rust migration: remaining development and validation</h1>
+</style></head><body><main><nav><strong>Agenturm / 23 November 2026</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md">Markdown source ↗</a></nav><h1>Rust migration: remaining development and validation</h1>
 <p>Updated 23 November 2026. This is the detailed remaining-work plan for the
 <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md">Rust execution plan</a> and
 <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-tasks.md">task board</a>. It separates unfinished features,
@@ -155,8 +155,23 @@ checks. No release/default switch or complete migration claim follows.</p>
 <h2>Remaining feature development — current scheduling</h2>
 <p>The five CF1–CF5 slices are implemented and merged in PR #382 (<code>3135060</code>);
 PR #383 (<code>2fea865</code>) synchronizes baseline test evidence and fixes the reported
-lint/upgrade-identity coverage gap. The rows below describe development still
-open. The SDK/CLI audit and test qualification are separate work categories.</p>
+lint/upgrade-identity coverage gap. FD3's combined usage slice is merged in PR
+#385 (<code>1541481</code>). The rows below describe development still open. The SDK/CLI
+audit and test qualification are separate work categories.</p>
+<h3>Active implementation</h3>
+<p><strong>FD4 — cross-host terminal routing is in progress in the shared checkout</strong>
+(<code>main</code> at <code>1541481</code>, with uncommitted changes in
+<code>rust/agenturm-app/src/workflow_route.rs</code>,
+<code>rust/agenturm-app/src/remote_history/client.rs</code>, and
+<code>rust/agenturm-app/src/cockpit_workflows.rs</code>). The current slice adds an
+operator-supplied route file to the native remote cockpit, verifies the exact
+current request, and probes the receiver host for one unique tmux pane whose
+process ancestry matches the provider's exact resume command. Worker requests,
+unsupported providers, missing configuration, ambiguous/stale targets and
+unavailable routes fail closed. This is implementation-in-progress evidence,
+not a completed or merged feature: focused validation, return-selection review,
+security review, and confirmation of supported route transport semantics are
+still pending. The Python receiver explicitly rejects this option.</p>
 <h3>Core Linux features</h3>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -188,9 +203,9 @@ open. The SDK/CLI audit and test qualification are separate work categories.</p>
 </tr>
 <tr>
 <td>FD4</td>
-<td>Core / remote workflow</td>
+<td>Core / remote workflow — <strong>in progress</strong></td>
 <td>Cross-host terminal routing to the exact recorded remote owner/session.</td>
-<td>Use an explicitly configured authenticated host/session route and current request evidence. Resolve a unique target or report unavailable. Preserve return selection; routing never answers or approves the agent request. Existing local routing/resume and native/attached receiver reads are not missing features.</td>
+<td>Current working-tree slice: native receiver <code>--route-file</code>, exact current-request check, bounded receiver-host process/tmux probes and unique-target verification. Still complete focused validation, return-selection review, security/transport review, and fail-closed acceptance. Resolve one exact target or report unavailable; routing never answers or approves. Existing local routing/resume and native/attached receiver reads are not missing features.</td>
 </tr>
 </tbody>
 </table></div>
