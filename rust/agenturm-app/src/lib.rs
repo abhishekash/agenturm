@@ -20,6 +20,7 @@ mod handoff_export;
 mod host_cli;
 mod inspector_activity;
 mod investigate_cli;
+mod native_session_context;
 #[cfg(target_os = "linux")]
 mod new_window;
 mod private_output;
@@ -92,8 +93,8 @@ use agenturm_store::{
     SessionPosition, SessionQuery, Store, TraceReviewQuery,
 };
 use agenturm_ui::{
-    HistorySelection, ProjectOrigin, RecordedSession, ReviewVersion, SessionCatalog, SessionCursor,
-    SessionView, WorkspaceRequest, WorkspaceResponse, WorkspaceView,
+    HistorySelection, NativeSessionContext, ProjectOrigin, RecordedSession, ReviewVersion,
+    SessionCatalog, SessionCursor, SessionView, WorkspaceRequest, WorkspaceResponse, WorkspaceView,
 };
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1768,6 +1769,7 @@ pub fn execute_cockpit_with_extensions(
     };
     install_process_extensions(&mut app, &extensions)?;
     let mut store = None;
+    let mut native_members = native_session_context::StartupMembers::default();
     agenturm_ui::run_workspace(move |request| {
         if startup.is_none() {
             startup = Some(cockpit_startup::prepare_cockpit_store(None)?);
@@ -1785,7 +1787,21 @@ pub fn execute_cockpit_with_extensions(
                 startup.prompt(command).map(WorkspaceResponse::Work)
             }
             request => {
-                workspace_response(&mut app, store, &startup.db, request, || startup.notice())
+                let native_sources = matches!(request, WorkspaceRequest::Sessions(_))
+                    .then(|| {
+                        native_members
+                            .update(startup.source_authority())
+                            .or_else(|| native_session_context::configured_sources(&startup.db))
+                    })
+                    .flatten();
+                workspace_response_with_sources(
+                    &mut app,
+                    store,
+                    &startup.db,
+                    request,
+                    || startup.notice(),
+                    native_sources.as_ref(),
+                )
             }
         }
     })
@@ -1799,7 +1815,17 @@ pub fn execute_inspect_ui(options: &InspectOptions) -> Result<(), String> {
         .map_err(|error| format!("open store failed: {error}"))?;
     let db = options.db.clone();
     agenturm_ui::run_workspace(move |request| {
-        workspace_response(&mut app, &store, &db, request, || None)
+        let native_sources = matches!(request, WorkspaceRequest::Sessions(_))
+            .then(|| native_session_context::configured_sources(&db))
+            .flatten();
+        workspace_response_with_sources(
+            &mut app,
+            &store,
+            &db,
+            request,
+            || None,
+            native_sources.as_ref(),
+        )
     })
     .map_err(|error| error.to_string())
 }
@@ -1847,12 +1873,30 @@ fn workspace_response(
     request: WorkspaceRequest,
     notice: impl FnOnce() -> Option<String>,
 ) -> Result<WorkspaceResponse, String> {
+    workspace_response_with_sources(app, store, db, request, notice, None)
+}
+
+fn workspace_response_with_sources(
+    app: &mut AgenturmApp,
+    store: &impl HistoryReader,
+    db: &std::path::Path,
+    request: WorkspaceRequest,
+    notice: impl FnOnce() -> Option<String>,
+    native_sources: Option<&discovery::SourceAuthority>,
+) -> Result<WorkspaceResponse, String> {
     match request {
         WorkspaceRequest::Sessions(before) => {
-            let mut catalog = load_session_catalog(store, db, before)?;
-            if catalog.notice.is_none() {
-                catalog.notice = notice();
-            }
+            let mut catalog = if let Some(native_sources) = native_sources {
+                load_session_catalog_with_sources(store, db, before, Some(native_sources))?
+            } else {
+                load_session_catalog(store, db, before)?
+            };
+            catalog.notice = match (notice(), catalog.notice) {
+                (Some(startup), Some(coverage)) if startup != coverage => {
+                    Some(format!("{startup} · {coverage}"))
+                }
+                (startup, coverage) => startup.or(coverage),
+            };
             Ok(WorkspaceResponse::Sessions(catalog))
         }
         WorkspaceRequest::Work(command) => {
@@ -1902,6 +1946,15 @@ fn load_session_catalog(
     db: &std::path::Path,
     before: Option<SessionCursor>,
 ) -> Result<SessionCatalog, String> {
+    load_session_catalog_with_sources(store, db, before, None)
+}
+
+fn load_session_catalog_with_sources(
+    store: &impl HistoryReader,
+    db: &std::path::Path,
+    before: Option<SessionCursor>,
+    source_authority: Option<&discovery::SourceAuthority>,
+) -> Result<SessionCatalog, String> {
     let mut query = SessionQuery::latest(200);
     query.before = before.map(|cursor| SessionPosition {
         observed_at_unix_ns: cursor.updated_at_unix_ns,
@@ -1914,7 +1967,10 @@ fn load_session_catalog(
         .query_sessions(&query)
         .map_err(|error| format!("Read sessions failed: {error}"))?;
     let mut titles = session_titles::load(store, db, &page);
+    let mut activity = session_titles::last_activity(store, &page);
     let mut projects = session_projects::load(store.session_title_store(), db, &page);
+    let mut native =
+        native_session_context::load(store.session_title_store(), db, &page, source_authority);
     let keys = page
         .sessions
         .iter()
@@ -1953,6 +2009,18 @@ fn load_session_catalog(
             Err(_) => {}
         }
     }
+    let incomplete_names = native.values().filter(|row| row.partial_title).count();
+    if incomplete_names > 0 {
+        let partial = format!(
+            "Native title coverage is partial · {incomplete_names} Claude transcript(s) have only verified header metadata within the scan budget"
+        );
+        if let Some(current) = &mut notice {
+            current.push_str(" · ");
+            current.push_str(&partial);
+        } else {
+            notice = Some(partial);
+        }
+    }
     let sessions = page
         .sessions
         .into_iter()
@@ -1962,15 +2030,42 @@ fn load_session_catalog(
                 (Some(life.state), life.reason_code, life.turn_id)
             });
             let session_key = (session.harness_id.clone(), session.session_id.clone());
-            let project_path = projects.remove(&session_key).map(String::into_boxed_str);
+            let metadata = native.remove(&session_key);
+            let task_title = titles
+                .remove(&session_key)
+                .or_else(|| metadata.as_ref().and_then(|row| row.title.clone()))
+                .map(String::into_boxed_str);
+            let project = projects
+                .remove(&session_key)
+                .map(|path| (path, ProjectOrigin::OperatorTaskWorkspace))
+                .or_else(|| {
+                    metadata
+                        .as_ref()
+                        .and_then(|row| row.workspace.clone())
+                        .map(|path| (path, ProjectOrigin::NativeRecordedWorkspace))
+                });
+            let (project_path, project_origin) = project.map_or((None, None), |(path, origin)| {
+                (Some(path.into_boxed_str()), Some(origin))
+            });
+            let last_activity = activity.remove(&session_key).map(String::into_boxed_str);
+            let native_context = if metadata.is_some() || last_activity.is_some() {
+                let metadata = metadata.unwrap_or_default();
+                Some(Box::new(NativeSessionContext {
+                    agent_name: metadata.agent_name.map(String::into_boxed_str),
+                    agent_role: metadata.agent_role.map(String::into_boxed_str),
+                    agent_path: metadata.agent_path.map(String::into_boxed_str),
+                    model_provider: metadata.model_provider.map(String::into_boxed_str),
+                    last_activity,
+                }))
+            } else {
+                None
+            };
             RecordedSession {
                 harness_id: session.harness_id.as_str().to_owned(),
-                project_origin: project_path
-                    .as_ref()
-                    .map(|_| ProjectOrigin::OperatorTaskWorkspace),
+                project_origin,
                 project_path,
-                native_context: None,
-                task_title: titles.remove(&session_key).map(String::into_boxed_str),
+                task_title,
+                native_context,
                 pending_requests: pending
                     .remove(&(
                         session.harness_id.as_str().to_owned(),

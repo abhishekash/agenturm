@@ -18,6 +18,8 @@ mod eval_detail;
 mod eval_inventory;
 mod eval_outcome;
 mod linked_trace;
+#[cfg(target_os = "linux")]
+mod native_codex_metadata;
 mod private_text;
 mod retention;
 mod review_ledger;
@@ -47,6 +49,8 @@ pub use eval_outcome::{
     RetainedEvalOutcome, SelectedEvalPage, SelectedEvalQuery, deserialize_eval_batch,
 };
 pub use linked_trace::{ResolvedTraceReview, ResolvedTraceTurn, TraceReviewQuery, TraceTurnQuery};
+#[cfg(target_os = "linux")]
+pub use native_codex_metadata::{CodexThreadMetadata, read_codex_thread_metadata};
 pub use private_text::bounded_text_preview;
 pub use retention::RetentionOutcome;
 pub use review_ledger::{ReviewDecisionNote, ReviewError, ReviewKey, ReviewLedger, ReviewVersion};

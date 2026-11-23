@@ -1,4 +1,4 @@
-//! Roster labels from explicit task titles and retained structural observations.
+//! Saved task labels and separate retained activity captions.
 
 use agenturm_kernel::{ExtensionId, Observation, ObservationKind, ObservationQuery};
 use agenturm_store::{SessionPage, bounded_text_preview};
@@ -32,19 +32,31 @@ pub(super) fn load(
                 .map_err(|error| error.to_string())
         })
         .unwrap_or_default();
-    let mut titles = task_titles(&keys, tasks);
-    if titles.len() < keys.len()
-        && let Ok(evidence) = store.query_observations(&ObservationQuery {
-            snapshot_id: Some(page.snapshot_id),
-            ..ObservationQuery::latest(ROSTER_EVIDENCE_LIMIT)
-        })
-        && evidence.snapshot_id == page.snapshot_id
-    {
-        for (key, title) in evidence_titles(&keys, &evidence.observations) {
-            titles.entry(key).or_insert(title);
-        }
+    task_titles(&keys, tasks)
+}
+
+pub(super) fn last_activity(
+    store: &impl HistoryReader,
+    page: &SessionPage,
+) -> BTreeMap<SessionKey, String> {
+    if page.sessions.is_empty() {
+        return BTreeMap::new();
     }
-    titles
+    let keys = page
+        .sessions
+        .iter()
+        .map(|row| (row.harness_id.clone(), row.session_id.clone()))
+        .collect();
+    let Ok(evidence) = store.query_observations(&ObservationQuery {
+        snapshot_id: Some(page.snapshot_id),
+        ..ObservationQuery::latest(ROSTER_EVIDENCE_LIMIT)
+    }) else {
+        return BTreeMap::new();
+    };
+    if evidence.snapshot_id != page.snapshot_id {
+        return BTreeMap::new();
+    }
+    activity_captions(&keys, &evidence.observations)
 }
 
 fn task_titles(
@@ -80,58 +92,47 @@ fn safe_title(text: &str) -> Option<String> {
     (!text.is_empty()).then_some(text)
 }
 
-fn evidence_titles(
+fn activity_captions(
     keys: &BTreeSet<SessionKey>,
     observations: &[Observation],
 ) -> BTreeMap<SessionKey, String> {
-    let mut titles = BTreeMap::<_, (u8, String)>::new();
-    // The page contains exact retained observations, in time order. Favor
-    // concrete recorded work over generic evidence and the newer tie.
+    let mut captions = BTreeMap::new();
+    // The retained page is chronological. Later structural work updates the
+    // caption independently of the recorded native or operator title.
     for observation in observations {
         let Some(session) = observation.identity.session_id.as_ref() else {
             continue;
         };
         let key = (observation.harness_id.clone(), session.clone());
         if keys.contains(&key)
-            && let Some((rank, title)) = evidence_title(&observation.kind)
-            && titles
-                .get(&key)
-                .is_none_or(|(old_rank, _)| *old_rank <= rank)
+            && let Some(label) = activity_caption(&observation.kind)
         {
-            titles.insert(key, (rank, title));
+            captions.insert(key, label);
         }
     }
-    titles
-        .into_iter()
-        .map(|(key, (_, title))| (key, title))
-        .collect()
+    captions
 }
 
-fn evidence_title(kind: &ObservationKind) -> Option<(u8, String)> {
-    let (rank, title) = match kind {
-        ObservationKind::PullRequestRaised { repository, number } => (
-            5,
+fn activity_caption(kind: &ObservationKind) -> Option<String> {
+    Some(match kind {
+        ObservationKind::PullRequestRaised { repository, number } => {
             safe_title(&format!("Pull request #{number} · {repository}"))
-                .unwrap_or_else(|| format!("Pull request #{number}")),
-        ),
-        ObservationKind::FileEdit(_) => (4, "Recorded file edit".into()),
-        ObservationKind::McpCall { tool, .. } => (
-            3,
-            tool.as_deref().and_then(safe_title).map_or_else(
-                || "Recorded MCP operation".into(),
-                |tool| format!("MCP · {tool}"),
-            ),
-        ),
-        ObservationKind::Check { .. } => (3, "Recorded check".into()),
-        ObservationKind::Tool { category, .. } if category == "shell" => {
-            (2, "Recorded shell activity".into())
+                .unwrap_or_else(|| format!("Pull request #{number}"))
         }
-        ObservationKind::Tool { .. } => (2, "Recorded tool activity".into()),
-        ObservationKind::TraceSpan(_) => (1, "Recorded trace".into()),
-        ObservationKind::TraceProgress(_) => (1, "Recorded trace progress".into()),
+        ObservationKind::FileEdit(_) => "Recorded file edit".into(),
+        ObservationKind::McpCall { tool, .. } => tool.as_deref().and_then(safe_title).map_or_else(
+            || "Recorded MCP operation".into(),
+            |tool| format!("MCP · {tool}"),
+        ),
+        ObservationKind::Check { .. } => "Recorded check".into(),
+        ObservationKind::Tool { category, .. } if category == "shell" => {
+            "Recorded shell activity".into()
+        }
+        ObservationKind::Tool { .. } => "Recorded tool activity".into(),
+        ObservationKind::TraceSpan(_) => "Recorded trace".into(),
+        ObservationKind::TraceProgress(_) => "Recorded trace progress".into(),
         _ => return None,
-    };
-    Some((rank, title))
+    })
 }
 
 #[cfg(test)]
@@ -140,7 +141,7 @@ mod tests {
     use agenturm_kernel::{ObservationIdentity, TraceSpan, TraceStatus};
 
     #[test]
-    fn only_exact_titles_and_public_structural_evidence_label_roster_sessions() {
+    fn saved_titles_and_activity_captions_use_exact_source_and_session_keys() {
         let codex = ExtensionId::parse("harness.codex").unwrap();
         let pi = ExtensionId::parse("harness.pi").unwrap();
         let trace = ExtensionId::parse("otlp.collector").unwrap();
@@ -197,7 +198,7 @@ mod tests {
             observed_at_unix_ns: 1,
             kind,
         };
-        let derived = evidence_titles(
+        let derived = activity_captions(
             &keys,
             &[
                 row(
@@ -232,7 +233,7 @@ mod tests {
             derived,
             BTreeMap::from([(selected(&pi), "Recorded file edit".into())])
         );
-        assert!(evidence_titles(&keys, &[]).is_empty());
+        assert!(activity_captions(&keys, &[]).is_empty());
         assert!(safe_title("Hidden\x1b title").is_none());
     }
 }
