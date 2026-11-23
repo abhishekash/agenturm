@@ -4,17 +4,21 @@ from __future__ import annotations
 
 import argparse
 import contextlib
+import fcntl
 import grp
 import http.client
 import json
 import os
 from pathlib import Path
+import pty
 import pwd
 import secrets
 import select
+import struct
 import subprocess
 import sys
 import tempfile
+import termios
 import time
 from urllib.parse import urlsplit
 
@@ -23,8 +27,8 @@ HARNESS = "harness.codex"
 TRACE = "1234567890abcdef1234567890abcdef"
 SPAN = "1234567890abcdef"
 SESSION = "telemetry-session"
-INPUT = "synthetic captured model request"
-OUTPUT = "synthetic captured model response"
+INPUT = "CAPTURED_INPUT_84217"
+OUTPUT = "CAPTURED_OUTPUT_76391"
 UNRELATED = "synthetic excluded input value"
 
 
@@ -58,6 +62,52 @@ def post(endpoint, body, token=None, path="/v1/traces"):
         return response.status, json.loads(response.read())
 
 
+def cockpit_preview(args, principal, state, *, columns, rows, close):
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+    original = termios.tcgetattr(slave)
+    env = {**os.environ, "HOME": str(state), "XDG_STATE_HOME": str(state / "xdg"),
+           "TERM": "xterm-256color"}
+    process = subprocess.Popen(args, cwd=state, stdin=slave, stdout=slave, stderr=slave,
+                               env=env, **principal)
+
+    def until(marker):
+        frame = bytearray()
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if select.select([master], [], [], .05)[0]:
+                frame.extend(os.read(master, 8192))
+            if marker in frame:
+                return bytes(frame)
+            assert process.poll() is None, bytes(frame)
+        raise AssertionError((marker, bytes(frame)))
+
+    try:
+        assert INPUT.encode() not in until(SESSION.encode())
+        os.write(master, b"8")
+        assert INPUT.encode() not in until(b"d captured text")
+        os.write(master, b"d")
+        assert INPUT.encode() not in until(b"Enter reveal")
+        os.write(master, b"\r")
+        frame = until(OUTPUT.encode())
+        assert b"Producer-captured text" in frame and INPUT.encode() in frame
+        os.write(master, close)
+        if close == b"\x1b":
+            clear = until(b"Enter reveal")
+            assert INPUT.encode() not in clear and OUTPUT.encode() not in clear
+            os.write(master, b"q")
+        tail = until(b"\x1b[?1049l")
+        assert INPUT.encode() not in tail and OUTPUT.encode() not in tail
+        assert process.wait(timeout=8) == 0
+        assert termios.tcgetattr(slave) == original
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=8)
+        os.close(master)
+        os.close(slave)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--bin-dir", type=Path, required=True)
@@ -79,6 +129,8 @@ def main():
         private_directory(data, broker, broker)
         private_directory(transport, broker, client_gid, 0o2710)
         private_directory(backup_root, broker, broker)
+        state = root / "reader-state"
+        private_directory(state, reader, client_gid)
         endpoint_socket = transport / "agenturm-native-storage-v1.sock"
         config = root / "broker.json"
         config.write_text(json.dumps({
@@ -242,6 +294,9 @@ def main():
             preview(code=1, uid=collector)
             preview(code=1, uid=admin)
             assert preview() == {"input": INPUT, "output": OUTPUT}
+            for columns, rows, close in [(60, 18, b"\x1b"), (120, 32, b"q"), (60, 18, b"\x03")]:
+                cockpit_preview(command("cockpit"), principal(reader), state,
+                                columns=columns, rows=rows, close=close)
 
             with contextlib.ExitStack() as cleanup:
                 read_fd, write_fd = os.pipe2(os.O_NONBLOCK)
@@ -297,7 +352,7 @@ def main():
             for process in (receiver, gateway, service):
                 if process is not None:
                     stop(process)
-        print("PASS payload admission, exact private grant and ACK, metadata gateway, restore and retention",
+        print("PASS payload admission, private CLI and cockpit, disclosure ACK, gateway, restore and retention",
               flush=True)
 
 

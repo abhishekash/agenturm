@@ -620,6 +620,20 @@ impl Workspace {
                     self.queued_prompt = Some(entry)
                 }
                 WorkInput::Reveal(_) => {}
+                WorkInput::RevealTelemetry(span) if self.pending.is_none() => {
+                    let (delivery, mut receiver) = prompt_channel();
+                    receiver.title = "Producer-captured text";
+                    self.request(
+                        sender,
+                        WorkspaceRequest::Work(WorkCommand::RevealTelemetry(
+                            Box::new(span),
+                            delivery,
+                        )),
+                        Change::Work(None),
+                    );
+                    self.prompt_receiver = Some(receiver);
+                }
+                WorkInput::RevealTelemetry(_) => {}
                 WorkInput::None => {}
                 WorkInput::Close => {
                     self.discard_work_result = matches!(self.pending, Some(Change::Work(_)));
@@ -713,6 +727,14 @@ impl Workspace {
             return false;
         }
 
+        if key.code == KeyCode::Char('d') && self.pending.is_none() && telemetry_details(view) {
+            self.work = Some(Workbench::new(
+                WorkResult::TelemetrySpans(view.page.telemetry_spans.clone()),
+                None,
+            ));
+            self.message = None;
+            return false;
+        }
         let detail = match key.code {
             KeyCode::Char('m') => Some(OperationDetailKind::Mcp),
             KeyCode::Char('e') if view.page.reviewing() || view.page.ui.in_turn => {
@@ -1163,6 +1185,8 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
                 error
             } else if workspace.pending.is_some() {
                 "Loading history…"
+            } else if telemetry_details(view) {
+                "d captured text · Esc back · [ ] pages"
             } else if let HistorySelection::Session(session, _) = &view.selection
                 && view.page.reviewing()
             {
@@ -1238,6 +1262,15 @@ pub(super) fn age(nanos: u64) -> String {
         3600..=86399 => format!("{}h ago", elapsed / 3600),
         _ => format!("{}d ago", elapsed / 86400),
     }
+}
+
+fn telemetry_details(view: &HistoryView) -> bool {
+    !view.page.telemetry_spans.is_empty()
+        && matches!(
+            view.selection,
+            HistorySelection::All(WorkspaceView::Traces)
+                | HistorySelection::Session(_, SessionView::Traces)
+        )
 }
 
 fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message: Option<&str>) {
@@ -1502,6 +1535,7 @@ mod tests {
                 initial_pane: None,
                 review_pane: None,
                 operation_details: Vec::new(),
+                private_telemetry: false,
             })));
             let _ = frame(&mut workspace);
             assert!(!press(&mut workspace, KeyCode::Right));

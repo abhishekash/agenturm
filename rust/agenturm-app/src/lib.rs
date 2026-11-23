@@ -1869,7 +1869,9 @@ fn workspace_response(
             Ok(WorkspaceResponse::ReviewSaved)
         }
         WorkspaceRequest::History { selection, before } => {
-            load_workspace_history(app, store, selection, before).map(WorkspaceResponse::History)
+            let mut page = load_workspace_history(app, store, selection, before)?;
+            page.private_telemetry = store.allows_private_telemetry();
+            Ok(WorkspaceResponse::History(page))
         }
     }
 }
@@ -1947,6 +1949,10 @@ fn load_session_catalog(
 }
 
 trait HistoryReader: ObservationStore {
+    fn allows_private_telemetry(&self) -> bool {
+        cfg!(target_os = "linux")
+    }
+
     fn local_host_data(&self) -> bool {
         true
     }

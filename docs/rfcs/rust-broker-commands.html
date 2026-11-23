@@ -93,7 +93,10 @@ selection with <code>binding</code> containing <code>source_id</code> and
 <code>native_source_id</code>, the exact <code>trace_id</code>, <code>span_id</code>,
 <code>session_id</code>, <code>turn_id</code> and <code>worker_id</code>, and the
 returned <code>snapshot_id</code>. Use null for absent native, turn and worker
-IDs. The response labels producer-captured text. Native linkage is a producer assertion.</p>
+IDs. The response labels producer-captured text. Native linkage is a producer assertion.
+In the local or broker cockpit, open Traces with <kbd>8</kbd>, press <kbd>d</kbd> to
+select a span, and use Enter to open the private text modal. Escape clears the
+display and returns to the span list.</p>
 <p>Local <code>run</code> generates a bearer for payload capture. Local
 <code>serve-traces</code> requires an owner-only bearer file. The local
 <code>trace-payload</code> commands use <code>--db history.sqlite</code>.

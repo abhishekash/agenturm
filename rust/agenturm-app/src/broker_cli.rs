@@ -748,6 +748,15 @@ fn execute_private_cockpit(
                 "Prompt shown from the verified current source".into(),
             ))
         }
+        WorkCommand::RevealTelemetry(span, mut output) => {
+            let selection = telemetry_payload_cli::modal_selection(*span)?;
+            store
+                .with_telemetry_payload(&selection, |payload| {
+                    telemetry_payload_cli::deliver_modal(payload, &mut output)
+                })
+                .map_err(|error| error.to_string())?;
+            Ok(WorkResult::Status(String::new()))
+        }
         WorkCommand::RevealOperation(operation, mut output) => {
             let kind = match operation.kind {
                 OperationDetailKind::Mcp => PrivateEvidenceKind::CodexMcpPayload {

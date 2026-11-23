@@ -72,6 +72,19 @@ pub struct OperationDetailEntry {
     pub label: String,
 }
 
+/// Exact metadata for a producer-captured span text request.
+#[derive(Clone, Debug)]
+pub struct TelemetrySpanEntry {
+    pub source_id: ExtensionId,
+    pub native_source_id: Option<String>,
+    pub trace_id: String,
+    pub span_id: String,
+    pub session_id: String,
+    pub turn_id: Option<String>,
+    pub worker_id: Option<String>,
+    pub snapshot_id: agenturm_kernel::ReadSnapshot,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationDetailKind {
     Mcp,
@@ -195,6 +208,7 @@ pub enum WorkCommand {
     Prompts(WorkAnchor),
     RevealPrompt(PromptEntry, PromptDelivery),
     RevealOperation(OperationDetailEntry, PromptDelivery),
+    RevealTelemetry(Box<TelemetrySpanEntry>, PromptDelivery),
 }
 
 pub struct ReviewNoteEntry {
@@ -230,6 +244,7 @@ pub enum WorkResult {
         partial: bool,
     },
     Prompts(Vec<PromptEntry>),
+    TelemetrySpans(Vec<TelemetrySpanEntry>),
     Seen(RequestEntry),
     Status(String),
 }
@@ -265,6 +280,7 @@ enum Draft {
 
 pub(super) enum WorkInput {
     Reveal(PromptEntry),
+    RevealTelemetry(TelemetrySpanEntry),
     None,
     Close,
     Command(WorkCommand),
@@ -351,6 +367,7 @@ impl Workbench {
             WorkResult::TaskWorkspace { .. } => 0,
             WorkResult::Workflow { items, .. } => items.len(),
             WorkResult::Prompts(items) => items.len(),
+            WorkResult::TelemetrySpans(spans) => spans.len(),
             WorkResult::Seen(_) | WorkResult::Status(_) => 0,
         }
     }
@@ -570,6 +587,11 @@ impl Workbench {
                 if let Some(item) = items.get(selected) =>
             {
                 return WorkInput::Reveal(item.clone());
+            }
+            (WorkResult::TelemetrySpans(spans), KeyCode::Enter)
+                if let Some(span) = spans.get(selected) =>
+            {
+                return WorkInput::RevealTelemetry(span.clone());
             }
             _ => {}
         }
@@ -866,6 +888,34 @@ impl Workbench {
                     .map(|item| anchor_details(&item.anchor))
                     .unwrap_or_default(),
                 "No eligible prompts",
+            ),
+            WorkResult::TelemetrySpans(spans) => (
+                "Captured span text",
+                "Enter reveal · ↑↓ select · Esc traces",
+                spans
+                    .iter()
+                    .map(|span| format!("{} · span {}", span.source_id.as_str(), span.span_id))
+                    .collect(),
+                spans
+                    .get(selected)
+                    .map(|span| {
+                        let mut detail = vec![
+                            Line::from(format!("Trace  {}", span.trace_id)),
+                            Line::from(format!("Session  {}", span.session_id)),
+                        ];
+                        if let Some(source) = &span.native_source_id {
+                            detail.push(Line::from(format!("Native source  {source}")));
+                        }
+                        if let Some(turn) = &span.turn_id {
+                            detail.push(Line::from(format!("Turn  {turn}")));
+                        }
+                        if let Some(worker) = &span.worker_id {
+                            detail.push(Line::from(format!("Worker  {worker}")));
+                        }
+                        detail
+                    })
+                    .unwrap_or_default(),
+                "No spans in the loaded trace page",
             ),
             WorkResult::Seen(_) | WorkResult::Status(_) => return,
         };

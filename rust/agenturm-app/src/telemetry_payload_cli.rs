@@ -226,6 +226,52 @@ fn load_selection(path: &Path) -> Result<TelemetryPayloadSelection, String> {
     serde_json::from_slice(&input).map_err(|_| "Invalid telemetry payload selection".into())
 }
 
+pub(super) fn modal_selection(
+    span: agenturm_ui::TelemetrySpanEntry,
+) -> Result<TelemetryPayloadSelection, String> {
+    let native_source_id = span
+        .native_source_id
+        .as_deref()
+        .map(ExtensionId::parse)
+        .transpose()
+        .map_err(|_| "Invalid native telemetry source")?;
+    Ok(TelemetryPayloadSelection {
+        binding: TelemetryBinding {
+            source_id: span.source_id,
+            native_source_id,
+        },
+        trace_id: span.trace_id,
+        span_id: span.span_id,
+        session_id: span.session_id,
+        turn_id: span.turn_id,
+        worker_id: span.worker_id,
+        snapshot_id: span.snapshot_id,
+    })
+}
+
+pub(super) fn deliver_modal(
+    payload: &TelemetryPayload,
+    delivery: &mut agenturm_ui::PromptDelivery,
+) -> Result<(), String> {
+    let mut text = String::new();
+    if let Some(input) = &payload.input {
+        text.push_str("Input\n");
+        text.push_str(input);
+    }
+    if let Some(output) = &payload.output {
+        if !text.is_empty() {
+            text.push_str("\n\n");
+        }
+        text.push_str("Output\n");
+        text.push_str(output);
+    }
+    serde_json::to_writer(&mut *delivery, &text)
+        .map_err(|_| "Captured span text display closed")?;
+    delivery
+        .flush()
+        .map_err(|_| "Captured span text display closed".into())
+}
+
 fn display(payload: &TelemetryPayload, output: &mut dyn Write) -> Result<(), String> {
     serde_json::to_writer(
         &mut *output,

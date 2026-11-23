@@ -228,6 +228,7 @@ pub(super) fn is_prompt_command(command: &WorkCommand) -> bool {
         WorkCommand::Prompts(_)
             | WorkCommand::RevealPrompt(_, _)
             | WorkCommand::RevealOperation(_, _)
+            | WorkCommand::RevealTelemetry(_, _)
     )
 }
 
@@ -300,6 +301,23 @@ pub(super) fn execute_prompt(
                 &mut delivery,
                 writer,
             )?;
+            Ok(WorkResult::Status(String::new()))
+        }
+        WorkCommand::RevealTelemetry(span, mut delivery) => {
+            let selection = super::telemetry_payload_cli::modal_selection(*span)?;
+            let opened;
+            let store = if let Some(writer) = writer {
+                writer
+            } else {
+                opened = Store::open_collector(db).map_err(string)?;
+                &opened
+            };
+            store
+                .with_telemetry_payload(&selection, |payload| {
+                    super::telemetry_payload_cli::deliver_modal(payload, &mut delivery)
+                })
+                .map_err(string)?
+                .ok_or("Exact retained telemetry payload is unavailable")??;
             Ok(WorkResult::Status(String::new()))
         }
         _ => Err("Unsupported prompt request".into()),

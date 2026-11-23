@@ -270,6 +270,10 @@ impl ObservationStore for RemoteStore {
 }
 
 impl HistoryReader for RemoteStore {
+    fn allows_private_telemetry(&self) -> bool {
+        false
+    }
+
     fn local_host_data(&self) -> bool {
         false
     }

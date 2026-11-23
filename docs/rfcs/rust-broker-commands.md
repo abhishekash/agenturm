@@ -119,7 +119,9 @@ runs preview. The selection JSON names `binding` with `source_id` and
 `span_id`, `session_id`, `turn_id`, and `worker_id` (null when absent),
 and the returned `snapshot_id`. The response labels the text as
 `producer_captured_telemetry`. A claimed native linkage is a producer
-assertion. It does not certify native transcript bytes.
+assertion. In the local or broker cockpit, open Traces with `8`, press
+`d` to select a span, and use Enter to open the private text modal. Escape
+clears the display and returns to the span list.
 
 Local `run` supports the same `--payload-scope` with an explicit
 `--source-id` and a generated bearer. Local `serve-traces` requires an
