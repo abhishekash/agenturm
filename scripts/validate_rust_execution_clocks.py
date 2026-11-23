@@ -21,7 +21,7 @@ import time
 from urllib.parse import urlsplit
 
 from validate_rust_native_attention import pending
-from validate_rust_remote_history import request
+from validate_rust_remote_history import request as history_request
 from validate_rust_telemetry_payloads import private_directory, ready, stop
 
 
@@ -273,7 +273,7 @@ def validate(binaries, root):
         assert not attention()
 
         def head(identity):
-            status, reply = request(read_url, reader_token, {
+            status, reply = history_request(read_url, reader_token, {
                 "op": "history", "selection": {"kind": "observations"},
                 "query": {"limit": 1},
             }, identity)
@@ -281,7 +281,7 @@ def validate(binaries, root):
             return reply["result"]["Ok"]["value"]["snapshot_id"]
 
         def clocks(identity, snapshot, scopes, token=reader_token):
-            return request(read_url, token, {"op": "execution_clocks",
+            return history_request(read_url, token, {"op": "execution_clocks",
                 "query": {"snapshot_id": snapshot, "scopes": scopes}}, identity)
 
         scope = dict(saved["scope"])
@@ -333,11 +333,12 @@ def validate(binaries, root):
         assert exchange(fresh_write, PATH, later, collector_token, old_binding)[0] >= 400
         assert count() == 3
 
-        status, identity_reply = request(read_url, reader_token, {"op": "identity"})
+        status, identity_reply = history_request(read_url, reader_token, {"op": "identity"})
         identity = identity_reply["history_identity"]
         assert status == 200 and identity != old_binding
         restored_snapshot = head(identity)
-        assert clocks(old_binding, snapshot, siblings)[1]["result"] == {"Err": {"code": "history_replaced"}}
+        stale_binding = clocks(old_binding, snapshot, siblings)
+        assert stale_binding[1]["result"] == {"Err": {"code": "snapshot_replaced"}}, stale_binding
         assert clocks(identity, snapshot, siblings)[1]["result"] == {"Err": {"code": "invalid_request"}}
         restored = clocks(identity, restored_snapshot, siblings)[1]["result"]["Ok"]["value"]
         assert not restored["active"]

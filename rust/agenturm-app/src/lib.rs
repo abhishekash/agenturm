@@ -4191,6 +4191,7 @@ pub fn render(command: Command) -> String {
             "       agenturm content <grant|revoke|list|preview> [options]\n",
             "       agenturm serve-traces --listen <loopback-IP:port> --db <path> --source-id otlp.<id> [--payload-scope <standalone|harness-id> --token-file <path>]\n",
             "       agenturm run --db <path> [--source-id otlp.<id>] [--payload-scope <standalone|harness-id>] [--instrument python [--service <name>] [--capture-content]] -- <program> [args...]\n",
+            "       agenturm run --endpoint http://<loopback-IP:port> --token-file <path> --instrument python [--service <name>] -- <python> <script|-m module> [args...]\n",
             "       agenturm trace-payload <binding|grant|revoke|snapshot|preview> [options]\n",
             "       agenturm eval-detail <binding|grant|revoke|preview> [options]\n",
             "       agenturm import-traces --file <otlp-json-path|-> --db <path> --source-id otlp.<id>\n",

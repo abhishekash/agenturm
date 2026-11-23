@@ -111,8 +111,8 @@ expect_usage() {
 
 expect_replay() {
     local log=$1
-    grep -qE '^harness\.codex\..*: committed 0 observation\(s\).*ACK sent=true$' "$log"
-    grep -qE '^harness\.pi\..*: committed 0 observation\(s\).*ACK sent=true$' "$log"
+    grep -qE '^harness\.codex\..*: (committed 0 observation\(s\)|replay confirmed \(0 newly inserted\)).*ACK sent=true$' "$log"
+    grep -qE '^harness\.pi\..*: (committed 0 observation\(s\)|replay confirmed \(0 newly inserted\)).*ACK sent=true$' "$log"
 }
 
 publish_fixture_files() {

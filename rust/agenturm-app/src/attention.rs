@@ -1,6 +1,7 @@
 //! Read-only attention snapshots and bounded change notifications.
 
 mod desktop;
+mod status;
 
 pub(crate) use desktop::workflow::{
     alert_deliveries as workflow_alert_deliveries, change_settings as change_workflow_settings,
@@ -20,9 +21,10 @@ use std::time::{Duration, Instant};
 
 const MAX_POLLS: usize = 10_000;
 const USAGE: &str = concat!(
-    "usage: agenturm attention status --db <path>\n",
+    "usage: agenturm attention status --db <path> [--workflow]\n",
     "       agenturm attention watch --db <path> [--once | --max-polls <1..10000>] ",
     "[--interval-ms <100..60000>] [--desktop]\n",
+    "       agenturm attention watch --db <path> --once --workflow\n",
     "       agenturm attention native <bind|send|hook|retry> (explicit receiver binding)\n",
     "       agenturm attention <status|watch> --endpoint http://<loopback-IP:port> ",
     "--token-file <path> [--receiver-protocol python-v0.2.8] [watch options]\n",
@@ -34,6 +36,9 @@ pub enum AttentionOptions {
     #[cfg(target_os = "linux")]
     Native(Box<crate::attention_native::NativeOptions>),
     Status {
+        db: PathBuf,
+    },
+    WorkflowStatus {
         db: PathBuf,
     },
     Watch {
@@ -65,7 +70,28 @@ pub(super) fn parse(args: &[String]) -> Result<AttentionOptions, String> {
             "--endpoint" | "--token-file" | "--receiver-protocol"
         )
     }) {
+        if args.iter().any(|arg| arg == "--workflow") {
+            return Err("Workflow status requires a local --db".into());
+        }
         return parse_remote(args);
+    }
+    if let Some((verb, values)) = args.split_first()
+        && let Some(index) = values.iter().position(|value| value == "--workflow")
+    {
+        let mut values = values.to_vec();
+        values.remove(index);
+        let db = match (verb.as_str(), values.as_slice()) {
+            ("status", [flag, path]) if flag == "--db" && valid_value(path) => path.into(),
+            ("watch", values) => {
+                let (db, _, max_polls, desktop) = parse_watch(values, true)?;
+                if max_polls != 1 || desktop {
+                    return Err("Workflow watch requires one read-only poll".into());
+                }
+                db.ok_or(USAGE)?
+            }
+            _ => return Err(USAGE.into()),
+        };
+        return Ok(AttentionOptions::WorkflowStatus { db });
     }
     match args
         .split_first()
@@ -219,6 +245,10 @@ pub fn execute_attention(options: &AttentionOptions, mut output: impl Write) -> 
         AttentionOptions::Native(options) => crate::attention_native::execute(options),
         AttentionOptions::Status { db } => emit(&mut output, "snapshot", &read_snapshot(db)?)
             .map_err(|error| format!("write attention snapshot failed: {error}")),
+        AttentionOptions::WorkflowStatus { db } => {
+            emit(&mut output, "snapshot", &status::read(db)?)
+                .map_err(|error| format!("write attention snapshot failed: {error}"))
+        }
         AttentionOptions::Watch {
             db,
             interval,
@@ -298,6 +328,7 @@ pub(super) fn execute_broker(
                 snapshot_from(store, &ledger)
             }
         }),
+        AttentionOptions::WorkflowStatus { .. } => Err("Workflow status requires a local --db".into()),
         AttentionOptions::Remote { .. } => {
             Err("Broker attention uses its configured native history".into())
         }

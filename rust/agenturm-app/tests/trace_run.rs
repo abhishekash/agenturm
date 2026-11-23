@@ -13,6 +13,10 @@ use std::time::{Duration, Instant};
 
 const FIXTURE: &str = "AGENTURM_TEST_TRACE_PRODUCER";
 
+#[cfg(target_os = "linux")]
+#[path = "trace_run/existing_endpoint.rs"]
+mod existing_endpoint;
+
 struct Scratch(PathBuf);
 
 impl Scratch {
