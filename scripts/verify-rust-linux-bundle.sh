@@ -125,35 +125,10 @@ publish_fixture_files() {
 
 inspect_history() {
     local database=$1
-    local transcript="$state/inspector.txt"
-    # Run on a PTY with the same empty PATH as the foreground collector.
-    (
-        sleep 1
-        printf g
-        sleep 0.3
-        printf T
-        sleep 0.3
-        printf '\033[B'
-        sleep 0.3
-        printf '\r'
-        sleep 0.3
-        printf '\033'
-        sleep 0.3
-        printf q
-    ) |
-        AGENTURM_TEST_HOME="$test_home" AGENTURM_TEST_PATH="$empty_path" \
-        AGENTURM_TEST_BIN="$agenturm" AGENTURM_TEST_DB="$database" \
-        timeout 15s script -eq -c '
-            stty rows 28 cols 120
-            exec env -i HOME="$AGENTURM_TEST_HOME" PATH="$AGENTURM_TEST_PATH" TERM=xterm-256color "$AGENTURM_TEST_BIN" inspect --db "$AGENTURM_TEST_DB"
-        ' "$transcript" > /dev/null
-    # Strip terminal control sequences when matching the rendered value.
-    local screen="$state/inspector-screen.txt"
-    sed -E $'s/\033\\[[0-?]*[ -\\/]*[@-~]//g' "$transcript" > "$screen"
-    grep -Eq 'Sessions observed[[:space:]]*2([[:space:]│]|$)' "$screen"
-    grep -q 'select · Enter open · Esc back' "$screen"
-    grep -q 'Turn activity' "$screen"
-    grep -Eq 'Lifecycle[[:space:]]*completed · codex_task_complete' "$screen"
+    local helper
+    helper="$(dirname -- "${BASH_SOURCE[0]}")/validate_rust_default_cockpit.py"
+    python3 "$helper" --agenturm "$agenturm" --home "$test_home" --empty-path "$empty_path" \
+        --history "$database" --transcript "$state/inspector.txt" --inspect-source "$codex_source"
 }
 
 config="$state/sources.json"
