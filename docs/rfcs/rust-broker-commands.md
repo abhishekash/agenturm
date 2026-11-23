@@ -395,18 +395,29 @@ crossing a replaced database. Ordinary queries retain metadata only.
 ## Investigate retained source evidence
 
 ```sh
+agenturm broker investigate failures --broker-config reader.json --kind tool
 agenturm broker investigate instruction 'keep the public API' \
   --broker-config reader.json --source-id harness.pi --session-id session-1
 agenturm broker investigate path src/retry.py \
   --broker-config reader.json --source-id harness.codex --session-id session-2
 agenturm broker investigate command 'pytest suite' \
   --broker-config reader.json --source-id harness.codex --session-id session-2
+agenturm broker investigate command 'pytest suite' --failed \
+  --broker-config reader.json --source-id harness.codex --session-id session-2
 agenturm broker investigate source "$event_id" --reference "$source_reference" \
   --broker-config reader.json
 ```
 
-For local history, run `agenturm investigate` and supply `--db` and
-`--config`. Instruction search matches literal word
+`failures` lists reported failure candidates in the reader's authorized
+history. It accepts optional source, session, and kind filters. A page
+scans up to `--limit` rows at a fixed snapshot and can return a continuation
+cursor even with zero matches. Eligible Codex shell candidates carry a
+reference for grant-verified source inspection. A current command-detail
+grant can confirm the selected failure while its occurrence remains retained.
+See [failure investigation](rust-cutover-workflows.md#investigate-retained-failures).
+
+For local history, run `agenturm investigate` with `--db`. Exact source and
+phrase reads also require `--config`. Instruction search matches literal word
 phrases in bounded approved user prompts. Path search matches the exact
 recorded path or move destination of a Codex edit approved under
 `codex.edit_detail`. Each search requires a source and session. Add
@@ -419,6 +430,9 @@ exact retained native Codex `CommandExecution` occurrence. A match has a
 It carries no execution-success claim. The proof withholds incomplete,
 oversized, credential-like, or control-bearing invocations. Output, working
 directory, and environment fields stay outside the projection.
+With `--failed`, each match also requires a source-confirmed terminal failure.
+Known informational exit-one commands and conflicting terminal evidence
+do not qualify.
 
 The command emits JSON Lines. Every match includes its event ID and
 `source_reference`. A final coverage record reports rows examined, proved

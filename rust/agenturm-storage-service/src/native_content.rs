@@ -55,6 +55,10 @@ pub enum PrivateEvidenceKind {
         turn_id: String,
         operation_id: String,
     },
+    CodexFailedCommandDetail {
+        turn_id: String,
+        operation_id: String,
+    },
 }
 
 impl PrivateEvidenceSelection {
@@ -70,6 +74,10 @@ impl PrivateEvidenceSelection {
                 operation_id,
             } => (OperationDetailKind::Edit, turn_id, operation_id),
             PrivateEvidenceKind::CodexCommandDetail {
+                turn_id,
+                operation_id,
+            }
+            | PrivateEvidenceKind::CodexFailedCommandDetail {
                 turn_id,
                 operation_id,
             } => (OperationDetailKind::Command, turn_id, operation_id),
@@ -305,6 +313,12 @@ pub(crate) fn disclose(
     terminal: bool,
     output: &mut dyn Write,
 ) -> Result<(), PrivateEvidenceFailure> {
+    if matches!(
+        selection.kind,
+        PrivateEvidenceKind::CodexFailedCommandDetail { .. }
+    ) {
+        return Err(PrivateEvidenceFailure::Unavailable);
+    }
     let config = config.ok_or(PrivateEvidenceFailure::Unavailable)?;
     let resolve = config.resolver(allowed);
     let Some((kind, operation)) = selection.operation() else {
@@ -388,13 +402,25 @@ pub(crate) fn verify_operation(
             &operation,
             |edit| output.publish_proof(store, Some(snapshot_id), occurrence, edit),
         ),
-        OperationDetailKind::Command => agenturm_content::with_verified_command(
-            store,
-            &resolver,
-            &selection.source_id,
-            &operation,
-            |command| output.publish_proof(store, Some(snapshot_id), occurrence, command),
-        ),
+        OperationDetailKind::Command => {
+            let verify = if matches!(
+                selection.kind,
+                PrivateEvidenceKind::CodexFailedCommandDetail { .. }
+            ) {
+                agenturm_content::with_verified_failed_command
+            } else {
+                agenturm_content::with_verified_command
+            };
+            verify(
+                store,
+                &resolver,
+                &selection.source_id,
+                &operation,
+                |command: &agenturm_content::VerifiedCommand| {
+                    output.publish_proof(store, Some(snapshot_id), occurrence, command)
+                },
+            )
+        }
         OperationDetailKind::Mcp => return Err(PrivateEvidenceFailure::Unavailable),
     }
     .map_err(|_| PrivateEvidenceFailure::Unavailable)?

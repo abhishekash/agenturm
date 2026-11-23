@@ -3497,6 +3497,7 @@ pub fn render(command: Command) -> String {
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
             "       agenturm review --db <path> --harness-id <id> --session-id <id> (--turn-id <id> | --turn-of-trace <trace-id> --trace-source-id <id>) [--worker-id <id>] [--linked-traces] [--format text|json|markdown|html] [--output <new-directory>] [query paging options]\n",
             "       agenturm investigate <instruction|path|command|source> <query> [options]\n",
+            "       agenturm investigate failures [--source-id <id>] [--session-id <id>] [options]\n",
             "       agenturm backup --db <path> --output <new-path>\n",
             "       agenturm backup --db <path> --bundle <new-directory>\n",
             "       agenturm restore --bundle <directory> --output <new-directory>\n",

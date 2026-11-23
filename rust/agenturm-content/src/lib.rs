@@ -1,6 +1,8 @@
 //! Shared source proof and fenced private-content delivery.
 #![cfg(target_os = "linux")]
 
+mod command_failure;
+
 use agenturm_jsonl_source::{CursorProof, cursor_proof};
 use agenturm_kernel::ExtensionId;
 use agenturm_store::{
@@ -349,6 +351,29 @@ pub fn with_verified_command<T>(
     selection: &CodexOperationSelection<'_>,
     consume: impl FnOnce(&VerifiedCommand) -> T,
 ) -> Result<T, String> {
+    with_verified_command_matching(store, resolver, source_id, selection, false, consume)
+}
+
+/// Apply terminal-result rules while the exact admitted command record and its
+/// independent content grant are fenced.
+pub fn with_verified_failed_command<T>(
+    store: &Store,
+    resolver: &SourceResolver<'_>,
+    source_id: &ExtensionId,
+    selection: &CodexOperationSelection<'_>,
+    consume: impl FnOnce(&VerifiedCommand) -> T,
+) -> Result<T, String> {
+    with_verified_command_matching(store, resolver, source_id, selection, true, consume)
+}
+
+fn with_verified_command_matching<T>(
+    store: &Store,
+    resolver: &SourceResolver<'_>,
+    source_id: &ExtensionId,
+    selection: &CodexOperationSelection<'_>,
+    failed: bool,
+    consume: impl FnOnce(&VerifiedCommand) -> T,
+) -> Result<T, String> {
     with_verified_operation(
         store,
         resolver,
@@ -358,12 +383,18 @@ pub fn with_verified_command<T>(
         |payload, evidence, grant_binding| {
             let CodexOperationPayload::Command {
                 recorded_invocation,
+                confirmed_failure,
             } = payload
             else {
                 return Err(operation_definition(OperationDetailKind::Command)
                     .unavailable
                     .into());
             };
+            if failed && !confirmed_failure {
+                return Err(operation_definition(OperationDetailKind::Command)
+                    .unavailable
+                    .into());
+            }
             Ok(consume(&VerifiedCommand {
                 recorded_invocation,
                 turn_id: evidence.turn_id,
@@ -1172,6 +1203,10 @@ struct CodexOperationItem {
     result: Option<serde_json::Value>,
     changes: Option<BTreeMap<String, NativeFileChange>>,
     command: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "present_payload_value")]
+    status: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "present_payload_value")]
+    exit_code: Option<serde_json::Value>,
 }
 
 impl CodexOperationItem {
@@ -1190,8 +1225,15 @@ impl CodexOperationItem {
         {
             return None;
         }
+        let confirmed_failure = command_failure::confirmed_failure(
+            &recorded_invocation,
+            self.status.as_ref(),
+            self.exit_code.as_ref(),
+            self.result.as_ref(),
+        );
         Some(CodexOperationPayload::Command {
             recorded_invocation,
+            confirmed_failure,
         })
     }
 
@@ -1301,6 +1343,8 @@ enum CodexOperationPayload {
     },
     Command {
         recorded_invocation: RecordedInvocation,
+        #[serde(skip)]
+        confirmed_failure: bool,
     },
 }
 
@@ -1322,6 +1366,7 @@ impl CodexOperationPayload {
                 .join("\n\n"),
             Self::Command {
                 recorded_invocation,
+                ..
             } => serde_json::to_string(recorded_invocation).map_err(|_| ())?,
         };
         serde_json::to_string(&display).map_err(|_| ())

@@ -23,12 +23,43 @@ migration of Python-era databases remains outside the Rust-only product scope.
 | `prune` | Keep explicit age-based retention. Rust `prune --before-unix-ns` and persisted `retention set\|disable\|run\|status` are available. New default cockpit histories use 14 days; existing histories retain their policy. Collector, cockpit, local receiver and broker writer ticks apply it, while receipts and checkpoints survive cleanup. Broker policy changes require maintenance authority. |
 | `attention status`, `attention watch` | Rust reads local history or an attached Rust receiver and keeps seen state in the user's workspace. Remote watch emits a snapshot and changes from retained native lifecycle evidence. Python receiver observation and cross-host terminal routing remain open. |
 | `review` | Rust cockpit and noninteractive Review use exact source, session, turn, and worker scope. The CLI reads a bounded page and exports metadata receipts in Markdown, HTML, and JSON. It can list the explicitly linked spans of a turn, or resolve a trace to its unique retained turn using producer-provided source, session, turn, and worker identity. |
-| `investigate path\|command\|instruction\|source` | Rust local and broker investigations use exact source/session scope, bounded paging, current-grant proofs, and pinned source references. Paths and recorded command invocations currently come from verified Codex occurrences. Receiver-wide search and legacy failure filtering remain open. |
+| `investigate failures\|path\|command\|instruction\|source` | Rust local and broker investigations page retained failure metadata across authorized sources. Exact-scope searches for instructions, paths and commands use current grants and pinned source references. Codex command search accepts `--failed` for source-confirmed failures. See [failure investigation](#investigate-retained-failures) for the supported kinds and native evidence limits. |
 | `task list\|create\|show\|archive` | Rust supports create, exact show, completion, archiving and restoration. The default task list hides archived entries. `list --all` and `show` can still read them. |
 | `task link\|unlink\|handoff\|backup` | Rust links use exact native source/session/turn/worker identities. `task handoff` reads one saved task revision and renders Markdown, HTML, or JSON. Its private export writes a Markdown and HTML pair. Workspace backup retains the ledger and supports restore into a new history directory. |
 | `task update\|snapshot\|brief\|decide\|decisions\|draft\|approve-draft` | Rust supports revision-checked editing, local Git summaries, opt-in tracked text patches, five structured brief fields, and immutable decisions with supersession. Drafts and decision citations can use one exact retained user prompt. Approval and excerpt reopening require revalidation of the original grant and source receipt. Broader Review evidence projections remain open. |
 
 The CLI maintainer owns implementation and installed scenarios for the retained commands. Any later retirement requires an explicit product decision. [Python command source](https://github.com/abhishekash/agenturm/blob/v0.2.8/observatory/__main__.py) · [Rust workflow coverage](rust-cockpit-workflow-coverage.md)
+
+### Investigate retained failures
+
+```sh
+agenturm investigate failures --db history.sqlite --limit 50
+agenturm broker investigate failures --broker-config broker.json --kind tool
+agenturm investigate command 'cargo check' --failed --source-id harness.codex \
+  --session-id session-id --db history.sqlite --config sources.json
+```
+
+`failures` scans authorized observation metadata, with optional exact
+`--source-id`, `--session-id` and `--kind` filters. Supported kinds are
+`lifecycle`, `tool`, `mcp`, `check` and `trace`. It reports explicit failed
+lifecycle and check states, failed or denied tool and MCP calls, and error
+span statuses. Eval outcomes are available separately through `evals`.
+
+Each newline-delimited JSON page ends in a coverage record. `--limit` sets
+the number of observations examined, from 1 to 100. Pass `next_cursor` as
+`--cursor` with the same filters to continue at the pinned read snapshot.
+A page can contain zero matches and a continuation cursor.
+
+Each candidate carries a reported result and exact occurrence metadata.
+Eligible Codex shell candidates include a `source_reference`. Open the
+reference with `investigate source EVENT_ID --reference TOKEN` and the
+appropriate local or broker configuration. Successful source inspection
+requires a current Codex command-detail grant and verifies the same retained
+occurrence and its terminal evidence. `command --failed` applies that same
+proof before emitting a matching invocation. Known informational exit-one
+commands, such as a plain `rg` with no matches, and contradictory terminal
+records are excluded from confirmed results. Receiver-wide discovery reads
+metadata. Phrase search of private evidence requires an exact source and session.
 
 ### Open the cockpit in a new window
 

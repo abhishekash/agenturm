@@ -77,6 +77,17 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
                     'command':['/bin/bash','-lc','pytest isolated smoke'],
                     'aggregated_output':'private command output'}
         }},
+        {'type':'event_msg','timestamp':'2026-11-19T12:00:04Z','payload':{
+            'type':'item_completed','thread_id':'edit-session','turn_id':'failed-command',
+            'item':{'type':'CommandExecution','id':'failure-operation','status':'failed',
+                    'command':['pytest','failed-fixture'],'exit_code':2,
+                    'aggregated_output':'private failure output'}
+        }},
+        {'type':'event_msg','timestamp':'2026-11-19T12:00:05Z','payload':{
+            'type':'item_completed','thread_id':'edit-session','turn_id':'informational-command',
+            'item':{'type':'CommandExecution','id':'info-operation','status':'failed',
+                    'command':['/bin/bash','-lc','rg informational-fixture test.txt'],'exit_code':1}
+        }},
     ]))
     os.chown(codex,COLLECTOR,SOURCE_GID);codex.chmod(0o640)
     sources=[('harness.pi','example.rust-pi-harness',ADAPTER,source),
@@ -125,6 +136,30 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
         path_search=['investigate','path','src/after.txt','--source-id','harness.codex','--session-id','edit-session']
         command_search=['investigate','command','isolated smoke','--source-id','harness.codex','--session-id','edit-session','--turn-id','command-turn']
         solo_search=['investigate','command','solo-control','--source-id','harness.codex','--session-id','edit-session','--turn-id','solo-command']
+        failed_search=['investigate','command','failed-fixture','--failed','--source-id',
+                       'harness.codex','--session-id','edit-session']
+        informational_search=['investigate','command','informational-fixture','--failed','--source-id',
+                              'harness.codex','--session-id','edit-session']
+        failure_metadata=['investigate','failures','--kind','tool']
+        run(ADMIN,*failure_metadata,ok=False)
+        run(READER,*failure_metadata,'--source-id','harness.outside',ok=False)
+        assert json.loads(run(READER,*failure_metadata,'--source-id','harness.pi').stdout)['matched']==0
+        failure_output=run(READER,*failure_metadata).stdout
+        assert run(COLLECTOR,*failure_metadata).stdout==failure_output
+        for private_value in ['failed-fixture','informational-fixture','private failure output']:
+            assert private_value not in failure_output
+        first,second,failure_coverage=map(json.loads,failure_output.splitlines())
+        assert failure_coverage['matched']==2 and failure_coverage['scope_exhausted'],failure_coverage
+        assert {first['source_id'],second['source_id']}=={'harness.codex'}
+        assert {first['reported_result'],second['reported_result']}=={'failed'}
+        assert {first['identity']['turn_id'],second['identity']['turn_id']}=={'failed-command','informational-command'}
+        def candidate_source(candidate):
+            return ['investigate','source',candidate['position']['event_id'],
+                    '--reference',candidate['source_reference']]
+        failed_source=candidate_source(second)
+        informational_source=candidate_source(first)
+        run(READER,*failed_source,ok=False)
+        assert json.loads(run(READER,*failed_search).stdout)['matched']==0
         for investigation in [instruction,path_search,command_search]:
             coverage=json.loads(run(READER,*investigation).stdout)
             assert coverage['matched']==0 and coverage['unavailable_candidates']==1,coverage
@@ -163,6 +198,14 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
         command_binding.write_text(run(COLLECTOR,'content','binding','--config',config,
                                        '--source-id','harness.codex','--kind','codex.command_detail',broker=False).stdout)
         run(ADMIN,'grant','approve','--binding',command_binding)
+        failure,coverage=map(json.loads,run(READER,*failed_search).stdout.splitlines())
+        assert failure['confirmed_failure'] and coverage['matched']==1,(failure,coverage)
+        assert failure['recorded_invocation']==['pytest','failed-fixture']
+        confirmed=json.loads(run(READER,*failed_source).stdout)
+        assert confirmed['confirmed_failure'] and confirmed['evidence']=={'recorded_invocation':['pytest','failed-fixture']}
+        for uid in [COLLECTOR,ADMIN]:run(uid,*failed_source,ok=False)
+        run(READER,*informational_source,ok=False)
+        assert json.loads(run(READER,*informational_search).stdout)['matched']==0
         command,coverage=map(json.loads,run(READER,*command_search).stdout.splitlines())
         expected=['/bin/bash','-lc','pytest isolated smoke']
         assert command['recorded_invocation']==expected and coverage['matched']==1,(command,coverage)
@@ -177,6 +220,7 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
         run(ADMIN,'grant','revoke','--binding',command_binding)
         run(READER,*command_source,ok=False)
         run(READER,*solo_source,ok=False)
+        run(READER,*failed_source,ok=False)
         draft=json.loads(run(READER,'task','draft','--source-id','harness.pi','--session-id','private-session','--turn-id','prompt-1','--event-id',prompt['event_id'],'--revision',prompt['revision']).stdout)
         assert draft['excerpt']=='Review the bounded broker fixture'
         draft['continuation']='Verify the next bounded step'
@@ -302,7 +346,7 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
             for path in [source,codex]:
                 denied=subprocess.run([os.sys.executable,'-c',deny_script,str(path)],preexec_fn=drop(uid),capture_output=True)
                 assert denied.returncode==73,(uid,denied.returncode,denied.stdout,denied.stderr)
-        print('PASS bounded private pipe and broker instruction/path/command/source investigation, source-backed task draft/approval/decision/CAS, 60x18 cockpit display/redaction/revocation fence, private delivery, distinct reader, grant revocation, exact session/inode proof and metadata-only queries',flush=True)
+        print('PASS bounded private pipe and broker instruction/path/command/failure/source investigation, source-backed task draft/approval/decision/CAS, 60x18 cockpit display/redaction/revocation fence, private delivery, distinct reader, grant revocation, exact session/inode proof and metadata-only queries',flush=True)
     finally:
         service.terminate()
         assert service.wait(timeout=10)==0

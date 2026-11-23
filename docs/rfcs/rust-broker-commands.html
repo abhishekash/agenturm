@@ -311,17 +311,27 @@ acknowledgements fail within the display deadline. Every private operation
 pins the broker history identity, preventing stale selections from silently
 crossing a replaced database. Ordinary queries retain metadata only.</p>
 <h2>Investigate retained source evidence</h2>
-<pre><code class="language-sh">agenturm broker investigate instruction 'keep the public API' \
+<pre><code class="language-sh">agenturm broker investigate failures --broker-config reader.json --kind tool
+agenturm broker investigate instruction 'keep the public API' \
   --broker-config reader.json --source-id harness.pi --session-id session-1
 agenturm broker investigate path src/retry.py \
   --broker-config reader.json --source-id harness.codex --session-id session-2
 agenturm broker investigate command 'pytest suite' \
   --broker-config reader.json --source-id harness.codex --session-id session-2
+agenturm broker investigate command 'pytest suite' --failed \
+  --broker-config reader.json --source-id harness.codex --session-id session-2
 agenturm broker investigate source &quot;$event_id&quot; --reference &quot;$source_reference&quot; \
   --broker-config reader.json
 </code></pre>
-<p>For local history, run <code>agenturm investigate</code> and supply <code>--db</code> and
-<code>--config</code>. Instruction search matches literal word
+<p><code>failures</code> lists reported failure candidates in the reader's authorized
+history. It accepts optional source, session, and kind filters. A page
+scans up to <code>--limit</code> rows at a fixed snapshot and can return a continuation
+cursor even with zero matches. Eligible Codex shell candidates carry a
+reference for grant-verified source inspection. A current command-detail
+grant can confirm the selected failure while its occurrence remains retained.
+See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md#investigate-retained-failures">failure investigation</a>.</p>
+<p>For local history, run <code>agenturm investigate</code> with <code>--db</code>. Exact source and
+phrase reads also require <code>--config</code>. Instruction search matches literal word
 phrases in bounded approved user prompts. Path search matches the exact
 recorded path or move destination of a Codex edit approved under
 <code>codex.edit_detail</code>. Each search requires a source and session. Add
@@ -332,7 +342,10 @@ exact retained native Codex <code>CommandExecution</code> occurrence. A match ha
 <code>recorded_invocation</code> string or argument array in its original format.
 It carries no execution-success claim. The proof withholds incomplete,
 oversized, credential-like, or control-bearing invocations. Output, working
-directory, and environment fields stay outside the projection.</p>
+directory, and environment fields stay outside the projection.
+With <code>--failed</code>, each match also requires a source-confirmed terminal failure.
+Known informational exit-one commands and conflicting terminal evidence
+do not qualify.</p>
 <p>The command emits JSON Lines. Every match includes its event ID and
 <code>source_reference</code>. A final coverage record reports rows examined, proved
 and unavailable candidates, and any <code>next_cursor</code>. One invocation examines

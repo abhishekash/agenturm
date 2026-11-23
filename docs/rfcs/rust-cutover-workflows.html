@@ -57,8 +57,8 @@ migration of Python-era databases remains outside the Rust-only product scope.</
 <td>Rust cockpit and noninteractive Review use exact source, session, turn, and worker scope. The CLI reads a bounded page and exports metadata receipts in Markdown, HTML, and JSON. It can list the explicitly linked spans of a turn, or resolve a trace to its unique retained turn using producer-provided source, session, turn, and worker identity.</td>
 </tr>
 <tr>
-<td><code>investigate path|command|instruction|source</code></td>
-<td>Rust local and broker investigations use exact source/session scope, bounded paging, current-grant proofs, and pinned source references. Paths and recorded command invocations currently come from verified Codex occurrences. Receiver-wide search and legacy failure filtering remain open.</td>
+<td><code>investigate failures|path|command|instruction|source</code></td>
+<td>Rust local and broker investigations page retained failure metadata across authorized sources. Exact-scope searches for instructions, paths and commands use current grants and pinned source references. Codex command search accepts <code>--failed</code> for source-confirmed failures. See <a href="#investigate-retained-failures">failure investigation</a> for the supported kinds and native evidence limits.</td>
 </tr>
 <tr>
 <td><code>task list|create|show|archive</code></td>
@@ -75,6 +75,31 @@ migration of Python-era databases remains outside the Rust-only product scope.</
 </tbody>
 </table></div>
 <p>The CLI maintainer owns implementation and installed scenarios for the retained commands. Any later retirement requires an explicit product decision. <a href="https://github.com/abhishekash/agenturm/blob/v0.2.8/observatory/__main__.py">Python command source</a> · <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cockpit-workflow-coverage.md">Rust workflow coverage</a></p>
+<h3 id="investigate-retained-failures">Investigate retained failures</h3>
+<pre><code class="language-sh">agenturm investigate failures --db history.sqlite --limit 50
+agenturm broker investigate failures --broker-config broker.json --kind tool
+agenturm investigate command 'cargo check' --failed --source-id harness.codex \
+  --session-id session-id --db history.sqlite --config sources.json
+</code></pre>
+<p><code>failures</code> scans authorized observation metadata, with optional exact
+<code>--source-id</code>, <code>--session-id</code> and <code>--kind</code> filters. Supported kinds are
+<code>lifecycle</code>, <code>tool</code>, <code>mcp</code>, <code>check</code> and <code>trace</code>. It reports explicit failed
+lifecycle and check states, failed or denied tool and MCP calls, and error
+span statuses. Eval outcomes are available separately through <code>evals</code>.</p>
+<p>Each newline-delimited JSON page ends in a coverage record. <code>--limit</code> sets
+the number of observations examined, from 1 to 100. Pass <code>next_cursor</code> as
+<code>--cursor</code> with the same filters to continue at the pinned read snapshot.
+A page can contain zero matches and a continuation cursor.</p>
+<p>Each candidate carries a reported result and exact occurrence metadata.
+Eligible Codex shell candidates include a <code>source_reference</code>. Open the
+reference with <code>investigate source EVENT_ID --reference TOKEN</code> and the
+appropriate local or broker configuration. Successful source inspection
+requires a current Codex command-detail grant and verifies the same retained
+occurrence and its terminal evidence. <code>command --failed</code> applies that same
+proof before emitting a matching invocation. Known informational exit-one
+commands, such as a plain <code>rg</code> with no matches, and contradictory terminal
+records are excluded from confirmed results. Receiver-wide discovery reads
+metadata. Phrase search of private evidence requires an exact source and session.</p>
 <h3>Open the cockpit in a new window</h3>
 <p>Run <code>agenturm cockpit --new-window</code> on Linux. From a tmux pane, the cockpit
 opens a window in that session. From a Linux desktop, it can launch GNOME
