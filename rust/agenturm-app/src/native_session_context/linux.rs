@@ -72,11 +72,27 @@ fn load_bound(
         .iter()
         .map(|row| row.harness_id.as_str())
         .collect::<BTreeSet<_>>();
+    let recovered = authority.follow.as_ref().map_or_else(Vec::new, |follow| {
+        let current = authority
+            .sources
+            .iter()
+            .map(|source| source.source_id.as_str())
+            .collect::<BTreeSet<_>>();
+        let wanted = sources
+            .difference(&current)
+            .map(|source| (*source).to_owned())
+            .collect();
+        follow
+            .authorize_retained_sources(&wanted)
+            .unwrap_or_default()
+    });
+    let mut seen = BTreeSet::new();
     let mut candidates = Vec::new();
     let mut scopes = BTreeMap::<String, usize>::new();
     let mut claude_budget = MAX_CLAUDE_ROSTER_BYTES;
-    for source in authority.sources.iter().rev() {
-        if !matches!(source.plugin_id.as_str(), CODEX | CLAUDE)
+    for source in authority.sources.iter().rev().chain(&recovered) {
+        if !seen.insert(source.source_id.as_str())
+            || !matches!(source.plugin_id.as_str(), CODEX | CLAUDE)
             || (source.plugin_id == CLAUDE && !sources.contains(source.source_id.as_str()))
         {
             continue;
@@ -710,6 +726,57 @@ mod tests {
     }
 
     #[test]
+    fn restart_recovers_retained_metadata_before_collection_and_denies_replacement() {
+        let scratch = Scratch::new();
+        let db = scratch.0.join("history.sqlite");
+        let mut writer = Store::open_collector(&db).unwrap();
+        let home = scratch.0.join("codex");
+        let sources = home.join("sessions");
+        let member = sources.join("retained.jsonl");
+        let id = format!(
+            "harness.codex.{}",
+            &hash(member.to_str().unwrap().as_bytes())[..32]
+        );
+        let transcript = concat!(
+            r#"{"type":"session_meta","payload":{"id":"exact","cwd":"/work/retained","source":"cli"}}"#,
+            "\n",
+        );
+        seed(&mut writer, member.clone(), CODEX, &id, "exact", transcript);
+        fs::write(
+            home.join("session_index.jsonl"),
+            concat!(
+                r#"{"id":"exact","thread_name":"Retained native task","updated_at":"2026-11-23T10:00:00Z"}"#,
+                "\n",
+            ),
+        )
+        .unwrap();
+        drop(writer);
+
+        let store = Store::open_read_only(&db).unwrap();
+        let page = store.query_sessions(&SessionQuery::latest(20)).unwrap();
+        let follow = serde_json::from_value(serde_json::json!({
+            "codex_root": sources,
+            "pi_root": scratch.0.join("pi"),
+            "sessions_per_harness": 1,
+        }))
+        .unwrap();
+        let authority = SourceAuthority {
+            sources: Vec::new(),
+            codex_home: Some(home),
+            follow: Some(follow),
+        };
+        let loaded = load(Some(&store), &db, &page, Some(&authority));
+        let key = (ExtensionId::parse(id).unwrap(), "exact".into());
+        assert_eq!(loaded.len(), 1);
+        assert_eq!(loaded[&key].title.as_deref(), Some("Retained native task"));
+        assert_eq!(loaded[&key].workspace.as_deref(), Some("/work/retained"));
+
+        fs::rename(&member, scratch.0.join("original.jsonl")).unwrap();
+        fs::write(member, transcript).unwrap();
+        assert!(load(Some(&store), &db, &page, Some(&authority)).is_empty());
+    }
+
+    #[test]
     fn codex_index_renames_only_the_bound_session_and_rejects_duplicate_and_replaced_sources() {
         let scratch = Scratch::new();
         let db = scratch.0.join("history.sqlite");
@@ -749,6 +816,7 @@ mod tests {
         let authority = SourceAuthority {
             sources: vec![bound, one, two],
             codex_home: Some(home.clone()),
+            follow: None,
         };
         let page = store.query_sessions(&SessionQuery::latest(20)).unwrap();
         let key =
@@ -826,6 +894,7 @@ mod tests {
         let authority = SourceAuthority {
             sources: vec![source],
             codex_home: None,
+            follow: None,
         };
         let projected = super::super::super::load_session_catalog_with_sources(
             &store,
@@ -941,6 +1010,7 @@ mod tests {
         let authority = SourceAuthority {
             sources: vec![source, invalid_prelude],
             codex_home: None,
+            follow: None,
         };
         let page = store.query_sessions(&SessionQuery::latest(20)).unwrap();
         let projected = load(Some(&store), &db, &page, Some(&authority));
@@ -996,6 +1066,7 @@ mod tests {
         let authority = SourceAuthority {
             sources: vec![source],
             codex_home: None,
+            follow: None,
         };
         let catalog = super::super::super::load_session_catalog_with_sources(
             &store,
