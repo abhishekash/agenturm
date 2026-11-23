@@ -279,11 +279,38 @@ impl Report {
     }
 
     pub(super) fn into_live_page(self) -> LivePage {
+        // The Python sessions API can derive its free-form task fields from
+        // captured prompts. Use only authenticated structural evidence here.
+        let mut roster_evidence = BTreeMap::new();
+        for row in &self.activity {
+            let label = match row.domain {
+                "file" => "Recorded file activity",
+                "shell" => "Recorded shell activity",
+                "mcp" => "Recorded MCP operation",
+                "tool" => "Recorded tool activity",
+                _ => continue,
+            };
+            if let Some(session) = row.session_id.as_deref()
+                && let Some(owner) = Owner::new(&row.service, session, row.agent_id.clone())
+            {
+                roster_evidence.entry(owner).or_insert(label);
+            }
+        }
+        for row in &self.traces {
+            if let Some((service, session)) = row.service.as_deref().zip(row.session_id.as_deref())
+                && let Some(owner) = Owner::new(service, session, row.agent_id.clone())
+            {
+                roster_evidence.entry(owner).or_insert("Recorded trace");
+            }
+        }
         let sessions = self
             .sessions
             .iter()
             .map(|agent| {
-                let title = format!("{} · {}", agent.owner.label(), agent.state);
+                let mut title = format!("{} · {}", agent.owner.label(), agent.state);
+                if let Some(label) = roster_evidence.get(&agent.owner) {
+                    let _ = write!(title, " · {label}");
+                }
                 let detail = agent
                     .owner
                     .agent_id
@@ -550,5 +577,52 @@ fn action(value: &str) -> &'static str {
         "request_resolved" => "request resolved",
         "progress" => "progress",
         _ => "reported",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_roster_uses_only_exact_structural_evidence_for_its_labels() {
+        let make_session = |service: &str, actor: &str| {
+            serde_json::from_value::<Session>(serde_json::json!({
+                "service": service, "session_id": "shared", "agent_id": actor,
+                "initial_task": "Captured native prompt text",
+                "task": "Captured provider message body",
+            }))
+            .unwrap()
+            .project()
+            .unwrap()
+        };
+        let actor = format!("ag1_{}", "1".repeat(32));
+        let sibling = format!("ag1_{}", "2".repeat(32));
+        let mut report = Report::new("receiver".into());
+        report.sessions = vec![
+            make_session("codex", &actor),
+            make_session("codex", &sibling),
+            make_session("pi", &actor),
+        ];
+        report.activity.push(ActivityMetadata {
+            service: "codex".into(),
+            session_id: Some("shared".into()),
+            agent_id: Some(actor),
+            trace_id: None,
+            turn_id: None,
+            observed_at_unix_ns: "1".into(),
+            domain: "file",
+            action: "edit",
+            result: "ok",
+        });
+        let live = report.into_live_page();
+        assert!(live.sessions[0].title.contains("Recorded file activity"));
+        assert!(!live.sessions[1].title.contains("Recorded file activity"));
+        assert!(!live.sessions[2].title.contains("Recorded file activity"));
+        assert!(
+            live.sessions
+                .iter()
+                .all(|row| !row.title.contains("Captured"))
+        );
     }
 }

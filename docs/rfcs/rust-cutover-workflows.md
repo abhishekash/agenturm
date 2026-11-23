@@ -30,6 +30,19 @@ migration of Python-era databases remains outside the Rust-only product scope.
 
 The CLI maintainer owns implementation and installed scenarios for the retained commands. Any later retirement requires an explicit product decision. [Python command source](https://github.com/abhishekash/agenturm/blob/v0.2.8/observatory/__main__.py) · [Rust workflow coverage](rust-cockpit-workflow-coverage.md)
 
+### Session task labels
+
+The Rust Agents roster uses a saved task title when a session-level link
+matches the exact history, source, and session. If the bounded title read
+cannot resolve a single title, the roster can use a structural label such as
+a recorded pull request or file edit. Sessions without title evidence show
+**Untitled session**. The source and session ID remain visible separately.
+
+Prompt and payload text stays in explicit private views. The live Python
+receiver client can label a row from typed activity and trace evidence tied
+to the same service, session, and actor. Legacy task fields can contain
+captured prompts, so the live roster leaves those fields outside its labels.
+
 
 ### Attach to an existing Python 0.2.8 receiver
 

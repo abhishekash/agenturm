@@ -3,6 +3,7 @@
 use super::*;
 use crate::workbench::{PromptReceiver, WorkInput, Workbench, prompt_channel};
 use agenturm_kernel::{ReadSnapshot, RelationshipKind};
+use ratatui::buffer::CellWidth;
 use ratatui::widgets::{Row, Table, TableState};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, mpsc};
@@ -14,6 +15,7 @@ mod view_io;
 pub struct RecordedSession {
     pub harness_id: String,
     pub session_id: String,
+    pub task_title: Option<Box<str>>,
     pub updated_at_unix_ns: u64,
     pub snapshot_id: ReadSnapshot,
     pub state: Option<String>,
@@ -189,6 +191,10 @@ impl AgentList {
                         && (query.is_empty()
                             || session.session_id.to_ascii_lowercase().contains(&query)
                             || session.harness_id.to_ascii_lowercase().contains(&query)
+                            || session
+                                .task_title
+                                .as_deref()
+                                .is_some_and(|title| title.to_ascii_lowercase().contains(&query))
                             || session
                                 .state
                                 .as_ref()
@@ -1436,16 +1442,32 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
 }
 
 fn source_label(source: &str) -> &str {
-    source
-        .strip_prefix("harness.")
-        .unwrap_or(source)
-        .split('.')
-        .next()
-        .unwrap_or(source)
+    source.strip_prefix("harness.").unwrap_or(source)
 }
 
 fn recorded_state(row: &RecordedSession) -> &str {
     row.state.as_deref().unwrap_or("Unknown")
+}
+
+fn roster_cell(text: &str, width: u16) -> String {
+    if width == 0 {
+        return String::new();
+    }
+    if text.cell_width() <= width {
+        return text.into();
+    }
+    let mut output = String::new();
+    let mut remaining = width - 1;
+    for grapheme in Span::raw(text).styled_graphemes(Style::default()) {
+        let width = grapheme.symbol.cell_width();
+        if width > remaining {
+            break;
+        }
+        output.push_str(grapheme.symbol);
+        remaining -= width;
+    }
+    output.push('…');
+    output
 }
 
 pub(super) fn age(nanos: u64) -> String {
@@ -1587,6 +1609,8 @@ fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message
     let table_block = panel(caption);
     let table_area = table_block.inner(left);
     frame.render_widget(table_block, left);
+    // The other columns, two gutters, and selection marker occupy 24 cells.
+    let task_width = table_area.width.saturating_sub(24);
     let rows = agents.visible.iter().filter_map(|item| {
         let row = sessions?.get(item.index)?;
         let indent = "  ".repeat(item.depth.min(6));
@@ -1599,17 +1623,27 @@ fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message
         } else {
             ""
         };
-        let identity = Line::styled(
-            format!("{indent}{marker}{}", visible_text(&row.session_id)),
+        let title = row.task_title.as_deref().unwrap_or("Untitled session");
+        let task = Line::styled(
+            roster_cell(
+                &format!("{indent}{marker}{}", visible_text(title)),
+                task_width,
+            ),
             heading_style(),
         );
-        let source = Line::styled(
-            format!("{indent}{}", visible_text(source_label(&row.harness_id))),
-            label_style(),
+        let identity_width = task_width.saturating_sub(indent.cell_width());
+        let source_name = roster_cell(
+            &visible_text(source_label(&row.harness_id)),
+            identity_width / 2,
         );
+        let session = roster_cell(
+            &visible_text(&row.session_id),
+            identity_width.saturating_sub(source_name.cell_width() + 3),
+        );
+        let source = Line::styled(format!("{indent}{source_name} · {session}"), label_style());
         Some(
             Row::new(vec![
-                Text::from(vec![identity, source]),
+                Text::from(vec![task, source]),
                 Text::from(visible_text(recorded_state(row))),
                 Text::from(age(row.updated_at_unix_ns)),
             ])
@@ -1625,7 +1659,7 @@ fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message
                 Constraint::Length(8),
             ],
         )
-        .header(Row::new(["Session / source", "State", "Updated"]).style(heading_style()))
+        .header(Row::new(["Task / source", "State", "Updated"]).style(heading_style()))
         .highlight_symbol("› ")
         .row_highlight_style(selection_style()),
         table_area,
@@ -1724,6 +1758,7 @@ mod tests {
         RecordedSession {
             harness_id: source.into(),
             session_id: id.into(),
+            task_title: None,
             updated_at_unix_ns: 1,
             snapshot_id: 9.into(),
             state: Some(state.into()),
@@ -1744,6 +1779,38 @@ mod tests {
             sessions,
             older: None,
             notice: None,
+        }
+    }
+
+    #[test]
+    fn roster_titles_fit_terminal_cells_and_keep_secondary_identity() {
+        assert_eq!(roster_cell("調査中", 4), "調…");
+        assert_eq!(roster_cell("e\u{301}clair", 4), "e\u{301}cl…");
+        let mut titled = session("harness.codex", "source-session", "running", None);
+        titled.task_title =
+            Some("調査 tracing and verify the very long agent session release title".into());
+        let mut agents = AgentList::default();
+        agents.update(catalog(vec![
+            titled,
+            session("harness.pi", "only-structural", "completed", None),
+        ]));
+        for (width, height) in [(120, 32), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| draw_agents(frame, &mut agents, false, None))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(text.contains("Task / source"), "{text}");
+            assert!(text.contains("tracing and verify"), "{text}");
+            assert!(text.contains('…'), "{text}");
+            assert!(text.contains("source-session"), "{text}");
+            assert!(text.contains("Untitled session"), "{text}");
         }
     }
 

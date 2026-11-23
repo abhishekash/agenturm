@@ -28,6 +28,7 @@ mod remote_history;
 mod retention_cli;
 mod review_receipt;
 mod session_evidence;
+mod session_titles;
 mod span_jsonl_import;
 mod summary_cli;
 mod task_cli;
@@ -1908,6 +1909,7 @@ fn load_session_catalog(
     let page = store
         .query_sessions(&query)
         .map_err(|error| format!("Read sessions failed: {error}"))?;
+    let mut titles = session_titles::load(store, db, &page);
     let keys = page
         .sessions
         .iter()
@@ -1935,6 +1937,9 @@ fn load_session_catalog(
             });
             RecordedSession {
                 harness_id: session.harness_id.as_str().to_owned(),
+                task_title: titles
+                    .remove(&(session.harness_id.clone(), session.session_id.clone()))
+                    .map(String::into_boxed_str),
                 session_id: session.session_id,
                 updated_at_unix_ns: session.observed_at_unix_ns,
                 snapshot_id: page.snapshot_id,
@@ -1990,6 +1995,9 @@ trait HistoryReader: ObservationStore {
         &self,
         marker: &std::path::Path,
     ) -> Result<agenturm_store::WorkspaceLedger, String>;
+    fn session_title_store(&self) -> Option<&Store> {
+        None
+    }
     fn query_sessions(&self, query: &SessionQuery) -> Result<agenturm_store::SessionPage, String>;
     fn query_linked_traces(
         &self,
@@ -2008,6 +2016,9 @@ trait HistoryReader: ObservationStore {
 }
 
 impl HistoryReader for Store {
+    fn session_title_store(&self) -> Option<&Store> {
+        Some(self)
+    }
     #[cfg(target_os = "linux")]
     fn private_telemetry_history(&self) -> Option<String> {
         self.history_identity().ok()

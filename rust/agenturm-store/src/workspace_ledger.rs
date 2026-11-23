@@ -479,6 +479,69 @@ impl WorkspaceLedger {
         self.list_tasks_including_archived(limit, before, false)
     }
 
+    /// Bounded title-only projection of current, session-level task anchors.
+    /// Task excerpts, notes, and turn or worker links stay outside this read.
+    pub fn session_task_titles(
+        &self,
+        local_history: Option<&Store>,
+    ) -> Result<Vec<(ExtensionId, String, String)>> {
+        let page = self.list(
+            |version| match version {
+                3..=SCHEMA_VERSION => {
+                    "SELECT t.id, l.source_id, l.session_id, t.title
+                    FROM agenturm_saved_tasks AS t JOIN agenturm_task_links AS l ON l.task_id=t.id
+                    WHERE t.history_binding = ?1 AND t.id <= ?2 AND t.archived = 0
+                        AND l.worker_key = '' AND l.turn_key = '' ORDER BY t.id DESC, l.id DESC LIMIT ?3"
+                }
+                2 => {
+                    "SELECT t.id, l.source_id, l.session_id, t.title
+                    FROM agenturm_saved_tasks AS t JOIN agenturm_task_links AS l ON l.task_id=t.id
+                    WHERE t.history_binding = ?1 AND t.id <= ?2
+                        AND l.worker_key = '' AND l.turn_key = '' ORDER BY t.id DESC, l.id DESC LIMIT ?3"
+                }
+                _ => {
+                    "SELECT id, source_id, session_id, title
+                    FROM agenturm_saved_tasks WHERE history_binding = ?1 AND id <= ?2
+                        AND source_id IS NOT NULL AND worker_id IS NULL AND turn_id IS NULL
+                        ORDER BY id DESC LIMIT ?3"
+                }
+            },
+            MAX_WORKSPACE_PAGE_SIZE,
+            None,
+            |row, _| {
+                let source: String = row.get(1)?;
+                let id = ExtensionId::parse(source).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(1, Type::Text, Box::new(error))
+                })?;
+                Ok((id, row.get(2)?, row.get(3)?))
+            },
+        )?;
+        if page.next_before.is_some() {
+            // A page that omitted tasks cannot resolve conflicting titles.
+            return Ok(Vec::new());
+        }
+        if let Some(expected) = local_history.filter(|_| !page.items.is_empty()) {
+            let current = Store::open_read_only(&self.history).map_err(WorkspaceError::History)?;
+            if expected
+                .history_identity()
+                .map_err(WorkspaceError::History)?
+                != current
+                    .history_identity()
+                    .map_err(WorkspaceError::History)?
+                || expected
+                    .read_incarnation()
+                    .map_err(WorkspaceError::History)?
+                    != current
+                        .read_incarnation()
+                        .map_err(WorkspaceError::History)?
+            {
+                return Err(WorkspaceError::HistoryChanged);
+            }
+            self.verify_history()?;
+        }
+        Ok(page.items)
+    }
+
     pub fn list_tasks_including_archived(
         &self,
         limit: usize,
@@ -1788,6 +1851,81 @@ mod tests {
         ObservationBatch, ObservationIdentity, ObservationKind, StoredObservation, StoredScope,
     };
     use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn roster_titles_keep_session_anchors_and_reject_a_different_history() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("history.sqlite");
+        let mut store = Store::open_collector(&path).unwrap();
+        let worker = anchor("harness.codex");
+        seed(&mut store, &worker, &[0]);
+        let session = WorkspaceAnchor {
+            worker_id: None,
+            turn_id: None,
+            ..worker.clone()
+        };
+        let sibling = anchor("harness.pi");
+        seed(&mut store, &sibling, &[0]);
+        let ledger = WorkspaceLedger::open(&path).unwrap();
+        assert!(ledger.session_task_titles(Some(&store)).unwrap().is_empty());
+        let visible = ledger
+            .create_task(Some(&session), "Session title", "private note")
+            .unwrap();
+        ledger
+            .create_task(Some(&worker), "Worker-only title", "")
+            .unwrap();
+        ledger
+            .create_task(Some(&sibling), "Other source worker title", "")
+            .unwrap();
+        ledger.create_task(None, "Unlinked title", "").unwrap();
+        let archived = ledger
+            .create_task(Some(&session), "Archived title", "")
+            .unwrap();
+        assert!(
+            ledger
+                .set_task_archived(archived.id, true, None)
+                .unwrap()
+                .is_some()
+        );
+        let rows = ledger.session_task_titles(Some(&store)).unwrap();
+        assert_eq!(
+            rows,
+            [(
+                session.harness_id.clone(),
+                session.session_id.clone(),
+                visible.title.clone()
+            )]
+        );
+        let sibling_session = WorkspaceAnchor {
+            worker_id: None,
+            turn_id: None,
+            ..sibling.clone()
+        };
+        assert!(ledger.link_task(visible.id, &sibling_session).unwrap());
+        let rows = ledger.session_task_titles(Some(&store)).unwrap();
+        assert!(rows.contains(&(
+            sibling_session.harness_id,
+            sibling_session.session_id,
+            visible.title
+        )));
+
+        let other = scratch.0.join("other.sqlite");
+        let mut other = Store::open_collector(&other).unwrap();
+        seed(&mut other, &worker, &[0]);
+        seed(&mut other, &sibling, &[0]);
+        assert_eq!(
+            store.observation_page(1).unwrap().snapshot_id,
+            other.observation_page(1).unwrap().snapshot_id
+        );
+        assert_eq!(
+            store.read_incarnation().unwrap(),
+            other.read_incarnation().unwrap()
+        );
+        assert!(matches!(
+            ledger.session_task_titles(Some(&other)),
+            Err(WorkspaceError::HistoryChanged)
+        ));
+    }
 
     #[test]
     fn tasks_reopen_page_and_mutate_independently_of_a_live_collector() {
