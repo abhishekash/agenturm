@@ -64,7 +64,8 @@ impl Workspace {
                     .map(|row| MetricRow {
                         label: format!("{} / {}", row.harness_id, row.session_id),
                         value: format!(
-                            "state={} · updated_unix_ns={}",
+                            "task={} · state={} · updated_unix_ns={}",
+                            row.task_title.as_deref().unwrap_or("Untitled session"),
                             recorded_state(row),
                             row.updated_at_unix_ns
                         ),

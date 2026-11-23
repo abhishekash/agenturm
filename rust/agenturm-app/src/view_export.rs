@@ -24,6 +24,12 @@ pub(super) fn export(document: &LoadedView, directory: &str) -> Result<WorkResul
         "format": "agenturm.loaded-view/1",
         "coverage": if document.truncated { "partial_loaded_page" } else { "loaded_page" },
         "evidence_receipt": false,
+        "title": document.title,
+        "scope": document.scope,
+        "rows": document.rows.iter().map(|row| serde_json::json!({
+            "label": row.label,
+            "value": row.value,
+        })).collect::<Vec<_>>(),
         "text": text,
     }))
     .map_err(|_| "Cannot encode loaded view")?;

@@ -2147,6 +2147,7 @@ mod tests {
             operation_details: Vec::new(),
             private_telemetry_history: None,
             operation_tables: Default::default(),
+            evidence_tables: Default::default(),
         }
     }
 

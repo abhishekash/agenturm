@@ -2230,7 +2230,9 @@ fn load_workspace_history(
                 WorkspaceView::Mcp => Some(ids.mcp),
                 WorkspaceView::Operations => Some(ids.operations),
                 WorkspaceView::Findings => Some(ids.findings),
-                WorkspaceView::Host => Some(host.ok_or("Host data is unavailable from this receiver")?),
+                WorkspaceView::Host => {
+                    Some(host.ok_or("Host data is unavailable from this receiver")?)
+                }
                 WorkspaceView::Usage => Some(ids.usage),
                 WorkspaceView::Traces => Some(ids.traces),
                 WorkspaceView::Metrics => None,
