@@ -37,10 +37,54 @@ impl Grouping {
 pub(super) fn project(row: &RecordedSession) -> &str {
     row.project_path
         .as_deref()
-        .filter(|p| {
-            row.project_origin == Some(ProjectOrigin::OperatorTaskWorkspace) && !p.trim().is_empty()
-        })
+        .filter(|p| row.project_origin.is_some() && !p.trim().is_empty())
         .unwrap_or("Project unavailable")
+}
+
+pub(super) fn provider(row: &RecordedSession) -> &str {
+    match source_family(&row.harness_id) {
+        "harness.codex" => "Codex",
+        "harness.claude" => "Claude Code",
+        "harness.pi" => "Pi",
+        "harness.kiro" => "Kiro",
+        "harness.opencode" => "OpenCode",
+        source => source.strip_prefix("harness.").unwrap_or(source),
+    }
+}
+
+pub(super) fn name(row: &RecordedSession) -> &str {
+    row.task_title
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("Name unavailable")
+}
+
+fn supporting_context(row: &RecordedSession, grouping: Grouping, duplicate: bool) -> String {
+    let mut parts = vec![provider(row).to_owned()];
+    if let Some(value) = row.native_context.as_deref()
+        .and_then(|context| context.agent_name.as_deref())
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(visible_text(value));
+    }
+    if duplicate {
+        parts.push("Same name".into());
+    }
+    if let Some(value) = row.native_context.as_deref()
+        .and_then(|context| context.agent_role.as_deref())
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(visible_text(value));
+    }
+    if grouping != Grouping::Project && row.project_origin.is_some() {
+        let path = project(row);
+        let short = std::path::Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(path);
+        parts.push(visible_text(short));
+    }
+    parts.join(" · ")
 }
 
 pub(super) fn group(row: &RecordedSession, grouping: Grouping) -> &str {
@@ -236,15 +280,36 @@ pub(super) fn draw(
             "○"
         };
         let indent = "  ".repeat(item.depth.min(4));
-        let text = format!(
-            "{indent}{marker} {}",
-            visible_text(row.task_title.as_deref().unwrap_or("Untitled session"))
+        let text = format!("{indent}{marker} {}", visible_text(name(row)));
+        let duplicate = row.task_title.as_ref().is_some_and(|title| {
+            agents
+                .visible
+                .iter()
+                .filter_map(|item| sessions.and_then(|rows| rows.get(item.index)))
+                .filter(|other| {
+                    other
+                        .task_title
+                        .as_ref()
+                        .is_some_and(|other| other.eq_ignore_ascii_case(title))
+                })
+                .count()
+                > 1
+        });
+        let supporting = supporting_context(row, agents.grouping, duplicate);
+        rows.push(
+            Row::new(vec![
+                Text::from(vec![
+                    Line::styled(roster_cell(&text, task_width), heading_style()),
+                    Line::styled(
+                        roster_cell(&format!("{indent}  {supporting}"), task_width),
+                        label_style(),
+                    ),
+                ]),
+                Text::from(status(row)),
+                Text::from(age(row.updated_at_unix_ns)),
+            ])
+            .height(2),
         );
-        rows.push(Row::new([
-            roster_cell(&text, task_width),
-            status(row).into(),
-            age(row.updated_at_unix_ns),
-        ]));
     }
     let has_more = agents
         .catalog
@@ -303,9 +368,9 @@ pub(super) fn draw(
         },
         |row| {
             format!(
-                "{} / {} · {}",
-                visible_text(&row.harness_id),
-                visible_text(&row.session_id),
+                "{} · {} · recorded {}",
+                visible_text(name(row)),
+                supporting_context(row, agents.grouping, false),
                 visible_text(recorded_state(row))
             )
         },
@@ -320,13 +385,21 @@ pub(super) fn draw(
     let detail = message.map(visible_text).unwrap_or_else(|| {
         agents
             .current()
-            .filter(|row| {
-                row.project_origin == Some(ProjectOrigin::OperatorTaskWorkspace)
-                    && row.project_path.is_some()
-            })
+            .filter(|row| row.project_origin.is_some() && row.project_path.is_some())
             .map_or_else(
                 || connection.into(),
-                |row| format!("Operator task workspace · {}", visible_text(project(row))),
+                |row| {
+                    format!(
+                        "{} · {}",
+                        match row.project_origin {
+                            Some(ProjectOrigin::OperatorTaskWorkspace) => "Operator task workspace",
+                            Some(ProjectOrigin::NativeRecordedWorkspace) =>
+                                "Native session workspace",
+                            None => "Project unavailable",
+                        },
+                        visible_text(project(row))
+                    )
+                },
             )
     });
     let hints = if agents.editing {

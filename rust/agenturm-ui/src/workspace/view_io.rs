@@ -65,9 +65,9 @@ impl Workspace {
                         label: format!("{} / {}", row.harness_id, row.session_id),
                         value: format!(
                             "task={} · project={} · project_origin={} · state={} · updated_unix_ns={}",
-                            row.task_title.as_deref().unwrap_or("Untitled session"),
+                            command_center::name(row),
                             command_center::project(row),
-                            if row.project_origin == Some(ProjectOrigin::OperatorTaskWorkspace) { "operator_task_workspace" } else { "unavailable" },
+                            match row.project_origin { Some(ProjectOrigin::OperatorTaskWorkspace) => "operator_task_workspace", Some(ProjectOrigin::NativeRecordedWorkspace) => "native_recorded_workspace", None => "unavailable" },
                             recorded_state(row),
                             row.updated_at_unix_ns
                         ),

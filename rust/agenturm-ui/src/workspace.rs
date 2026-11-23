@@ -23,7 +23,7 @@ pub struct RecordedSession {
     pub session_id: String,
     pub task_title: Option<Box<str>>,
     pub native_context: Option<Box<NativeSessionContext>>,
-    /// Explicit public project metadata; never inferred from prompts or local cwd.
+    /// Operator-linked project or the exact native session’s recorded workspace.
     pub project_path: Option<Box<str>>,
     pub project_origin: Option<ProjectOrigin>,
     pub updated_at_unix_ns: u64,
@@ -260,6 +260,19 @@ impl AgentList {
                                 .task_title
                                 .as_deref()
                                 .is_some_and(|title| title.to_ascii_lowercase().contains(&query))
+                            || session.project_path.as_deref().is_some_and(|project| {
+                                project.to_ascii_lowercase().contains(&query)
+                            })
+                            || session.native_context.as_deref().is_some_and(|context| {
+                                [
+                                    context.agent_name.as_deref(),
+                                    context.agent_role.as_deref(),
+                                    context.model_provider.as_deref(),
+                                ]
+                                .iter()
+                                .flatten()
+                                .any(|name| name.to_ascii_lowercase().contains(&query))
+                            })
                             || session
                                 .state
                                 .as_ref()
@@ -2547,9 +2560,87 @@ mod tests {
             if width == 60 {
                 assert!(text.contains('…'), "{text}");
             }
-            assert!(text.contains("source-session"), "{text}");
-            assert!(text.contains("Untitled session"), "{text}");
+            assert!(text.contains("Codex"), "{text}");
+            assert!(text.contains("Name unavailable"), "{text}");
         }
+    }
+
+    #[test]
+    fn native_names_context_and_duplicates_are_readable_at_every_supported_size() {
+        let mut first = session("harness.codex.11111111111111111111111111111111", "opaque-one", "running", None);
+        first.task_title = Some("Release checks".into());
+        first.project_path = Some("/work/agenturm".into());
+        first.project_origin = Some(ProjectOrigin::NativeRecordedWorkspace);
+        first.native_context = Some(Box::new(NativeSessionContext {
+            agent_name: Some("Mira".into()),
+            agent_role: Some("reviewer".into()),
+            model_provider: Some("openai".into()),
+            ..NativeSessionContext::default()
+        }));
+        let mut second = first.clone();
+        second.session_id = "opaque-two".into();
+        second.native_context.as_mut().unwrap().agent_name = Some("Sol".into());
+        let mut agents = AgentList::default();
+        agents.update(catalog(vec![first, second]));
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| draw_agents(frame, &mut agents, false, None)).unwrap();
+            let text = terminal.backend().buffer().content().iter()
+                .map(|cell| cell.symbol()).collect::<String>();
+            for expected in ["Release checks", "Codex", "Mira", "Sol", "/work/agenturm", "Same name"] {
+                assert!(text.contains(expected), "{width}x{height}: {expected}: {text}");
+            }
+            assert!(!text.contains("opaque-one"), "IDs belong in inspector/copy: {text}");
+            assert!(!text.contains("opaque-two"), "IDs belong in inspector/copy: {text}");
+        }
+    }
+
+    #[test]
+    fn native_rename_reorders_rows_without_changing_exact_selection_or_inspector_binding() {
+        let mut selected = session("harness.codex.alpha", "shared", "running", None);
+        selected.task_title = Some("Before rename".into());
+        selected.project_path = Some("/work/z-project".into());
+        selected.project_origin = Some(ProjectOrigin::NativeRecordedWorkspace);
+        let other = session("harness.codex.beta", "shared", "completed", None);
+        let mut workspace = Workspace::new();
+        workspace.agents.update(catalog(vec![selected.clone(), other.clone()]));
+        let exact = session_key(&selected);
+        workspace.agents.apply_filters(Some(&exact));
+        selected.task_title = Some("After rename".into());
+        selected.project_path = Some("/work/a-project".into());
+        workspace.agents.update(catalog(vec![other, selected]));
+        assert_eq!(session_key(workspace.agents.current().unwrap()), exact);
+        let (sender, requests) = mpsc::channel();
+        assert!(!press(&mut workspace, &sender, KeyCode::Enter));
+        let Ok(WorkspaceRequest::History { selection: HistorySelection::Session(row, SessionView::Overview), .. }) = requests.try_recv() else { panic!("expected exact session inspector request") };
+        assert_eq!(session_key(&row), exact);
+        assert_eq!(row.task_title.as_deref(), Some("After rename"));
+        assert_eq!(row.project_path.as_deref(), Some("/work/a-project"));
+    }
+
+    #[test]
+    fn native_context_search_does_not_relabel_missing_names_with_activity_or_ids() {
+        let mut row = session("harness.claude.selected", "opaque-id", "completed", None);
+        row.project_path = Some("/work/alpha-project".into());
+        row.project_origin = Some(ProjectOrigin::NativeRecordedWorkspace);
+        row.native_context = Some(Box::new(NativeSessionContext {
+            agent_name: Some("Mira".into()),
+            agent_role: Some("reviewer".into()),
+            model_provider: Some("anthropic".into()),
+            last_activity: Some("MCP tool call".into()),
+            ..NativeSessionContext::default()
+        }));
+        let mut agents = AgentList::default();
+        agents.update(catalog(vec![row]));
+        for query in ["MIRA", "reviewer", "anthropic", "alpha-project"] {
+            agents.search = query.into();
+            agents.apply_filters(None);
+            assert_eq!(agents.visible.len(), 1, "{query}");
+            assert_eq!(command_center::name(agents.current().unwrap()), "Name unavailable");
+        }
+        agents.search = "absent".into();
+        agents.apply_filters(None);
+        assert!(agents.visible.is_empty());
     }
 
     #[test]
@@ -2899,7 +2990,7 @@ mod tests {
                 .collect::<String>();
             for text in [
                 "Agenturm command center",
-                "sample-session",
+                "Name unavailable",
                 "interrupted",
                 "Enter inspect",
             ] {
@@ -3068,7 +3159,7 @@ mod tests {
                 .iter()
                 .map(|c| c.symbol())
                 .collect::<String>();
-            assert!(text.contains("retained-selection"));
+            assert!(text.contains("Name unavailable"));
             assert!(text.contains("Receiver disconnected"));
         }
     }
