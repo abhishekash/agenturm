@@ -366,3 +366,191 @@ pub fn hex_id(value: &str, size: usize) -> bool {
             .bytes()
             .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    struct Scratch(std::path::PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            static NEXT: AtomicUsize = AtomicUsize::new(0);
+            let path = std::env::temp_dir().join(format!(
+                "agenturm-native-outbox-{}-{}",
+                std::process::id(),
+                NEXT.fetch_add(1, Ordering::Relaxed),
+            ));
+            fs::create_dir(&path).unwrap();
+            Self(path)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    fn sample(kind: EventKind, sequence: u64) -> Event {
+        Event {
+            event_id: format!("event-{sequence}"),
+            sequence: Some(sequence),
+            kind,
+            trace_id: "a".repeat(32),
+            turn_id: "b".repeat(32),
+            request_id: (kind.is_request() || kind == EventKind::RequestResolved)
+                .then(|| "request".into()),
+            source_time_unix_ns: 0,
+        }
+    }
+
+    #[test]
+    fn ambiguous_reply_preserves_immutable_event_and_retries_before_later_events() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("outbox.sqlite");
+        let owner = fs::metadata(&scratch.0).unwrap().uid();
+        let binding = [1; 32];
+        let first = sample(EventKind::ApprovalRequested, 1);
+        let mut outbox = NativeOutbox::open(&path, owner).unwrap();
+        assert!(outbox.enqueue("sender", &binding, first.clone()).unwrap());
+        let mut attempted = None;
+        assert!(
+            outbox
+                .flush("sender", &binding, |row| {
+                    attempted = Some(row.clone());
+                    Err("lost reply".into())
+                })
+                .is_err()
+        );
+        drop(outbox);
+        let mut outbox = NativeOutbox::open(&path, owner).unwrap();
+        assert!(!outbox.enqueue("sender", &binding, first.clone()).unwrap());
+        assert!(
+            outbox
+                .flush("sender", &[7; 32], |_| panic!(
+                    "different binding cannot dispatch"
+                ))
+                .is_err()
+        );
+        let mut wrong = sample(EventKind::RequestResolved, 2);
+        wrong.turn_id = "c".repeat(32);
+        assert!(outbox.enqueue("sender", &binding, wrong).is_err());
+        let mut wrong = sample(EventKind::RequestResolved, 2);
+        wrong.request_id = Some("other-request".into());
+        assert!(outbox.enqueue("sender", &binding, wrong).is_err());
+        let resolution = sample(EventKind::RequestResolved, 2);
+        assert!(
+            outbox
+                .enqueue("sender", &binding, resolution.clone())
+                .unwrap()
+        );
+        let mut delivered = Vec::new();
+        assert_eq!(
+            outbox.flush("sender", &binding, |row| {
+                delivered.push(row.clone());
+                Ok(())
+            }),
+            Ok(2)
+        );
+        assert_eq!(delivered[0], attempted.unwrap());
+        assert_eq!(delivered[1].event, resolution);
+        assert_eq!(
+            delivered[1].request_kind,
+            Some(EventKind::ApprovalRequested)
+        );
+        assert_eq!(delivered[0].event.source_time_unix_ns, 0);
+        assert!(delivered[0].received_at_unix_ns > 0);
+        assert_eq!(
+            outbox.flush("sender", &binding, |_| panic!("confirmed event replayed")),
+            Ok(0)
+        );
+        let mut conflict = first;
+        conflict.kind = EventKind::ReplyRequested;
+        assert!(outbox.enqueue("sender", &binding, conflict).is_err());
+        assert!(
+            outbox
+                .enqueue("sender", &binding, sample(EventKind::ReplyRequested, 3))
+                .is_err()
+        );
+        assert!(
+            outbox
+                .enqueue("sender", &binding, sample(EventKind::RequestResolved, 3))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn completion_transport_order_is_assigned_once_and_never_revives_confirmed_identity() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("outbox.sqlite");
+        let owner = fs::metadata(&scratch.0).unwrap().uid();
+        let mut outbox = NativeOutbox::open(&path, owner).unwrap();
+        let binding = [2; 32];
+        let mut first = sample(EventKind::TurnCompleted, 1);
+        first.sequence = None;
+        let mut second = sample(EventKind::TurnCompleted, 2);
+        second.sequence = None;
+        assert!(outbox.enqueue("codex", &binding, first.clone()).unwrap());
+        assert!(outbox.enqueue("codex", &binding, second).unwrap());
+        let mut order = Vec::new();
+        assert_eq!(
+            outbox.flush("codex", &binding, |row| {
+                order.push(row.sequence);
+                Ok(())
+            }),
+            Ok(2)
+        );
+        assert_eq!(order, [1, 2]);
+        assert!(!outbox.enqueue("codex", &binding, first).unwrap());
+        assert!(
+            outbox
+                .enqueue("codex", &binding, sample(EventKind::TurnStarted, 1))
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn opening_outbox_refuses_unsafe_files_and_foreign_sqlite_schema() {
+        use std::os::unix::fs::{PermissionsExt, symlink};
+
+        let scratch = Scratch::new();
+        let path = scratch.0.join("history.sqlite");
+        let owner = fs::metadata(&scratch.0).unwrap().uid();
+        let mut file = OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .open(&path)
+            .unwrap();
+        use std::io::Write;
+        file.write_all(b"unmanaged bytes").unwrap();
+        assert!(NativeOutbox::open(&path, owner).is_err());
+        assert_eq!(fs::read(&path).unwrap(), b"unmanaged bytes");
+
+        let link = scratch.0.join("foreign-link.sqlite");
+        symlink(&path, &link).unwrap();
+        assert!(NativeOutbox::open(&link, owner).is_err());
+        fs::set_permissions(&path, fs::Permissions::from_mode(0o644)).unwrap();
+        assert!(NativeOutbox::open(&path, owner).is_err());
+
+        let foreign = scratch.0.join("foreign.sqlite");
+        drop(
+            OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .mode(0o600)
+                .open(&foreign)
+                .unwrap(),
+        );
+        let db = Connection::open(&foreign).unwrap();
+        db.execute_batch("CREATE TABLE foreign_data (some_key TEXT);")
+            .unwrap();
+        assert!(NativeOutbox::open(&foreign, owner).is_err());
+        let count: u64 = db
+            .query_row("SELECT count(*) FROM sqlite_schema", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 1);
+    }
+}

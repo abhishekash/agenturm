@@ -163,7 +163,7 @@ pub(super) fn execute(options: &NativeOptions) -> Result<(), String> {
             if bytes.len() > MAX_BYTES {
                 return Err("Native binding exceeds the 8 KiB limit".into());
             }
-            write_binding(&args.output, &bytes)
+            write_binding(&args.output, &binding.sender_id, &bytes)
         }
         Action::Delivery {
             mode,
@@ -262,16 +262,33 @@ fn read_binding(path: &Path) -> Result<Binding, String> {
     serde_json::from_slice(&read_bounded(file)?).map_err(|_| "Invalid native binding JSON".into())
 }
 
-fn write_binding(path: &Path, bytes: &[u8]) -> Result<(), String> {
+fn write_binding(path: &Path, nonce: &str, bytes: &[u8]) -> Result<(), String> {
+    use rustix::fs::{CWD, RenameFlags, renameat_with};
+
+    let parent = path
+        .parent()
+        .filter(|path| !path.as_os_str().is_empty())
+        .unwrap_or(Path::new("."));
+    let staging = parent.join(format!(".agenturm-native-binding-{nonce}"));
     let mut file = OpenOptions::new()
         .write(true)
         .create_new(true)
         .mode(0o600)
-        .open(path)
+        .open(&staging)
         .map_err(|_| "Cannot create a new private native binding")?;
-    file.write_all(bytes)
+    let write = file
+        .write_all(bytes)
         .and_then(|()| file.sync_all())
-        .map_err(|_| "Cannot write the private native binding")
+        .and_then(|()| {
+            renameat_with(CWD, &staging, CWD, path, RenameFlags::NOREPLACE).map_err(io::Error::from)
+        });
+    if write.is_err() {
+        let _ = fs::remove_file(&staging);
+        return Err("Cannot publish a new private native binding".into());
+    }
+    File::open(parent)
+        .and_then(|file| file.sync_all())
+        .map_err(|_| "Cannot confirm durability of the private native binding".to_owned())
 }
 
 fn default_outbox_path() -> Result<PathBuf, String> {
