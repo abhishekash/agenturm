@@ -9,15 +9,73 @@ Use this status and the [detailed remaining-work plan](rust-migration-remaining-
 | Area | Current status | Next completion condition |
 | --- | --- | --- |
 | Native Rust cockpit, telemetry, Workflow and protected evidence | PR [#379](https://github.com/abhishekash/agenturm/pull/379) merged as `52ec13b`. Runtime source `42712dd` passed **813 tests / 96 suites**, strict workspace all-target Clippy and all binaries. Exact optimized x86-64 archive passed installer/0.3.8 upgrade and **12 separate-UID KVM cases**. | Requalify the final combined archive after the newer slices land. |
-| Command center E1–E5 | Native human-readable titles, nickname fallback, project provenance, newest-update ordering and stable selection implemented. Twelve actual Codex transcript handles across two processes passed checks at 120×32, 80×24 and 60×18. | Final installed and simultaneous Claude acceptance; header-only roster behavior remains open (F1). Recorded lifecycle is not process liveness. |
+| Command center E1–E5 | Native human-readable titles, nickname fallback, project provenance, newest-update ordering and stable selection implemented. Twelve actual Codex transcript handles across two processes passed checks at 120×32, 80×24 and 60×18. | Supported header-only presence is implemented in CF1. Final installed/native concurrency acceptance remains with the test owner. Recorded lifecycle is not process liveness. |
 | Explicit receiver Findings | Merged PR [#380](https://github.com/abhishekash/agenturm/pull/380), `ef3d647` → `39474dd`; **819 tests / 96 suites**, strict Clippy, optimized actual-tagged Findings/Review journeys passed. All applicable CI jobs are green, including both Linux bundle targets and five selected SDK jobs. | Final combined-artifact regression; verified merge complete. |
-| Metric descriptions and full-catalog search | Joined code passed **833 tests / 96 suites**, strict Clippy and all binaries. Real HTTP and all three terminal sizes passed search beyond the first page, descriptions, snapshot binding and exact return. | Current-source CI and final optimized schema 21 upgrade/installed acceptance. |
+| Metric descriptions and full-catalog search | Joined code passed **833 tests / 96 suites**, strict Clippy and all binaries. Real HTTP and all three terminal sizes passed search beyond the first page, descriptions, snapshot binding and exact return. | Current-source CI and final optimized schema 21→22 upgrade/installed acceptance are qualification work. |
 | Remote Host inventory | Latest-per-authorized-source query and reported hostname/platform implemented. Final chooser refresh/source-context correction passed **14 focused tests** plus the joined **833-test / 96-suite** run, strict workspace Clippy and all binaries. | Correction integrated; joined checks and updated separate-UID terminal/KVM fixture passed. Final optimized archive remains open. |
-| Remaining feature work | Header-only roster and native relationship/check evidence gaps; required Review/edit, MCP and SDK/usage coverage differences; automatic decoder installation; additional connector profiles/deployed acceptance; macOS. | Follow F1–F5. Some are independent support/extension gates rather than prerequisites for an opt-in Linux archive. No workflow is retired implicitly. |
+| Remaining feature work | Core FD1–FD4: attributable native shapes, private provider details beyond Codex, duplicate-safe usage/cost aggregation and cross-host terminal routing. Separate FD5–FD7: remote extension packages/formats, additional connector profiles and macOS. | Use the FD registry below; AP1 resolves SDK/CLI audit items. Tests remain delegated. No workflow is retired implicitly. |
 | Release/default switch | Rust 0.3.8 remains the latest public opt-in Linux release. No 0.3.9 publication or default change. | Final selected workflow acceptance and immutable-artifact checks. At most one public release per rolling 24 hours. |
 
-The 813, 819 and 833 test counts belong to successive source baselines and are **not additive**. The 833-test run predates the final Host chooser correction. No completion percentage is asserted while required workflow acceptance remains open. A real Kiro transcript and an approved production connector endpoint remain external inputs; macOS needs native runners and its D2-Mac checks. Comparative benchmarks remain deferred.
+The 813, 819 and 833 test counts belong to successive source baselines and are **not additive**. The 833-test baseline includes the final Host chooser correction and predates CF1–CF5/schema 22. No completion percentage is asserted while required workflow acceptance remains open. A real Kiro transcript and an approved production connector endpoint remain external inputs; macOS needs native runners and its D2-Mac checks. Comparative benchmarks remain deferred.
 
+
+## Remaining feature development — current scheduling
+
+The five CF1–CF5 slices are implemented and merged in PR #382 (`3135060`);
+PR #383 (`2fea865`) synchronizes baseline test evidence and fixes the reported
+lint/upgrade-identity coverage gap. The rows below describe development still
+open. The SDK/CLI audit and test qualification are separate work categories.
+
+### Core Linux features
+
+| ID | Priority / owner | Feature still to implement | Dependency and completion condition |
+| --- | --- | --- | --- |
+| FD1 | Core / harness adapters | Remaining attributable native evidence: Pi same-session worker relationships, Claude asynchronous workers, and additional supported check/turn shapes. | Obtain positive native records for each shape, then add exact typed attribution through admission/reopen and the evidence UI. Missing exit codes or parent evidence stay unknown; fixtures or output prose cannot invent facts. Completed Claude worker spawning and neutral presence are not reopened. |
+| FD2 | Core / private evidence and UI | Provider-specific private edit and MCP detail beyond the implemented Codex routes. | Define each provider's exact retained/source proof and separate content approval. Implement scoped selection/reveal/revocation and clear unavailable cases. Existing whole-session Codex Review edits, MCP preview and linked-trace paths remain implemented. |
+| FD3 | Core / usage and cost | Combined usage/cost totals that safely handle overlapping producer reports. | Define provenance and deduplication for native, OTLP and multiple instrumentation layers. Keep currencies distinct and ambiguous totals unreported. Implement only totals with attributable nonduplicated evidence. Existing seven-day and per-currency views remain implemented. |
+| FD4 | Core / remote workflow | Cross-host terminal routing to the exact recorded remote owner/session. | Use an explicitly configured authenticated host/session route and current request evidence. Resolve a unique target or report unavailable. Preserve return selection; routing never answers or approves the agent request. Existing local routing/resume and native/attached receiver reads are not missing features. |
+
+FD1–FD4 can progress independently after agreeing on any shared DTO, grant or
+transport contracts. An unavailable native witness is a dependency, not proof
+that the producer records the desired fact.
+
+### Separate platform and extension development
+
+| ID | Owner | Feature still open | Existing baseline and boundary |
+| --- | --- | --- | --- |
+| FD5 | Extension runtime | Remote adapter package discovery/download and support for additional decoder formats. | Trusted local install/replace/list/show/pin-CAS remove is complete. Define trusted origin, integrity, version/format and update selection before remote acquisition. Activation remains explicit and subject to the supported trust/isolation profile. |
+| FD6 | Connector runtime | HTTPS/general provider transport, production credential provisioning and sandbox support beyond the current architecture/profile. | Static Linux x86-64 isolated_linux and host-mediated unix_status_v1 are implemented. Select and implement the additional profile before its deployed acceptance; an approved production endpoint is a qualification dependency, not this transport implementation. |
+| FD7 | Platform/distribution | macOS artifacts, installation/update/uninstall, native paths and service integration, signing/notarization and normal Gatekeeper behavior. | Apple Silicon and Intel are separate targets. Define minimum OS and foreground/launchd support. Native testing follows implementation; macOS is unsupported until D2-Mac passes. Linux qualification can proceed under its own declared support. |
+
+These are independent delivery/support tracks. Do not advertise them complete
+because a Linux build ships, and do not silently retire them or expand the
+Linux release scope without an explicit product decision.
+
+### AP1 — SDK/CLI parity audit, not a blanket missing-feature list
+
+Reconcile every retained Python 0.2.8 CLI/keyboard journey and selected SDK
+integration with its actual Rust code path. Cover OpenAI, Anthropic,
+LangChain/LangGraph, Google ADK and Pydantic AI as applicable to the retained
+inventory. Record each row as **implemented**, **test-only acceptance pending**,
+**confirmed missing feature**, **native evidence unavailable**, or **scope
+decision needed**. Include the owner, source anchor and acceptance journey.
+
+Only confirmed missing behavior becomes a new FD development task. Passing
+selected SDK jobs on an older source is not complete instrumentation coverage;
+unexecuted tests are not evidence that implementation is absent. Complete this
+audit before claiming feature development or default cutover complete. No
+workflow is retired by this documentation update.
+
+### Implemented code and qualification ownership
+
+CF1 neutral Claude/Pi presence and admission-age retention, CF2 whole-session
+Review edits, CF3 adapter lifecycle, CF4 log failure investigation and CF5 exact
+Claude worker spawning are **implemented**. Their pending current-head tests,
+paired UI states, installers/upgrades, artifact/guest checks and CI belong to
+the separate test execution agent in
+[the core feature test plan](../validation/rust-core-feature-test-plan.md).
+Actual Kiro collection, the approved production endpoint and native Mac runs
+are evidence/platform gates. Comparative performance benchmarks stay deferred.
 
 ## Synchronized test progress
 
@@ -322,11 +380,11 @@ The [separate remaining-work plan](rust-migration-remaining-plan.md) is the deta
 
 | Gate | Verified progress | Remaining work |
 | --- | --- | --- |
-| Native harnesses | Real Pi, Codex, Claude Code and OpenCode collection; Kiro native-format process fixtures. | F1: attributable worker/check/turn evidence gaps. Q8: per-provider installed scenarios and an actual Kiro transcript. |
+| Native harnesses | Real Pi, Codex, Claude Code and OpenCode collection; Kiro native-format process fixtures. | FD1: remaining attributable worker/check/turn evidence shapes. Q8: per-provider installed scenarios and an actual Kiro transcript. |
 | Cockpit/workflows | Native command center, MCP inventory/trace navigation, telemetry history, usage, Findings, Workflow and selected tasks/imports/retention implemented. | F2: close remaining detailed edit/MCP and SDK/usage coverage inventory; I1–I3 integration; Q6 installed paired visual/keyboard acceptance. |
 | Metrics/Host follow-ups | 833-test joined baseline; real metric HTTP/PTY checks; Host correction has 14 focused passing tests. | Final Host correction and Q1–Q3 development checks passed; repeat on the final optimized artifact. Preserve exact source/snapshot, selection and recorded-source labels. |
 | Storage authority/recovery | Separate-UID Linux guests exercised broker admission/queries/grants/retention, backup/restore and disclosure boundaries. A qualification host is available; C1–C5 are no longer wholly missing implementation. | Q5 final schema 21 combined-artifact upgrade/recovery; F4 additional connector profiles and Q9 deployed endpoint acceptance; C6/C7 local static-x86-64 isolation and host-mediated transport are already implemented. |
-| Extensions/connectors | Explicit pinned catalog/capability loading and trusted connector replay/reconciliation implemented. | F3 automatic decoder installation; F4 additional connector profiles; C6/C7 local isolated_linux and unix_status_v1 controls are implemented. Keep unsupported profiles/unqualified production activation disabled. |
+| Extensions/connectors | Explicit pinned catalog/capability loading and trusted connector replay/reconciliation implemented. | FD5 remote package discovery/new formats; FD6 additional connector profiles; C6/C7 local isolated_linux and unix_status_v1 controls are implemented. Keep unsupported profiles/unqualified production activation disabled. |
 | Distribution | Published Linux x86-64 and ARM64 Rust 0.3.8; both architectures passed PR #380 bundle CI. | Q5–Q7 final exact source/artifact qualification. F5/Q10 macOS remains unsupported pending native implementation/testing. |
 | Full default cutover | Rust native path can run without a Python process. | Required retained workflow inventory, installed paired journeys and applicable production/support gates must pass. No silent retirement or default change. |
 
