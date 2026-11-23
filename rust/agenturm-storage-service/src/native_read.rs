@@ -2,7 +2,7 @@
 
 use agenturm_kernel::ReadSnapshot;
 use agenturm_kernel::retained_history::{
-    MetricHistoryPage, MetricHistoryQuery, UsageHistoryPage, UsageHistoryQuery,
+    HistoryProjection, MetricHistoryPage, MetricHistoryQuery, UsageHistoryPage, UsageHistoryQuery,
 };
 use agenturm_kernel::{
     ExtensionId, MAX_DURABLE_SNAPSHOT_OBSERVATIONS, ObservationPage, ObservationQuery,
@@ -61,6 +61,11 @@ pub enum HistorySelection<'a> {
         turn_id: &'a str,
         worker_id: Option<&'a str>,
     },
+    Projected {
+        projection: &'a HistoryProjection,
+        turn_id: Option<&'a str>,
+        worker_filter: Option<Option<&'a str>>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -110,6 +115,17 @@ pub fn query_history(
         HistorySelection::LinkedTurnTraces { turn_id, worker_id } => {
             store.query_linked_turn_traces_from_sources(&query, turn_id, worker_id, allowed_sources)
         }
+        HistorySelection::Projected {
+            projection,
+            turn_id,
+            worker_filter,
+        } => store.query_projected_history(
+            &query,
+            projection,
+            turn_id,
+            worker_filter,
+            Some(allowed_sources),
+        ),
     }
     .map_err(failure)
 }

@@ -22,7 +22,9 @@ pub use native_admin::{AdminFailure, BackupReceipt, GrantBinding, GrantStatus};
 #[cfg(target_os = "linux")]
 pub use native_content::{PrivateEvidenceFailure, PrivateEvidenceKind, PrivateEvidenceSelection};
 #[cfg(target_os = "linux")]
-pub use native_store::{NativeClientError, NativeSelection, NativeStore, logical_read_identity};
+pub use native_store::{
+    NativeClientError, NativeSelection, NativeStore, ProjectedHistoryScope, logical_read_identity,
+};
 #[cfg(target_os = "linux")]
 pub use reader_history::{ReaderHistoryReply, ReaderHistoryRequest};
 

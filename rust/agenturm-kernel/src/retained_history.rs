@@ -1,10 +1,40 @@
-//! Bounded metadata-only metric and usage views shared by stores and readers.
+//! Bounded metadata views shared by stores and readers.
 
 use crate::metric::{MetricPoint, MetricSeries};
 use crate::{ExtensionId, ReadSnapshot, TraceSpan};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_METRIC_HISTORY_PAGE: usize = 64;
+pub const MAX_MCP_SEARCH_BYTES: usize = 256;
+
+/// A metadata projection applied before the retained history page limit.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum HistoryProjection {
+    Activity,
+    /// An exact trace returns only structural spans. The overview also
+    /// includes reported progress.
+    Traces {
+        trace_id: Option<String>,
+    },
+    Progress {
+        trace_id: Option<String>,
+    },
+    /// Literal, ASCII-case-insensitive search over the closed call metadata.
+    Mcp {
+        query: Option<String>,
+    },
+    Usage,
+    Relationships,
+}
+
+impl HistoryProjection {
+    pub fn valid_mcp_query(query: &str) -> bool {
+        !query.trim().is_empty()
+            && query.len() <= MAX_MCP_SEARCH_BYTES
+            && !query.chars().any(char::is_control)
+    }
+}
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]

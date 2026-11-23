@@ -11,7 +11,7 @@ use crate::native_content::{
 use crate::native_read::{self, HistorySelection, ReadFailure};
 use crate::reader_history::{self, ReaderHistoryReply, ReaderHistoryRequest};
 use agenturm_kernel::retained_history::{
-    MetricHistoryPage, MetricHistoryQuery, UsageHistoryPage, UsageHistoryQuery,
+    HistoryProjection, MetricHistoryPage, MetricHistoryQuery, UsageHistoryPage, UsageHistoryQuery,
 };
 use agenturm_kernel::{
     ExtensionId, Observation, ObservationPage, ObservationQuery, ObservationStore, StoreCommit,
@@ -199,6 +199,51 @@ pub enum NativeSelection {
         turn_id: String,
         worker_id: Option<String>,
     },
+    Projected {
+        projection: HistoryProjection,
+        scope: ProjectedHistoryScope,
+    },
+}
+
+/// A native turn can cover every worker or one exact worker (including main).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ProjectedHistoryScope {
+    All,
+    Turn {
+        turn_id: String,
+    },
+    Worker {
+        turn_id: String,
+        worker_id: Option<String>,
+    },
+}
+
+impl ProjectedHistoryScope {
+    pub fn from_filters(
+        turn_id: Option<&str>,
+        worker_filter: Option<Option<&str>>,
+    ) -> Option<Self> {
+        match (turn_id, worker_filter) {
+            (None, None) => Some(Self::All),
+            (Some(turn_id), None) => Some(Self::Turn {
+                turn_id: turn_id.into(),
+            }),
+            (Some(turn_id), Some(worker_id)) => Some(Self::Worker {
+                turn_id: turn_id.into(),
+                worker_id: worker_id.map(str::to_owned),
+            }),
+            (None, Some(_)) => None,
+        }
+    }
+
+    fn filters(&self) -> (Option<&str>, Option<Option<&str>>) {
+        match self {
+            Self::All => (None, None),
+            Self::Turn { turn_id } => (Some(turn_id), None),
+            Self::Worker { turn_id, worker_id } => (Some(turn_id), Some(worker_id.as_deref())),
+        }
+    }
 }
 
 impl NativeSelection {
@@ -215,6 +260,14 @@ impl NativeSelection {
                 turn_id,
                 worker_id: worker_id.as_deref(),
             },
+            Self::Projected { projection, scope } => {
+                let (turn_id, worker_filter) = scope.filters();
+                HistorySelection::Projected {
+                    projection,
+                    turn_id,
+                    worker_filter,
+                }
+            }
         }
     }
 }
@@ -1472,6 +1525,24 @@ impl NativeStore {
         query: &ObservationQuery,
     ) -> Result<ObservationPage, NativeClientError> {
         self.query(query, NativeSelection::LinkedTraces)
+    }
+
+    pub fn query_projected_history(
+        &self,
+        query: &ObservationQuery,
+        projection: &HistoryProjection,
+        turn_id: Option<&str>,
+        worker_filter: Option<Option<&str>>,
+    ) -> Result<ObservationPage, NativeClientError> {
+        let scope = ProjectedHistoryScope::from_filters(turn_id, worker_filter)
+            .ok_or(NativeClientError::Read(ReadFailure::InvalidRequest))?;
+        self.query(
+            query,
+            NativeSelection::Projected {
+                projection: projection.clone(),
+                scope,
+            },
+        )
     }
 
     pub fn query_linked_turn_traces(

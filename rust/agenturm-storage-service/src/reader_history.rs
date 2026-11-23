@@ -214,7 +214,9 @@ fn allow_anchor(
 mod tests {
     use super::*;
     use agenturm_kernel::ReadSnapshot;
-    use agenturm_kernel::retained_history::{MetricSeriesKey, MetricSeriesPosition};
+    use agenturm_kernel::retained_history::{
+        HistoryProjection, MetricSeriesKey, MetricSeriesPosition,
+    };
 
     #[test]
     fn typed_history_reads_require_reader_role_current_binding_and_allowed_sources() {
@@ -240,6 +242,23 @@ mod tests {
                 snapshot_id: snapshot,
                 limit: 1,
                 before: None,
+            },
+        };
+        let projected = |source_id: &ExtensionId| ReaderHistoryRequest::History {
+            query: ObservationQuery {
+                harness_id: Some(source_id.as_str().into()),
+                session_id: Some("recorded-session".into()),
+                snapshot_id: Some(snapshot),
+                ..ObservationQuery::latest(1)
+            },
+            selection: NativeSelection::Projected {
+                projection: HistoryProjection::Mcp {
+                    query: Some("TOOLS/CALL".into()),
+                },
+                scope: crate::ProjectedHistoryScope::Worker {
+                    turn_id: "recorded-turn".into(),
+                    worker_id: None,
+                },
             },
         };
         let metrics = |source_id, snapshot_id, after| ReaderHistoryRequest::MetricHistory {
@@ -284,6 +303,12 @@ mod tests {
             dispatch_reader(mcp(native.clone())),
             Ok(ReaderHistoryReply::McpTraces(None))
         ));
+        let wire = serde_json::to_string(&projected(&native)).unwrap();
+        assert!(
+            matches!(dispatch_reader(serde_json::from_str(&wire).unwrap()),
+                Ok(ReaderHistoryReply::History(page)) if page.snapshot_id == snapshot && page.observations.is_empty()
+            )
+        );
         assert!(
             matches!(dispatch_reader(metrics(Some(source.clone()), Some(snapshot), None)),
             Ok(ReaderHistoryReply::MetricHistory(MetricHistoryPage::Series { snapshot_id, rows, .. })) if snapshot_id == snapshot && rows.is_empty())
@@ -318,6 +343,7 @@ mod tests {
         };
         for request in [
             mcp(denied.clone()),
+            projected(&denied),
             metrics(Some(denied.clone()), Some(snapshot), None),
             metrics(None, Some(snapshot), Some(outside_cursor)),
             usage(Some(denied.clone())),

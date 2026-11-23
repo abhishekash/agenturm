@@ -17,6 +17,7 @@ mod content_grant;
 mod eval_detail;
 mod eval_inventory;
 mod eval_outcome;
+mod history_projection;
 mod linked_trace;
 pub mod metric_history;
 pub mod native_attention;
@@ -1868,10 +1869,14 @@ impl Store {
         allowed_sources: Option<&BTreeSet<ExtensionId>>,
         host_history: bool,
     ) -> Result<ObservationPage> {
-        let linked_traces = !matches!(trace_link, TraceLink::Unlinked);
+        let linked_traces = matches!(trace_link, TraceLink::Session | TraceLink::McpOperation(_));
         let operation = match trace_link {
             TraceLink::McpOperation(operation) => Some(operation),
-            TraceLink::Unlinked | TraceLink::Session => None,
+            _ => None,
+        };
+        let (projection, filter) = match trace_link {
+            TraceLink::Projected(projection) => history_projection::selection(projection),
+            _ => (None, None),
         };
         if query.limit == 0 || query.limit > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
             return Err(StoreError::Invalid("observation page limit is invalid"));
@@ -1913,6 +1918,17 @@ impl Store {
         // and result rows so a concurrent prune cannot shift an active page.
         let (snapshot_id, receipt_watermark) =
             retention::resolve_read_snapshot(connection, query.snapshot_id)?;
+        if let TraceLink::Projected(projection) = trace_link {
+            history_projection::require_cursor(
+                connection,
+                query,
+                projection,
+                turn_id,
+                worker_filter,
+                allowed_sources,
+                receipt_watermark,
+            )?;
+        }
         let mut statement = connection.prepare(
             "SELECT observation.source_id, observation.event_id, observation.revision,
                     observation.scope, observation.session_id, observation.worker_id, observation.turn_id,
@@ -1952,6 +1968,25 @@ impl Store {
                      AND json_extract(observation.kind_json,'$.kind')='host_sample')
                     OR (?14 = 0 AND (substr(observation.source_id,1,5)<>'host.'
                           OR json_extract(observation.kind_json,'$.kind')<>'host_sample')))
+               AND CASE ?16
+                   WHEN 'activity' THEN json_extract(observation.kind_json,'$.kind')<>'trace_span_summary'
+                   WHEN 'traces' THEN (
+                       (json_extract(observation.kind_json,'$.kind')='trace_span'
+                           AND (?17 IS NULL OR json_extract(observation.kind_json,'$.trace_id')=?17))
+                       OR (?17 IS NULL AND json_extract(observation.kind_json,'$.kind')='trace_progress'))
+                   WHEN 'progress' THEN (json_extract(observation.kind_json,'$.kind')='trace_progress'
+                       AND (?17 IS NULL OR json_extract(observation.kind_json,'$.trace_id')=?17))
+                   WHEN 'mcp' THEN (json_extract(observation.kind_json,'$.kind')='mcp_call' AND (
+                       ?17 IS NULL
+                       OR instr(lower(json_extract(observation.kind_json,'$.server')),lower(?17))>0
+                       OR instr(lower(json_extract(observation.kind_json,'$.tool')),lower(?17))>0
+                       OR instr(lower(json_extract(observation.kind_json,'$.method')),lower(?17))>0
+                       OR instr(lower(json_extract(observation.kind_json,'$.result')),lower(?17))>0))
+                   WHEN 'usage' THEN json_extract(observation.kind_json,'$.kind') IN (
+                       'usage','credit_usage','reported_cost','span_token_usage')
+                   WHEN 'relationships' THEN json_extract(observation.kind_json,'$.kind')='relationship'
+                   ELSE ?16 IS NULL
+               END
                AND (?4 IS NULL OR
                     (observation.observed_at_unix_ns,observation.source_id,
                      observation.event_id,observation.revision) <
@@ -1980,6 +2015,8 @@ impl Store {
                 allowed_sources.map(serde_json::to_string).transpose()?,
                 host_history,
                 operation,
+                projection,
+                filter,
             ],
             |row| {
                 let revision: i64 = row.get(2)?;

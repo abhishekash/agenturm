@@ -1,6 +1,7 @@
 //! Resolve only explicitly attributed, retained OTLP execution scope.
 
 use super::*;
+use agenturm_kernel::retained_history::HistoryProjection;
 use agenturm_kernel::{ObservationPosition, ReadSnapshot};
 
 const MAX_TRACE_SCOPE_ROWS: usize = 4096;
@@ -10,6 +11,7 @@ pub(super) enum TraceLink<'a> {
     Unlinked,
     Session,
     McpOperation(&'a str),
+    Projected(&'a HistoryProjection),
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -372,7 +374,7 @@ impl Store {
     }
 }
 
-fn valid_trace_id(value: &str) -> bool {
+pub(super) fn valid_trace_id(value: &str) -> bool {
     value.len() == 32
         && value
             .bytes()
