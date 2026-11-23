@@ -42,8 +42,8 @@ pub use workbench::workflow_resume::{ResumeRuntime, WorkflowResume};
 pub use agenturm_kernel::workflow_notifications::WorkflowDelivery;
 pub use workbench::{
     CurrentHostSample, HandoffEntry, OperationDetailEntry, OperationDetailKind, PromptDelivery,
-    PromptEntry, RequestEntry, RequestProof, ReviewNoteEntry, TaskEntry, TelemetrySpanEntry,
-    WorkAnchor, WorkCommand, WorkResult, WorkflowAlertInbox,
+    PromptEntry, RequestEntry, RequestProof, ReviewNoteEntry, TaskEntry, TelemetryLogEntry,
+    TelemetrySpanEntry, WorkAnchor, WorkCommand, WorkResult, WorkflowAlertInbox,
 };
 
 pub use workspace::{

@@ -341,6 +341,7 @@ pub(super) fn is_prompt_command(command: &WorkCommand) -> bool {
             | WorkCommand::RevealPrompt(_, _)
             | WorkCommand::RevealOperation(_, _)
             | WorkCommand::RevealTelemetry(_, _)
+            | WorkCommand::RevealTelemetryLog(_, _)
             | WorkCommand::RevealEvalDetail(_, _)
             | WorkCommand::RevealFailedEvalFinding { .. }
             | WorkCommand::RevealInvestigation { .. }
@@ -445,6 +446,23 @@ pub(super) fn execute_prompt(
                 })
                 .map_err(string)?
                 .ok_or("Exact retained telemetry payload is unavailable")??;
+            Ok(WorkResult::Status(String::new()))
+        }
+        WorkCommand::RevealTelemetryLog(log, mut delivery) => {
+            let selection = super::findings::log_selection(*log);
+            let opened;
+            let store = if let Some(writer) = writer {
+                writer
+            } else {
+                opened = Store::open_collector(db).map_err(string)?;
+                &opened
+            };
+            store
+                .with_telemetry_log_text(&selection, |body| {
+                    super::findings::deliver_log_text(body, &mut delivery)
+                })
+                .map_err(string)?
+                .ok_or("Captured log text is unavailable")??;
             Ok(WorkResult::Status(String::new()))
         }
         WorkCommand::RevealEvalDetail(detail, mut delivery) => {

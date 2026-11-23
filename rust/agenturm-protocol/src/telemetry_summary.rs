@@ -61,6 +61,67 @@ impl OtlpActivityLog {
     }
 }
 
+/// Closed metadata for an ordinary OTLP log reported at error or fatal severity.
+/// Neither the producer's label nor log body is part of public history.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OtlpErrorLog {
+    pub severity_number: u8,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub source_time_unix_ns: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub observed_time_unix_ns: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub trace_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_source_id: Option<String>,
+}
+
+impl OtlpErrorLog {
+    pub fn is_valid_at(&self, at: u64) -> bool {
+        let valid_time = |value: u64| (1..=i64::MAX as u64).contains(&value);
+        (17..=24).contains(&self.severity_number)
+            && self.source_time_unix_ns.is_none_or(valid_time)
+            && self.observed_time_unix_ns.is_none_or(valid_time)
+            && self
+                .source_time_unix_ns
+                .or(self.observed_time_unix_ns)
+                .unwrap_or_default()
+                == at
+            && self
+                .trace_id
+                .as_deref()
+                .is_none_or(|id| valid_otlp_id(id, 16))
+            && self
+                .span_id
+                .as_deref()
+                .is_none_or(|id| self.trace_id.is_some() && valid_otlp_id(id, 8))
+            && self.target_source_id.as_deref().is_none_or(valid_target_id)
+    }
+
+    pub fn matches_event(&self, event_id: &str) -> bool {
+        event_id
+            .strip_prefix("otlp-error-log:")
+            .is_some_and(|digest| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+            })
+    }
+}
+
+fn valid_target_id(id: &str) -> bool {
+    !id.starts_with("otlp.")
+        && id.len() <= 96
+        && id.as_bytes().first().is_some_and(u8::is_ascii_lowercase)
+        && id.bytes().all(|byte| {
+            byte.is_ascii_lowercase() || byte.is_ascii_digit() || b".-_/".contains(&byte)
+        })
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LogTokenUsage {

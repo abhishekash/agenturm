@@ -6,7 +6,7 @@ use agenturm_kernel::ReadSnapshot;
 use agenturm_storage_service_contract::native;
 use agenturm_store::{
     CodexOperationSelection, EvalDetailSelection, EvalFindingSelection, Store, StoreError,
-    TelemetryPayloadSelection,
+    TelemetryLogTextSelection, TelemetryPayloadSelection,
 };
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
@@ -451,6 +451,14 @@ pub(crate) fn disclose_telemetry(
     output: &mut Disclosure<'_>,
 ) -> Result<(), PrivateEvidenceFailure> {
     finish_capture(store.with_telemetry_payload(selected, |payload| output.publish(payload)))
+}
+
+pub(crate) fn disclose_telemetry_log(
+    store: &Store,
+    selected: &TelemetryLogTextSelection,
+    output: &mut Disclosure<'_>,
+) -> Result<(), PrivateEvidenceFailure> {
+    finish_capture(store.with_telemetry_log_text(selected, |payload| output.publish(payload)))
 }
 
 pub(crate) fn disclose_eval_detail(

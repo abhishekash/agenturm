@@ -57,6 +57,7 @@ pub struct FindingEvaluation {
 pub enum FindingSource {
     Command(String),
     Telemetry(Box<crate::TelemetrySpanEntry>),
+    Log(Box<crate::TelemetryLogEntry>),
     Evaluation(Box<crate::EvaluationDetailEntry>),
 }
 
@@ -73,6 +74,16 @@ impl FindingOccurrence {
                 || Some(span.session_id.as_str()) != self.identity.session_id.as_deref()
                 || span.worker_id != self.identity.worker_id
                 || span.turn_id != self.identity.turn_id)
+        {
+            return None;
+        }
+        if let Some(FindingSource::Log(log)) = &self.source
+            && (log.source_id.as_str() != self.position.harness_id
+                || log.event_id != self.position.event_id
+                || log.revision != self.position.revision
+                || log.observed_at_unix_ns != self.position.observed_at_unix_ns
+                || log.snapshot_id != self.position.snapshot_id
+                || log.identity != self.identity)
         {
             return None;
         }

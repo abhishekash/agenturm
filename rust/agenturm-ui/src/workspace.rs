@@ -1523,6 +1523,12 @@ impl Workspace {
                         let (delivery, receiver) = prompt_channel(PromptKind::Telemetry);
                         Some((WorkCommand::RevealTelemetry(span, delivery), receiver))
                     }
+                    (Some(crate::FindingSource::Log(log)), Some(history_identity))
+                        if log.history_identity == history_identity =>
+                    {
+                        let (delivery, receiver) = prompt_channel(PromptKind::TelemetryLog);
+                        Some((WorkCommand::RevealTelemetryLog(log, delivery), receiver))
+                    }
                     (Some(crate::FindingSource::Evaluation(detail)), Some(history_identity)) => {
                         let (delivery, receiver) = prompt_channel(PromptKind::Evaluation);
                         Some((
@@ -3304,6 +3310,138 @@ mod tests {
                 .plain_text()
                 .unwrap()
                 .contains(reference)
+        );
+    }
+
+    #[test]
+    fn selected_log_requires_the_page_history_and_redacts_before_acknowledgement() {
+        use std::io::Write;
+        let pane = ExtensionId::parse("app.workspace-findings").unwrap();
+        let source_id = ExtensionId::parse("otlp.logs").unwrap();
+        let event_id = format!("otlp-error-log:{}", "a".repeat(64));
+        let snapshot_id = 83.into();
+        let row_identity = agenturm_kernel::ObservationIdentity::source();
+        let log = crate::TelemetryLogEntry {
+            history_identity: "history-identity".into(),
+            source_id: source_id.clone(),
+            native_source_id: None,
+            event_id: event_id.clone(),
+            revision: 0,
+            observed_at_unix_ns: 0,
+            identity: row_identity.clone(),
+            snapshot_id,
+        };
+        let occurrence = |selected: crate::TelemetryLogEntry| crate::FindingOccurrence {
+            position: ObservationPosition {
+                observed_at_unix_ns: 0,
+                harness_id: source_id.as_str().into(),
+                event_id: event_id.clone(),
+                revision: 0,
+                snapshot_id,
+            },
+            identity: row_identity.clone(),
+            evaluation: None,
+            details: Vec::new(),
+            source: Some(crate::FindingSource::Log(Box::new(selected))),
+        };
+        let mut wrong_history = log.clone();
+        wrong_history.history_identity = "other-history".into();
+        let mut wrong_scope = log.clone();
+        wrong_scope.identity = agenturm_kernel::ObservationIdentity::session("unrelated");
+        let mut page = empty_history_page();
+        page.history_identity = Some(log.history_identity.clone());
+        page.snapshot.history_snapshot_id = snapshot_id;
+        page.initial_pane = Some(pane.clone());
+        page.snapshot.panes.insert(
+            pane.clone(),
+            agenturm_kernel::PaneModel {
+                title: "Findings".into(),
+                rows: Vec::new(),
+            },
+        );
+        page.features.findings = Some((
+            pane,
+            crate::FindingsPage {
+                groups: vec![crate::FindingGroup {
+                    source_id: source_id.clone(),
+                    kind: "Error log",
+                    severity: "error".into(),
+                    signal: "Recorded error log".into(),
+                    occurrences: vec![
+                        occurrence(wrong_history),
+                        occurrence(wrong_scope),
+                        occurrence(log.clone()),
+                    ],
+                }],
+                snapshot_id,
+                scanned: 3,
+                has_older: false,
+                evaluation_partial: false,
+            },
+        ));
+        let mut workspace = Workspace::new();
+        workspace.history.push(HistoryView::new(
+            HistorySelection::All(WorkspaceView::Findings),
+            page,
+        ));
+        let (sender, requests) = mpsc::channel();
+        let key = |workspace: &mut Workspace, code| assert!(!press(workspace, &sender, code));
+        key(&mut workspace, KeyCode::Enter);
+        for _ in 0..2 {
+            key(&mut workspace, KeyCode::Enter);
+            key(&mut workspace, KeyCode::Char('s'));
+            assert!(requests.try_recv().is_err());
+            key(&mut workspace, KeyCode::Esc);
+            key(&mut workspace, KeyCode::Down);
+        }
+        key(&mut workspace, KeyCode::Enter);
+        key(&mut workspace, KeyCode::Char('s'));
+        let WorkspaceRequest::Work(WorkCommand::RevealTelemetryLog(selected, mut delivery)) =
+            requests.try_recv().unwrap()
+        else {
+            panic!("expected exact log source request");
+        };
+        assert_eq!(*selected, log);
+        let body = "synthetic private log text";
+        serde_json::to_writer(&mut delivery, body).unwrap();
+        let send = std::thread::spawn(move || delivery.flush());
+        let receiver = workspace.prompt_receiver.take().unwrap();
+        let bytes = receiver
+            .frames
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        workspace.prompt = Some(PromptScreen::new(
+            serde_json::from_slice::<String>(&bytes).unwrap(),
+            receiver,
+            Instant::now(),
+        ));
+        for code in [KeyCode::Char('c'), KeyCode::Char('x')] {
+            key(&mut workspace, code);
+        }
+        assert!(workspace.view_io.clipboard.is_none());
+        assert!(workspace.view_io.form.is_none());
+        let mut terminal = Terminal::new(TestBackend::new(60, 18)).unwrap();
+        terminal
+            .draw(|frame| draw_workspace(frame, &mut workspace))
+            .unwrap();
+        assert!(terminal.backend().to_string().contains(body));
+        key(&mut workspace, KeyCode::Esc);
+        assert!(!send.is_finished());
+        terminal
+            .draw(|frame| draw_workspace(frame, &mut workspace))
+            .unwrap();
+        let redacted = terminal.backend().to_string();
+        assert!(!redacted.contains(body));
+        assert!(redacted.contains("Recorded error log"));
+        workspace.acknowledge_redaction();
+        assert!(send.join().unwrap().is_ok());
+        assert!(
+            !workspace
+                .loaded_view()
+                .unwrap()
+                .plain_text()
+                .unwrap()
+                .contains(body)
         );
     }
 

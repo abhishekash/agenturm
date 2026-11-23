@@ -1,11 +1,19 @@
 //! Explicit local and broker views of producer-captured telemetry text.
 
 use agenturm_kernel::{ExtensionId, ObservationQuery, ObservationStore};
-use agenturm_store::{Store, TelemetryBinding, TelemetryPayload, TelemetryPayloadSelection};
+use agenturm_store::{
+    ContentGrantScope, Store, TelemetryBinding, TelemetryPayload, TelemetryPayloadSelection,
+};
 use serde_json::json;
 use std::collections::BTreeMap;
 use std::io::{Read, Write};
 use std::path::{Path, PathBuf};
+
+mod logs;
+
+#[cfg(target_os = "linux")]
+pub(super) use logs::parse_broker_log_text;
+pub(super) use logs::parse_log_text;
 
 pub const USAGE: &str = concat!(
     "agenturm trace-payload <grant|revoke> --db <path> --source-id <otlp.id> --payload-scope <standalone|harness-id>\n",
@@ -26,6 +34,7 @@ pub enum PayloadCommand {
         db: PathBuf,
         read: PayloadRead,
     },
+    Log(Box<logs::LogCommand>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -35,10 +44,11 @@ pub enum PayloadRead {
         session: String,
     },
     Preview(PathBuf),
+    Log(Box<logs::LogRead>),
 }
 
 pub(super) fn parse(args: &[String]) -> Result<PayloadCommand, String> {
-    let (verb, mut flags) = arguments(args)?;
+    let (verb, mut flags) = arguments(args, USAGE)?;
     let command = match verb {
         "grant" | "revoke" | "binding" => {
             let source =
@@ -68,7 +78,7 @@ pub(super) fn parse(args: &[String]) -> Result<PayloadCommand, String> {
 
 #[cfg(target_os = "linux")]
 pub(super) fn parse_broker(args: &[String]) -> Result<PayloadRead, String> {
-    let (verb, mut flags) = arguments(args)?;
+    let (verb, mut flags) = arguments(args, USAGE)?;
     let read = parse_read(verb, &mut flags);
     if !flags.is_empty() {
         return Err(USAGE.into());
@@ -76,8 +86,11 @@ pub(super) fn parse_broker(args: &[String]) -> Result<PayloadRead, String> {
     read
 }
 
-fn arguments(args: &[String]) -> Result<(&str, BTreeMap<&str, &str>), String> {
-    let (verb, rest) = args.split_first().ok_or(USAGE)?;
+fn arguments<'a>(
+    args: &'a [String],
+    usage: &str,
+) -> Result<(&'a str, BTreeMap<&'a str, &'a str>), String> {
+    let (verb, rest) = args.split_first().ok_or(usage)?;
     let (pairs, remainder) = rest.as_chunks::<2>();
     let mut flags = BTreeMap::new();
     for [flag, value] in pairs {
@@ -85,11 +98,11 @@ fn arguments(args: &[String]) -> Result<(&str, BTreeMap<&str, &str>), String> {
             || value.starts_with("--")
             || flags.insert(flag.as_str(), value.as_str()).is_some()
         {
-            return Err(USAGE.into());
+            return Err(usage.into());
         }
     }
     if !remainder.is_empty() {
-        return Err(USAGE.into());
+        return Err(usage.into());
     }
     Ok((verb, flags))
 }
@@ -113,13 +126,7 @@ pub fn execute_payload_stdout(options: &PayloadCommand) -> Result<(), String> {
     match options {
         PayloadCommand::Binding(binding) => {
             let scope = binding.grant_scope().map_err(|error| error.to_string())?;
-            println!(
-                "{}",
-                json!({
-                    "source_id": scope.source_id(), "kind": scope.kind(),
-                    "source_fingerprint": scope.source_fingerprint(),
-                })
-            );
+            print_binding(&scope);
         }
         PayloadCommand::Grant {
             db,
@@ -127,18 +134,7 @@ pub fn execute_payload_stdout(options: &PayloadCommand) -> Result<(), String> {
             revoke,
         } => {
             let scope = binding.grant_scope().map_err(|error| error.to_string())?;
-            let mut store = open_local(db)?;
-            if *revoke {
-                let changed = store
-                    .revoke_bound_content(&scope)
-                    .map_err(|error| error.to_string())?;
-                println!("{}", json!({ "revoked": changed }));
-            } else {
-                let grant = store
-                    .grant_content(&scope)
-                    .map_err(|error| error.to_string())?;
-                println!("{}", json!({ "epoch": grant.epoch() }));
-            }
+            update_grant(db, &scope, *revoke)?;
         }
         PayloadCommand::Read {
             db,
@@ -162,6 +158,13 @@ pub fn execute_payload_stdout(options: &PayloadCommand) -> Result<(), String> {
                     .map_err(|error| error.to_string())?
                     .ok_or_else(|| "Exact retained telemetry payload is unavailable".to_owned())?
             })?;
+        }
+        PayloadCommand::Log(command) => logs::execute_local(command)?,
+        PayloadCommand::Read {
+            db,
+            read: PayloadRead::Log(read),
+        } => {
+            logs::execute_local_read(db, read)?;
         }
     }
     Ok(())
@@ -191,7 +194,34 @@ pub(super) fn execute_broker(
                     .map_err(|error| error.to_string())
             })
         }
+        PayloadRead::Log(read) => logs::execute_broker(read, &store, &identity),
     }
+}
+
+fn print_binding(scope: &ContentGrantScope) {
+    println!(
+        "{}",
+        json!({
+            "source_id": scope.source_id(), "kind": scope.kind(),
+            "source_fingerprint": scope.source_fingerprint(),
+        })
+    );
+}
+
+fn update_grant(db: &Path, scope: &ContentGrantScope, revoke: bool) -> Result<(), String> {
+    let mut store = open_local(db)?;
+    if revoke {
+        let changed = store
+            .revoke_bound_content(scope)
+            .map_err(|error| error.to_string())?;
+        println!("{}", json!({ "revoked": changed }));
+    } else {
+        let grant = store
+            .grant_content(scope)
+            .map_err(|error| error.to_string())?;
+        println!("{}", json!({ "epoch": grant.epoch() }));
+    }
+    Ok(())
 }
 
 fn snapshot(
@@ -223,6 +253,13 @@ fn open_local(db: &Path) -> Result<Store, String> {
 }
 
 fn load_selection(path: &Path) -> Result<TelemetryPayloadSelection, String> {
+    let input = read_selection(path)?;
+    serde_json::from_slice(&input).map_err(|_| {
+        "Invalid telemetry payload selection. Refresh it with trace-payload snapshot and include the returned history_identity and snapshot_id.".into()
+    })
+}
+
+fn read_selection(path: &Path) -> Result<Vec<u8>, String> {
     let file = super::trace_import::open_regular_export(path, "telemetry payload selection")?;
     let mut input = Vec::new();
     file.take(4097)
@@ -231,9 +268,7 @@ fn load_selection(path: &Path) -> Result<TelemetryPayloadSelection, String> {
     if input.len() > 4096 {
         return Err("Telemetry payload selection exceeds 4 KiB".into());
     }
-    serde_json::from_slice(&input).map_err(|_| {
-        "Invalid telemetry payload selection. Refresh it with trace-payload snapshot and include the returned history_identity and snapshot_id.".into()
-    })
+    Ok(input)
 }
 
 pub(super) fn modal_selection(

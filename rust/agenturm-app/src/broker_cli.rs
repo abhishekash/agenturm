@@ -20,6 +20,7 @@ const USAGE: &str = concat!(
     "       agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path> [--include-host]\n",
     "       agenturm broker host <record|history> --broker-config <json> [options]\n",
     "       agenturm broker trace-payload <snapshot|preview> --broker-config <json> [options]\n",
+    "       agenturm broker log-text <snapshot|preview> --broker-config <json> [options]\n",
     "       agenturm broker eval-detail preview --broker-config <json> --selection <json-file>\n",
     "       agenturm broker grant <check|approve|revoke> --broker-config <json> --binding <json>\n",
     "       agenturm broker content list --broker-config <json> --source-id <id> --session-id <id>\n",
@@ -170,6 +171,14 @@ pub(super) fn parse_os(args: &[OsString]) -> Result<BrokerOptions, String> {
         return Ok(BrokerOptions {
             config,
             command: BrokerCommand::TracePayload(telemetry_payload_cli::parse_broker(
+                &command[1..],
+            )?),
+        });
+    }
+    if command.first().is_some_and(|verb| verb == "log-text") {
+        return Ok(BrokerOptions {
+            config,
+            command: BrokerCommand::TracePayload(telemetry_payload_cli::parse_broker_log_text(
                 &command[1..],
             )?),
         });
@@ -467,6 +476,7 @@ pub fn execute(options: &BrokerOptions) -> Result<ExitCode, BrokerExecutionError
                 store.clone(),
                 &options.settings.source,
                 options.settings.payload_binding.clone(),
+                options.settings.capture_log_text,
             )?;
             let token = trace_receiver::ProducerToken::from_file(&options.token_file)?;
             trace_receiver::execute_with_commit(
@@ -486,6 +496,7 @@ pub fn execute(options: &BrokerOptions) -> Result<ExitCode, BrokerExecutionError
                 store,
                 &invocation.source,
                 invocation.payload_binding.clone(),
+                false,
             )?;
             let token = trace_receiver::ProducerToken::generate()?;
             return trace_run::execute_with_commit(invocation, Some(token), commit)
@@ -726,12 +737,21 @@ fn trace_commit(
     mut store: NativeStore,
     source: &ExtensionId,
     binding: Option<agenturm_store::TelemetryBinding>,
+    capture_log_text: bool,
 ) -> Result<BrokerTraceCommit, String> {
     trace_import::admission_cursor(&store, source)?;
     if let Some(binding) = &binding {
         store
             .check_telemetry_admission(binding)
             .map_err(|err| err.to_string())?;
+    }
+    if capture_log_text {
+        let binding = binding
+            .as_ref()
+            .ok_or("log text capture requires a payload binding")?;
+        store
+            .check_telemetry_log_admission(&agenturm_store::TelemetryLogTextBinding::from(binding))
+            .map_err(|error| error.to_string())?;
     }
     Ok(Box::new(
         move |source: &ExtensionId,
@@ -744,6 +764,19 @@ fn trace_commit(
                 .as_ref()
                 .ok_or("private trace capture is disabled")?;
             let batch = trace_import::prepare_payload_batch(&store, binding, &rows)?;
+            if trace_import::is_log_export(&rows) {
+                if !capture_log_text {
+                    return Err("log text capture is disabled".into());
+                }
+                return store
+                    .commit_telemetry_log_batch(
+                        &agenturm_store::TelemetryLogTextBinding::from(binding),
+                        batch,
+                        payloads,
+                    )
+                    .map(|_| ())
+                    .map_err(|error| error.to_string());
+            }
             store
                 .commit_telemetry_batch(binding, batch, payloads)
                 .map(|_| ())
@@ -810,6 +843,15 @@ fn execute_private_cockpit(
             store
                 .with_telemetry_payload(&selection, |payload| {
                     telemetry_payload_cli::deliver_modal(payload, &mut output)
+                })
+                .map_err(|error| error.to_string())?;
+            Ok(WorkResult::Status(String::new()))
+        }
+        WorkCommand::RevealTelemetryLog(log, mut delivery) => {
+            let selection = super::findings::log_selection(*log);
+            store
+                .with_telemetry_log_text(&selection, |body| {
+                    super::findings::deliver_log_text(body, &mut delivery)
                 })
                 .map_err(|error| error.to_string())?;
             Ok(WorkResult::Status(String::new()))

@@ -216,7 +216,7 @@ pub(crate) fn decode_attribute(
     }))
 }
 
-fn id_hex(bytes: &[u8], size: usize) -> Result<String, &'static str> {
+pub(crate) fn id_hex(bytes: &[u8], size: usize) -> Result<String, &'static str> {
     if bytes.len() != size {
         return Err(MALFORMED);
     }

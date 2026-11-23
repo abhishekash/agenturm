@@ -29,6 +29,7 @@ mod private_text;
 mod retention;
 mod review_ledger;
 mod session_catalog;
+mod telemetry_log_text;
 mod telemetry_payload;
 pub mod usage_history;
 mod workspace_ledger;
@@ -68,6 +69,10 @@ pub use session_catalog::{
     MAX_SESSION_PAGE_SIZE, SessionLifecycle, SessionPage, SessionPosition, SessionQuery,
     SessionSummary,
 };
+pub use telemetry_log_text::{
+    TelemetryLogText, TelemetryLogTextBinding, TelemetryLogTextSelection,
+    deserialize_telemetry_log_records,
+};
 pub use telemetry_payload::{
     MAX_TELEMETRY_PAYLOAD_BATCH_BYTES, MAX_TELEMETRY_PAYLOAD_TEXT_BYTES, TelemetryBinding,
     TelemetryPayload, TelemetryPayloadRecord, TelemetryPayloadSelection,
@@ -96,7 +101,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 19;
+const SCHEMA_VERSION: i64 = 20;
 pub const MAX_HOST_HISTORY_PAGE: usize = 64;
 const MAX_BATCH_EVENTS: usize = 2_048;
 pub const MAX_OTLP_BATCH_SPANS: usize = 1_024;
@@ -115,7 +120,8 @@ const STORE_MARKER_V15: &str = "agenturm.observation-store.v15";
 const STORE_MARKER_V16: &str = "agenturm.observation-store.v16";
 const STORE_MARKER_V17: &str = "agenturm.observation-store.v17";
 const STORE_MARKER_V18: &str = "agenturm.observation-store.v18";
-const STORE_MARKER: &str = "agenturm.observation-store.v19";
+const STORE_MARKER_V19: &str = "agenturm.observation-store.v19";
+const STORE_MARKER: &str = "agenturm.observation-store.v20";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -151,6 +157,7 @@ pub enum ObservationKind {
     MetricPoint(agenturm_kernel::MetricPoint),
     TraceSpanSummary(agenturm_kernel::telemetry_summary::TraceSpanSummary),
     OtlpActivityLog(agenturm_kernel::telemetry_summary::OtlpActivityLog),
+    OtlpErrorLog(agenturm_kernel::telemetry_summary::OtlpErrorLog),
     InternalReview(agenturm_kernel::native_review::InternalReview),
     NativeRequest(agenturm_kernel::native_review::NativeRequest),
     Lifecycle {
@@ -342,6 +349,9 @@ impl ObservationBatch {
                     }
                     KernelObservationKind::OtlpActivityLog(log) => {
                         ObservationKind::OtlpActivityLog(log.clone())
+                    }
+                    KernelObservationKind::OtlpErrorLog(log) => {
+                        ObservationKind::OtlpErrorLog(log.clone())
                     }
                     KernelObservationKind::MetricPoint(point) => {
                         ObservationKind::MetricPoint(point.clone())
@@ -634,7 +644,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         16 => STORE_MARKER_V16,
         17 => STORE_MARKER_V17,
         18 => STORE_MARKER_V18,
-        19 => STORE_MARKER,
+        19 => STORE_MARKER_V19,
+        20 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -1411,6 +1422,18 @@ impl Store {
             native_attention::create_schema(&transaction)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V19],
+            )?;
+            transaction.pragma_update(None, "user_version", 19)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 19)?;
+        }
+        if (2..20).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            content_grant::migrate_grant_schema(&transaction, 20)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],
             )?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
@@ -1454,7 +1477,23 @@ impl Store {
         self.verify_telemetry_storage()?;
         self.commit_batch_inner(
             batch,
-            Some((binding, payloads)),
+            Some(telemetry_payload::Admission::Spans(binding, payloads)),
+            None,
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    pub fn commit_telemetry_log_batch(
+        &mut self,
+        batch: &ObservationBatch,
+        binding: &TelemetryLogTextBinding,
+        records: &[TelemetryPayloadRecord],
+    ) -> Result<CommitOutcome> {
+        self.verify_telemetry_storage()?;
+        self.commit_batch_inner(
+            batch,
+            Some(telemetry_payload::Admission::Logs(binding, records)),
             None,
             #[cfg(test)]
             None,
@@ -1464,13 +1503,13 @@ impl Store {
     fn commit_batch_inner(
         &mut self,
         batch: &ObservationBatch,
-        telemetry: Option<(&TelemetryBinding, &[TelemetryPayloadRecord])>,
+        telemetry: Option<telemetry_payload::Admission<'_>>,
         fail_after_insert: Option<usize>,
         #[cfg(test)] before_commit: Option<fn()>,
     ) -> Result<CommitOutcome> {
         validate_batch(batch)?;
         let payloads = telemetry
-            .map(|(binding, records)| telemetry_payload::build_admission(batch, binding, records))
+            .map(|admission| admission.encode(batch))
             .transpose()?
             .unwrap_or_default();
         let digest = batch_digest(batch)?;
@@ -2136,6 +2175,7 @@ impl Store {
                     ObservationKind::OtlpActivityLog(log) => {
                         KernelObservationKind::OtlpActivityLog(log)
                     }
+                    ObservationKind::OtlpErrorLog(log) => KernelObservationKind::OtlpErrorLog(log),
                     ObservationKind::MetricPoint(point) => {
                         KernelObservationKind::MetricPoint(point)
                     }
@@ -2340,6 +2380,7 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
                     ObservationKind::Diagnostic { .. }
                         | ObservationKind::HostSample(_)
                         | ObservationKind::MetricPoint(_)
+                        | ObservationKind::OtlpErrorLog(_)
                         | ObservationKind::InternalReview(_)
                 ) && observation.identity.session_id.is_none()
                     && observation.identity.worker_id.is_none()
@@ -2403,6 +2444,21 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
         {
             return Err(StoreError::Invalid(
                 "activity log requires exact OTLP session scope and safe metadata",
+            ));
+        }
+        if let ObservationKind::OtlpErrorLog(log) = &observation.kind
+            && (!batch.source_id.starts_with("otlp.")
+                || observation.revision != 0
+                || observation.identity.operation_id.is_some()
+                || !log.is_valid_at(observation.observed_at_unix_ns)
+                || !log.matches_event(&observation.event_id)
+                || (log.target_source_id.is_some() && observation.identity.session_id.is_none())
+                || (observation.identity.turn_id.is_some() && log.target_source_id.is_none())
+                || (observation.identity.worker_id.is_some()
+                    && observation.identity.turn_id.is_none()))
+        {
+            return Err(StoreError::Invalid(
+                "error log requires exact typed OTLP scope and safe metadata",
             ));
         }
         let review_source =

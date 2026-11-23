@@ -567,6 +567,7 @@ fn kind_name(kind: &ObservationKind) -> &'static str {
         ObservationKind::NativeRequest(_) => "native-request",
         ObservationKind::TraceSpanSummary(_) => "trace-span-summary",
         ObservationKind::OtlpActivityLog(_) => "otlp-activity-log",
+        ObservationKind::OtlpErrorLog(_) => "otlp-error-log",
         ObservationKind::MetricPoint(_) => "metric-point",
         ObservationKind::TraceProgress(_) => "trace-progress",
         ObservationKind::Lifecycle { .. } => "lifecycle",

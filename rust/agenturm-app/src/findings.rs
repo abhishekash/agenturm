@@ -5,13 +5,17 @@ use agenturm_kernel::{
     ExtensionId, MetricRow, Observation, ObservationKind, ObservationPosition, ObservationScope,
     ReadSnapshot, Snapshot, TraceStatus,
 };
-use agenturm_store::{EvalQuery, SelectedEvalPage, SelectedEvalQuery};
+use agenturm_store::{
+    EvalQuery, SelectedEvalPage, SelectedEvalQuery, TelemetryLogText, TelemetryLogTextBinding,
+    TelemetryLogTextSelection,
+};
 use agenturm_ui::{
     EvaluationDetailEntry, FindingEvaluation, FindingGroup, FindingOccurrence, FindingSource,
-    FindingsPage, TelemetrySpanEntry,
+    FindingsPage, PromptDelivery, TelemetryLogEntry, TelemetrySpanEntry,
 };
 use std::cmp::Reverse;
 use std::collections::{BTreeMap, BTreeSet};
+use std::io::Write;
 
 // A producer event ID has meaning only within that source and native scope.
 // Keep corrections pinned to the same complete scope even if other providers
@@ -72,7 +76,10 @@ pub(super) fn project(
             continue;
         };
         let key = (row.harness_id.clone(), kind, severity.to_owned(), signal);
-        let protected_source = if codex_failed_command(row) || failed_span(row) {
+        let protected_source = if codex_failed_command(row)
+            || failed_span(row)
+            || matches!(row.kind, ObservationKind::OtlpErrorLog(_))
+        {
             Some(row)
         } else if matches!(row.kind, ObservationKind::Check { .. }) {
             companion(row, false).and_then(|key| commands.get(&key).copied())
@@ -268,6 +275,68 @@ pub(super) fn telemetry_source(
     Some(FindingSource::Telemetry(Box::new(entry)))
 }
 
+pub(super) fn log_source(
+    row: &Observation,
+    snapshot_id: ReadSnapshot,
+    history_identity: &str,
+) -> Option<FindingSource> {
+    let ObservationKind::OtlpErrorLog(log) = &row.kind else {
+        return None;
+    };
+    if !row.harness_id.as_str().starts_with("otlp.")
+        || row.revision != 0
+        || row.identity.operation_id.is_some()
+        || !log.is_valid_at(row.observed_at_unix_ns)
+        || !log.matches_event(&row.event_id)
+    {
+        return None;
+    }
+    let native_source_id = log
+        .target_source_id
+        .as_deref()
+        .map(ExtensionId::parse)
+        .transpose()
+        .ok()?;
+    Some(FindingSource::Log(Box::new(TelemetryLogEntry {
+        history_identity: history_identity.into(),
+        source_id: row.harness_id.clone(),
+        native_source_id,
+        event_id: row.event_id.clone(),
+        revision: row.revision,
+        observed_at_unix_ns: row.observed_at_unix_ns,
+        identity: row.identity.clone(),
+        snapshot_id,
+    })))
+}
+
+pub(super) fn log_selection(log: TelemetryLogEntry) -> TelemetryLogTextSelection {
+    TelemetryLogTextSelection {
+        history_identity: log.history_identity,
+        binding: TelemetryLogTextBinding {
+            source_id: log.source_id,
+            native_source_id: log.native_source_id,
+        },
+        event_id: log.event_id,
+        revision: log.revision,
+        observed_at_unix_ns: log.observed_at_unix_ns,
+        session_id: log.identity.session_id,
+        turn_id: log.identity.turn_id,
+        worker_id: log.identity.worker_id,
+        snapshot_id: log.snapshot_id,
+    }
+}
+
+pub(super) fn deliver_log_text(
+    log: &TelemetryLogText,
+    delivery: &mut PromptDelivery,
+) -> Result<(), String> {
+    serde_json::to_writer(&mut *delivery, &log.text)
+        .map_err(|_| "Captured log text display closed")?;
+    delivery
+        .flush()
+        .map_err(|_| "Captured log text display closed".into())
+}
+
 fn failed_span(row: &Observation) -> bool {
     matches!(&row.kind, ObservationKind::TraceSpan(span) if span.status == TraceStatus::Error)
 }
@@ -398,6 +467,32 @@ fn signal(row: &Observation) -> Option<Signal<'_>> {
             );
             ("Trace", "error", "Reported span error".into(), details)
         }
+        ObservationKind::OtlpErrorLog(log) => {
+            let mut details = vec![metric("Severity number", &log.severity_number.to_string())];
+            for (label, value) in [
+                ("Trace", log.trace_id.as_deref()),
+                ("Span", log.span_id.as_deref()),
+                ("Linked native source", log.target_source_id.as_deref()),
+            ] {
+                details.extend(value.map(|value| metric(label, value)));
+            }
+            for (label, value) in [
+                ("Source timestamp ns", log.source_time_unix_ns),
+                ("Reported observed ns", log.observed_time_unix_ns),
+            ] {
+                details.extend(value.map(|value| metric(label, &value.to_string())));
+            }
+            ("Error log", "error", "Recorded error log".into(), details)
+        }
+        ObservationKind::OtlpActivityLog(log) if log.reported_error => (
+            "Activity",
+            "error",
+            "Reported activity error".into(),
+            log.target_source_id
+                .iter()
+                .map(|source| metric("Linked native source", source))
+                .collect(),
+        ),
         ObservationKind::InternalReview(review)
             if review.state == InternalReviewState::Interrupted =>
         {
@@ -462,6 +557,92 @@ mod tests {
 
     fn project(snapshot: &Snapshot) -> FindingsPage {
         super::project(snapshot, |_, _| None)
+    }
+
+    #[test]
+    fn error_logs_are_source_findings_and_only_the_generic_receipt_can_request_text() {
+        use agenturm_kernel::telemetry_summary::{OtlpActivityLog, OtlpErrorLog};
+        let source = ExtensionId::parse("otlp.fixture").unwrap();
+        let trace_id = "a".repeat(32);
+        let event_id = format!("otlp-error-log:{}", "c".repeat(64));
+        let generic = Observation {
+            harness_id: source.clone(),
+            event_id: event_id.clone(),
+            revision: 0,
+            identity: ObservationIdentity::source(),
+            observed_at_unix_ns: 0,
+            kind: ObservationKind::OtlpErrorLog(OtlpErrorLog {
+                severity_number: 17,
+                source_time_unix_ns: None,
+                observed_time_unix_ns: None,
+                trace_id: Some(trace_id.clone()),
+                span_id: None,
+                target_source_id: None,
+            }),
+        };
+        let activity = Observation {
+            event_id: format!("otlp-log:{}", "d".repeat(64)),
+            identity: ObservationIdentity::session("recorded-session"),
+            observed_at_unix_ns: 42,
+            kind: ObservationKind::OtlpActivityLog(OtlpActivityLog {
+                reported_error: true,
+                target_source_id: None,
+                usage: None,
+                cost: None,
+            }),
+            ..generic.clone()
+        };
+        let snapshot = Snapshot {
+            observations: vec![generic.clone(), activity],
+            history_snapshot_id: 77.into(),
+            ..Snapshot::default()
+        };
+        let findings = super::project(&snapshot, |row, at| log_source(row, at, "exact-history"));
+        assert_eq!(findings.groups.len(), 2);
+        let group = findings
+            .groups
+            .iter()
+            .find(|group| group.kind == "Error log")
+            .unwrap();
+        let record = &group.occurrences[0];
+        assert_eq!(
+            record
+                .details
+                .iter()
+                .find(|row| row.label == "Trace")
+                .unwrap()
+                .value,
+            trace_id
+        );
+        let Some(FindingSource::Log(log)) = record.source.clone() else {
+            panic!("source-scoped log should remain revealable");
+        };
+        let selected = log_selection(*log);
+        assert_eq!(selected.binding.source_id, source);
+        assert_eq!(selected.history_identity, "exact-history");
+        assert_eq!(selected.event_id, event_id);
+        assert_eq!(selected.snapshot_id, 77.into());
+        assert_eq!(selected.observed_at_unix_ns, 0);
+        assert_eq!(selected.session_id, None);
+        assert_eq!(selected.turn_id, None);
+        assert_eq!(selected.worker_id, None);
+        let activity = findings
+            .groups
+            .iter()
+            .find(|group| group.kind == "Activity")
+            .unwrap();
+        assert!(activity.occurrences[0].source.is_none());
+        assert!(
+            log_source(
+                &Observation {
+                    revision: 1,
+                    ..generic
+                },
+                77.into(),
+                "exact-history"
+            )
+            .is_none()
+        );
     }
 
     fn row(

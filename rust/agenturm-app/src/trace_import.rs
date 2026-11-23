@@ -232,11 +232,26 @@ pub(super) fn commit_payloads(
         .apply_current_automatic_retention()
         .map_err(|_| "Automatic retention could not run")?;
     let batch = prepare_payload_batch(&store, binding, rows)?;
-    match store.commit_telemetry_batch(&batch, binding, payloads) {
+    let result = if is_log_export(rows) {
+        store.commit_telemetry_log_batch(&batch, &binding.into(), payloads)
+    } else {
+        store.commit_telemetry_batch(&batch, binding, payloads)
+    };
+    match result {
         Ok(CommitOutcome::Replay) => Ok(0),
         Ok(CommitOutcome::Committed { inserted }) => Ok(inserted),
         Err(error) => Err(error.to_string()),
     }
+}
+
+pub(super) fn is_log_export(rows: &[Observation]) -> bool {
+    !rows.is_empty()
+        && rows.iter().all(|row| {
+            matches!(
+                row.kind,
+                ObservationKind::OtlpActivityLog(_) | ObservationKind::OtlpErrorLog(_)
+            )
+        })
 }
 
 pub(super) fn admission_cursor(
@@ -302,6 +317,13 @@ fn import_cursor(observations: &[Observation]) -> Result<String, String> {
             )),
             ObservationKind::OtlpActivityLog(log) => serde_json::to_vec(&(
                 "otlp_activity_log",
+                &row.event_id,
+                &row.identity,
+                row.observed_at_unix_ns,
+                log,
+            )),
+            ObservationKind::OtlpErrorLog(log) => serde_json::to_vec(&(
+                "otlp_error_log",
                 &row.event_id,
                 &row.identity,
                 row.observed_at_unix_ns,
@@ -574,7 +596,9 @@ pub(super) struct TraceScope {
     output: Option<String>,
 }
 
-pub(super) fn trace_scope(attributes: &[Attribute]) -> Result<TraceScope, String> {
+pub(super) fn trace_scope<'a>(
+    attributes: impl IntoIterator<Item = &'a Attribute>,
+) -> Result<TraceScope, String> {
     let mut scope = TraceScope::default();
     for attribute in attributes {
         let (slot, valid, error): (_, fn(&str) -> bool, _) = match attribute.key.as_str() {

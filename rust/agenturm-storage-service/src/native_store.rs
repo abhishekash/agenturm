@@ -27,9 +27,9 @@ use agenturm_store::{
     EvalFindingSelection, EvalImportReport, EvalInventory, EvalInventoryQuery, EvalOutcome,
     EvalPage, EvalQuery, EvalResultDetail, McpTraceQuery, ObservationBatch, ResolvedTraceReview,
     RetainedEvalOutcome, RetentionOutcome, SelectedEvalPage, SelectedEvalQuery, SessionPage,
-    SessionQuery, StandaloneTraceQuery, Store, TelemetryBinding, TelemetryPayload,
-    TelemetryPayloadRecord, TelemetryPayloadSelection, TraceReviewQuery, WorkspaceAnchor,
-    WorkspaceHistory,
+    SessionQuery, StandaloneTraceQuery, Store, TelemetryBinding, TelemetryLogText,
+    TelemetryLogTextBinding, TelemetryLogTextSelection, TelemetryPayload, TelemetryPayloadRecord,
+    TelemetryPayloadSelection, TraceReviewQuery, WorkspaceAnchor, WorkspaceHistory,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeSet;
@@ -58,6 +58,19 @@ pub(crate) enum NativeOperation {
     RevealTelemetry {
         history_identity: String,
         selection: TelemetryPayloadSelection,
+    },
+    CheckTelemetryLogAdmission {
+        binding: TelemetryLogTextBinding,
+    },
+    AdmitTelemetryLogs {
+        binding: TelemetryLogTextBinding,
+        batch: ObservationBatch,
+        #[serde(deserialize_with = "agenturm_store::deserialize_telemetry_log_records")]
+        records: Vec<TelemetryPayloadRecord>,
+    },
+    RevealTelemetryLog {
+        history_identity: String,
+        selection: TelemetryLogTextSelection,
     },
     QueryHistory {
         query: ObservationQuery,
@@ -315,6 +328,7 @@ impl NativeOperation {
                 | Self::VerifyPrivatePrompt { .. }
                 | Self::VerifyPrivateOperation { .. }
                 | Self::RevealTelemetry { .. }
+                | Self::RevealTelemetryLog { .. }
                 | Self::RevealEvalDetail { .. }
                 | Self::RevealFailedEvalFinding { .. }
         )
@@ -371,6 +385,22 @@ impl NativeOperation {
                     &selection.binding.source_id,
                 )?;
                 native_content::disclose_telemetry(store, &selection, output)
+            }
+            Self::RevealTelemetryLog {
+                history_identity,
+                selection,
+            } => {
+                if !allows_telemetry_log(telemetry, allowed, &selection.binding) {
+                    return Err(PrivateEvidenceFailure::Unauthorized);
+                }
+                authorize_private(
+                    store,
+                    allowed,
+                    role,
+                    &history_identity,
+                    &selection.binding.source_id,
+                )?;
+                native_content::disclose_telemetry_log(store, &selection, output)
             }
             Self::RevealPrivate {
                 history_identity,
@@ -435,6 +465,22 @@ impl NativeOperation {
     }
 }
 
+fn allows_telemetry_log(
+    configured: &[TelemetryBinding],
+    allowed: &BTreeSet<ExtensionId>,
+    binding: &TelemetryLogTextBinding,
+) -> bool {
+    allowed.contains(&binding.source_id)
+        && binding
+            .native_source_id
+            .as_ref()
+            .is_none_or(|source| allowed.contains(source))
+        && configured.iter().any(|candidate| {
+            candidate.source_id == binding.source_id
+                && candidate.native_source_id == binding.native_source_id
+        })
+}
+
 pub(crate) fn dispatch_with_telemetry(
     store: &mut Store,
     allowed: &BTreeSet<ExtensionId>,
@@ -461,6 +507,32 @@ pub(crate) fn dispatch_with_telemetry(
         } else {
             Err(AdmissionFailure::Unauthorized)
         }),
+        NativeOperation::CheckTelemetryLogAdmission { binding } => NativeReply::Admission(
+            if role == Role::Collector && allows_telemetry_log(telemetry, allowed, &binding) {
+                Ok(AdmissionReply::PayloadPolicyEnabled)
+            } else {
+                Err(AdmissionFailure::Unauthorized)
+            },
+        ),
+        NativeOperation::AdmitTelemetryLogs {
+            binding,
+            batch,
+            records,
+        } => NativeReply::Admission(
+            if role == Role::Collector && allows_telemetry_log(telemetry, allowed, &binding) {
+                native_admission::admit_telemetry_logs(store, &binding, batch, &records)
+            } else {
+                Err(AdmissionFailure::Unauthorized)
+            },
+        ),
+        NativeOperation::Admin { request }
+            if matches!(&request, AdminRequest::ApproveGrant { binding }
+            if binding.kind == agenturm_store::ContentKind::TelemetryLogText
+                && !telemetry.iter().any(|configured| TelemetryLogTextBinding::from(configured)
+                    .grant_scope().is_ok_and(|scope| GrantBinding::from(&scope) == *binding))) =>
+        {
+            NativeReply::Admin(Err(AdminFailure::Unauthorized))
+        }
         NativeOperation::Admin { request }
             if matches!(&request, AdminRequest::ApproveGrant { binding }
             if binding.kind == agenturm_store::ContentKind::TelemetrySpanPayload
@@ -485,7 +557,9 @@ pub(crate) fn dispatch(
     let admission = match operation {
         NativeOperation::SourceCursor { source_id } => AdmissionRequest::SourceCursor { source_id },
         NativeOperation::CheckTelemetryAdmission { .. }
-        | NativeOperation::AdmitTelemetry { .. } => {
+        | NativeOperation::AdmitTelemetry { .. }
+        | NativeOperation::CheckTelemetryLogAdmission { .. }
+        | NativeOperation::AdmitTelemetryLogs { .. } => {
             return NativeReply::Admission(Err(AdmissionFailure::Unauthorized));
         }
         NativeOperation::Admit { batch } => AdmissionRequest::Admit { batch },
@@ -742,6 +816,7 @@ pub(crate) fn dispatch(
         | NativeOperation::VerifyPrivatePrompt { .. }
         | NativeOperation::VerifyPrivateOperation { .. }
         | NativeOperation::RevealTelemetry { .. }
+        | NativeOperation::RevealTelemetryLog { .. }
         | NativeOperation::RevealEvalDetail { .. }
         | NativeOperation::RevealFailedEvalFinding { .. } => {
             return NativeReply::PrivatePrompts(Err(PrivateEvidenceFailure::Unauthorized));
@@ -1367,6 +1442,25 @@ impl NativeStore {
         )
     }
 
+    pub fn with_telemetry_log_text<T>(
+        &self,
+        selection: &TelemetryLogTextSelection,
+        consume: impl FnOnce(&TelemetryLogText) -> Result<T, String>,
+    ) -> Result<T, NativeClientError> {
+        self.consume_private(
+            NativeOperation::RevealTelemetryLog {
+                history_identity: self.private_history_identity()?,
+                selection: selection.clone(),
+            },
+            |payload: &TelemetryLogText| {
+                payload
+                    .validate()
+                    .map_err(|_| NativeClientError::InvalidReply)?;
+                consume(payload).map_err(|_| NativeClientError::PrivateConsumer)
+            },
+        )
+    }
+
     pub fn with_eval_result_detail<T>(
         &self,
         selection: &EvalDetailSelection,
@@ -1427,6 +1521,35 @@ impl NativeStore {
         records: Vec<TelemetryPayloadRecord>,
     ) -> Result<usize, NativeClientError> {
         match self.admission(NativeOperation::AdmitTelemetry {
+            binding: binding.clone(),
+            batch,
+            records,
+        })? {
+            AdmissionReply::Committed { inserted } => Ok(inserted),
+            AdmissionReply::Replay => Ok(0),
+            _ => Err(NativeClientError::InvalidReply),
+        }
+    }
+
+    pub fn check_telemetry_log_admission(
+        &self,
+        binding: &TelemetryLogTextBinding,
+    ) -> Result<(), NativeClientError> {
+        match self.admission(NativeOperation::CheckTelemetryLogAdmission {
+            binding: binding.clone(),
+        })? {
+            AdmissionReply::PayloadPolicyEnabled => Ok(()),
+            _ => Err(NativeClientError::InvalidReply),
+        }
+    }
+
+    pub fn commit_telemetry_log_batch(
+        &self,
+        binding: &TelemetryLogTextBinding,
+        batch: ObservationBatch,
+        records: Vec<TelemetryPayloadRecord>,
+    ) -> Result<usize, NativeClientError> {
+        match self.admission(NativeOperation::AdmitTelemetryLogs {
             binding: binding.clone(),
             batch,
             records,
@@ -1857,6 +1980,122 @@ mod tests {
     use super::*;
     use agenturm_kernel::{ObservationIdentity, ObservationKind, TraceSpan, TraceStatus};
     use agenturm_store::TraceTurnQuery;
+
+    #[test]
+    fn telemetry_log_policy_checks_exact_configured_pair_advancing_only_collector() {
+        let directory =
+            std::env::temp_dir().join(format!("agenturm-broker-log-policy-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut store = Store::open_collector(directory.join("history.sqlite")).unwrap();
+        let binding = TelemetryBinding {
+            source_id: ExtensionId::parse("otlp.error").unwrap(),
+            native_source_id: Some(ExtensionId::parse("harness.codex.linked").unwrap()),
+        };
+        let configured = std::slice::from_ref(&binding);
+        let bound = TelemetryLogTextBinding::from(&binding);
+        let standalone = TelemetryLogTextBinding {
+            native_source_id: None,
+            ..bound.clone()
+        };
+        let producer = BTreeSet::from([bound.source_id.clone()]);
+        let mut all = producer.clone();
+        all.insert(bound.native_source_id.clone().unwrap());
+        let mut check = |role, scope, tested: &TelemetryLogTextBinding| {
+            dispatch_with_telemetry(
+                &mut store,
+                scope,
+                role,
+                NativeOperation::CheckTelemetryLogAdmission {
+                    binding: tested.clone(),
+                },
+                None,
+                None,
+                configured,
+            )
+        };
+        for (role, scope, wrong) in [
+            (Role::Reader, &all, &bound),
+            (Role::GrantAdministrator, &all, &bound),
+            (Role::Collector, &producer, &bound),
+            (Role::Collector, &all, &standalone),
+        ] {
+            assert!(matches!(
+                check(role, scope, wrong),
+                NativeReply::Admission(Err(AdmissionFailure::Unauthorized))
+            ));
+        }
+        assert!(matches!(
+            check(Role::Collector, &all, &bound),
+            NativeReply::Admission(Ok(AdmissionReply::PayloadPolicyEnabled))
+        ));
+        assert!(!allows_telemetry_log(configured, &producer, &bound));
+        assert!(allows_telemetry_log(configured, &all, &bound));
+
+        for (tested, accepted) in [(&standalone, false), (&bound, true)] {
+            let grant = GrantBinding::from(&tested.grant_scope().unwrap());
+            let reply = dispatch_with_telemetry(
+                &mut store,
+                &all,
+                Role::GrantAdministrator,
+                NativeOperation::Admin {
+                    request: AdminRequest::ApproveGrant { binding: grant },
+                },
+                None,
+                None,
+                configured,
+            );
+            if accepted {
+                assert!(matches!(reply, NativeReply::Admin(Ok(_))));
+            } else {
+                assert!(matches!(
+                    reply,
+                    NativeReply::Admin(Err(AdminFailure::Unauthorized))
+                ));
+            }
+        }
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn telemetry_log_wire_records_are_bounded_and_body_kind_is_closed() {
+        let encoded_record = |text: String| {
+            serde_json::json!({
+                "event_id": format!("otlp-error-log:{}", "a".repeat(64)),
+                "payload": { "input": text },
+            })
+        };
+        let parse = |records| {
+            serde_json::from_value::<NativeOperation>(serde_json::json!({
+                "op": "admit_telemetry_logs",
+                "binding": { "source_id": "otlp.fixture", "native_source_id": null },
+                "batch": {
+                    "source_id": "otlp.fixture",
+                    "request_id": "test-request",
+                    "expected_cursor": null,
+                    "next_cursor": "next",
+                    "observations": [],
+                },
+                "records": records,
+            }))
+        };
+        assert!(matches!(
+            parse(vec![encoded_record("fixture".into())]),
+            Ok(NativeOperation::AdmitTelemetryLogs { .. })
+        ));
+        for records in [
+            vec![encoded_record("a".repeat(
+                agenturm_store::MAX_TELEMETRY_PAYLOAD_TEXT_BYTES + 1,
+            ))],
+            vec![encoded_record("a".repeat(agenturm_store::MAX_TELEMETRY_PAYLOAD_TEXT_BYTES)); 33],
+            vec![encoded_record("a".into()); agenturm_store::MAX_OTLP_BATCH_SPANS + 1],
+            vec![
+                serde_json::json!({"event_id": format!("otlp-error-log:{}", "a".repeat(64)), "payload": {"output": "must be withheld"}}),
+            ],
+        ] {
+            assert!(parse(records).is_err());
+        }
+    }
 
     #[test]
     fn evaluation_transport_checks_collector_role_and_exact_source_allowlist() {

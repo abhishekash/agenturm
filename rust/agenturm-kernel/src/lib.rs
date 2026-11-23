@@ -247,6 +247,7 @@ pub enum ObservationKind {
     MetricPoint(MetricPoint),
     TraceSpanSummary(telemetry_summary::TraceSpanSummary),
     OtlpActivityLog(telemetry_summary::OtlpActivityLog),
+    OtlpErrorLog(telemetry_summary::OtlpErrorLog),
     InternalReview(agenturm_protocol::native_review::InternalReview),
     NativeRequest(agenturm_protocol::native_review::NativeRequest),
     Lifecycle {
@@ -1443,6 +1444,7 @@ fn validate_raw_observation_slice(
                         | ObservationKind::HostSample(_)
                         | ObservationKind::MetricPoint(_)
                         | ObservationKind::InternalReview(_)
+                        | ObservationKind::OtlpErrorLog(_)
                 ) && row.identity.session_id.is_none()
                     && row.identity.worker_id.is_none()
                     && row.identity.turn_id.is_none()
@@ -1506,6 +1508,18 @@ fn validate_raw_observation_slice(
                 || (row.identity.worker_id.is_some() && row.identity.turn_id.is_none()))
         {
             return Err("activity log requires exact OTLP session scope and safe metadata".into());
+        }
+        if let ObservationKind::OtlpErrorLog(log) = &row.kind
+            && (!source.as_str().starts_with("otlp.")
+                || row.revision != 0
+                || row.identity.operation_id.is_some()
+                || !log.is_valid_at(row.observed_at_unix_ns)
+                || !log.matches_event(&row.event_id)
+                || (log.target_source_id.is_some() && row.identity.session_id.is_none())
+                || (row.identity.turn_id.is_some() && log.target_source_id.is_none())
+                || (row.identity.worker_id.is_some() && row.identity.turn_id.is_none()))
+        {
+            return Err("error log requires exact typed OTLP scope and safe metadata".into());
         }
         let review_source =
             agenturm_protocol::native_review::is_codex_review_source(source.as_str());
@@ -1983,6 +1997,65 @@ mod tests {
                 inserted: 0,
                 replay: false,
             })
+        }
+    }
+
+    #[test]
+    fn durable_source_only_error_log_rehydrates_without_fabricating_a_session() {
+        let log = telemetry_summary::OtlpErrorLog {
+            severity_number: 17,
+            source_time_unix_ns: None,
+            observed_time_unix_ns: Some(23),
+            trace_id: Some("a1".repeat(16)),
+            span_id: None,
+            target_source_id: None,
+        };
+        let row = Observation {
+            harness_id: id("otlp.errors"),
+            event_id: format!("otlp-error-log:{}", "2f".repeat(32)),
+            revision: 0,
+            identity: ObservationIdentity::source(),
+            observed_at_unix_ns: 23,
+            kind: ObservationKind::OtlpErrorLog(log.clone()),
+        };
+        let mut kernel = Kernel::new();
+        let load = |kernel: &mut Kernel, observation: Observation| {
+            let store = OnePageStore(ObservationPage {
+                observations: vec![observation],
+                has_more: false,
+                snapshot_id: 7.into(),
+            });
+            kernel.refresh_query_with_store(&store, ObservationQuery::latest(10))
+        };
+        let snapshot = load(&mut kernel, row.clone());
+        assert!(snapshot.failures.is_empty(), "{:?}", snapshot.failures);
+        assert_eq!(snapshot.observations.as_slice(), std::slice::from_ref(&row));
+        assert_eq!(snapshot.history_snapshot_id, 7.into());
+
+        for inadmissible in [
+            Observation {
+                harness_id: id("harness.codex"),
+                ..row.clone()
+            },
+            Observation {
+                kind: ObservationKind::OtlpErrorLog(telemetry_summary::OtlpErrorLog {
+                    target_source_id: Some("harness.codex".into()),
+                    ..log
+                }),
+                ..row.clone()
+            },
+            Observation {
+                identity: ObservationIdentity {
+                    session_id: Some("not-a-source-session".into()),
+                    ..row.identity.clone()
+                },
+                ..row
+            },
+        ] {
+            let snapshot = load(&mut kernel, inadmissible);
+            assert!(snapshot.observations.is_empty());
+            assert_eq!(snapshot.failures.len(), 1);
+            assert_eq!(snapshot.failures[0].stage, ExtensionStage::AdmissionRead);
         }
     }
 

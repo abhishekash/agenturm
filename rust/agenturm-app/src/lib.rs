@@ -935,6 +935,9 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         Some("trace-payload") => {
             telemetry_payload_cli::parse(&args[1..]).map(Command::TracePayload)
         }
+        Some("log-text") => {
+            telemetry_payload_cli::parse_log_text(&args[1..]).map(Command::TracePayload)
+        }
         Some("discover") => parse_discover_options(&args[1..]),
         Some("collect") => parse_collect_options(&args[1..]).map(Command::Collect),
         Some("service") => parse_service_options(&args[1..]).map(Command::Service),
@@ -2726,7 +2729,8 @@ fn load_workspace_history(
                         return Some(agenturm_ui::FindingSource::Command(reference));
                     }
                     if let Some(identity) = store.private_telemetry_history() {
-                        return findings::telemetry_source(row, snapshot_id, &identity);
+                        return findings::telemetry_source(row, snapshot_id, &identity)
+                            .or_else(|| findings::log_source(row, snapshot_id, &identity));
                     }
                 }
                 #[cfg(not(target_os = "linux"))]
@@ -2987,7 +2991,7 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                     "method":method.as_str(), "duration_ns":duration_ns.map(|nanos| nanos.to_string()),
                     "result":result,
                 }),
-                ObservationKind::TraceSpanSummary(_) | ObservationKind::OtlpActivityLog(_) | ObservationKind::InternalReview(_) | ObservationKind::NativeRequest(_) | ObservationKind::MetricPoint(_) => serde_json::to_value(&row.kind)
+                ObservationKind::TraceSpanSummary(_) | ObservationKind::OtlpActivityLog(_) | ObservationKind::OtlpErrorLog(_) | ObservationKind::InternalReview(_) | ObservationKind::NativeRequest(_) | ObservationKind::MetricPoint(_) => serde_json::to_value(&row.kind)
                     .expect("typed metric metadata serializes"),
                 ObservationKind::TraceSpan(span) => {
                     let mut evidence = serde_json::json!({
@@ -4199,6 +4203,7 @@ pub fn render(command: Command) -> String {
             "       agenturm run --db <path> [--source-id otlp.<id>] [--payload-scope <standalone|harness-id>] [--instrument python [--service <name>] [--capture-content]] -- <program> [args...]\n",
             "       agenturm run --endpoint http://<loopback-IP:port> --token-file <path> --instrument python [--service <name>] -- <python> <script|-m module> [args...]\n",
             "       agenturm trace-payload <binding|grant|revoke|snapshot|preview> [options]\n",
+            "       agenturm log-text <binding|grant|revoke|snapshot|preview> [options]\n",
             "       agenturm eval-detail <binding|grant|revoke|preview> [options]\n",
             "       agenturm import-traces --file <otlp-json-path|-> --db <path> --source-id otlp.<id>\n",
             "       agenturm watch-jsonl --file <span-jsonl-path> --db <path> --source-id otlp.<id> [--session-id <id>] [--interval-ms <100..60000>] [payload options]\n",

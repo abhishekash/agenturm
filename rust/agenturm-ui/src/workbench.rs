@@ -136,6 +136,19 @@ impl TelemetrySpanEntry {
     }
 }
 
+/// Body-free identity of a single producer-captured log record.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TelemetryLogEntry {
+    pub history_identity: String,
+    pub source_id: ExtensionId,
+    pub native_source_id: Option<ExtensionId>,
+    pub event_id: String,
+    pub revision: u32,
+    pub observed_at_unix_ns: u64,
+    pub identity: agenturm_kernel::ObservationIdentity,
+    pub snapshot_id: ReadSnapshot,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationDetailKind {
     Mcp,
@@ -164,6 +177,7 @@ pub(super) enum PromptKind {
     Mcp,
     Edit,
     Telemetry,
+    TelemetryLog,
     Evaluation,
     Investigation,
     LegacyReview,
@@ -176,6 +190,7 @@ impl PromptKind {
             Self::Mcp => "Granted MCP payload",
             Self::Edit => "Granted file edit",
             Self::Telemetry => "Producer-captured text",
+            Self::TelemetryLog => "Producer-captured log text",
             Self::Evaluation => "Imported evaluation text",
             Self::Investigation => "Verified source evidence",
             Self::LegacyReview => "Python receiver · verified Review",
@@ -381,6 +396,7 @@ pub enum WorkCommand {
     RevealPrompt(Box<PromptEntry>, PromptDelivery),
     RevealOperation(OperationDetailEntry, PromptDelivery),
     RevealTelemetry(Box<TelemetrySpanEntry>, PromptDelivery),
+    RevealTelemetryLog(Box<TelemetryLogEntry>, PromptDelivery),
     RevealEvalDetail(Box<evaluation::EvaluationDetailEntry>, PromptDelivery),
     RevealFailedEvalFinding {
         detail: Box<evaluation::EvaluationDetailEntry>,

@@ -22,9 +22,9 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "agenturm serve-traces --listen <loopback-IP:port> --db <path> --source-id otlp.<id> [--payload-scope <standalone|harness-id> --token-file <path>]";
+const USAGE: &str = "agenturm serve-traces --listen <loopback-IP:port> --db <path> --source-id otlp.<id> [--payload-scope <standalone|harness-id> --token-file <path> [--capture-log-text]]";
 #[cfg(target_os = "linux")]
-const BROKER_USAGE: &str = "agenturm broker serve-traces --broker-config <json> --listen <loopback-IP:port> --source-id otlp.<id> --token-file <path> [--payload-scope <standalone|harness-id>] [--native-attention-source <harness-id>]";
+const BROKER_USAGE: &str = "agenturm broker serve-traces --broker-config <json> --listen <loopback-IP:port> --source-id otlp.<id> --token-file <path> [--payload-scope <standalone|harness-id> [--capture-log-text]] [--native-attention-source <harness-id>]";
 pub(super) const NATIVE_ATTENTION_PATH: &str = "/v1/native-attention";
 const MAX_NATIVE_ATTENTION_BYTES: usize = 8 * 1024;
 
@@ -45,6 +45,7 @@ pub(super) struct TraceReceiverSettings {
     listen: SocketAddr,
     pub source: ExtensionId,
     pub payload_binding: Option<TelemetryBinding>,
+    pub capture_log_text: bool,
     native_attention_source: Option<ExtensionId>,
 }
 
@@ -187,20 +188,25 @@ fn parse_settings(
     local: bool,
     usage: &str,
 ) -> Result<(TraceReceiverSettings, PathBuf, Option<PathBuf>), String> {
-    let (pairs, extras) = args.as_chunks::<2>();
-    if !extras.is_empty() {
-        return Err(usage.into());
-    }
     let (mut listen, mut path, mut source) = (None, None, None);
     let mut scope = None;
     let mut token_file = None;
     let mut native_attention_source = None;
-    for [flag, value] in pairs {
-        let value = value.as_str();
+    let mut capture_log_text = false;
+    let mut args = args.iter().map(String::as_str);
+    while let Some(flag) = args.next() {
+        if flag == "--capture-log-text" {
+            if capture_log_text {
+                return Err(usage.into());
+            }
+            capture_log_text = true;
+            continue;
+        }
+        let value = args.next().ok_or(usage)?;
         if value.is_empty() || value.starts_with("--") {
             return Err(usage.into());
         }
-        match flag.as_str() {
+        match flag {
             "--listen" if listen.is_none() => {
                 let address = value.parse::<SocketAddr>().map_err(|_| usage)?;
                 if !address.ip().is_loopback() {
@@ -225,6 +231,9 @@ fn parse_settings(
             _ => return Err(usage.into()),
         }
     }
+    if capture_log_text && (scope.is_none() || token_file.is_none()) {
+        return Err("--capture-log-text requires --payload-scope and --token-file".into());
+    }
     let source = source.ok_or(usage)?;
     let payload_binding = scope
         .map(|scope| parse_payload_scope(&source, scope))
@@ -234,6 +243,7 @@ fn parse_settings(
             listen: listen.ok_or(usage)?,
             source,
             payload_binding,
+            capture_log_text,
             native_attention_source,
         },
         if local {
@@ -348,6 +358,7 @@ pub(super) struct TraceReceiver {
     launch_session: Option<String>,
     token: Option<ProducerToken>,
     payload_binding: Option<TelemetryBinding>,
+    capture_log_text: bool,
     native_attention_source: Option<ExtensionId>,
 }
 
@@ -357,6 +368,9 @@ impl TraceReceiver {
         launch_session: Option<String>,
         token: Option<ProducerToken>,
     ) -> Result<Self, String> {
+        if settings.capture_log_text && settings.payload_binding.is_none() {
+            return Err("Private log capture requires an explicit capture scope".into());
+        }
         if settings.payload_binding.is_some() && token.is_none() {
             return Err("Private trace capture requires an authenticated producer".into());
         }
@@ -377,6 +391,7 @@ impl TraceReceiver {
             launch_session,
             token,
             payload_binding: settings.payload_binding,
+            capture_log_text: settings.capture_log_text,
             native_attention_source: settings.native_attention_source,
         })
     }
@@ -392,6 +407,7 @@ impl TraceReceiver {
                 listen: SocketAddr::from(([127, 0, 0, 1], 0)),
                 source,
                 payload_binding,
+                capture_log_text: false,
                 native_attention_source: None,
             },
             Some(launch_session),
@@ -415,6 +431,7 @@ impl TraceReceiver {
                 listen: SocketAddr::from(([127, 0, 0, 1], port)),
                 source: parse_source_id("otlp.local")?,
                 payload_binding: None,
+                capture_log_text: false,
                 native_attention_source: None,
             },
             None,
@@ -493,6 +510,11 @@ fn handle(
     let source = &receiver.source;
     let launch_session = receiver.launch_session.as_deref();
     let binding = receiver.payload_binding.as_ref();
+    let log_capture = if receiver.capture_log_text {
+        binding
+    } else {
+        None
+    };
     let deadline = Instant::now() + READ_BUDGET;
     let result = read_request(&stream, receiver.address, receiver.token.as_ref(), deadline)
         .and_then(|(request, body)| {
@@ -514,8 +536,10 @@ fn handle(
                 Encoding::ProgressJson => trace_progress::decode(&body, source, launch_session)
                     .map(|row| (vec![row], 0, Vec::new()))
                     .map_err(str::to_owned),
-                Encoding::LogsJson => logs::decode_json(&body, source),
-                Encoding::LogsProtobuf => logs::decode_protobuf(&body, source),
+                Encoding::LogsJson => logs::decode_json(&body, source, launch_session, log_capture),
+                Encoding::LogsProtobuf => {
+                    logs::decode_protobuf(&body, source, launch_session, log_capture)
+                }
                 Encoding::MetricsJson => {
                     metrics::decode_json(&body, source).map(|rows| (rows, 0, Vec::new()))
                 }
