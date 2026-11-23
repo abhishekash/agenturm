@@ -350,20 +350,45 @@ def wait_for_admission(app, env, work, db, cockpit, rows, excluded, timeout):
     raise ValidationError(f"Admitted {len(expected) - len(missing)} of {len(expected)} expected sessions; missing {ids}")
 
 
+def export_roster(cockpit, export_directory):
+    editor = "Export loaded view"
+    pending = "Wait for the current read before exporting"
+    output = export_directory / "view.json"
+    cockpit.key(b"x")
+    cockpit.markers("metadata export editor", editor, "New directory")
+    cockpit.key(os.fsencode(export_directory))
+
+    def filled(frame):
+        compact = "".join(line.strip(" │") for line in frame.splitlines())
+        return editor in frame and str(export_directory) in compact
+
+    cockpit.until(filled, "complete metadata export path")
+    deadline = time.monotonic() + 10
+    last_submit = float("-inf")
+    while time.monotonic() < deadline:
+        if output.is_file():
+            cockpit.markers("metadata export completion", "Agenturm command center")
+            return json.loads(output.read_text(encoding="utf-8"))
+        now = time.monotonic()
+        frame = cockpit.screen.contents()
+        # A background roster read can reject Enter while leaving the
+        # populated form open. Retrying after it closes would open a row.
+        delay = .3 if pending in frame else .8
+        if filled(frame) and now - last_submit >= delay:
+            cockpit.key(b"\r")
+            last_submit = now
+        cockpit.receive()
+    raise ValidationError(f"Cockpit did not save the metadata export at width {cockpit.width}")
+
+
 def verify_roster(cockpit, rows, excluded, export_directory):
     def ready(frame):
         count = re.search(r"\bAll\s+(\d+)\b", frame)
         return "Agenturm command center" in frame and count is not None and int(count[1]) >= len(rows)
 
     cockpit.until(ready, "command center readiness after admission")
-    # Export the metadata of the visible page inside disposable state to
-    # verify exact titles and roots that may be abbreviated at 60 columns.
-    cockpit.key(b"x")
-    cockpit.markers("metadata export editor", "Export loaded view", "New directory")
-    cockpit.key(os.fsencode(export_directory) + b"\r")
-    cockpit.until(lambda _: (export_directory / "view.json").is_file(), "metadata export")
-    cockpit.markers("metadata export completion", "Saved loaded metadata view")
-    exported = json.loads((export_directory / "view.json").read_text(encoding="utf-8"))
+    # This disposable copy preserves exact metadata at narrow terminal widths.
+    exported = export_roster(cockpit, export_directory)
     require(exported["coverage"] == "loaded_page", "Loaded roster page is partial")
     indexed = {item["label"]: item["value"] for item in exported["rows"]}
     for excluded_row in excluded:
@@ -410,6 +435,10 @@ def select_human_row(cockpit, row, max_matches):
     cockpit.key(b"a/" + query.encode() + b"\r")
     cockpit.until(lambda frame: roster_selection(frame, query) is not None,
                   f"named roster search for {session}")
+    # Search can preserve a previous selection in the middle of the results.
+    # Up clamps at the first match. Rendered rows can be identical, so the
+    # exact inspector owner is the only useful witness for each subsequent Down.
+    cockpit.key(b"\x1b[A" * max_matches)
     visited = set()
     for _ in range(max_matches):
         cockpit.key(b"\r")
@@ -446,10 +475,8 @@ def select_human_row(cockpit, row, max_matches):
         if owner in visited:
             break
         visited.add(owner)
-        previous = roster_selection(cockpit.screen.contents(), query)
         cockpit.key(b"\x1b[B")
-        cockpit.until(lambda frame: (selected := roster_selection(frame, query)) is not None and selected != previous,
-                      f"advance to the next named roster row {session}")
+        cockpit.receive()
     raise ValidationError(f"Named roster search did not select {source} / {session}")
 
 
