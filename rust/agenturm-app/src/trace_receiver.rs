@@ -938,7 +938,7 @@ mod tests {
             assert_eq!(
                 parse_headers(&headers(&authorized), address, Some(&token)),
                 Ok(RequestHead {
-                    encoding: encoding,
+                    encoding,
                     length: 32,
                     history_binding: None
                 })

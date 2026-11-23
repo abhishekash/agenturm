@@ -2191,6 +2191,7 @@ trait HistoryReader: ObservationStore {
     fn session_title_store(&self) -> Option<&Store> {
         None
     }
+    fn query_native_attention(&self, query: &agenturm_store::native_attention::NativeAttentionQuery) -> Result<agenturm_store::native_attention::NativeAttentionPage, String>;
     fn query_standalone_trace(
         &self,
         query: &agenturm_store::StandaloneTraceQuery,
@@ -2254,6 +2255,9 @@ impl HistoryReader for Store {
         marker: &std::path::Path,
     ) -> Result<agenturm_store::WorkspaceLedger, String> {
         agenturm_store::WorkspaceLedger::open(marker).map_err(|error| error.to_string())
+    }
+    fn query_native_attention(&self, query: &agenturm_store::native_attention::NativeAttentionQuery) -> Result<agenturm_store::native_attention::NativeAttentionPage, String> {
+        Store::query_native_attention(self, query, None).map_err(|error| error.to_string())
     }
     fn query_standalone_trace(
         &self,
@@ -2336,6 +2340,9 @@ impl HistoryReader for agenturm_storage_service::NativeStore {
     ) -> Result<agenturm_store::WorkspaceLedger, String> {
         agenturm_store::WorkspaceLedger::open_with_history(marker, self.clone())
             .map_err(|error| error.to_string())
+    }
+    fn query_native_attention(&self, query: &agenturm_store::native_attention::NativeAttentionQuery) -> Result<agenturm_store::native_attention::NativeAttentionPage, String> {
+        self.query_native_attention(query).map_err(|error| error.to_string())
     }
     fn query_standalone_trace(
         &self,

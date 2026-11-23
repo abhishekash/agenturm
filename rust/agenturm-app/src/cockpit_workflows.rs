@@ -486,7 +486,21 @@ fn pending_requests(
         history_identity: store.workspace_history_identity(),
     };
     let mut results = project_requests(&page.observations, &proof);
-    let partial = page.has_more || results.len() > MAX_REQUESTS;
+    let native = store.query_native_attention(&agenturm_store::native_attention::NativeAttentionQuery {
+        source_id: owner.map(|value| ExtensionId::parse(&value.source)).transpose().map_err(string)?,
+        session_id: owner.map(|value| value.session.clone()), snapshot_id: Some(page.snapshot_id), limit: MAX_REQUESTS,
+    })?;
+    if native.snapshot_id != page.snapshot_id { return Err("Native attention history changed; refresh Workflow".into()); }
+    for request in native.pending {
+        results.push(RequestEntry {
+            owner: WorkAnchor { source: request.scope.source_id, session: request.scope.session_id, turn: Some(request.scope.turn_id), worker: request.scope.worker_id },
+            event_id: request.event_id, revision: 0, timestamp: request.receipt_time_unix_ns,
+            reason: if request.kind == agenturm_kernel::native_attention::NativeAttentionKind::ApprovalRequested { "native_approval_request" } else { "native_user_input_request" }.into(),
+            seen: false, proof: proof.clone(),
+        });
+    }
+    results.sort_by(|a,b| (b.timestamp, &b.owner.source, &b.event_id).cmp(&(a.timestamp, &a.owner.source, &a.event_id)));
+    let partial = page.has_more || native.truncated || results.len() > MAX_REQUESTS;
     results.truncate(MAX_REQUESTS);
     Ok((results, partial))
 }
