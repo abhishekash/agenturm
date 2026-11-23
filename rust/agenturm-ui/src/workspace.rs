@@ -2642,6 +2642,36 @@ mod tests {
     }
 
     #[test]
+    fn task_titles_inherit_the_same_row_background_as_status_and_context() {
+        let mut alpha = session("harness.codex", "alpha", "running", None);
+        alpha.task_title = Some("First task".into());
+        let mut beta = session("harness.codex", "beta", "completed", None);
+        beta.task_title = Some("Second task".into());
+        let mut agents = AgentList::default();
+        agents.update(catalog(vec![alpha, beta]));
+        for (width, height) in [(120, 32), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| draw_agents(frame, &mut agents, false, None))
+                .unwrap();
+            let buffer = terminal.backend().buffer();
+            let row = (0..height)
+                .find(|&y| {
+                    (0..width)
+                        .map(|x| buffer[(x, y)].symbol())
+                        .collect::<String>()
+                        .contains("Second task")
+                })
+                .expect("the second task is visible");
+            let status = (0..width)
+                .find(|&x| buffer[(x, row)].symbol() == "R")
+                .unwrap();
+            assert_eq!(buffer[(8, row)].bg, buffer[(status, row)].bg);
+            assert_eq!(buffer[(8, row)].bg, buffer[(8, row + 1)].bg);
+        }
+    }
+
+    #[test]
     fn native_rename_reorders_rows_without_changing_exact_selection_or_inspector_binding() {
         let mut selected = session("harness.codex.alpha", "shared", "running", None);
         selected.task_title = Some("Before rename".into());
