@@ -59,7 +59,7 @@ Review receipt, or private content grant. <code>q</code> and Ctrl-C restore term
 settings promptly even during a stalled receiver read. The Rust receiver
 protocol remains the default.</p>
 <p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md#attach-to-an-existing-python-028-receiver">Python receiver setup and coverage</a></p>
-<h2>Opt-in installer source candidate</h2>
+<h2>Opt-in installer</h2>
 <p>The checked-out <code>scripts/install-rust.sh</code> installs the complete versioned Linux
 bundle as <code>agenturm-rust</code>. It verifies the archive checksum and layout before
 selecting a release, supports offline archives and same-version replay, and
@@ -67,7 +67,30 @@ preserves user history and configuration on uninstall. The existing <code>agentu
 command retains its current behavior. Both native Linux bundle jobs run the
 offline installer verifier before uploading their artifacts. A hosted
 bootstrap, signed release manifests, and registry packages remain future work.</p>
-<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-distribution-installation.md">Installer proposal and usage</a></p>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-distribution-installation.md">Installer usage</a></p>
+<h2>Published Linux bundles</h2>
+<p>Rust 0.3.7 was published from <code>31faa9fc32224f57bba326d1a93e31cc96a316a3</code>.
+Both archives have published checksum files. The release API digests and
+checksum files agree with the archive hashes below.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Architecture</th>
+<th>Archive SHA-256</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Linux x86-64</td>
+<td><code>936ad6f90e49bea8acdaf44b2fdc08e11c50df50987d7a5aa53ac8e65bef1791</code></td>
+</tr>
+<tr>
+<td>Linux ARM64 (<code>aarch64</code>)</td>
+<td><code>56d1dcddc934e9c590c1247063ec78c35532201a04361a5de4c2aee5f40dda28</code></td>
+</tr>
+</tbody>
+</table></div>
+<p><a href="https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.7">Release archives and checksums</a></p>
 <h2>Qualification and remaining gates</h2>
 <p>The frozen source passed 602 Rust workspace tests across 93 suites and strict
 workspace Clippy. The installer passed 14 offline fixture tests and upgrade,
@@ -75,15 +98,14 @@ replay, and uninstall checks with the published 0.3.5 and 0.3.6 Linux x86-64
 archives. Source-built Linux guests checked private selection isolation,
 complete evaluation inventories, and tagged Python receiver navigation at
 60×18 and 120×32.</p>
-<p>The exact Linux x86-64 archive has SHA-256
-936ad6f90e49bea8acdaf44b2fdc08e11c50df50987d7a5aa53ac8e65bef1791.
-It passed managed install, restart, backup, upgrade and uninstall, all six
-retained keyboard journeys, 24 producer/client cases and eight cached SDK
-and private-capture cases without skips. Separate-principal packaged guests
+<p>The published x86-64 archive passed managed install, restart, backup, upgrade
+and uninstall, all six retained keyboard journeys, 24 producer/client cases,
+and eight cached SDK and private-capture cases without skips. Separate-principal packaged guests
 passed the selector, evaluation, legacy receiver, HTTP, Host and disclosure
-checks. Both native Linux candidate jobs passed the offline installer flow;
-all five mandatory vendor jobs passed 16 selected SDK cases. The tag build
-qualifies and attaches the ARM64 archive and checksum separately.</p>
+checks. Both native Linux jobs passed the tagged bundle and offline installer
+checks. The tag workflow attached the qualified ARM64 archive and checksum.
+All five mandatory vendor jobs passed 16 selected SDK cases with skips
+disabled. <a href="https://github.com/abhishekash/agenturm/actions/runs/45110581824">Tagged bundle qualification</a></p>
 <p>The standalone Rust installation remains opt-in.
 The default distribution cutover still depends on real Kiro transcript
 collection, qualification with a supported production connector endpoint,
