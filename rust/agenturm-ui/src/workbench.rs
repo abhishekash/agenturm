@@ -106,10 +106,31 @@ pub(super) struct PromptReceiver {
     pub(super) frames: mpsc::Receiver<Vec<u8>>,
     pub(super) acknowledgement: mpsc::Sender<()>,
     pub(super) active: Arc<Mutex<bool>>,
-    pub(super) title: &'static str,
+    pub(super) kind: PromptKind,
 }
 
-pub(super) fn prompt_channel() -> (PromptDelivery, PromptReceiver) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PromptKind {
+    User,
+    Mcp,
+    Edit,
+    Telemetry,
+    Evaluation,
+}
+
+impl PromptKind {
+    pub(super) fn title(self) -> &'static str {
+        match self {
+            Self::User => "Granted prompt",
+            Self::Mcp => "Granted MCP payload",
+            Self::Edit => "Granted file edit",
+            Self::Telemetry => "Producer-captured text",
+            Self::Evaluation => "Imported evaluation text",
+        }
+    }
+}
+
+pub(super) fn prompt_channel(kind: PromptKind) -> (PromptDelivery, PromptReceiver) {
     let (frames, received) = mpsc::channel();
     let (acknowledgement, ack) = mpsc::channel();
     let active = Arc::new(Mutex::new(true));
@@ -124,7 +145,7 @@ pub(super) fn prompt_channel() -> (PromptDelivery, PromptReceiver) {
             frames: received,
             acknowledgement,
             active,
-            title: "Granted prompt",
+            kind,
         },
     )
 }

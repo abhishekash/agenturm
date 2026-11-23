@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::keymap::{self, Destination};
-use crate::workbench::{PromptReceiver, WorkInput, Workbench, prompt_channel};
+use crate::workbench::{PromptKind, PromptReceiver, WorkInput, Workbench, prompt_channel};
 use agenturm_kernel::{ReadSnapshot, RelationshipKind};
 use ratatui::buffer::CellWidth;
 use ratatui::widgets::{Row, Table, TableState};
@@ -11,7 +11,10 @@ use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod command_center;
+mod prompt;
 mod view_io;
+
+use prompt::PromptScreen;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecordedSession {
@@ -529,38 +532,6 @@ struct Workspace {
     refresh_after: Instant,
 }
 
-struct PromptScreen {
-    text: String,
-    title: &'static str,
-    scroll: u16,
-    acknowledge: Option<mpsc::Sender<()>>,
-    active: Arc<Mutex<bool>>,
-    expires: Instant,
-}
-
-impl PromptScreen {
-    fn draw(&self, frame: &mut Frame) {
-        let [main, foot] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(frame.area());
-        let text = self
-            .text
-            .lines()
-            .map(|line| Line::from(visible_text(line)))
-            .collect::<Vec<_>>();
-        frame.render_widget(
-            Paragraph::new(text)
-                .wrap(Wrap { trim: false })
-                .scroll((self.scroll, 0))
-                .block(Block::bordered().title(self.title)),
-            main,
-        );
-        frame.render_widget(
-            Paragraph::new("↑↓ scroll · Esc close · closes after 25s"),
-            foot,
-        );
-    }
-}
-
 impl Workspace {
     fn new() -> Self {
         Self {
@@ -793,13 +764,34 @@ impl Workspace {
     }
 
     fn reveal(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, entry: PromptEntry) {
-        let (delivery, receiver) = prompt_channel();
+        let (delivery, receiver) = prompt_channel(PromptKind::User);
         self.request(
             sender,
             WorkspaceRequest::Work(WorkCommand::RevealPrompt(Box::new(entry), delivery)),
             Change::Work(None),
         );
         self.prompt_receiver = Some(receiver);
+    }
+
+    fn dismiss_prompt(&mut self) -> bool {
+        let Some(mut prompt) = self.prompt.take() else {
+            return false;
+        };
+        self.redact_then_acknowledge = prompt.acknowledge.take();
+        true
+    }
+
+    fn expire_prompt(&mut self, now: Instant) -> bool {
+        self.prompt
+            .as_ref()
+            .is_some_and(|prompt| prompt.expired(now))
+            && self.dismiss_prompt()
+    }
+
+    fn acknowledge_redaction(&mut self) {
+        if let Some(acknowledge) = self.redact_then_acknowledge.take() {
+            let _ = acknowledge.send(());
+        }
     }
 
     fn key(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, key: event::KeyEvent) -> bool {
@@ -813,17 +805,11 @@ impl Workspace {
         if let Some(prompt) = &mut self.prompt {
             match code {
                 KeyCode::Esc => {
-                    self.redact_then_acknowledge = prompt.acknowledge.take();
-                    self.prompt = None;
+                    self.dismiss_prompt();
                     self.message = None;
                 }
                 KeyCode::Char('q') => return true,
-                KeyCode::Down | KeyCode::Char('j') => {
-                    prompt.scroll = prompt.scroll.saturating_add(1)
-                }
-                KeyCode::Up | KeyCode::Char('k') => prompt.scroll = prompt.scroll.saturating_sub(1),
-                KeyCode::Home => prompt.scroll = 0,
-                _ => {}
+                _ => prompt.key(code),
             }
             return false;
         }
@@ -872,8 +858,7 @@ impl Workspace {
                 }
                 WorkInput::Reveal(_) => {}
                 WorkInput::RevealTelemetry(span) if self.pending.is_none() => {
-                    let (delivery, mut receiver) = prompt_channel();
-                    receiver.title = "Producer-captured text";
+                    let (delivery, receiver) = prompt_channel(PromptKind::Telemetry);
                     self.request(
                         sender,
                         WorkspaceRequest::Work(WorkCommand::RevealTelemetry(
@@ -886,8 +871,7 @@ impl Workspace {
                 }
                 WorkInput::RevealTelemetry(_) => {}
                 WorkInput::RevealEvaluation(detail) if self.pending.is_none() => {
-                    let (delivery, mut receiver) = prompt_channel();
-                    receiver.title = "Imported evaluation text";
+                    let (delivery, receiver) = prompt_channel(PromptKind::Evaluation);
                     self.request(
                         sender,
                         WorkspaceRequest::Work(WorkCommand::RevealEvalDetail(
@@ -991,11 +975,11 @@ impl Workspace {
                         .and_then(|i| entries.clone().nth(i))
                         .cloned()
                     {
-                        let (delivery, mut receiver) = prompt_channel();
-                        receiver.title = match kind {
-                            OperationDetailKind::Mcp => "Granted MCP payload",
-                            OperationDetailKind::Edit => "Granted file edit",
+                        let prompt_kind = match kind {
+                            OperationDetailKind::Mcp => PromptKind::Mcp,
+                            OperationDetailKind::Edit => PromptKind::Edit,
                         };
+                        let (delivery, receiver) = prompt_channel(prompt_kind);
                         self.request(
                             sender,
                             WorkspaceRequest::Work(WorkCommand::RevealOperation(
@@ -1450,14 +1434,7 @@ pub fn run_workspace(
                         .take()
                         .expect("prompt delivery arrived");
                     if let Ok(text) = serde_json::from_slice::<String>(&bytes) {
-                        workspace.prompt = Some(PromptScreen {
-                            text,
-                            title: receiver.title,
-                            scroll: 0,
-                            acknowledge: Some(receiver.acknowledgement),
-                            active: receiver.active,
-                            expires: Instant::now() + Duration::from_secs(25),
-                        });
+                        workspace.prompt = Some(PromptScreen::new(text, receiver, Instant::now()));
                     } else {
                         workspace.message = Some("Invalid private content delivery".into());
                     }
@@ -1506,15 +1483,7 @@ pub fn run_workspace(
                     );
                     dirty = true;
                 }
-                if workspace
-                    .prompt
-                    .as_ref()
-                    .is_some_and(|prompt| Instant::now() >= prompt.expires)
-                    && let Some(mut prompt) = workspace.prompt.take()
-                {
-                    workspace.redact_then_acknowledge = prompt.acknowledge.take();
-                    dirty = true;
-                }
+                dirty |= workspace.expire_prompt(Instant::now());
                 if dirty {
                     let active = workspace
                         .prompt
@@ -1528,9 +1497,7 @@ pub fn run_workspace(
                             Some("Content authorization expired before display".into());
                     }
                     terminal.draw(|frame| draw_workspace(frame, &mut workspace))?;
-                    if let Some(acknowledge) = workspace.redact_then_acknowledge.take() {
-                        let _ = acknowledge.send(());
-                    }
+                    workspace.acknowledge_redaction();
                     drop(gate);
                     dirty = false;
                 }
@@ -1542,11 +1509,11 @@ pub fn run_workspace(
                             if workspace.key(&request, key) {
                                 // Keep the proof fence until a flushed non-private
                                 // frame replaces the modal, including q and Ctrl-C.
-                                if let Some(mut prompt) = workspace.prompt.take() {
+                                if workspace.dismiss_prompt()
+                                    || workspace.redact_then_acknowledge.is_some()
+                                {
                                     terminal.draw(|frame| draw_workspace(frame, &mut workspace))?;
-                                    if let Some(acknowledge) = prompt.acknowledge.take() {
-                                        let _ = acknowledge.send(());
-                                    }
+                                    workspace.acknowledge_redaction();
                                 }
                                 break Ok(());
                             }
@@ -1585,7 +1552,7 @@ fn pending_evidence_titles(selection: &HistorySelection) -> Option<(&'static str
 
 fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
     frame.render_widget(Block::default().style(surface(CANVAS)), frame.area());
-    if let Some(prompt) = &workspace.prompt {
+    if let Some(prompt) = &mut workspace.prompt {
         prompt.draw(frame);
         return;
     }
@@ -2034,15 +2001,12 @@ mod tests {
         assert!(!press(&mut workspace, &sender, KeyCode::Esc));
         assert!(!press(&mut workspace, &sender, KeyCode::Char('a')));
 
-        let (ack, _) = mpsc::channel();
-        workspace.prompt = Some(PromptScreen {
-            text: "private".into(),
-            title: "Granted test fixture",
-            scroll: 0,
-            acknowledge: Some(ack),
-            active: Arc::new(Mutex::new(true)),
-            expires: Instant::now() + Duration::from_secs(25),
-        });
+        let (_delivery, receiver) = prompt_channel(PromptKind::User);
+        workspace.prompt = Some(PromptScreen::new(
+            "private".into(),
+            receiver,
+            Instant::now(),
+        ));
         for code in [KeyCode::Char('4'), KeyCode::Char('p'), KeyCode::F(1)] {
             assert!(!press(&mut workspace, &sender, code));
         }
@@ -2056,6 +2020,84 @@ mod tests {
         assert!(
             matches!(requests.try_recv(), Ok(WorkspaceRequest::History { selection: HistorySelection::Session(row, SessionView::Review), before: None }) if row.session_id == "selected")
         );
+    }
+
+    #[test]
+    fn prompt_layout_keeps_the_original_deadline_and_redaction_acknowledgement() {
+        let now = Instant::now();
+        for exit in [
+            Some(event::KeyEvent::new(KeyCode::Esc, KeyModifiers::NONE)),
+            Some(event::KeyEvent::new(KeyCode::Char('q'), KeyModifiers::NONE)),
+            Some(event::KeyEvent::new(
+                KeyCode::Char('c'),
+                KeyModifiers::CONTROL,
+            )),
+            None,
+        ] {
+            let mut workspace = Workspace::new();
+            let (_producer, frames) = mpsc::channel();
+            let (acknowledgement, original_ack) = mpsc::channel();
+            let active = Arc::new(Mutex::new(true));
+            let receiver = PromptReceiver {
+                frames,
+                acknowledgement,
+                active: Arc::clone(&active),
+                kind: PromptKind::User,
+            };
+            let (sender, requests) = mpsc::channel();
+            workspace.prompt = Some(PromptScreen::new(
+                "SCOPED_PROMPT_TEXT".into(),
+                receiver,
+                now,
+            ));
+
+            let mut terminal = Terminal::new(TestBackend::new(60, 18)).unwrap();
+            let mut draw = |workspace: &mut Workspace| {
+                terminal
+                    .draw(|frame| draw_workspace(frame, workspace))
+                    .unwrap();
+                terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>()
+            };
+            assert!(draw(&mut workspace).contains("SCOPED_PROMPT_TEXT"));
+            for _ in 0..3 {
+                assert!(!press(&mut workspace, &sender, KeyCode::Char('z')));
+                assert!(!workspace.expire_prompt(now + Duration::from_millis(24_999)));
+                assert!(draw(&mut workspace).contains("SCOPED_PROMPT_TEXT"));
+            }
+            for code in [KeyCode::Char('v'), KeyCode::Char('X')] {
+                assert!(!press(&mut workspace, &sender, code));
+            }
+            assert!(requests.try_recv().is_err());
+            assert!(workspace.view_io.clipboard.is_none());
+            assert!(workspace.view_io.form.is_none());
+            let prompt = workspace.prompt.as_ref().unwrap();
+            assert!(Arc::ptr_eq(&prompt.active, &active));
+            assert!(prompt.acknowledge.is_some());
+            assert_eq!(original_ack.try_recv(), Err(mpsc::TryRecvError::Empty));
+
+            if let Some(key) = exit {
+                let quits = workspace.key(&sender, key);
+                assert_eq!(quits, key.code != KeyCode::Esc);
+                if quits {
+                    assert!(workspace.dismiss_prompt());
+                }
+            } else {
+                assert!(workspace.expire_prompt(now + Duration::from_secs(25)));
+            }
+            assert!(workspace.prompt.is_none());
+            assert_eq!(original_ack.try_recv(), Err(mpsc::TryRecvError::Empty));
+            assert!(!draw(&mut workspace).contains("SCOPED_PROMPT_TEXT"));
+            assert_eq!(original_ack.try_recv(), Err(mpsc::TryRecvError::Empty));
+            workspace.acknowledge_redaction();
+            assert_eq!(original_ack.try_recv(), Ok(()));
+            assert!(workspace.redact_then_acknowledge.is_none());
+        }
     }
 
     #[test]
