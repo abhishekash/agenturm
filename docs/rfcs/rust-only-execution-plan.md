@@ -54,18 +54,23 @@ Linux release scope without an explicit product decision.
 
 ### AP1 — SDK/CLI parity audit, not a blanket missing-feature list
 
-Reconcile every retained Python 0.2.8 CLI/keyboard journey and selected SDK
-integration with its actual Rust code path. Cover OpenAI, Anthropic,
-LangChain/LangGraph, Google ADK and Pydantic AI as applicable to the retained
-inventory. Record each row as **implemented**, **test-only acceptance pending**,
-**confirmed missing feature**, **native evidence unavailable**, or **scope
-decision needed**. Include the owner, source anchor and acceptance journey.
+**Audit completed 23 November 2026** — see
+[the AP1 parity audit](rust-cli-parity-audit.md). Every retained Python 0.2.8
+CLI entry point, cockpit keyboard journey and selected SDK integration now
+has a recorded disposition with source anchors: the parity table classifies
+each surface, the six previously unrecorded items have explicit dispositions,
+and all five selected SDK families have real CI jobs exercising a Rust path
+(current-head results remain Q7's to record).
 
-Only confirmed missing behavior becomes a new FD development task. Passing
-selected SDK jobs on an older source is not complete instrumentation coverage;
-unexecuted tests are not evidence that implementation is absent. Complete this
-audit before claiming feature development or default cutover complete. No
-workflow is retired by this documentation update.
+The audit's confirmed-missing inventory (Ctrl+P action palette, saved-task
+Brief/Decisions cockpit editors, Ctrl+R concurrent-edit reload, Workflow `h`
+history toggle, `task create --snapshot`, `task draft --workspace` and handoff
+receiver revalidation, remote receiver deployment) gates the B1/D3
+cutover-scope decision — it does not create development tasks by itself.
+Only that decision, or an explicit retirement, schedules them. No workflow is
+retired by the audit. Focused spot-verification confirmed the audit's key
+anchors (theme-only Ctrl+P, no `--snapshot` on `task create`, Draft editor
+surface, attention-native verbs).
 
 ### Implemented code and qualification ownership
 
