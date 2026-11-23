@@ -27,6 +27,14 @@ jobs:
       - run: cargo build --locked --bin agenturm-opencode-harness
       - run: cargo build --locked --bin agenturm-plugin-host
       - run: cargo build --locked --bin agenturm
+      - name: Stage the Rust app for vendor SDK tests
+        run: install -D -m 0755 -s target/debug/agenturm "$RUNNER_TEMP/rust-vendor/agenturm"
+      - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
+        with:
+          name: rust-vendor-agenturm
+          path: ${{ runner.temp }}/rust-vendor/agenturm
+          if-no-files-found: error
+          retention-days: 3
       - name: Build the independent harness from its own workspace
         working-directory: rust/agenturm-app/tests/fixtures/standalone_harness
         run: |
@@ -247,6 +255,7 @@ jobs:
       - run: python -m unittest tests.test_otel_export_e2e -v
 
   pydantic-ai-interoperability:
+    needs: rust-protocol
     name: Pydantic AI native instrumentation
     runs-on: ubuntu-24.04
     steps:
@@ -257,8 +266,21 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install '.[auto]' 'pydantic-ai>=2,<3'
       - run: python -m unittest tests.test_pydantic_ai_otel_e2e -v
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rust-vendor-agenturm
+          path: ${{ runner.temp }}/rust-vendor
+      - run: chmod 0755 "$RUNNER_TEMP/rust-vendor/agenturm"
+      - name: Verify SDK traces through the Rust OTLP launcher
+        run: >-
+          python -m unittest -v
+          tests.test_rust_vendor_sdk_e2e.RustVendorSdkTests.test_pydantic_ai_native_instrumentation_flushes_model_and_tool_spans
+        env:
+          AGENTURM_RUST_APP_BIN: ${{ runner.temp }}/rust-vendor/agenturm
+          AGENTURM_REQUIRE_VENDOR_SDK_TESTS: "1"
 
   google-adk-interoperability:
+    needs: rust-protocol
     name: Google ADK OTLP interoperability
     runs-on: ubuntu-24.04
     steps:
@@ -269,8 +291,21 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install '.[auto]' 'google-adk[mcp]>=1.17,<3'
       - run: python -m unittest tests.test_google_adk_otel_e2e -v
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rust-vendor-agenturm
+          path: ${{ runner.temp }}/rust-vendor
+      - run: chmod 0755 "$RUNNER_TEMP/rust-vendor/agenturm"
+      - name: Verify SDK traces through the Rust OTLP launcher
+        run: >-
+          python -m unittest -v
+          tests.test_rust_vendor_sdk_e2e.RustVendorSdkTests.test_google_adk_native_instrumentation_flushes_agent_and_tool_spans
+        env:
+          AGENTURM_RUST_APP_BIN: ${{ runner.temp }}/rust-vendor/agenturm
+          AGENTURM_REQUIRE_VENDOR_SDK_TESTS: "1"
 
   openai-agents-interoperability:
+    needs: rust-protocol
     name: OpenAI Agents SDK local tracing
     runs-on: ubuntu-24.04
     steps:
@@ -281,8 +316,21 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install '.[openai-agents]'
       - run: python -m unittest tests.test_openai_agents_export_e2e -v
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rust-vendor-agenturm
+          path: ${{ runner.temp }}/rust-vendor
+      - run: chmod 0755 "$RUNNER_TEMP/rust-vendor/agenturm"
+      - name: Verify SDK traces through the Rust OTLP launcher
+        run: >-
+          python -m unittest -v
+          tests.test_rust_vendor_sdk_e2e.RustVendorSdkTests.test_openai_agents_real_tool_workflow_preserves_normalized_sdk_identity
+        env:
+          AGENTURM_RUST_APP_BIN: ${{ runner.temp }}/rust-vendor/agenturm
+          AGENTURM_REQUIRE_VENDOR_SDK_TESTS: "1"
 
   langchain-interoperability:
+    needs: rust-protocol
     name: LangChain callback interoperability
     runs-on: ubuntu-24.04
     steps:
@@ -291,10 +339,24 @@ jobs:
         with:
           python-version: "3.13"
       - run: python -m pip install --upgrade pip
-      - run: python -m pip install '.[langchain]'
+      - run: python -m pip install '.[auto,langchain]' 'langchain-openai>=1.4,<2' 'langgraph>=1.2,<2'
       - run: python -m unittest tests.test_langchain_callback_e2e -v
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rust-vendor-agenturm
+          path: ${{ runner.temp }}/rust-vendor
+      - run: chmod 0755 "$RUNNER_TEMP/rust-vendor/agenturm"
+      - name: Verify SDK traces through the Rust OTLP launcher
+        run: >-
+          python -m unittest -v
+          tests.test_rust_vendor_sdk_e2e.RustVendorSdkTests.test_langchain_automatic_instrumentation_preserves_its_callback_hierarchy
+          tests.test_rust_vendor_sdk_e2e.RustVendorSdkTests.test_langgraph_real_callbacks_retain_graph_node_and_model_spans
+        env:
+          AGENTURM_RUST_APP_BIN: ${{ runner.temp }}/rust-vendor/agenturm
+          AGENTURM_REQUIRE_VENDOR_SDK_TESTS: "1"
 
   automatic-capture-interoperability:
+    needs: rust-protocol
     name: Automatic SDK capture through CLI
     runs-on: ubuntu-24.04
     steps:
@@ -305,3 +367,16 @@ jobs:
       - run: python -m pip install --upgrade pip
       - run: python -m pip install '.[auto]' 'openai>=1.68,<3' 'anthropic>=1.8,<2' 'langchain-core>=0.3.9,<2'
       - run: python -m unittest tests.test_auto_launcher_e2e -v
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: rust-vendor-agenturm
+          path: ${{ runner.temp }}/rust-vendor
+      - run: chmod 0755 "$RUNNER_TEMP/rust-vendor/agenturm"
+      - name: Verify SDK traces through the Rust OTLP launcher
+        run: >-
+          python -m unittest -v
+          tests.test_rust_vendor_sdk_e2e.RustVendorSdkTests.test_openai_sync_stream_and_error_flush_through_automatic_launcher
+          tests.test_rust_vendor_sdk_e2e.RustVendorSdkTests.test_anthropic_messages_flush_through_automatic_launcher
+        env:
+          AGENTURM_RUST_APP_BIN: ${{ runner.temp }}/rust-vendor/agenturm
+          AGENTURM_REQUIRE_VENDOR_SDK_TESTS: "1"

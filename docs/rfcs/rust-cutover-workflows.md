@@ -116,6 +116,8 @@ client's checkout.
 | Prompt and MCP payloads | Preserve the recorded operation and current scope when opening content. Unavailable, revoked and over-limit evidence needs a visible outcome. B2 and B4 own the prompt and MCP detail gaps. |
 | Usage, cost and host history | Preserve presence and units for input, output and cache fields. Show cost only when recorded. Rust currently has token counts, Kiro credits and current same-user Linux host data. Producer-reported cost, historical host metrics and process drilldown remain open. Telemetry maintainer implements the retained fields after the release owner sets scope. |
 
+The vendor fixture matrix records the actual SDK paths and pending checks. [Rust OTLP vendor producer qualification](../validation/rust-vendor-sdk-producers.md)
+
 ## Required keyboard journeys
 
 Run each journey at 120×32 and 60×18 in both installed applications. Record the exact archive or wheel digest, fixture, terminal, focused control and visible evidence. After each drilldown verify return to the same selected row or run. Record shortcut and layout changes in the result.

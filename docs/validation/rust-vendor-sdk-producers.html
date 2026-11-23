@@ -1,0 +1,44 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<title>Rust OTLP vendor producer qualification</title>
+<style>
+:root { color-scheme: light dark; font: 16px/1.55 system-ui, sans-serif; }
+main { max-width: 68rem; margin: auto; padding: 2rem 1.2rem; }
+h1 { line-height: 1.2; }
+table { border-collapse: collapse; width: 100%; }
+th, td { text-align: left; vertical-align: top; padding: .7rem; border-bottom: 1px solid GrayText; }
+.table { overflow-x: auto; }
+code { overflow-wrap: anywhere; }
+pre { padding: 1rem; background: color-mix(in srgb, CanvasText 8%, Canvas); overflow-x: auto; }
+</style>
+</head>
+<body>
+<main>
+<h1>Rust OTLP vendor producer qualification</h1>
+<p>The fixture runs real SDK and framework code with loopback model responses or each SDK's offline model interface. The producer exits immediately after its workflow and flush. The test reopens Rust history and compares every retained trace ID, span ID, parent ID, timestamp and status with the SDK or callback observation. It also checks the exact native source, session, turn and worker, exit status, and exclusion of fixture payloads and credentials.</p>
+<div class="table" role="region" aria-label="Vendor producer qualification" tabindex="0">
+<table>
+<thead><tr><th scope="col">Producer</th><th scope="col">Exercised path</th><th scope="col">Qualification</th></tr></thead>
+<tbody>
+<tr><th scope="row">OpenAI Python</th><td>OpenInference automatic capture of synchronous, streamed and rejected SDK requests</td><td>Passed locally with OpenAI 2.53.0 and OpenInference OpenAI 0.1.65</td></tr>
+<tr><th scope="row">LangChain</th><td>OpenInference automatic capture of a runnable sequence and the OpenAI SDK call it makes</td><td>Passed locally with LangChain Core 1.5.3, LangChain OpenAI 1.4.2 and OpenInference LangChain 0.1.79</td></tr>
+<tr><th scope="row">LangGraph</th><td>Agenturm callback handler on an actual state graph that invokes the model</td><td>Passed locally with LangGraph 1.2.10</td></tr>
+<tr><th scope="row">Anthropic Python</th><td>Automatic capture around an actual Messages SDK call</td><td>Pending in Automatic SDK capture through CLI</td></tr>
+<tr><th scope="row">OpenAI Agents SDK</th><td>Agent and tool loop with the SDK's scripted model, processor and normalized span IDs</td><td>Pending in OpenAI Agents SDK local tracing</td></tr>
+<tr><th scope="row">Pydantic AI</th><td>Native agent, model and tool instrumentation with the SDK's offline model</td><td>Pending in Pydantic AI native instrumentation</td></tr>
+<tr><th scope="row">Google ADK</th><td>Native agent, model and tool instrumentation with the SDK's offline model</td><td>Pending in Google ADK OTLP interoperability</td></tr>
+</tbody>
+</table>
+</div>
+<p>Local runs used Python 3.12, OpenTelemetry SDK 1.45.1 and the Rust 0.3.4 Linux x86-64 bundle. Its archive SHA-256 is <code>74f85b9d0b1f0c9c2afc9dbcc9e97119087777b03deed1203a0072e28878a18c</code>. The remaining SDKs are installed by the listed CI jobs. Each job receives the Rust app built from the same source revision and runs its named tests with skips disabled.</p>
+<p>The verified transport carries structural span evidence. Provider payloads, span links across traces, progress, usage and recorded cost have separate coverage requirements. Parent checks reflect recorded ancestry within each SDK trace.</p>
+<p>Run with the optional SDKs already installed in the producer environment and a standalone Rust binary.</p>
+<pre><code>AGENTURM_RUST_APP_BIN=/path/to/agenturm \
+  python -m unittest tests.test_rust_vendor_sdk_e2e -v</code></pre>
+<p>To use the broker, set <code>AGENTURM_RUST_BROKER_CONFIG</code> to a collector's configuration for a fresh test history. Allow the <code>otlp.&lt;vendor&gt;</code> sources under test and <code>harness.codex</code>. The same fixtures launch via <code>broker run</code> and verify the result via <code>broker query</code>. <a href="../rfcs/rust-broker-commands.html">Native broker commands</a></p>
+</main>
+</body>
+</html>
