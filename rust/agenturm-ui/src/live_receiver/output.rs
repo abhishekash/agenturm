@@ -4,7 +4,10 @@ use super::{FrameGate, RenderOutput};
 use crossterm::cursor::{Hide, Show};
 use crossterm::style::{Attribute, ResetColor, SetAttribute};
 use crossterm::terminal::{self, EnterAlternateScreen, LeaveAlternateScreen};
-use ratatui::{Frame, Terminal, backend::CrosstermBackend};
+use ratatui::{
+    Frame, Terminal,
+    backend::{Backend, CrosstermBackend},
+};
 use rustix::event::{PollFd, PollFlags, Timespec, poll};
 use rustix::fs::{Mode, OFlags, fstat, open};
 use rustix::io::Errno;
@@ -157,7 +160,11 @@ impl RenderOutput for BoundedTerminal {
             ResetColor,
             SetAttribute(Attribute::Reset)
         )?;
-        self.terminal.clear()?;
+        // Terminal::clear preserves the cursor using a request to the terminal.
+        // This lane only needs a full-screen clear and has no input round trip.
+        self.terminal.backend_mut().clear()?;
+        self.terminal.current_buffer_mut().reset();
+        self.terminal.swap_buffers();
         self.terminal.draw(draw).map(|_| ())
     }
 }
