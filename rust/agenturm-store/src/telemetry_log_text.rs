@@ -596,6 +596,8 @@ mod tests {
             [crate::STORE_MARKER_V19],
         )
         .unwrap();
+        tx.execute_batch("DROP INDEX agenturm_metric_descriptions_by_series;")
+            .unwrap();
         tx.pragma_update(None, "user_version", 19).unwrap();
         tx.commit().unwrap();
         drop(store);
@@ -613,7 +615,7 @@ mod tests {
         );
         drop(read_only);
         let mut upgraded = Store::open_collector(&path).unwrap();
-        assert_eq!(version(&upgraded), 20);
+        assert_eq!(version(&upgraded), crate::SCHEMA_VERSION);
         assert_eq!(
             upgraded
                 .current_content_grant(&grant_scope)

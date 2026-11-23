@@ -117,6 +117,10 @@ jobs:
         run: |
           python scripts/validate_rust_python_findings.py --python-root .validation/python-028 --bin-dir target/debug
           PYTHONPATH=.validation/python-028 python scripts/validate_rust_python_receiver_review.py target/debug/agenturm
+      - name: Verify metric description compatibility and retained catalog navigation
+        run: |
+          python scripts/validate_rust_metric_descriptions.py --app target/debug/agenturm
+          python scripts/validate_rust_metric_catalog.py --app target/debug/agenturm
       - name: Verify ordinary OTLP error logs and opt-in text
         run: python scripts/validate_rust_error_logs.py --agenturm target/debug/agenturm
       - name: Verify protected log and current evaluation Finding journeys

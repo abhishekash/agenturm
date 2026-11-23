@@ -12,6 +12,7 @@ pub(crate) fn initial(
         source_id: None,
         snapshot_id: Some(snapshot_id),
         after: None,
+        search: None,
         limit: agenturm_ui::metric_history::METRIC_PAGE_SIZE,
     })
 }

@@ -245,6 +245,7 @@ pub enum ObservationKind {
     TraceProgress(TraceProgress),
     HostSample(HostSample),
     MetricPoint(MetricPoint),
+    MetricDescriptor(MetricDescriptor),
     TraceSpanSummary(telemetry_summary::TraceSpanSummary),
     OtlpActivityLog(telemetry_summary::OtlpActivityLog),
     OtlpErrorLog(telemetry_summary::OtlpErrorLog),
@@ -309,11 +310,11 @@ pub fn is_anchored_pull_request(
 }
 
 pub use agenturm_protocol::host::{
-    HostCpu, HostProcess, HostProcessState, HostRuntime, HostSample, MAX_HOST_PROCESSES,
-    is_host_source,
+    HostCpu, HostPlatform, HostProcess, HostProcessState, HostRuntime, HostSample,
+    MAX_HOST_PROCESSES, is_host_source,
 };
 pub use agenturm_protocol::metric;
-pub use agenturm_protocol::metric::{MetricPoint, is_metric_source};
+pub use agenturm_protocol::metric::{MetricDescriptor, MetricPoint, is_metric_source};
 pub use agenturm_protocol::observation::{
     FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, NANOUNITS_PER_CURRENCY_UNIT, NativeCostBasis,
     RelationshipKind, ReportedCost, SpanTokenUsage, TraceProgress, TraceSpan, TraceSpanIdentity,
@@ -1443,6 +1444,7 @@ fn validate_raw_observation_slice(
                     ObservationKind::Diagnostic { .. }
                         | ObservationKind::HostSample(_)
                         | ObservationKind::MetricPoint(_)
+                        | ObservationKind::MetricDescriptor(_)
                         | ObservationKind::InternalReview(_)
                         | ObservationKind::OtlpErrorLog(_)
                 ) && row.identity.session_id.is_none()
@@ -1488,6 +1490,17 @@ fn validate_raw_observation_slice(
         {
             return Err(
                 "metric point requires a valid OTLP source, event, and source scope".into(),
+            );
+        }
+        if let ObservationKind::MetricDescriptor(descriptor) = &row.kind
+            && (row.identity.scope != ObservationScope::Source
+                || row.revision != 0
+                || !is_metric_source(source.as_str())
+                || !descriptor.is_valid_at(row.observed_at_unix_ns)
+                || !descriptor.matches_event(&row.event_id))
+        {
+            return Err(
+                "metric descriptor requires a valid OTLP source and exact point identity".into(),
             );
         }
         if let ObservationKind::TraceSpanSummary(summary) = &row.kind

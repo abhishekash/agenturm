@@ -9,6 +9,7 @@ pub const MAX_METRIC_EXEMPLARS: usize = 16;
 pub const MAX_METRIC_NAME_BYTES: usize = 255;
 pub const MAX_METRIC_LABEL_BYTES: usize = 128;
 pub const MAX_METRIC_UNIT_BYTES: usize = 63;
+pub const MAX_METRIC_DESCRIPTION_BYTES: usize = 512;
 
 const NO_RECORDED_VALUE: u32 = 1;
 
@@ -347,6 +348,59 @@ impl MetricData {
             }
         }
     }
+}
+
+/// A description reported alongside one exact retained point. This metadata
+/// never participates in the series digest or the point's identity.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct MetricDescriptor {
+    pub series_id: String,
+    pub point_event_id: String,
+    pub description: String,
+}
+
+impl MetricDescriptor {
+    pub fn is_valid_at(&self, observed_at_unix_ns: u64) -> bool {
+        let Some(point_id) = self.point_event_id.strip_prefix("otlp-metric:") else {
+            return false;
+        };
+        let mut parts = point_id.split(':');
+        parts.next() == Some(self.series_id.as_str())
+            && parts.next().is_some_and(|start| {
+                start == "x"
+                    || canonical_positive_time(start)
+                        .is_some_and(|start| start <= observed_at_unix_ns)
+            })
+            && parts.next().and_then(canonical_positive_time) == Some(observed_at_unix_ns)
+            && parts.next().is_none()
+            && is_metric_series_id(&self.series_id)
+            && is_metric_description(&self.description)
+    }
+
+    pub fn matches_event(&self, event_id: &str) -> bool {
+        event_id
+            .strip_prefix("otlp-metric-description:")
+            .is_some_and(is_metric_series_id)
+    }
+}
+
+fn canonical_positive_time(value: &str) -> Option<u64> {
+    let time = value.parse::<u64>().ok()?;
+    (time > 0 && time <= i64::MAX as u64 && value == time.to_string()).then_some(time)
+}
+
+pub fn is_metric_description(description: &str) -> bool {
+    !description.is_empty()
+        && description == description.trim()
+        && description.len() <= MAX_METRIC_DESCRIPTION_BYTES
+        && description.chars().all(|ch| {
+            !ch.is_control()
+                && !matches!(ch, '\u{061c}' | '\u{00ad}' | '\u{180e}'
+                    | '\u{200b}'..='\u{200f}' | '\u{2028}'..='\u{202e}'
+                    | '\u{2060}'..='\u{206f}' | '\u{feff}' | '\u{fff9}'..='\u{fffb}'
+                    | '\u{e0001}'..='\u{e007f}')
+        })
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

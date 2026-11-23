@@ -1,6 +1,6 @@
 //! Snapshot-pinned metric catalog, chronological points, and explicit exemplars.
 
-use super::pane_filter::{self, Filter, FilterKey};
+use super::pane_filter::{Filter, FilterKey};
 use super::{
     Frame, KeyCode, Layout, LoadedView, MetricRow, Rect, label_style, panel, selection_style,
     theme, visible_text, wrap_display_width,
@@ -8,8 +8,9 @@ use super::{
 use agenturm_kernel::ReadSnapshot;
 use agenturm_kernel::metric::{ExponentialBuckets, MetricData, MetricPoint, MetricSeries};
 use agenturm_kernel::retained_history::{
-    MetricExemplarTrace, MetricHistoryPage, MetricHistoryQuery, MetricPointEntry,
-    MetricPointPosition, MetricSeriesEntry, MetricSeriesKey, MetricSeriesPosition,
+    MAX_METRIC_SEARCH_BYTES, MetricExemplarTrace, MetricHistoryPage, MetricHistoryQuery,
+    MetricPointEntry, MetricPointPosition, MetricSeriesEntry, MetricSeriesKey,
+    MetricSeriesPosition,
 };
 use ratatui::layout::Constraint;
 use ratatui::text::{Line, Span};
@@ -29,7 +30,6 @@ pub enum MetricInput {
 
 struct Page<Row, Position> {
     rows: Vec<Row>,
-    visible: Vec<usize>,
     next: Option<Position>,
     selection: ListState,
 }
@@ -38,7 +38,6 @@ impl<Row, Position> Page<Row, Position> {
     fn new(rows: Vec<Row>, next: Option<Position>) -> Self {
         let selection = ListState::default().with_selected((!rows.is_empty()).then_some(0));
         Self {
-            visible: (0..rows.len()).collect(),
             rows,
             next,
             selection,
@@ -46,31 +45,13 @@ impl<Row, Position> Page<Row, Position> {
     }
 
     fn selected(&self) -> Option<&Row> {
-        self.rows
-            .get(*self.visible.get(self.selection.selected()?)?)
-    }
-
-    fn filter(&mut self, predicate: impl Fn(&Row) -> bool) {
-        let previous = self
-            .selection
-            .selected()
-            .and_then(|index| self.visible.get(index).copied());
-        self.visible = self
-            .rows
-            .iter()
-            .enumerate()
-            .filter_map(|(index, row)| predicate(row).then_some(index))
-            .collect();
-        self.selection =
-            ListState::default().with_selected(pane_filter::selection(&self.visible, previous));
+        self.rows.get(self.selection.selected()?)
     }
 
     fn move_selection(&mut self, delta: isize) {
         if let Some(index) = self.selection.selected() {
             self.selection.select(Some(
-                index
-                    .saturating_add_signed(delta)
-                    .min(self.visible.len() - 1),
+                index.saturating_add_signed(delta).min(self.rows.len() - 1),
             ));
         }
     }
@@ -154,6 +135,7 @@ struct TraceDetail {
 
 enum PendingRead {
     SeriesPage,
+    Search(String),
     OpenSeries(MetricSeriesKey),
     PointPage(MetricSeriesKey),
     Exemplar(MetricPointPosition, usize),
@@ -164,6 +146,7 @@ pub struct MetricBrowser {
     source_id: Option<agenturm_kernel::ExtensionId>,
     catalog: Pages<MetricSeriesEntry, MetricSeriesPosition>,
     filter: Filter,
+    series_detail: Option<Scroll>,
     history: Option<PointHistory>,
     detail: Option<PointDetail>,
     trace: Option<TraceDetail>,
@@ -187,16 +170,25 @@ impl MetricBrowser {
         else {
             return None;
         };
-        Some(Self {
+        let browser = Self {
             snapshot_id,
             source_id,
             catalog: Pages::new(rows, next),
             filter: Filter::default(),
+            series_detail: None,
             history: None,
             detail: None,
             trace: None,
             pending: None,
-        })
+        };
+        browser
+            .matches_series(
+                snapshot_id,
+                &browser.catalog.current.rows,
+                browser.catalog.current.next.as_ref(),
+                None,
+            )
+            .then_some(browser)
     }
 
     pub fn cancel_read(&mut self) {
@@ -215,9 +207,27 @@ impl MetricBrowser {
                     rows,
                     next,
                 },
-            ) if snapshot_id == self.snapshot_id => {
+            ) if self.matches_series(snapshot_id, &rows, next.as_ref(), self.search()) => {
                 self.catalog.advance(rows, next);
-                self.apply_filter();
+            }
+            (
+                PendingRead::Search(query),
+                MetricHistoryPage::Series {
+                    snapshot_id,
+                    rows,
+                    next,
+                },
+            ) if self.matches_series(snapshot_id, &rows, next.as_ref(), nonempty(&query)) => {
+                let selected = self
+                    .catalog
+                    .current
+                    .selected()
+                    .and_then(|prior| rows.iter().position(|row| row.key == prior.key));
+                self.catalog = Pages::new(rows, next);
+                if let Some(selected) = selected {
+                    self.catalog.current.selection.select(Some(selected));
+                }
+                self.filter = Filter::with_query(query);
             }
             (
                 PendingRead::OpenSeries(series),
@@ -276,6 +286,49 @@ impl MetricBrowser {
         true
     }
 
+    fn matches_series(
+        &self,
+        snapshot: ReadSnapshot,
+        rows: &[MetricSeriesEntry],
+        next: Option<&MetricSeriesPosition>,
+        search: Option<&str>,
+    ) -> bool {
+        let matches_scope = |key: &MetricSeriesKey| {
+            self.source_id
+                .as_ref()
+                .is_none_or(|source| key.source_id == *source)
+        };
+        snapshot == self.snapshot_id
+            && rows.len() <= METRIC_PAGE_SIZE
+            && rows
+                .iter()
+                .all(|row| row.key.series_id == row.series.id && matches_scope(&row.key))
+            && next.is_none_or(|cursor| {
+                cursor.snapshot_id == snapshot
+                    && cursor.search.as_deref() == search
+                    && cursor.source_filter == self.source_id
+                    && rows.last().is_some_and(|row| row.key == cursor.series)
+            })
+    }
+
+    fn search(&self) -> Option<&str> {
+        nonempty(self.filter.query())
+    }
+
+    fn series_query(
+        &self,
+        search: Option<String>,
+        after: Option<MetricSeriesPosition>,
+    ) -> MetricHistoryQuery {
+        MetricHistoryQuery::Series {
+            source_id: self.source_id.clone(),
+            snapshot_id: Some(self.snapshot_id),
+            search,
+            after,
+            limit: METRIC_PAGE_SIZE,
+        }
+    }
+
     fn matches_points(
         &self,
         series: &MetricSeriesKey,
@@ -299,45 +352,37 @@ impl MetricBrowser {
         self.filter.editing()
     }
 
-    pub(super) fn filter_key(&mut self, key: KeyCode, loading: bool) -> bool {
-        if self.history.is_some() || loading || self.pending.is_some() {
-            return false;
+    pub(super) fn filter_key(&mut self, key: KeyCode, loading: bool) -> MetricInput {
+        if self.history.is_some()
+            || self.series_detail.is_some()
+            || loading
+            || self.pending.is_some()
+        {
+            return MetricInput::Unhandled;
         }
-        match self.filter.key(key) {
+        let previous = self.filter.query().to_owned();
+        match self.filter.key_with_limit(key, MAX_METRIC_SEARCH_BYTES) {
             FilterKey::Changed => {
-                self.apply_filter();
-                true
+                let query = self.filter.query().to_owned();
+                self.filter = Filter::with_query(previous);
+                let read = self.series_query(nonempty(&query).map(str::to_owned), None);
+                self.read(PendingRead::Search(query), read)
             }
-            FilterKey::Handled => true,
-            FilterKey::Ignored => false,
+            FilterKey::Handled => MetricInput::Handled,
+            FilterKey::Ignored => MetricInput::Unhandled,
         }
-    }
-
-    fn apply_filter(&mut self) {
-        self.catalog.current.filter(|row| {
-            let series = &row.series;
-            self.filter.matches(
-                [
-                    series.name.as_str(),
-                    series.unit.as_str(),
-                    series.kind.label(),
-                    row.key.source_id.as_str(),
-                ]
-                .into_iter()
-                .chain(series.scope.as_deref())
-                .chain(series.service.as_deref()),
-            )
-        });
     }
 
     pub fn key(&mut self, key: KeyCode, loading: bool) -> MetricInput {
-        if self.filter_key(key, loading) {
-            return MetricInput::Handled;
+        match self.filter_key(key, loading) {
+            MetricInput::Unhandled => {}
+            input => return input,
         }
         if key == KeyCode::Esc {
             if self.trace.take().is_some()
                 || self.detail.take().is_some()
                 || self.history.take().is_some()
+                || self.series_detail.take().is_some()
             {
                 self.cancel_read();
                 return MetricInput::Handled;
@@ -359,12 +404,22 @@ impl MetricBrowser {
                 | KeyCode::Down
                 | KeyCode::PageUp
                 | KeyCode::PageDown
-                | KeyCode::Char('j' | 'k' | 'e' | '[' | ']') => MetricInput::Handled,
+                | KeyCode::Char('j' | 'k' | 'd' | 'e' | '[' | ']') => MetricInput::Handled,
                 _ => MetricInput::Unhandled,
             };
         }
         if self.detail.is_some() {
             return self.detail_key(key);
+        }
+        if self.history.is_none()
+            && let Some(detail) = &mut self.series_detail
+        {
+            if detail.key(key) {
+                return MetricInput::Handled;
+            }
+            if key != KeyCode::Enter {
+                return MetricInput::Unhandled;
+            }
         }
         let delta = match key {
             KeyCode::Up | KeyCode::Char('k') => -1,
@@ -421,18 +476,18 @@ impl MetricBrowser {
                 }),
                 KeyCode::Char('[') => {
                     self.catalog.back();
-                    self.apply_filter();
+                    return MetricInput::Handled;
+                }
+                KeyCode::Char('d') => {
+                    if self.catalog.current.selected().is_some() {
+                        self.series_detail = Some(Scroll::default());
+                    }
                     return MetricInput::Handled;
                 }
                 KeyCode::Char(']') => self.catalog.current.next.clone().map(|after| {
                     (
                         PendingRead::SeriesPage,
-                        MetricHistoryQuery::Series {
-                            source_id: self.source_id.clone(),
-                            snapshot_id: Some(self.snapshot_id),
-                            after: Some(after),
-                            limit: METRIC_PAGE_SIZE,
-                        },
+                        self.series_query(self.search().map(str::to_owned), Some(after)),
                     )
                 }),
                 _ => return MetricInput::Unhandled,
@@ -544,15 +599,31 @@ impl MetricBrowser {
                     || history.pages.current.next.is_some(),
             };
         }
+        if self.series_detail.is_some()
+            && let Some(row) = self.catalog.current.selected()
+        {
+            return LoadedView {
+                title: "Metric series details".into(),
+                scope: format!(
+                    "{} / {} / {snapshot}",
+                    row.key.source_id.as_str(),
+                    row.key.series_id
+                ),
+                rows: detail_rows(series_lines(row)),
+                truncated: false,
+            };
+        }
         LoadedView {
             title: "Metrics · OTLP series".into(),
-            scope: snapshot,
+            scope: match self.search() {
+                Some(query) => format!("{snapshot} · Catalog search {query}"),
+                None => snapshot,
+            },
             rows: self
                 .catalog
                 .current
-                .visible
+                .rows
                 .iter()
-                .map(|index| &self.catalog.current.rows[*index])
                 .map(|row| MetricRow {
                     label: row.series.name.clone(),
                     value: format!(
@@ -644,8 +715,26 @@ impl MetricBrowser {
                     .map_or_else(Vec::new, |row| point_lines(row, 0, false));
                 render_lines(frame, area, " Selected point ", rows, None);
             }
+        } else if self.series_detail.is_some() {
+            let rows = self
+                .catalog
+                .current
+                .selected()
+                .map_or_else(Vec::new, series_lines);
+            render_lines(
+                frame,
+                body,
+                " Metric series details ",
+                rows,
+                self.series_detail.as_mut(),
+            );
         } else {
-            let body = if let Some(label) = self.filter.label() {
+            let query = if let Some(PendingRead::Search(needle)) = &self.pending {
+                Some(format!("Search catalog · {} …", visible_text(needle)))
+            } else {
+                self.filter.label_with("Search catalog")
+            };
+            let body = if let Some(label) = query {
                 let [query, rest] =
                     Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(body);
                 frame.render_widget(Paragraph::new(label).style(label_style()), query);
@@ -655,8 +744,7 @@ impl MetricBrowser {
             };
             let (list, preview) = split(body);
             let page = &mut self.catalog.current;
-            let items = page.visible.iter().map(|index| {
-                let row = &page.rows[*index];
+            let items = page.rows.iter().map(|row| {
                 ListItem::new(Line::from(vec![
                     Span::raw(visible_text(&row.series.name)),
                     Span::styled(
@@ -669,9 +757,9 @@ impl MetricBrowser {
                     ),
                 ]))
             });
-            if page.visible.is_empty() {
+            if page.rows.is_empty() {
                 let empty = if self.filter.active() {
-                    "No matching metric series on this page."
+                    "No matching retained metric series."
                 } else {
                     "No retained OTLP metric series."
                 };
@@ -720,13 +808,19 @@ impl MetricBrowser {
                 "Esc series   ↑↓ select   Enter details{}",
                 history.pages.paging_hint()
             )
+        } else if self.series_detail.is_some() {
+            "Esc catalog   ↑↓ scroll   Enter points".into()
         } else {
             format!(
-                "/ search   Enter points   ↑↓ select{}",
+                "/ search   d details   Enter points   ↑↓{}",
                 self.catalog.paging_hint()
             )
         }
     }
+}
+
+fn nonempty(query: &str) -> Option<&str> {
+    (!query.is_empty()).then_some(query)
 }
 
 fn detail_rows(lines: Vec<String>) -> Vec<MetricRow> {
@@ -838,6 +932,13 @@ fn series_descriptor(series: &MetricSeries, source: &agenturm_kernel::ExtensionI
 
 fn series_lines(row: &MetricSeriesEntry) -> Vec<String> {
     let mut lines = series_descriptor(&row.series, &row.key.source_id);
+    lines.insert(
+        1,
+        format!(
+            "Description {}",
+            present(row.description.as_deref().map(visible_text))
+        ),
+    );
     lines.push(format!("Latest {}", timestamp(row.latest_unix_ns)));
     lines
 }
@@ -1021,47 +1122,84 @@ mod tests {
             other.id = "2".repeat(64);
             other.name = "agent.sibling".into();
             other.service = Some("different-service".into());
-            let mut browser = MetricBrowser::new(MetricHistoryPage::Series {
+            let sibling = MetricSeriesEntry {
+                key: MetricSeriesKey {
+                    series_id: other.id.clone(),
+                    ..key.clone()
+                },
+                series: other,
+                latest_unix_ns: 15,
+                description: None,
+            };
+            let selected = MetricSeriesEntry {
+                key: key.clone(),
+                series: series.clone(),
+                latest_unix_ns: 16,
+                description: Some("Previously retained request duration".into()),
+            };
+            let series_page = |rows, next| MetricHistoryPage::Series {
                 snapshot_id: snapshot,
-                rows: vec![
-                    MetricSeriesEntry {
-                        key: MetricSeriesKey {
-                            series_id: other.id.clone(),
-                            ..key.clone()
-                        },
-                        series: other,
-                        latest_unix_ns: 15,
-                    },
-                    MetricSeriesEntry {
-                        key: key.clone(),
-                        series: series.clone(),
-                        latest_unix_ns: 16,
-                    },
-                ],
-                next: None,
-            })
-            .unwrap();
+                rows,
+                next,
+            };
+            let mut browser = MetricBrowser::new(series_page(vec![sibling.clone()], None)).unwrap();
             assert!(render(&mut terminal, &mut browser).contains("OTLP series"));
-            for key in std::iter::once(KeyCode::Char('/'))
-                .chain("missing".chars().map(KeyCode::Char))
-                .chain([KeyCode::Enter])
-            {
-                assert!(matches!(browser.key(key, false), MetricInput::Handled));
-            }
-            assert!(render(&mut terminal, &mut browser).contains("No matching metric series"));
-            for key in [KeyCode::Esc, KeyCode::Char('/')]
-                .into_iter()
-                .chain(
-                    "TELEMETRY-SERVICE Gauge ms sdk.fixture"
-                        .chars()
-                        .map(KeyCode::Char),
-                )
-                .chain([KeyCode::Enter])
-            {
-                assert!(matches!(browser.key(key, false), MetricInput::Handled));
-            }
+            let query = |browser: &mut MetricBrowser, text: &str| {
+                for key in
+                    std::iter::once(KeyCode::Char('/')).chain(text.chars().map(KeyCode::Char))
+                {
+                    assert!(matches!(browser.key(key, false), MetricInput::Handled));
+                }
+                let MetricInput::Read(query) = browser.key(KeyCode::Enter, false) else {
+                    panic!("catalog search should submit a retained read");
+                };
+                assert!(matches!(
+                    query.as_ref(), MetricHistoryQuery::Series { search, after: None, snapshot_id: Some(at), .. }
+                    if search.as_deref() == Some(text) && *at == snapshot
+                ));
+            };
+            query(&mut browser, "missing");
+            assert!(browser.apply(series_page(Vec::new(), None)));
+            assert!(
+                render(&mut terminal, &mut browser).contains("No matching retained metric series")
+            );
+            let MetricInput::Read(reset) = browser.key(KeyCode::Esc, false) else {
+                panic!("reset should submit the unfiltered catalog");
+            };
+            assert!(matches!(
+                reset.as_ref(),
+                MetricHistoryQuery::Series {
+                    search: None,
+                    after: None,
+                    ..
+                }
+            ));
+            assert!(browser.apply(series_page(vec![sibling.clone()], None)));
+            let search = "RETAINED REQUEST DURATION";
+            query(&mut browser, search);
+            let next = MetricSeriesPosition {
+                series: key.clone(),
+                snapshot_id: snapshot,
+                source_filter: None,
+                search: Some(search.into()),
+            };
+            let mismatched = MetricSeriesPosition {
+                search: None,
+                ..next.clone()
+            };
+            assert!(!browser.apply(series_page(vec![selected.clone()], Some(mismatched))));
+            assert!(render(&mut terminal, &mut browser).contains("agent.sibling"));
+            query(&mut browser, search);
+            assert!(browser.apply(series_page(vec![selected], Some(next.clone()))));
             let screen = render(&mut terminal, &mut browser);
             assert!(screen.contains("agent.latency") && !screen.contains("agent.sibling"));
+            assert!(matches!(
+                browser.key(KeyCode::Char('d'), false),
+                MetricInput::Handled
+            ));
+            let screen = render(&mut terminal, &mut browser);
+            assert!(screen.contains("Metric series details"));
+            assert!(screen.contains("Previously retained request duration"));
             let MetricInput::Read(query) = browser.key(KeyCode::Enter, false) else {
                 panic!("open a selected metric series");
             };
@@ -1122,11 +1260,40 @@ mod tests {
                 ));
             }
             let screen = render(&mut terminal, &mut browser);
-            assert!(screen.contains("›  agent.latency"));
+            assert!(screen.contains("Metric series details") && screen.contains("agent.latency"));
             assert!(matches!(
                 browser.key(KeyCode::Esc, false),
                 MetricInput::Handled
             ));
+            assert!(render(&mut terminal, &mut browser).contains("›  agent.latency"));
+            let MetricInput::Read(older) = browser.key(KeyCode::Char(']'), false) else {
+                panic!("read the next page of the same pinned catalog search");
+            };
+            assert!(matches!(older.as_ref(),
+                MetricHistoryQuery::Series { search: Some(query), after: Some(cursor), snapshot_id: Some(at), .. }
+                if query == search && cursor == &next && *at == snapshot
+            ));
+            assert!(browser.apply(series_page(Vec::new(), None)));
+            assert!(matches!(
+                browser.key(KeyCode::Char('['), false),
+                MetricInput::Handled
+            ));
+            assert!(render(&mut terminal, &mut browser).contains("›  agent.latency"));
+            assert!(matches!(
+                browser.key(KeyCode::Char('/'), false),
+                MetricInput::Handled
+            ));
+            for _ in search.chars() {
+                assert!(matches!(
+                    browser.key(KeyCode::Backspace, false),
+                    MetricInput::Handled
+                ));
+            }
+            assert!(
+                matches!(browser.key(KeyCode::Enter, false), MetricInput::Read(query)
+                if matches!(query.as_ref(), MetricHistoryQuery::Series { search: None, after: None, .. }))
+            );
+            assert!(browser.apply(series_page(vec![sibling], None)));
             assert!(matches!(
                 browser.key(KeyCode::Esc, false),
                 MetricInput::Back

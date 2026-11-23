@@ -375,6 +375,13 @@ impl HistoryReader for RemoteStore {
         false
     }
 
+    fn query_host_inventory(&self) -> Result<ObservationPage, String> {
+        match self.request(ReaderHistoryRequest::HostInventory { snapshot_id: None })? {
+            ReaderHistoryReply::HostInventory(page) => Ok(page),
+            _ => Err("History receiver sent an unexpected Host inventory".into()),
+        }
+    }
+
     fn query_host_history(&self, query: &ObservationQuery) -> Result<ObservationPage, String> {
         match self.request(ReaderHistoryRequest::HostHistory {
             query: query.clone(),

@@ -173,7 +173,7 @@ pub(super) fn create_schema(connection: &Connection, version: i64) -> Result<()>
         17..=19 => {
             "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail')"
         }
-        20 => {
+        20..=21 => {
             "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')"
         }
         _ => return Err(StoreError::UnsupportedSchema(version)),

@@ -2231,6 +2231,10 @@ trait HistoryReader: ObservationStore {
     fn local_host_data(&self) -> bool {
         true
     }
+    fn query_host_inventory(&self) -> Result<agenturm_kernel::ObservationPage, String> {
+        Err("Recorded Host inventory is unavailable from this reader".into())
+    }
+
     fn query_host_history(
         &self,
         _: &ObservationQuery,
@@ -2413,6 +2417,11 @@ impl HistoryReader for agenturm_storage_service::NativeStore {
     fn local_host_data(&self) -> bool {
         false
     }
+    fn query_host_inventory(&self) -> Result<agenturm_kernel::ObservationPage, String> {
+        self.query_host_inventory(None)
+            .map_err(|error| error.to_string())
+    }
+
     fn query_host_history(
         &self,
         query: &ObservationQuery,
@@ -2991,7 +3000,7 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                     "method":method.as_str(), "duration_ns":duration_ns.map(|nanos| nanos.to_string()),
                     "result":result,
                 }),
-                ObservationKind::TraceSpanSummary(_) | ObservationKind::OtlpActivityLog(_) | ObservationKind::OtlpErrorLog(_) | ObservationKind::InternalReview(_) | ObservationKind::NativeRequest(_) | ObservationKind::MetricPoint(_) => serde_json::to_value(&row.kind)
+                ObservationKind::TraceSpanSummary(_) | ObservationKind::OtlpActivityLog(_) | ObservationKind::OtlpErrorLog(_) | ObservationKind::InternalReview(_) | ObservationKind::NativeRequest(_) | ObservationKind::MetricPoint(_) | ObservationKind::MetricDescriptor(_) => serde_json::to_value(&row.kind)
                     .expect("typed metric metadata serializes"),
                 ObservationKind::TraceSpan(span) => {
                     let mut evidence = serde_json::json!({

@@ -83,6 +83,11 @@ pub(crate) enum NativeOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_history_identity: Option<String>,
     },
+    QueryHostInventory {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot_id: Option<ReadSnapshot>,
+        expected_history_identity: String,
+    },
     QueryHostHistory {
         query: ObservationQuery,
         expected_history_identity: Option<String>,
@@ -586,6 +591,17 @@ pub(crate) fn dispatch(
                 authorize_read(store, role, expected_history_identity.as_deref())
                     .and_then(|()| native_read::query_sessions(store, allowed, &query)),
             );
+        }
+        NativeOperation::QueryHostInventory {
+            snapshot_id,
+            expected_history_identity,
+        } => {
+            return NativeReply::History(if role != Role::Reader {
+                Err(ReadFailure::Unauthorized)
+            } else {
+                authorize_read(store, role, Some(&expected_history_identity))
+                    .and_then(|()| native_read::query_host_inventory(store, allowed, snapshot_id))
+            });
         }
         NativeOperation::QueryHostHistory {
             query,
@@ -1274,6 +1290,19 @@ impl NativeStore {
             query: query.clone(),
             expected_history_identity: self.read_binding.clone(),
         })?
+        .map_err(NativeClientError::Read)
+    }
+
+    pub fn query_host_inventory(
+        &self,
+        snapshot_id: Option<ReadSnapshot>,
+    ) -> Result<ObservationPage, NativeClientError> {
+        self.exchange::<Result<ObservationPage, ReadFailure>>(
+            NativeOperation::QueryHostInventory {
+                snapshot_id,
+                expected_history_identity: self.require_read_binding()?,
+            },
+        )?
         .map_err(NativeClientError::Read)
     }
 

@@ -321,6 +321,16 @@ pub fn query_host_history(
         .map_err(failure)
 }
 
+pub fn query_host_inventory(
+    store: &Store,
+    allowed_sources: &BTreeSet<ExtensionId>,
+    snapshot_id: Option<agenturm_kernel::ReadSnapshot>,
+) -> Result<ObservationPage, ReadFailure> {
+    store
+        .query_host_inventory(snapshot_id, allowed_sources)
+        .map_err(failure)
+}
+
 fn authorize(
     allowed_sources: &BTreeSet<ExtensionId>,
     source_id: Option<&str>,

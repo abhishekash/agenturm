@@ -927,6 +927,10 @@ pub(super) fn describe_observation(kind: &ObservationKind) -> (&'static str, Str
             "Error log",
             format!("Reported severity {}", log.severity_number),
         ),
+        ObservationKind::MetricDescriptor(_) => (
+            "Metric description",
+            "Reported instrument description".into(),
+        ),
         ObservationKind::MetricPoint(point) => (
             "Metric point",
             format!(

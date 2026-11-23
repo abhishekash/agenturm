@@ -9,7 +9,7 @@ pub(super) fn decode(body: &[u8], source: &ExtensionId) -> DecodeResult<Vec<Obse
             resource_metrics(group, source, &mut batch)?;
         }
     }
-    Ok(batch.into_rows())
+    Ok(batch.into_rows(source))
 }
 
 fn wire_fields(input: &[u8]) -> impl Iterator<Item = DecodeResult<(u64, Field<'_>)>> {
@@ -103,6 +103,7 @@ fn metric(
     context: &Context,
 ) -> DecodeResult<()> {
     let (mut name, mut unit, mut payload) = (None, None, None);
+    let mut description = None;
     for field in wire_fields(input) {
         let (number, Field::Bytes(bytes)) = field? else {
             continue;
@@ -110,6 +111,14 @@ fn metric(
         let kind = match number {
             1 => {
                 set(&mut name, text(bytes)?)?;
+                continue;
+            }
+            2 => {
+                description = Some(if description.is_some() {
+                    None
+                } else {
+                    text(bytes).ok()
+                });
                 continue;
             }
             3 => {
@@ -151,10 +160,20 @@ fn metric(
         aggregation.unwrap_or(MetricTemporality::Unspecified),
         monotonic,
     )?;
+    let description = description
+        .flatten()
+        .filter(|description| valid_metric_description(description));
     for field in wire_fields(data) {
         if let (1, Field::Bytes(bytes)) = field? {
             let (observed_at, attributes, point) = point(bytes, &series)?;
-            batch.push(source, context, &attributes, observed_at, point)?;
+            batch.push(
+                source,
+                context,
+                &attributes,
+                observed_at,
+                point,
+                description,
+            )?;
         }
     }
     Ok(())

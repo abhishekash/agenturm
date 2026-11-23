@@ -1112,7 +1112,8 @@ impl Workspace {
         if let Some(analytics::HistoryAnalytics::Metrics(browser)) = view.active_analytics_mut()
             && (key == KeyCode::Char('/') || browser.editing_filter())
         {
-            return browser.filter_key(key, false);
+            let input = browser.filter_key(key, false);
+            return self.handle_metric_input(sender, input, false);
         }
         if let Some(browser) = view.page.active_findings()
             && (key == KeyCode::Char('/') || browser.editing_filter())
@@ -2753,6 +2754,7 @@ mod tests {
                 key: key.clone(),
                 series,
                 latest_unix_ns: 20,
+                description: None,
             }],
             next: None,
         }));
@@ -2761,6 +2763,25 @@ mod tests {
             HistorySelection::All(WorkspaceView::Metrics),
             page,
         ));
+        assert_eq!(
+            workspace.loaded_view().unwrap().rows[0].label,
+            "fixture.latency"
+        );
+        press(&mut workspace, &sender, KeyCode::Char('/'));
+        for ch in "historical description".chars() {
+            press(&mut workspace, &sender, KeyCode::Char(ch));
+        }
+        assert!(requests.try_recv().is_err());
+        press(&mut workspace, &sender, KeyCode::Enter);
+        assert!(
+            matches!(requests.try_recv(), Ok(WorkspaceRequest::MetricHistory(query))
+            if matches!(query.as_ref(), MetricHistoryQuery::Series {
+                search: Some(search), snapshot_id: Some(at), after: None, ..
+            } if search == "historical description" && *at == snapshot))
+        );
+        press(&mut workspace, &sender, KeyCode::Esc);
+        workspace.finish(Err("Cancelled search must not replace the catalog".into()));
+        assert!(workspace.message.is_none());
         assert_eq!(
             workspace.loaded_view().unwrap().rows[0].label,
             "fixture.latency"

@@ -154,7 +154,10 @@ pub(super) fn require_cursor(
 fn matches_projection(kind: &ObservationKind, projection: &HistoryProjection) -> bool {
     match (kind, projection) {
         (ObservationKind::HostSample(_), _) => false,
-        (ObservationKind::TraceSpanSummary(_), HistoryProjection::Activity) => false,
+        (
+            ObservationKind::TraceSpanSummary(_) | ObservationKind::MetricDescriptor(_),
+            HistoryProjection::Activity,
+        ) => false,
         (_, HistoryProjection::Activity) => true,
         (ObservationKind::TraceSpan(span), HistoryProjection::Traces { trace_id }) => {
             trace_id.as_ref().is_none_or(|id| id == &span.trace_id)

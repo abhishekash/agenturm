@@ -27,6 +27,10 @@ impl Filter {
     }
 
     pub(super) fn key(&mut self, key: KeyCode) -> FilterKey {
+        self.key_with_limit(key, MAX_QUERY_BYTES)
+    }
+
+    pub(super) fn key_with_limit(&mut self, key: KeyCode, max_query_bytes: usize) -> FilterKey {
         if let Some(draft) = self.draft.as_mut() {
             match key {
                 KeyCode::Esc => self.draft = None,
@@ -42,7 +46,7 @@ impl Filter {
                     draft.pop();
                 }
                 KeyCode::Char(ch)
-                    if !ch.is_control() && draft.len() + ch.len_utf8() <= MAX_QUERY_BYTES =>
+                    if !ch.is_control() && draft.len() + ch.len_utf8() <= max_query_bytes =>
                 {
                     draft.push(ch);
                 }

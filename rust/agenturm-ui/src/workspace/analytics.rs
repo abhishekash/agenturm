@@ -42,6 +42,7 @@ impl HistoryAnalytics {
     pub(super) fn help(&self) -> &'static str {
         match self {
             Self::Metrics(_) => concat!(
+                "/ Search retained catalog · d Series details\n",
                 "↑/↓ Select or scroll · Enter Open selected row\n",
                 "[ / ] Previous / next retained page\n",
                 "e Next exemplar · Enter Open exact trace span\n",
@@ -100,10 +101,7 @@ impl Workspace {
                 self.message = if browser.apply(page) {
                     None
                 } else {
-                    Some(
-                        "Metric history response did not match the selected snapshot and series"
-                            .into(),
-                    )
+                    Some("Metric history response did not match the pinned selection".into())
                 };
             }
             result => {
@@ -113,6 +111,40 @@ impl Workspace {
                     Ok(_) => Some("History reader returned an unexpected metric response".into()),
                 };
             }
+        }
+    }
+
+    pub(super) fn handle_metric_input(
+        &mut self,
+        sender: &mpsc::Sender<WorkspaceRequest>,
+        input: MetricInput,
+        cancel: bool,
+    ) -> bool {
+        match input {
+            MetricInput::Read(query) => {
+                self.request(
+                    sender,
+                    WorkspaceRequest::MetricHistory(query),
+                    Change::MetricHistory { cancelled: false },
+                );
+                if self.pending.is_none()
+                    && let Some(HistoryAnalytics::Metrics(browser)) = self
+                        .history
+                        .last_mut()
+                        .and_then(HistoryView::active_analytics_mut)
+                {
+                    browser.cancel_read();
+                }
+                true
+            }
+            MetricInput::Back | MetricInput::Handled => {
+                if cancel && matches!(input, MetricInput::Back) {
+                    self.history.pop();
+                }
+                self.message = None;
+                true
+            }
+            MetricInput::Unhandled => false,
         }
     }
 
@@ -165,32 +197,8 @@ impl Workspace {
                     }
                 }
                 let code = if cancel { KeyCode::Esc } else { code };
-                match browser.key(code, self.pending.is_some()) {
-                    MetricInput::Read(query) => {
-                        self.request(
-                            sender,
-                            WorkspaceRequest::MetricHistory(query),
-                            Change::MetricHistory { cancelled: false },
-                        );
-                        if self.pending.is_none()
-                            && let Some(HistoryAnalytics::Metrics(browser)) = self
-                                .history
-                                .last_mut()
-                                .and_then(HistoryView::active_analytics_mut)
-                        {
-                            browser.cancel_read();
-                        }
-                        return true;
-                    }
-                    input @ (MetricInput::Back | MetricInput::Handled) => {
-                        if cancel && matches!(input, MetricInput::Back) {
-                            self.history.pop();
-                        }
-                        self.message = None;
-                        return true;
-                    }
-                    MetricInput::Unhandled => {}
-                }
+                let input = browser.key(code, self.pending.is_some());
+                return self.handle_metric_input(sender, input, cancel);
             }
         }
         false

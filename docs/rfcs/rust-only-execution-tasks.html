@@ -2,8 +2,14 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Rust migration task board</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-tasks.md">Markdown source ↗</a></nav><h1>Rust-only execution tasks</h1>
-<p>Reviewed against the <a href="https://github.com/abhishekash/agenturm/blob/14be2845e4c7520ecbe9d77cac2f087b9b81fb2b/docs/rfcs/rust-only-execution-plan.md">execution plan</a> at <code>14be284</code>. The immediate work can start on four fronts in parallel. The decision about the default distribution depends on which workflows must survive cutover. Untrusted connectors have their own security gate.</p>
+</style></head><body><main><nav><strong>Agenturm / Rust migration progress — 23 November 2026</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-tasks.md">Markdown source ↗</a></nav><h1>Rust-only execution tasks</h1>
+<p>Progress updated 23 November 2026 against merged native PR #379 (<code>52ec13b</code>), Findings PR #380 (<code>ef3d647</code>) and the joined Host/Metrics development baseline. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md">detailed remaining-work plan</a>: <strong>F = feature development, I = integration, Q = tests/qualification</strong>. The status column below supersedes old scheduling labels such as “Start now”; dependencies and original acceptance criteria remain for traceability.</p>
+<ul>
+<li><strong>Merged native baseline:</strong> 813 tests / 96 suites, strict Clippy, exact optimized archive install/upgrade and 12 separate-UID KVM cases passed.</li>
+<li><strong>Findings follow-up:</strong> 819 tests / 96 suites, actual tagged development/optimized journeys and all applicable PR CI passed; PR #380 merged as <code>39474dd</code>; final joined-artifact regression remains.</li>
+<li><strong>Host/Metrics joined baseline:</strong> 833 tests / 96 suites, strict Clippy and all binaries; real metric HTTP and three-size terminal checks passed. The final Host refresh/context correction passed its 14 focused tests and the joined 833-test / 96-suite run with strict workspace Clippy/all binaries; the updated separate-UID Host KVM/three-size fixture also passed. Final optimized artifact qualification remains.</li>
+<li><strong>Full migration:</strong> incomplete. Do not add successive test totals or equate implemented code with final artifact acceptance. Default cutover and one-release-per-24-hours rules remain in force.</li>
+</ul>
 <h2>Review of the existing plan</h2>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -27,7 +33,7 @@
 </tr>
 <tr>
 <td>Storage, release and connectors (steps 4–6)</td>
-<td>Trusted Linux recovery, the published Ubuntu x86-64 Rust 0.3.1 archive, and pinned trusted connector replay/reconciliation are baselines. A distinct storage principal, untrusted connector controls, and each additional platform require separate proof.</td>
+<td>Trusted Linux recovery, published Rust 0.3.8 Linux x86-64/ARM64, separate-principal KVM broker checks and trusted connector replay/reconciliation are baselines. The static x86-64 isolated_linux / unix_status_v1 controls are locally qualified; additional profiles, deployed production acceptance, the final combined artifact and macOS remain open.</td>
 </tr>
 <tr>
 <td>Default distribution</td>
@@ -35,15 +41,14 @@
 </tr>
 </tbody>
 </table></div>
-<h2>Current integration status — 23 November 2026</h2>
-<p>The tables below preserve the original task definitions and diagnosis. Later authorization started implementation. E1–E3 discovery/native metadata work is integrated in the Linux candidate; E4/E5 name fallback and recency ordering are implemented with focused UI tests. The final archive and actual-session rerun remain gates. D2-Mac is planned and unsupported until each advertised native architecture passes. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md">current execution plan</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-journey-parity.md">paired cockpit audit</a> for completed versus pending journeys. No workflow has been retired.</p>
 <h2>Task board</h2>
-<p>Each ID is an independently assignable task. <strong>Start now</strong> means the task can run in parallel with every other start-now task. Dependencies apply to completion unless a narrower prerequisite is named. Record the commit or archive digest, platform, scenario and result for each acceptance run.</p>
+<p>Each ID retains its original acceptance requirement. Assign only unfinished work using the current status and F/I/Q plan. Completed baseline work needs final-artifact regression where indicated, not a new implementation from scratch. Record source/artifact digest, platform, scenario and result for each acceptance run.</p>
 <h3>A. Native harness evidence</h3>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
 <tr>
 <th>ID</th>
+<th>Current status</th>
 <th>Task</th>
 <th>Depends on</th>
 <th>Done when</th>
@@ -52,36 +57,42 @@
 <tbody>
 <tr>
 <td>A1</td>
+<td>Partial — native fork/checks verified; same-session worker relationships open (F1/Q8).</td>
 <td>Pi worker relationships and check outcomes</td>
 <td>Start now</td>
 <td>Native records establish which parent IDs and explicit check outcomes are available. Supported cases survive collect and reopen. Missing evidence stays unknown.</td>
 </tr>
 <tr>
 <td>A2</td>
+<td>Partial — structured lifecycle/delegation/direct checks verified; remaining shapes and full check coverage open (F1/Q8).</td>
 <td>Codex lifecycle and check gaps</td>
 <td>Start now</td>
 <td>Previously uncovered native turn or check shapes have positive and ambiguous examples. A later turn or successful PR creation cannot overwrite the recorded ending of an earlier turn.</td>
 </tr>
 <tr>
 <td>A3</td>
+<td>Partial — exact worker/session and completion verified; attributable parent/check evidence open (F1).</td>
 <td>Claude Code parentage and check outcomes</td>
 <td>Start now</td>
 <td>Verify whether native records identify the immediate parent and check exit. Persist only attributable facts and cover the worker-with-session-only case.</td>
 </tr>
 <tr>
 <td>A4</td>
+<td>External input — native-format fixtures pass; real Kiro transcript unavailable (Q8).</td>
 <td>Kiro actual-session qualification</td>
 <td>Start now. Actual run needs a Kiro host with a native transcript.</td>
 <td>The installed bundle discovers a real session, commits it, restarts and displays its recorded turn and activity. Record which relationship, credit and check shapes were present. Keep fixture-only cases identified.</td>
 </tr>
 <tr>
 <td>A5</td>
+<td>Implemented supported shapes — native idle boundaries/relationships/direct checks verified; final installed coverage Q8.</td>
 <td>OpenCode turn boundaries and activity</td>
 <td>Start now</td>
 <td>A native SQLite sample demonstrates attribution after an explicit idle boundary. Missing boundaries, missing exits and ambiguous outcomes retain their documented scope after reopen.</td>
 </tr>
 <tr>
 <td>A6</td>
+<td>Partially qualified — provider checks exist; final installed per-provider acceptance remains (Q8).</td>
 <td>Verify the installed cockpit per harness</td>
 <td>After the corresponding A1–A5 task, independently per provider</td>
 <td>Exercise selection, recorded reason, missing evidence, later activity, view switching and terminal restoration at 60×18. Update that provider's matrix row with the actual and fixture evidence.</td>
@@ -93,6 +104,7 @@
 <thead>
 <tr>
 <th>ID</th>
+<th>Current status</th>
 <th>Task</th>
 <th>Depends on</th>
 <th>Done when</th>
@@ -101,48 +113,56 @@
 <tbody>
 <tr>
 <td>B1</td>
+<td>Inventory exists — required differences and cutover scope still need explicit closure (F2).</td>
 <td>Inventory remaining user workflows and decide cutover scope</td>
 <td>Start now</td>
 <td>Map each Python CLI entry point and cockpit workflow to a Rust command, a missing behavior or an explicit retirement decision. Include SDK instrumentation, payload views, usage/cost and host history. List the required Python 0.2.8 keyboard journeys, their expected evidence and navigation results, and the owner of each open decision.</td>
 </tr>
 <tr>
 <td>B2</td>
+<td>Implemented/verified — older exact retained OpenCode proof path; final artifact regression Q5/Q6.</td>
 <td>Extend OpenCode prompt proofs beyond the current sweep</td>
 <td>Start now</td>
 <td>An older retained SQLite event can be revealed under its current grant after a later sweep and reopen. Changed source bytes, expired evidence, source replacement, revocation and restore all deny reveal.</td>
 </tr>
 <tr>
 <td>B3</td>
+<td>Partial — exact Codex e/edit preview, codex.edit_detail and version-linked notes implemented; other source/shape coverage F2/Q6.</td>
 <td>Add detailed edit evidence to Review</td>
 <td>Start now with a source that provides edit evidence</td>
 <td>A recorded edit appears on the correct run and evidence version. Existing decision notes survive reopen. Content-bearing detail follows the applicable grant.</td>
 </tr>
 <tr>
 <td>B4</td>
+<td>Partial — current-grant exact Codex MCP preview/trace paths implemented; remaining source-specific detail F2/Q6.</td>
 <td>Add scoped MCP payload detail</td>
 <td>Start now with existing Codex MCP metadata</td>
 <td>Opening a supported operation shows only authorized detail for that operation. Missing payload, mismatched identity and revoked access are covered.</td>
 </tr>
 <tr>
 <td>B5</td>
+<td>Selected jobs green — five SDK jobs passed on ef3d647; broader producer inventory F2 and final-head Q7.</td>
 <td>Implement required SDK instrumentation</td>
 <td>B1 selects SDKs. Parallel per SDK.</td>
 <td>Each selected SDK can emit a real trace through the documented launch path and reopen a span linked to the correct source and session.</td>
 </tr>
 <tr>
 <td>B6</td>
+<td>Selected commands implemented — remaining workflow inventory F2 and installed Q5/Q6.</td>
 <td>Close remaining required CLI workflows</td>
 <td>B1. Parallel per independent command.</td>
 <td>Each retained workflow has a Rust entry point and an installed end-to-end scenario. Record accepted retirements and any unresolved user-facing differences.</td>
 </tr>
 <tr>
 <td>B7</td>
+<td>Implemented/verified native baseline — packaged final combined artifact rerun Q5.</td>
 <td>Qualify default cockpit capability loading</td>
 <td>Start now</td>
 <td>Launch the packaged bare cockpit with an explicitly enabled independent capability. Observe its pane and metric, then verify disabled and mismatched-pin cases.</td>
 </tr>
 <tr>
 <td>B8</td>
+<td>Open feature — automatic decoder install/trust flow F3; pinned explicit catalog loading exists.</td>
 <td>Define and implement automatic decoder installation</td>
 <td>Start design now. Activation depends on the approved trust model.</td>
 <td>An independent supported decoder can be installed, selected and verified through the declared format and pin. Unsupported formats or changed artifacts fail closed. Keep untrusted activation behind its isolation gate.</td>
@@ -154,6 +174,7 @@
 <thead>
 <tr>
 <th>ID</th>
+<th>Current status</th>
 <th>Task</th>
 <th>Depends on</th>
 <th>Done when</th>
@@ -162,48 +183,56 @@
 <tbody>
 <tr>
 <td>C1</td>
+<td>Implemented baseline — broker operations and caller roles exercised in distinct-UID KVM.</td>
 <td>Specify broker operations and caller permissions</td>
 <td>Start now</td>
 <td>Map admission, read/query, grants, retention and maintenance to the existing storage contracts. Specify principal ownership, authorized callers, request replay and failure behavior.</td>
 </tr>
 <tr>
 <td>C2</td>
+<td>Available/verified — Linux KVM supplies distinct broker/application identities; old host limitation superseded.</td>
 <td>Obtain a Linux qualification host</td>
 <td>Start now</td>
-<td>Demonstrate separate broker and application identities and verify filesystem permissions under both. The recorded test host could not supply this setup.</td>
+<td>Demonstrate separate broker and application identities and verify filesystem permissions under both. Separate-UID Linux KVM now supplies this setup; retain it in final archive acceptance.</td>
 </tr>
 <tr>
 <td>C3</td>
+<td>Implemented/verified baseline — broker admission/replay; final artifact Q5.</td>
 <td>Implement broker admission and replay</td>
 <td>C1</td>
 <td>The collector commits observations and checkpoint through the broker before ACK. Retry on either side of commit recovers one durable result.</td>
 </tr>
 <tr>
 <td>C4</td>
+<td>Implemented/verified baseline — scoped reads/grants/retention; final artifact Q5.</td>
 <td>Implement broker queries, grant checks and retention</td>
 <td>C1. Parallel with C3 on the agreed contract.</td>
 <td>Scoped reads preserve watermarks, revoked grants deny access and retention preserves cursor and receipt semantics.</td>
 </tr>
 <tr>
 <td>C5</td>
+<td>Implemented/verified baseline — separate-UID broker/client denial/recovery; final combined archive Q5.</td>
 <td>Route installed clients through the distinct-principal broker</td>
 <td>C2–C4</td>
 <td>Collector and cockpit work through the broker while direct database access by the client identity is denied. Repeat concurrent writer, kill/restart, backup, restore and fresh-grant checks.</td>
 </tr>
 <tr>
 <td>C6</td>
+<td>Implemented/locally qualified — static x86-64 isolated_linux boundary; additional profiles F4 and deployed acceptance Q9 remain.</td>
 <td>Implement connector process isolation</td>
 <td>Start now</td>
 <td>A supervised child demonstrably cannot read the store or unrelated user files. Failure to establish the configured boundary prevents launch.</td>
 </tr>
 <tr>
 <td>C7</td>
+<td>Implemented/locally qualified — host-mediated unix_status_v1 grants/credentials/endpoints; other transports/provisioning F4 and production Q9 remain.</td>
 <td>Implement connector credential and egress controls</td>
 <td>Start now. Agree on the launch interface with C6.</td>
 <td>Only the granted credential and destination are usable. Revocation fences subsequent work, and receipts and diagnostics omit secrets.</td>
 </tr>
 <tr>
 <td>C8</td>
+<td>External/dependent — approved endpoint plus F4 boundary proof required (Q9).</td>
 <td>Qualify a supported production connector</td>
 <td>C6 and C7, access to a supported endpoint, and proof that the deployed storage boundary denies child access</td>
 <td>Under isolation, verify authorized delivery, denial after revocation and reconciliation after an ambiguous send with the same key. Repeat inbound commit-before-ACK for an inbound connector. Enable only the qualified configuration.</td>
@@ -215,6 +244,7 @@
 <thead>
 <tr>
 <th>ID</th>
+<th>Current status</th>
 <th>Task</th>
 <th>Depends on</th>
 <th>Done when</th>
@@ -223,24 +253,28 @@
 <tbody>
 <tr>
 <td>D1</td>
+<td>Native archive qualified — final Host/Metrics/Findings combined archive not yet qualified (Q5/Q6).</td>
 <td>Qualify the integrated Ubuntu x86-64 candidate</td>
 <td>After the changes selected for that candidate</td>
 <td>The checksum-identified archive passes Python-free startup, discovery, collection, service restart, query, inspection, upgrade from the previous supported Rust release, backup and uninstall with history retained. Include B7 and applicable new acceptance cases.</td>
 </tr>
 <tr>
 <td>D2</td>
+<td>ARM64 native CI qualified on ef3d647 — final joined head/artifact Q7; additional OS targets separate.</td>
 <td>Qualify one additional platform or architecture</td>
 <td>Start now if a target and runner are selected. Parallel per target.</td>
 <td>The exact target artifact passes install, collect, restart, query, inspect, upgrade and uninstall under its claimed service manager. Add support only for combinations that pass.</td>
 </tr>
 <tr>
 <td>D2-Mac</td>
+<td>Open — implementation F5 and native per-architecture qualification Q10; unsupported.</td>
 <td>Qualify macOS release artifacts and installer</td>
 <td>Start when native macOS runner(s) are available; qualify Apple Silicon and Intel as separate targets.</td>
 <td>For each advertised architecture, a checksum-identified artifact installs and launches without Python or Rust, discovers and collects supported local harnesses, survives restart and upgrade, supports query/inspect/backup, and uninstalls while retaining history. Define minimum macOS version, data/config paths, foreground or <code>launchd</code> support, and Gatekeeper signing/notarization. Run required cockpit journeys at normal and narrow terminal sizes and verify terminal restoration. Do not advertise macOS until every claimed combination passes.</td>
 </tr>
 <tr>
 <td>D3</td>
+<td>Gated — required feature inventory and final installed paired journeys not yet closed.</td>
 <td>Switch the default distribution entry point</td>
 <td>B1 decisions, all workflows designated required there, and D1 for the intended release</td>
 <td>A clean default install starts Rust and uses its own data directory. Compare the B1 keyboard journeys on Python 0.2.8 and the installed Rust entry point at normal width and 60×18. Record evidence, focus, return selection and intentional shortcut or layout differences. Capture and compare the Python and Rust screens for the selected journeys, including populated, loading, unavailable and narrow states. Resolve unaccepted visual and interaction differences. All required journeys pass. Publish the verified support matrix and install instructions.</td>
@@ -248,7 +282,7 @@
 </tbody>
 </table></div>
 <h2>Pending issue — running sessions missing from the command center</h2>
-<p>Recorded 23 November 2026 from the user's Rust 0.3.8 screenshot. Diagnosis and backlog only. Implementation is deferred at the user's direction.</p>
+<p>Historical diagnosis recorded from the user's Rust 0.3.8 screenshot. Later authorization superseded the original diagnosis-only restriction. E1–E5 have an implemented, checked native baseline; header-only roster behavior, actual simultaneous Claude coverage and final combined-artifact acceptance remain open. The findings below describe the published source at diagnosis time, not the current native implementation.</p>
 <p><strong>Confirmed findings from the published source</strong></p>
 <ul>
 <li>Default discovery selects four newest-modified transcript files per harness, within a 16-source global limit. It uses recent file modification time without an active-session inventory. A running session outside the selected files can be omitted from collection.</li>
@@ -262,6 +296,7 @@
 <thead>
 <tr>
 <th>ID</th>
+<th>Current status</th>
 <th>Pending task</th>
 <th>Dependencies and parallel work</th>
 <th>Acceptance</th>
@@ -270,20 +305,23 @@
 <tbody>
 <tr>
 <td>E1</td>
+<td>Partial — Codex actual cohort passed; header-only roster behavior F1, simultaneous Claude and installed Q6 remain.</td>
 <td>Diagnose the selected history and cover running sessions in discovery</td>
-<td>Pending. Runtime diagnosis first. Can proceed alongside E2 after implementation is authorized.</td>
+<td>Implemented; retain runtime diagnosis/coverage criteria for Q6 installed regression.</td>
 <td>Record the actual executable/version, command, selected database, collector ownership and coverage notice. Compare expected session IDs against discovered files, selected adapters, committed cursors and roster rows. Exercise more than four concurrent sessions, idle-but-running sessions, source turnover, cold catch-up, restart and intentionally excluded review files. Show collection coverage and distinguish recorded lifecycle from current liveness.</td>
 </tr>
 <tr>
 <td>E2</td>
+<td>Implemented/actual native naming/context checked — final installed rerun Q6.</td>
 <td>Show exact native session titles and project context</td>
-<td>Pending. Independent of E1 collection changes, with agreed metadata contracts.</td>
+<td>Implemented; final joined-artifact native metadata checks Q6.</td>
 <td>Preserve exact source/session identity and provenance when native display titles and project paths are available. Keep authorized content handling explicit. Ordinary native sessions display useful names and project groups. Missing or conflicting context has a visible fallback. Activity summaries remain separately identifiable.</td>
 </tr>
 <tr>
 <td>E3</td>
+<td>Partial — actual Codex cohort at all three sizes; historical Claude separate; simultaneous Claude and final installed Q6 remain.</td>
 <td>Qualify the command center against actual concurrent agent sessions</td>
-<td>Pending. After E1 and E2.</td>
+<td>Actual-transcript checks passed after E1/E2; final installed Q6 remains.</td>
 <td>Run the installed cockpit against actual simultaneous sessions, compare exact identities and project groups with the native inventory, verify lifecycle changes and selection after refresh/restart, and capture 120×32, 80×24 and 60×18 screens. Account for every omitted session and show partial coverage.</td>
 </tr>
 </tbody>
@@ -300,11 +338,12 @@
 </ul>
 <p>Source anchors are <code>rust/agenturm-app/src/discovery.rs</code>, <code>cockpit_startup.rs</code>, <code>session_titles.rs</code>, <code>session_projects.rs</code>, <code>load_session_catalog</code> in <code>lib.rs</code>, and <code>Filter::accepts</code> in <code>rust/agenturm-ui/src/workspace.rs</code>, as inspected in the Rust 0.3.8 integration worktree.</p>
 <h2>Command-center corrections from the latest screenshot</h2>
-<p>These requirements were added after native naming was introduced. They remain pending implementation and validation.</p>
+<p>These requirements were added after native naming was introduced. E4/E5 are now implemented and tested in the native batch; retain the acceptance criteria for final installed regression.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
 <tr>
 <th>ID</th>
+<th>Current status</th>
 <th>Task</th>
 <th>Parallel work</th>
 <th>Acceptance</th>
@@ -313,12 +352,14 @@
 <tbody>
 <tr>
 <td>E4</td>
+<td>Implemented/tested — exact title, nickname then concise fallback; final installed rerun Q6.</td>
 <td>Use available human names throughout the roster</td>
 <td>Can proceed independently of E5.</td>
 <td>Use the task/conversation title when present. Otherwise promote the native agent nickname to the primary label, so the screenshot's rows read Nash, Zeno and Mencius. When neither exists, use concise provider/role/project context such as “Codex session”. Remove repeated “Name unavailable” labels. Keep missing metadata and exact IDs in inspector details. Verify titled sessions, nickname-only subagents, duplicates and genuinely unnamed sessions.</td>
 </tr>
 <tr>
 <td>E5</td>
+<td>Implemented/tested — newest-updated group/row order and stable selection; final installed rerun Q6.</td>
 <td>Always order the roster by latest update</td>
 <td>Can proceed independently of E4.</td>
 <td>Sort newest updates first. Order project groups by their newest member, and sessions within each group by descending update time. Status, alphabetical group labels, insertion order and selected-row position must not override recency. Hierarchy presentation must preserve this ordering requirement. Use deterministic ties and preserve the selected session identity as rows move. Verify initial load, live refresh, grouping/filter changes, pagination and restart. Show Updated ↓ and remove the status-sort toggle from the command center.</td>
@@ -327,7 +368,7 @@
 </table></div>
 <h2>Integration order</h2>
 <ul>
-<li><strong>Assign immediately</strong> to adapter owners (A1–A5), cockpit and workflow owners (B1–B4, B7 and B8 design), storage owners (C1–C2), and connector owners (C6–C7). Acquiring a real Kiro transcript and a separate-principal host early removes two external waits.</li>
+<li><strong>Prioritize unfinished slices:</strong> I1–I3 integration and Q1–Q7 final Linux qualification; F1/F2 remaining harness/workflow gaps can proceed independently. C1–C5 and E1–E5 have implemented/verified baselines and must not be reassigned as wholly missing. A real Kiro transcript and approved production endpoint remain external inputs; the distinct-principal Linux test host is already available.</li>
 <li><strong>Integrate by interface.</strong> Provider changes can land separately. If multiple slices need a new shared observation type, land the format, decoder and store support first, then enable adapter emission. Coordinate schema revisions for B2–B4 and broker work. Keep terminal rendering in the UI and provider parsing in the adapters.</li>
 <li><strong>Close gates independently.</strong> Run A6 as each provider is ready. Join C3 and C4 at C5, and C6 and C7 at C8. For the default switch, finish B1, its required workflow slices and D1, in that order. Extra platforms, automatic decoder installation and production connectors have independent acceptance gates unless explicitly included in the release scope.</li>
 </ul>

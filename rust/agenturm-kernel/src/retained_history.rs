@@ -5,6 +5,7 @@ use crate::{ExtensionId, ReadSnapshot, TraceSpan};
 use serde::{Deserialize, Serialize};
 
 pub const MAX_METRIC_HISTORY_PAGE: usize = 64;
+pub const MAX_METRIC_SEARCH_BYTES: usize = 256;
 pub const MAX_MCP_SEARCH_BYTES: usize = 256;
 
 /// A metadata projection applied before the retained history page limit.
@@ -50,6 +51,10 @@ pub struct MetricSeriesKey {
 pub struct MetricSeriesPosition {
     pub series: MetricSeriesKey,
     pub snapshot_id: ReadSnapshot,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_filter: Option<ExtensionId>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub search: Option<String>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -68,6 +73,8 @@ pub enum MetricHistoryQuery {
         source_id: Option<ExtensionId>,
         snapshot_id: Option<ReadSnapshot>,
         after: Option<MetricSeriesPosition>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        search: Option<String>,
         limit: usize,
     },
     Points {
@@ -83,6 +90,12 @@ pub enum MetricHistoryQuery {
 }
 
 impl MetricHistoryQuery {
+    pub fn valid_search(query: &str) -> bool {
+        !query.trim().is_empty()
+            && query.len() <= MAX_METRIC_SEARCH_BYTES
+            && !query.chars().any(char::is_control)
+    }
+
     pub fn source_id(&self) -> Option<&ExtensionId> {
         match self {
             Self::Series { source_id, .. } => source_id.as_ref(),
@@ -97,6 +110,8 @@ impl MetricHistoryQuery {
 pub struct MetricSeriesEntry {
     pub key: MetricSeriesKey,
     pub series: MetricSeries,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub description: Option<String>,
     pub latest_unix_ns: u64,
 }
 

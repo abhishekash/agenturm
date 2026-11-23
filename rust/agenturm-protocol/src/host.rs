@@ -14,6 +14,10 @@ pub fn is_host_source(source: &str) -> bool {
 #[serde(deny_unknown_fields)]
 pub struct HostSample {
     pub boot_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub hostname: Option<String>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub platform: Option<HostPlatform>,
     pub clock_ticks_per_second: Option<u64>,
     pub cpu: Option<HostCpu>,
     pub load_1m_milli: Option<u64>,
@@ -23,6 +27,20 @@ pub struct HostSample {
     pub memory_available_bytes: Option<u64>,
     pub processes: Vec<HostProcess>,
     pub processes_partial: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum HostPlatform {
+    Linux,
+}
+
+impl HostPlatform {
+    pub fn label(self) -> &'static str {
+        match self {
+            Self::Linux => "Linux",
+        }
+    }
 }
 
 /// Cumulative CPU counters across the host CPUs since this boot. Values use
@@ -41,8 +59,29 @@ pub struct HostCpu {
 }
 
 impl HostSample {
+    pub const MAX_HOSTNAME_BYTES: usize = 64;
+
+    pub fn valid_hostname(value: &str) -> bool {
+        !value.is_empty()
+            && value.len() <= Self::MAX_HOSTNAME_BYTES
+            && value.split('.').all(|label| {
+                label
+                    .as_bytes()
+                    .first()
+                    .is_some_and(u8::is_ascii_alphanumeric)
+                    && label
+                        .as_bytes()
+                        .last()
+                        .is_some_and(u8::is_ascii_alphanumeric)
+                    && label
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-')
+            })
+    }
+
     pub fn is_valid(&self) -> bool {
         valid_boot_id(&self.boot_id)
+            && self.hostname.as_deref().is_none_or(Self::valid_hostname)
             && self.clock_ticks_per_second.is_none_or(|value| value > 0)
             && self.processes.len() <= MAX_HOST_PROCESSES
             && self.processes.iter().all(|process| {
@@ -174,6 +213,56 @@ impl HostProcessState {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn old_host_sample_round_trips_without_hostname_and_rejects_unsafe_labels() {
+        let prior = serde_json::json!({
+            "boot_id": "11111111-1111-1111-1111-111111111111",
+            "clock_ticks_per_second": null, "cpu": null, "load_1m_milli": null,
+            "load_5m_milli": null, "load_15m_milli": null, "memory_total_bytes": null,
+            "memory_available_bytes": null, "processes": [], "processes_partial": false,
+        });
+        let sample: HostSample = serde_json::from_value(prior.clone()).unwrap();
+        assert!(sample.hostname.is_none() && sample.platform.is_none() && sample.is_valid());
+        assert_eq!(serde_json::to_value(sample).unwrap(), prior);
+        let mut linux = prior.clone();
+        linux["platform"] = serde_json::json!("linux");
+        let sample: HostSample = serde_json::from_value(linux.clone()).unwrap();
+        assert_eq!(sample.platform, Some(HostPlatform::Linux));
+        assert_eq!(serde_json::to_value(sample).unwrap(), linux);
+        linux["platform"] = serde_json::json!("unknown");
+        assert!(serde_json::from_value::<HostSample>(linux).is_err());
+        for valid in ["capture-1", "node.example", "UPPER-1", &"n".repeat(64)] {
+            let mut named = prior.clone();
+            named["hostname"] = serde_json::json!(valid);
+            let parsed: HostSample = serde_json::from_value(named.clone()).unwrap();
+            assert!(parsed.is_valid(), "{valid:?}");
+            assert_eq!(serde_json::to_value(parsed).unwrap(), named);
+        }
+        for invalid in [
+            "",
+            ".",
+            "a..b",
+            "a.-b",
+            "-a",
+            "a-",
+            "a/b",
+            "a\\b",
+            " a",
+            "a\n",
+            "a\u{202e}",
+            &"n".repeat(65),
+        ] {
+            let mut named = prior.clone();
+            named["hostname"] = serde_json::json!(invalid);
+            assert!(
+                !serde_json::from_value::<HostSample>(named)
+                    .unwrap()
+                    .is_valid(),
+                "{invalid:?}"
+            );
+        }
+    }
 
     #[test]
     fn legacy_host_process_payload_round_trips_without_a_directory_or_parent() {

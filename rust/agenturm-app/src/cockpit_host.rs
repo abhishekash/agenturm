@@ -1,5 +1,7 @@
-use agenturm_kernel::{ExtensionId, MetricRow, Snapshot};
-use agenturm_ui::{EvidenceRow, EvidenceSpec, EvidenceTable};
+use agenturm_kernel::{
+    ExtensionId, MetricRow, ObservationIdentity, ObservationKind, ObservationPage, Snapshot,
+};
+use agenturm_ui::{CurrentHostSample, EvidenceRow, EvidenceSpec, EvidenceTable, WorkResult};
 #[cfg(target_os = "linux")]
 mod capture;
 #[cfg(target_os = "linux")]
@@ -19,6 +21,153 @@ const MAX_PROCESS_ENTRIES: usize = 1024;
 const PROCESS_SCAN_BUDGET: Duration = Duration::from_millis(40);
 #[cfg(target_os = "linux")]
 const PROCESS_SAMPLE_AGE: Duration = Duration::from_secs(2);
+
+pub(super) fn host_now(store: &impl super::HistoryReader) -> Result<WorkResult, String> {
+    if !store.local_host_data() {
+        return recorded_inventory(store.query_host_inventory()?);
+    }
+
+    #[cfg(target_os = "linux")]
+    let capture = (|| {
+        let sample = capture().ok()?;
+        let captured_at_unix_ns = u64::try_from(
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .ok()?
+                .as_nanos(),
+        )
+        .ok()?;
+        Some(Box::new(CurrentHostSample {
+            captured_at_unix_ns,
+            sample,
+            recorded_source: None,
+        }))
+    })();
+    #[cfg(not(target_os = "linux"))]
+    let capture = None;
+    Ok(WorkResult::HostNow(capture))
+}
+
+fn recorded_inventory(mut page: ObservationPage) -> Result<WorkResult, String> {
+    if page.has_more {
+        return Err(format!(
+            "More than {} retained Host streams. Open Host history to choose a sample.",
+            agenturm_store::MAX_HOST_HISTORY_PAGE,
+        ));
+    }
+    let mut sources = std::collections::BTreeSet::new();
+    if page.observations.iter().any(|row| {
+        !agenturm_kernel::is_host_source(row.harness_id.as_str())
+            || !sources.insert(&row.harness_id)
+            || row.identity != ObservationIdentity::source()
+            || !matches!(&row.kind, ObservationKind::HostSample(sample) if sample.is_valid())
+    }) {
+        return Err("Receiver returned an invalid recorded host inventory".into());
+    }
+    if page.observations.len() != 1 {
+        return Ok(WorkResult::HostInventory(page));
+    }
+    let latest = page
+        .observations
+        .pop()
+        .expect("checked the latest host row");
+    let ObservationKind::HostSample(sample) = latest.kind else {
+        unreachable!("checked host sample kinds")
+    };
+    Ok(WorkResult::HostNow(Some(Box::new(CurrentHostSample {
+        captured_at_unix_ns: latest.observed_at_unix_ns,
+        sample,
+        recorded_source: Some(latest.harness_id),
+    }))))
+}
+
+#[cfg(test)]
+mod inventory_tests {
+    use super::*;
+    use agenturm_kernel::{HostSample, Observation};
+
+    fn row(source: &str, timestamp: u64) -> Observation {
+        Observation {
+            harness_id: ExtensionId::parse(source).unwrap(),
+            event_id: format!("sample-{timestamp}"),
+            revision: 0,
+            identity: ObservationIdentity::source(),
+            observed_at_unix_ns: timestamp,
+            kind: ObservationKind::HostSample(HostSample {
+                boot_id: "12345678-1234-1234-1234-123456789abc".into(),
+                hostname: Some("collector-1.example".into()),
+                platform: Some(agenturm_kernel::HostPlatform::Linux),
+                clock_ticks_per_second: None,
+                cpu: None,
+                load_1m_milli: None,
+                load_5m_milli: None,
+                load_15m_milli: None,
+                memory_total_bytes: None,
+                memory_available_bytes: None,
+                processes: Vec::new(),
+                processes_partial: false,
+            }),
+        }
+    }
+
+    #[test]
+    fn single_complete_stream_uses_latest_exact_recorded_sample() {
+        let view = recorded_inventory(ObservationPage {
+            observations: vec![row("host.receiver", 11)],
+            ..ObservationPage::default()
+        })
+        .unwrap();
+        let WorkResult::HostNow(Some(capture)) = view else {
+            panic!("expected one recorded host")
+        };
+        assert_eq!(capture.recorded_source.unwrap().as_str(), "host.receiver");
+        assert_eq!(capture.captured_at_unix_ns, 11);
+        assert_eq!(
+            capture.sample.hostname.as_deref(),
+            Some("collector-1.example")
+        );
+    }
+
+    #[test]
+    fn multiple_streams_use_the_exact_chooser_and_partial_reports_limit() {
+        for observations in [
+            vec![row("host.first", 7), row("host.second", 11)],
+            Vec::new(),
+        ] {
+            let page = ObservationPage {
+                observations,
+                ..ObservationPage::default()
+            };
+            let WorkResult::HostInventory(chooser) = recorded_inventory(page.clone()).unwrap()
+            else {
+                panic!("expected recorded sample chooser");
+            };
+            assert_eq!(chooser, page);
+        }
+        assert!(matches!(recorded_inventory(ObservationPage {
+            has_more: true,
+            observations: vec![row("host.first", 7)],
+            ..ObservationPage::default()
+        }), Err(error) if error.contains("Open Host history")));
+    }
+
+    #[test]
+    fn remote_inventory_rejects_non_host_or_session_rows() {
+        let mut wrong_scope = row("host.receiver", 7);
+        wrong_scope.identity = ObservationIdentity::session("unrelated");
+        let mut wrong_kind = row("host.receiver", 8);
+        wrong_kind.kind = ObservationKind::SessionStarted;
+        for invalid in [wrong_scope, wrong_kind, row("otlp.unrelated", 7)] {
+            assert!(
+                recorded_inventory(ObservationPage {
+                    observations: vec![invalid],
+                    ..ObservationPage::default()
+                })
+                .is_err()
+            );
+        }
+    }
+}
 
 pub(super) fn add_host_pane(snapshot: &mut Snapshot) -> (ExtensionId, EvidenceTable) {
     let mut rows = current_host_rows();
@@ -60,6 +209,9 @@ fn current_host_rows() -> Vec<MetricRow> {
         value,
     };
     let mut rows = Vec::new();
+    if let Some(hostname) = capture::hostname() {
+        rows.push(row("Hostname", hostname));
+    }
     if let Some(load) = read_proc("/proc/loadavg") {
         let values = load
             .split_whitespace()
