@@ -3,6 +3,9 @@
 use super::{Reply, Request, VERSION, http, loopback_address, parse_address_and_token};
 use crate::trace_receiver::ProducerToken;
 use crate::{AgenturmApp, HistoryReader, cockpit_startup, cockpit_workflows, workspace_response};
+use agenturm_kernel::retained_history::{
+    MetricHistoryPage, MetricHistoryQuery, UsageHistoryPage, UsageHistoryQuery,
+};
 use agenturm_kernel::{
     ExtensionId, Observation, ObservationPage, ObservationQuery, ObservationStore, StoreCommit,
 };
@@ -11,8 +14,8 @@ use agenturm_storage_service::{
     NativeSelection, ReaderHistoryReply, ReaderHistoryRequest, logical_read_identity,
 };
 use agenturm_store::{
-    ResolvedTraceReview, SessionPage, SessionQuery, TraceReviewQuery, WorkspaceAnchor,
-    WorkspaceHistory, WorkspaceLedger,
+    McpTraceQuery, ResolvedTraceReview, SessionPage, SessionQuery, TraceReviewQuery,
+    WorkspaceAnchor, WorkspaceHistory, WorkspaceLedger,
 };
 use agenturm_ui::{WorkCommand, WorkspaceRequest};
 use sha2::{Digest, Sha256};
@@ -392,6 +395,36 @@ impl HistoryReader for RemoteStore {
         })? {
             ReaderHistoryReply::TraceReview(page) => Ok(page),
             _ => Err("History receiver sent an unexpected trace Review page".into()),
+        }
+    }
+
+    fn query_mcp_traces(&self, query: &McpTraceQuery) -> Result<Option<ObservationPage>, String> {
+        match self.request(ReaderHistoryRequest::McpTraces {
+            query: query.clone(),
+        })? {
+            ReaderHistoryReply::McpTraces(page) => Ok(page),
+            _ => Err("History receiver sent an unexpected MCP trace page".into()),
+        }
+    }
+
+    fn query_metric_history(
+        &self,
+        query: &MetricHistoryQuery,
+    ) -> Result<MetricHistoryPage, String> {
+        match self.request(ReaderHistoryRequest::MetricHistory {
+            query: query.clone(),
+        })? {
+            ReaderHistoryReply::MetricHistory(page) => Ok(page),
+            _ => Err("History receiver sent an unexpected metric page".into()),
+        }
+    }
+
+    fn query_usage_history(&self, query: &UsageHistoryQuery) -> Result<UsageHistoryPage, String> {
+        match self.request(ReaderHistoryRequest::UsageHistory {
+            query: query.clone(),
+        })? {
+            ReaderHistoryReply::UsageHistory(page) => Ok(*page),
+            _ => Err("History receiver sent an unexpected usage history page".into()),
         }
     }
 }

@@ -10,6 +10,9 @@ use crate::native_content::{
 };
 use crate::native_read::{self, HistorySelection, ReadFailure};
 use crate::reader_history::{self, ReaderHistoryReply, ReaderHistoryRequest};
+use agenturm_kernel::retained_history::{
+    MetricHistoryPage, MetricHistoryQuery, UsageHistoryPage, UsageHistoryQuery,
+};
 use agenturm_kernel::{
     ExtensionId, Observation, ObservationPage, ObservationQuery, ObservationStore, StoreCommit,
 };
@@ -18,10 +21,10 @@ use agenturm_storage_service_contract::{ContractError, ServerPolicy, native};
 use agenturm_store::{
     AutomaticRetentionPolicy, AutomaticRetentionStatus, EvalDetailRecord, EvalDetailSelection,
     EvalImportReport, EvalInventory, EvalInventoryQuery, EvalOutcome, EvalPage, EvalQuery,
-    EvalResultDetail, ObservationBatch, ResolvedTraceReview, RetainedEvalOutcome, RetentionOutcome,
-    SelectedEvalPage, SelectedEvalQuery, SessionPage, SessionQuery, Store, TelemetryBinding,
-    TelemetryPayload, TelemetryPayloadRecord, TelemetryPayloadSelection, TraceReviewQuery,
-    WorkspaceAnchor, WorkspaceHistory,
+    EvalResultDetail, McpTraceQuery, ObservationBatch, ResolvedTraceReview, RetainedEvalOutcome,
+    RetentionOutcome, SelectedEvalPage, SelectedEvalQuery, SessionPage, SessionQuery, Store,
+    TelemetryBinding, TelemetryPayload, TelemetryPayloadRecord, TelemetryPayloadSelection,
+    TraceReviewQuery, WorkspaceAnchor, WorkspaceHistory,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeSet;
@@ -68,6 +71,18 @@ pub(crate) enum NativeOperation {
     },
     ReviewTraceTurn {
         query: TraceReviewQuery,
+        expected_history_identity: String,
+    },
+    QueryMcpTraces {
+        query: McpTraceQuery,
+        expected_history_identity: String,
+    },
+    QueryMetricHistory {
+        query: MetricHistoryQuery,
+        expected_history_identity: String,
+    },
+    QueryUsageHistory {
+        query: UsageHistoryQuery,
         expected_history_identity: String,
     },
     ImportEvalOutcomes {
@@ -195,6 +210,9 @@ pub(crate) enum NativeReply {
     History(Result<ObservationPage, ReadFailure>),
     Sessions(Result<SessionPage, ReadFailure>),
     TraceReview(Result<Option<ResolvedTraceReview>, ReadFailure>),
+    McpTraces(Result<Option<ObservationPage>, ReadFailure>),
+    MetricHistory(Result<MetricHistoryPage, ReadFailure>),
+    UsageHistory(Result<Box<UsageHistoryPage>, ReadFailure>),
     EvalImported(Result<EvalImportReport, ReadFailure>),
     EvalOutcome(Result<Option<RetainedEvalOutcome>, ReadFailure>),
     EvalPage(Result<EvalPage, ReadFailure>),
@@ -416,6 +434,34 @@ pub(crate) fn dispatch(
             return NativeReply::TraceReview(
                 authorize_read(store, role, Some(&expected_history_identity))
                     .and_then(|()| native_read::review_trace_turn(store, allowed, query)),
+            );
+        }
+        NativeOperation::QueryMcpTraces {
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::McpTraces(
+                authorize_read(store, role, Some(&expected_history_identity))
+                    .and_then(|()| native_read::query_mcp_traces(store, allowed, query)),
+            );
+        }
+        NativeOperation::QueryMetricHistory {
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::MetricHistory(
+                authorize_read(store, role, Some(&expected_history_identity))
+                    .and_then(|()| native_read::query_metric_history(store, allowed, &query)),
+            );
+        }
+        NativeOperation::QueryUsageHistory {
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::UsageHistory(
+                authorize_read(store, role, Some(&expected_history_identity))
+                    .and_then(|()| native_read::query_usage_history(store, allowed, &query))
+                    .map(Box::new),
             );
         }
         NativeOperation::ImportEvalOutcomes {
@@ -1382,6 +1428,51 @@ impl NativeStore {
             },
         )?
         .map_err(NativeClientError::Read)
+    }
+
+    pub fn query_mcp_traces(
+        &self,
+        query: &McpTraceQuery,
+    ) -> Result<Option<ObservationPage>, NativeClientError> {
+        self.exchange::<Result<Option<ObservationPage>, ReadFailure>>(
+            NativeOperation::QueryMcpTraces {
+                query: query.clone(),
+                expected_history_identity: self.require_read_binding()?,
+            },
+        )?
+        .map_err(NativeClientError::Read)
+    }
+
+    pub fn query_metric_history(
+        &self,
+        query: &MetricHistoryQuery,
+    ) -> Result<MetricHistoryPage, NativeClientError> {
+        self.exchange::<Result<MetricHistoryPage, ReadFailure>>(
+            NativeOperation::QueryMetricHistory {
+                query: query.clone(),
+                expected_history_identity: self.require_read_binding()?,
+            },
+        )?
+        .map_err(NativeClientError::Read)
+    }
+
+    pub fn query_usage_history(
+        &self,
+        query: &UsageHistoryQuery,
+    ) -> Result<UsageHistoryPage, NativeClientError> {
+        self.exchange::<Result<UsageHistoryPage, ReadFailure>>(
+            NativeOperation::QueryUsageHistory {
+                query: query.clone(),
+                expected_history_identity: self.require_read_binding()?,
+            },
+        )?
+        .map_err(NativeClientError::Read)
+    }
+
+    fn require_read_binding(&self) -> Result<String, NativeClientError> {
+        self.read_binding
+            .clone()
+            .ok_or(NativeClientError::Read(ReadFailure::InvalidRequest))
     }
 
     fn admission(&self, operation: NativeOperation) -> Result<AdmissionReply, NativeClientError> {

@@ -272,6 +272,13 @@ fn import_cursor(observations: &[Observation]) -> Result<String, String> {
                 row.observed_at_unix_ns,
                 progress,
             )),
+            ObservationKind::MetricPoint(point) => serde_json::to_vec(&(
+                "metric_point",
+                &row.event_id,
+                &row.identity,
+                row.observed_at_unix_ns,
+                point,
+            )),
             _ => return Err("invalid trace import observation".into()),
         }
         .map_err(|_| "cannot encode trace import metadata".to_owned())?;

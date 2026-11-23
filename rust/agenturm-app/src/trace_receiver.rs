@@ -1,4 +1,6 @@
-//! Loopback-only HTTP ingestion for bounded OTLP trace exports.
+//! Loopback-only HTTP ingestion for bounded OTLP trace and metric exports.
+
+mod metrics;
 
 use crate::trace_import::{
     MAX_EXPORT_BYTES, commit, commit_payloads, decode_json, decode_protobuf, parse_source_id,
@@ -294,6 +296,10 @@ fn execute_with_maintenance(
         "Listening for OTLP traces at http://{}/v1/traces",
         receiver.address()
     );
+    println!(
+        "Listening for OTLP metrics at http://{}/v1/metrics",
+        receiver.address()
+    );
     receiver.serve_with_payloads(&stop, commit)
 }
 
@@ -444,6 +450,12 @@ fn handle(
             Encoding::ProgressJson => trace_progress::decode(&body, source, launch_session)
                 .map(|row| (vec![row], 0, Vec::new()))
                 .map_err(str::to_owned),
+            Encoding::MetricsJson => {
+                metrics::decode_json(&body, source).map(|rows| (rows, 0, Vec::new()))
+            }
+            Encoding::MetricsProtobuf => {
+                metrics::decode_protobuf(&body, source).map(|rows| (rows, 0, Vec::new()))
+            }
         };
         let (rows, skipped, payloads) = decoded.map_err(|_| "400 Bad Request")?;
         if !rows.is_empty() {
@@ -458,7 +470,8 @@ fn handle(
             .to_string()
             .into_bytes(),
             Encoding::Protobuf => protobuf_response(skipped),
-            Encoding::ProgressJson => b"{}".to_vec(),
+            Encoding::ProgressJson | Encoding::MetricsJson => b"{}".to_vec(),
+            Encoding::MetricsProtobuf => Vec::new(),
         };
         Ok((encoding, bytes))
     });
@@ -490,13 +503,15 @@ enum Encoding {
     Json,
     Protobuf,
     ProgressJson,
+    MetricsJson,
+    MetricsProtobuf,
 }
 
 impl Encoding {
     fn media_type(self) -> &'static str {
         match self {
-            Self::Json | Self::ProgressJson => "application/json",
-            Self::Protobuf => "application/x-protobuf",
+            Self::Json | Self::ProgressJson | Self::MetricsJson => "application/json",
+            Self::Protobuf | Self::MetricsProtobuf => "application/x-protobuf",
         }
     }
 }
@@ -562,11 +577,9 @@ fn parse_headers(
     if !matches!(version, "HTTP/1.0" | "HTTP/1.1") {
         return Err("404 Not Found");
     }
-    let progress = match path {
-        "/v1/traces" => false,
-        trace_progress::PATH => true,
-        _ => return Err("404 Not Found"),
-    };
+    if !matches!(path, "/v1/traces" | "/v1/metrics" | trace_progress::PATH) {
+        return Err("404 Not Found");
+    }
     let mut host = false;
     let mut authorization = None;
     let mut encoding = None;
@@ -626,13 +639,15 @@ fn parse_headers(
     {
         return Err("401 Unauthorized");
     }
-    let encoding = match (progress, encoding.ok_or("400 Bad Request")?) {
-        (true, Encoding::Json) => Encoding::ProgressJson,
-        (true, _) => return Err("415 Unsupported Media Type"),
-        (false, encoding) => encoding,
+    let encoding = match (path, encoding.ok_or("400 Bad Request")?) {
+        (trace_progress::PATH, Encoding::Json) => Encoding::ProgressJson,
+        (trace_progress::PATH, _) => return Err("415 Unsupported Media Type"),
+        ("/v1/metrics", Encoding::Json) => Encoding::MetricsJson,
+        ("/v1/metrics", Encoding::Protobuf) => Encoding::MetricsProtobuf,
+        (_, encoding) => encoding,
     };
     let length = length.ok_or("411 Length Required")?;
-    let max_body = if progress {
+    let max_body = if path == trace_progress::PATH {
         trace_progress::MAX_BYTES as u64
     } else {
         MAX_EXPORT_BYTES
@@ -646,6 +661,80 @@ fn parse_headers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn metrics_requires_existing_producer_authorization_and_exports_replay_once() {
+        use agenturm_kernel::retained_history::{MetricHistoryPage, MetricHistoryQuery};
+        let address = "127.0.0.1:4318".parse().unwrap();
+        let token = ProducerToken("ab".repeat(32));
+        let head = |media: &str, auth: &str| {
+            format!(
+                "POST /v1/metrics HTTP/1.1\r\nHost: 127.0.0.1:4318\r\nContent-Type: {media}\r\nContent-Length: 32\r\n{auth}\r\n",
+            )
+        };
+        let authorized = format!("Authorization: Bearer {}\r\n", token.0);
+        assert_eq!(
+            parse_headers(
+                &head("application/json", &authorized),
+                address,
+                Some(&token)
+            ),
+            Ok((Encoding::MetricsJson, 32))
+        );
+        assert_eq!(
+            parse_headers(
+                &head("application/x-protobuf", &authorized),
+                address,
+                Some(&token)
+            ),
+            Ok((Encoding::MetricsProtobuf, 32))
+        );
+        assert_eq!(
+            parse_headers(&head("application/json", ""), address, Some(&token)),
+            Err("401 Unauthorized")
+        );
+        assert_eq!(
+            parse_headers(
+                &head("application/json", &format!("{authorized}{authorized}")),
+                address,
+                Some(&token)
+            ),
+            Err("401 Unauthorized")
+        );
+        assert_eq!(
+            parse_headers(
+                &head("application/json", &authorized).replace("32", "4194305"),
+                address,
+                Some(&token)
+            ),
+            Err("413 Content Too Large")
+        );
+
+        let source = parse_source_id("otlp.metrics-fixture").unwrap();
+        let json = metrics::decode_json(
+            include_bytes!("trace_receiver/metrics/fixtures/sdk-metrics.json"),
+            &source,
+        )
+        .unwrap();
+        let proto = metrics::decode_protobuf(
+            include_bytes!("trace_receiver/metrics/fixtures/sdk-metrics.pb"),
+            &source,
+        )
+        .unwrap();
+        assert!(!json.is_empty());
+        assert_eq!(json, proto);
+        let mut store = agenturm_store::Store::open(":memory:").unwrap();
+        let commit = |store: &mut agenturm_store::Store, rows| {
+            crate::trace_import::commit_with_store(store, &source, rows).unwrap()
+        };
+        assert_eq!(commit(&mut store, &json), json.len());
+        assert_eq!(commit(&mut store, &proto), 0);
+        assert!(
+            matches!(store.query_metric_history(&MetricHistoryQuery::Series {
+            source_id: Some(source), snapshot_id: None, after: None, limit: 64,
+        }, None).unwrap(), MetricHistoryPage::Series { rows, .. } if !rows.is_empty())
+        );
+    }
 
     #[test]
     fn progress_uses_the_same_bearer_and_a_small_json_only_body() {
