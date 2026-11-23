@@ -148,8 +148,12 @@ Select a session and press `p` for eligible user prompts. Press Enter to
 reveal one and Escape to clear it. The view requires a current grant for a
 pinned source and uses `sources.json` next to the history database or the
 path set in `AGENTURM_CONTENT_CONFIG`. It verifies retained JSONL rows by
-their committed receipts. OpenCode SQLite prompts can also use a retained
-admission proof after later sweeps.
+their committed receipts. OpenCode SQLite prompts with an admission digest
+can reopen after later sweeps or unrelated committed writes. The original
+row identity, turn, timestamp and bytes must still verify in the native
+database. Legacy rows without a digest require the exact committed sweep.
+New prompt references carry a history snapshot. Reopen the prompt list after
+restore or snapshot expiry to make a fresh selection.
 The default cockpit uses its collector's writer lease for reveal. Establish
 or revoke grants from the CLI while the history writer is available.
 

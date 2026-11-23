@@ -1,6 +1,6 @@
 //! Host verification for explicit private previews from installed harnesses.
 
-use agenturm_kernel::ExtensionId;
+use agenturm_kernel::{ExtensionId, ReadSnapshot};
 use agenturm_store::Store;
 use agenturm_ui::OperationDetailKind;
 #[cfg(not(target_os = "linux"))]
@@ -21,6 +21,7 @@ pub struct PromptReference {
     pub revision: u32,
     pub turn_id: String,
     pub observed_at_unix_ns: u64,
+    pub snapshot_id: Option<ReadSnapshot>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -189,6 +190,7 @@ pub(super) struct PromptSelection<'a> {
     pub session_id: &'a str,
     pub event_id: &'a str,
     pub revision: u32,
+    pub snapshot_id: Option<ReadSnapshot>,
 }
 
 #[cfg(target_os = "linux")]
@@ -208,13 +210,16 @@ pub(super) fn with_verified_prompt<T>(
     consume: impl FnOnce(&agenturm_content::VerifiedPrompt) -> T,
 ) -> Result<T, String> {
     let store = linux::open_store(db)?;
-    agenturm_content::with_verified_prompt(
+    agenturm_content::with_selected_prompt(
         &store,
         &linux::resolver(config),
         source_id,
-        Some(selection.session_id),
-        selection.event_id,
-        selection.revision,
+        agenturm_content::PromptSelection {
+            session_id: Some(selection.session_id),
+            event_id: selection.event_id,
+            revision: selection.revision,
+            snapshot_id: selection.snapshot_id,
+        },
         consume,
     )
 }
@@ -228,32 +233,32 @@ pub(super) fn reveal_user_prompt(
     writer: Option<&Store>,
 ) -> Result<(), String> {
     #[cfg(target_os = "linux")]
-    if let Some(writer) = writer {
-        return linux::reveal_fenced(
+    {
+        let owned;
+        let writer = if let Some(writer) = writer {
+            writer
+        } else {
+            owned = linux::open_store(db)?;
+            &owned
+        };
+        agenturm_content::reveal_selected_prompt(
             writer,
-            config,
+            &linux::resolver(config),
             source_id,
-            Some(selection.session_id),
-            selection.event_id,
-            selection.revision,
+            agenturm_content::PromptSelection {
+                session_id: Some(selection.session_id),
+                event_id: selection.event_id,
+                revision: selection.revision,
+                snapshot_id: selection.snapshot_id,
+            },
             output,
-        );
+        )
     }
     #[cfg(not(target_os = "linux"))]
-    let _ = writer;
-    execute_content(
-        &ContentOptions {
-            action: Action::Preview {
-                config: config.to_owned(),
-                session_id: Some(selection.session_id.to_owned()),
-                event_id: selection.event_id.to_owned(),
-                revision: selection.revision,
-            },
-            db: db.to_owned(),
-            source_id: source_id.clone(),
-        },
-        output,
-    )
+    {
+        let _ = (db, config, source_id, selection, output, writer);
+        Err("Prompt preview is available on Linux".into())
+    }
 }
 
 pub(super) fn reveal_operation_detail(

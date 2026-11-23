@@ -1,7 +1,7 @@
 //! Durable authorization state for host-controlled private source requests.
 
 use crate::{Result, SCHEMA_VERSION, Store, StoreError};
-use agenturm_kernel::ExtensionId;
+use agenturm_kernel::{ExtensionId, ReadSnapshot};
 use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
@@ -126,6 +126,7 @@ pub struct UserTextEvidence {
     pub turn_id: String,
     pub observed_at_unix_ns: u64,
     pub revision: u32,
+    pub snapshot_id: ReadSnapshot,
 }
 
 /// The exact durable MCP occurrence to be checked against a native source.
@@ -543,11 +544,15 @@ impl Store {
         if version != SCHEMA_VERSION {
             return Err(StoreError::UnsupportedSchema(version));
         }
+        let opencode = scope.kind == ContentKind::OpenCodeUserText;
+        let (snapshot_id, watermark) =
+            crate::retention::resolve_read_snapshot(&self.connection, None)?;
         let mut statement = self.connection.prepare(
             "SELECT o.event_id, state.cursor, o.session_id, o.worker_id, o.turn_id,
                     o.observed_at_unix_ns, o.revision, proof.cursor
              FROM agenturm_observations AS o
              JOIN agenturm_source_state AS state ON state.source_id = o.source_id
+             JOIN agenturm_history_batches AS admission ON admission.request_id = o.request_id
              LEFT JOIN agenturm_content_cursor_proofs AS proof ON proof.request_id = o.request_id
                 AND ((?6 AND proof.cursor GLOB 'oc4:*') OR (NOT ?6 AND proof.cursor GLOB 'v2:*'))
              WHERE o.source_id = ?1 AND (?2 IS NULL OR o.event_id = ?2) AND (?3 IS NULL OR o.revision = ?3)
@@ -555,6 +560,7 @@ impl Store {
                AND o.scope = 'session' AND o.turn_id IS NOT NULL AND o.operation_id IS NULL
                AND json_extract(o.kind_json, '$.kind') = 'message'
                AND json_extract(o.kind_json, '$.role') = 'user'
+               AND admission.sequence <= ?7
                AND (proof.request_id IS NOT NULL OR ((NOT ?6 OR state.cursor GLOB 'oc3:*') AND o.request_id = (
                    SELECT newest.request_id FROM agenturm_history_batches AS newest
                    JOIN agenturm_ingest_receipts AS receipt USING (request_id)
@@ -580,7 +586,8 @@ impl Store {
                 revision,
                 session_id,
                 MAX_REFERENCES,
-                scope.kind == ContentKind::OpenCodeUserText
+                opencode,
+                watermark,
             ],
             |row| {
                 let evidence = UserTextEvidence {
@@ -591,6 +598,7 @@ impl Store {
                     observed_at_unix_ns: row.get(5)?,
                     revision: row.get(6)?,
                     admitted_cursor: row.get(7)?,
+                    snapshot_id,
                 };
                 Ok((row.get(0)?, evidence))
             },

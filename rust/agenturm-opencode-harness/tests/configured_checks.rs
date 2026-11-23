@@ -355,10 +355,47 @@ fn opencode_turns_and_granted_prompts_survive_collection_and_reopen() {
     assert_eq!(listed[0]["turn_id"], failed["identity"]["turn_id"]);
     assert_ne!(listed[0]["turn_id"], listed[1]["turn_id"]);
     assert_eq!(listed[1]["turn_id"], mcp["identity"]["turn_id"]);
+    assert!(!listed[0]["snapshot_id"].is_null());
+    assert_eq!(listed[0]["snapshot_id"], listed[1]["snapshot_id"]);
     let mut preview = request("preview");
     let event = listed[0]["event_id"].as_str().unwrap();
     preview.args(["--event-id", event, "--revision", "0"]);
     assert_eq!(run(&mut preview).trim(), r#""review fixture scenario""#);
+    let committed_cursor: String = Connection::open(&history)
+        .unwrap()
+        .query_row(
+            "SELECT cursor FROM agenturm_source_state WHERE source_id='harness.opencode'",
+            [],
+            |row| row.get(0),
+        )
+        .unwrap();
+    let legacy_cursor = format!(
+        "oc3:{}",
+        committed_cursor
+            .split(':')
+            .skip(1)
+            .take(12)
+            .collect::<Vec<_>>()
+            .join(":")
+    );
+    let prove_legacy = || {
+        agenturm_opencode_harness::prove_user_prompts(
+            &source,
+            &legacy_cursor,
+            "ses_schema_fixture",
+            &[agenturm_opencode_harness::UserPromptEvidence {
+                event_id: event,
+                turn_id: listed[0]["turn_id"].as_str().unwrap(),
+                revision: 0,
+                observed_at_unix_ns: listed[0]["observed_at_unix_ns"].as_u64().unwrap(),
+                admitted_proof: None,
+            }],
+        )
+    };
+    assert_eq!(
+        prove_legacy().unwrap().texts[event],
+        "review fixture scenario"
+    );
 
     let collect = || {
         run(Command::new(&app)
@@ -367,16 +404,26 @@ fn opencode_turns_and_granted_prompts_survive_collection_and_reopen() {
             .arg("--config")
             .arg(&config));
     };
+    let mutate_on = |db: &Connection, id: &str, data: &str| {
+        db.execute(
+            "UPDATE session_message SET data=?1 WHERE id=?2",
+            params![data, id],
+        )
+        .unwrap();
+    };
     let mutate = |id, data| {
-        Connection::open(&source)
-            .unwrap()
-            .execute(
-                "UPDATE session_message SET data=?1 WHERE id=?2",
-                params![data, id],
-            )
-            .unwrap();
+        mutate_on(&Connection::open(&source).unwrap(), id, data);
     };
     mutate("msg_end", r#"{"outcome":"interrupted"}"#);
+    assert!(prove_legacy().is_err());
+    assert_eq!(run(&mut preview).trim(), r#""review fixture scenario""#);
+    assert_eq!(
+        serde_json::from_str::<Value>(&run(
+            request("list").args(["--session-id", "ses_schema_fixture"])
+        ))
+        .unwrap(),
+        listed
+    );
     collect();
     assert_eq!(run(&mut preview).trim(), r#""review fixture scenario""#);
     let current = run(request("list").args(["--session-id", "ses_schema_fixture"]));
@@ -384,6 +431,51 @@ fn opencode_turns_and_granted_prompts_survive_collection_and_reopen() {
     assert_eq!(current.as_array().unwrap().len(), 2);
     assert_eq!(current[0]["event_id"], event);
     assert_eq!(current[0]["revision"], 1);
+    assert_ne!(current[0]["snapshot_id"], listed[0]["snapshot_id"]);
+
+    // Keep the writer open so these updates exist only in the live WAL.
+    // A changed unrelated row is safe. New evidence that changes the
+    // selected row or its turn is denied before collection.
+    let wal = Connection::open(&source).unwrap();
+    let journal_mode: String = wal
+        .query_row("PRAGMA journal_mode=WAL", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(journal_mode, "wal");
+    wal.execute_batch("PRAGMA wal_autocheckpoint=0").unwrap();
+    mutate_on(&wal, "msg_end", r#"{"outcome":"succeeded"}"#);
+    assert_eq!(run(&mut preview).trim(), r#""review fixture scenario""#);
+    wal.execute("UPDATE session_message SET seq=0 WHERE id='msg_before'", [])
+        .unwrap();
+    wal.execute(
+        "INSERT INTO session_message VALUES
+         ('msg_new_boundary','ses_schema_fixture','idle',1,1794650400001,1794650400001,
+          '{\"outcome\":\"succeeded\"}')",
+        [],
+    )
+    .unwrap();
+    let denied = preview.output().unwrap();
+    assert!(!denied.status.success() && denied.stdout.is_empty());
+    wal.execute(
+        "DELETE FROM session_message WHERE id='msg_new_boundary'",
+        [],
+    )
+    .unwrap();
+    wal.execute("UPDATE session_message SET seq=1 WHERE id='msg_before'", [])
+        .unwrap();
+    assert_eq!(run(&mut preview).trim(), r#""review fixture scenario""#);
+    mutate_on(&wal, "msg_request", r#"{"text":"unswept private edit"}"#);
+    let denied = preview.output().unwrap();
+    assert!(!denied.status.success() && denied.stdout.is_empty());
+    assert!(!String::from_utf8_lossy(&denied.stderr).contains("unswept private edit"));
+    mutate_on(&wal, "msg_request", r#"{"text":"review fixture scenario"}"#);
+    assert_eq!(run(&mut preview).trim(), r#""review fixture scenario""#);
+    drop(wal);
+    let native = Connection::open(&source).unwrap();
+    let journal_mode: String = native
+        .query_row("PRAGMA journal_mode=DELETE", [], |row| row.get(0))
+        .unwrap();
+    assert_eq!(journal_mode, "delete");
+    drop(native);
 
     let bundle = root.join("bundle");
     let restored = root.join("restored");
@@ -437,7 +529,10 @@ fn opencode_turns_and_granted_prompts_survive_collection_and_reopen() {
     fs::rename(&source, &replacement).unwrap();
     fs::copy(&replacement, &source).unwrap();
     assert!(!preview.output().unwrap().status.success());
+    run(&mut request("grant"));
+    assert!(!preview.output().unwrap().status.success());
     fs::rename(&replacement, &source).unwrap();
+    run(&mut request("grant"));
     collect();
     assert_eq!(run(&mut preview).trim(), r#""review fixture scenario""#);
 
@@ -449,5 +544,26 @@ fn opencode_turns_and_granted_prompts_survive_collection_and_reopen() {
     let newer = run(request("list").args(["--session-id", "ses_schema_fixture"]));
     let newer: Value = serde_json::from_str(&newer).unwrap();
     assert_eq!(newer.as_array().unwrap().len(), 1);
+    let event = newer[0]["event_id"].as_str().unwrap();
+    let revision = newer[0]["revision"].as_u64().unwrap().to_string();
+    preview = request("preview");
+    preview.args(["--event-id", event, "--revision", &revision]);
+    assert_eq!(run(&mut preview).trim(), r#""check next fixture scenario""#);
+    let native = Connection::open(&source).unwrap();
+    native
+        .execute("DELETE FROM session_message WHERE id='msg_next'", [])
+        .unwrap();
+    let denied = preview.output().unwrap();
+    assert!(!denied.status.success() && denied.stdout.is_empty());
+    native
+        .execute(
+            "INSERT INTO session_message VALUES
+             ('msg_next','ses_schema_fixture','user',4,1794650400004,1794650400004,?1)",
+            [r#"{"text":"check next fixture scenario"}"#],
+        )
+        .unwrap();
+    let denied = preview.output().unwrap();
+    assert!(!denied.status.success() && denied.stdout.is_empty());
+    drop(native);
     fs::remove_dir_all(root).unwrap();
 }

@@ -739,6 +739,7 @@ fn execute_private_cockpit(
                             event_id: prompt.event_id,
                             revision: prompt.revision,
                             timestamp: prompt.observed_at_unix_ns,
+                            snapshot_id: prompt.snapshot_id,
                         }
                     })
                     .collect(),
@@ -751,7 +752,9 @@ fn execute_private_cockpit(
                 session_id: prompt.anchor.session,
                 event_id: prompt.event_id,
                 revision: prompt.revision,
-                kind: PrivateEvidenceKind::UserText {},
+                kind: PrivateEvidenceKind::UserText {
+                    snapshot_id: prompt.snapshot_id,
+                },
             };
             store
                 .reveal_private(&selection, true, &mut output)

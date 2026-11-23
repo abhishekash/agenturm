@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::workspace::{RecordedSession, ReviewVersion};
+use agenturm_kernel::ReadSnapshot;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -58,6 +59,7 @@ pub struct PromptEntry {
     pub event_id: String,
     pub revision: u32,
     pub timestamp: u64,
+    pub snapshot_id: Option<ReadSnapshot>,
 }
 
 #[derive(Clone, Debug)]

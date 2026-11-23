@@ -4,7 +4,8 @@
 mod command_failure;
 
 use agenturm_jsonl_source::{CursorProof, cursor_proof};
-use agenturm_kernel::ExtensionId;
+use agenturm_kernel::{ExtensionId, ReadSnapshot};
+use agenturm_opencode_harness::PromptSourceStamp;
 use agenturm_store::{
     CodexOperationEvidence, CodexOperationSelection, ContentGrantScope, ContentKind, Store,
     UserTextEvidence, bounded_text_preview,
@@ -49,6 +50,15 @@ pub struct PromptReference {
     pub revision: u32,
     pub turn_id: String,
     pub observed_at_unix_ns: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<ReadSnapshot>,
+}
+
+pub struct PromptSelection<'a> {
+    pub session_id: Option<&'a str>,
+    pub event_id: &'a str,
+    pub revision: u32,
+    pub snapshot_id: Option<ReadSnapshot>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -226,6 +236,7 @@ pub fn list(
                         revision: evidence.revision,
                         turn_id: evidence.turn_id.clone(),
                         observed_at_unix_ns: evidence.observed_at_unix_ns,
+                        snapshot_id: Some(evidence.snapshot_id),
                     });
                 }
             }
@@ -233,7 +244,7 @@ pub fn list(
             store
                 .verify_content_grant(&fresh.scope, &grant)
                 .map_err(|error| error.to_string())?;
-            fresh.verify_additional_checkpoint(&first.cursor)?;
+            source.verify_additional_checkpoint()?;
             Ok(references)
         })
         .map_err(|error| error.to_string())?
@@ -248,22 +259,35 @@ pub fn reveal_fenced(
     revision: u32,
     output: &mut dyn Write,
 ) -> Result<(), String> {
-    with_verified_prompt(
+    reveal_selected_prompt(
         writer,
         resolver,
         source_id,
-        session_id,
-        event_id,
-        revision,
-        |prompt| {
-            // JSON escaping keeps controls out of terminal output. The source
-            // validator has already removed C1 and Unicode direction controls.
-            let mut line =
-                serde_json::to_vec(&prompt.text).map_err(|_| "cannot encode user-text preview")?;
-            line.push(b'\n');
-            write_output(output, &line)
+        PromptSelection {
+            session_id,
+            event_id,
+            revision,
+            snapshot_id: None,
         },
-    )?
+        output,
+    )
+}
+
+pub fn reveal_selected_prompt(
+    writer: &Store,
+    resolver: &SourceResolver<'_>,
+    source_id: &ExtensionId,
+    selection: PromptSelection<'_>,
+    output: &mut dyn Write,
+) -> Result<(), String> {
+    with_selected_prompt(writer, resolver, source_id, selection, |prompt| {
+        // JSON escaping keeps controls out of terminal output. The source
+        // validator has already removed C1 and Unicode direction controls.
+        let mut line =
+            serde_json::to_vec(&prompt.text).map_err(|_| "cannot encode user-text preview")?;
+        line.push(b'\n');
+        write_output(output, &line)
+    })?
 }
 
 /// Read exact native evidence and consume it while the current approval and
@@ -277,10 +301,30 @@ pub fn with_verified_prompt<T>(
     revision: u32,
     consume: impl FnOnce(&VerifiedPrompt) -> T,
 ) -> Result<T, String> {
+    with_selected_prompt(
+        writer,
+        resolver,
+        source_id,
+        PromptSelection {
+            session_id,
+            event_id,
+            revision,
+            snapshot_id: None,
+        },
+        consume,
+    )
+}
+
+pub fn with_selected_prompt<T>(
+    writer: &Store,
+    resolver: &SourceResolver<'_>,
+    source_id: &ExtensionId,
+    selection: PromptSelection<'_>,
+    consume: impl FnOnce(&VerifiedPrompt) -> T,
+) -> Result<T, String> {
     writer
         .with_user_content_fence(|store| {
-            let prompt =
-                verified_prompt(store, resolver, source_id, session_id, event_id, revision)?;
+            let prompt = verified_prompt(store, resolver, source_id, selection)?;
             Ok(consume(&prompt))
         })
         .map_err(|error| error.to_string())?
@@ -454,10 +498,14 @@ fn verified_prompt(
     store: &Store,
     resolver: &SourceResolver<'_>,
     source_id: &ExtensionId,
-    session_id: Option<&str>,
-    event_id: &str,
-    revision: u32,
+    selection: PromptSelection<'_>,
 ) -> Result<VerifiedPrompt, String> {
+    let PromptSelection {
+        session_id,
+        event_id,
+        revision,
+        snapshot_id,
+    } = selection;
     if event_id.is_empty() || event_id.len() > 256 {
         return Err("invalid prompt preview event ID".into());
     }
@@ -469,6 +517,13 @@ fn verified_prompt(
         .current_content_grant(&source.scope)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| missing_approval(source.harness))?;
+    if let Some(snapshot_id) = snapshot_id
+        && !store
+            .contains_observation_at_snapshot(source_id, event_id, revision, snapshot_id)
+            .map_err(|error| error.to_string())?
+    {
+        return Err(NO_EVIDENCE.into());
+    }
     let evidence = store
         .current_user_text_evidence(&source.scope, &grant, event_id, revision)
         .map_err(|error| error.to_string())?
@@ -491,7 +546,7 @@ fn verified_prompt(
     if FileStamp::from_file(&fresh.file)? != fresh.stamp {
         return Err(SOURCE_CHANGED.into());
     }
-    fresh.verify_additional_checkpoint(&evidence.cursor)?;
+    source.verify_additional_checkpoint()?;
     Ok(VerifiedPrompt {
         text,
         session_id: evidence.session_id,
@@ -552,6 +607,7 @@ pub struct BoundSource {
     harness: Harness,
     source_path: PathBuf,
     operation_kind: Option<OperationDetailKind>,
+    opencode_stamp: Option<PromptSourceStamp>,
 }
 
 impl BoundSource {
@@ -627,6 +683,7 @@ impl BoundSource {
             harness,
             source_path: source.source_root.clone(),
             operation_kind,
+            opencode_stamp: None,
         })
     }
 
@@ -658,14 +715,16 @@ impl BoundSource {
                     },
                 )
                 .collect::<Vec<_>>();
-            let texts = agenturm_opencode_harness::prove_user_prompts(
+            let proven = agenturm_opencode_harness::prove_user_prompts(
                 &self.source_path,
                 &first.cursor,
                 &first.session_id,
                 &candidates,
             )
             .map_err(|error| error.to_string())?;
-            let texts = texts
+            self.opencode_stamp = Some(proven.stamp);
+            let texts = proven
+                .texts
                 .into_iter()
                 .filter_map(|(event, text)| {
                     text_preview(UserContent::Text(text))
@@ -706,9 +765,12 @@ impl BoundSource {
         Ok(texts)
     }
 
-    fn verify_additional_checkpoint(&self, cursor: &str) -> Result<(), String> {
+    fn verify_additional_checkpoint(&self) -> Result<(), String> {
         if self.harness == Harness::OpenCode {
-            agenturm_opencode_harness::verify_prompt_checkpoint(&self.source_path, cursor)
+            self.opencode_stamp
+                .as_ref()
+                .ok_or(SOURCE_CHANGED)?
+                .verify(&self.source_path)
                 .map_err(|error| error.to_string())?;
         }
         Ok(())

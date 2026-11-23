@@ -366,7 +366,11 @@ agenturm broker content preview --broker-config reader.json --selection selectio
 agenturm broker cockpit --broker-config reader.json
 ```
 
-A user-text selection identifies the exact retained occurrence.
+A user-text selection identifies the exact retained occurrence. Copy the
+list entry's `snapshot_id` into the nested kind to keep the same history
+branch and receipt watermark. After restore or snapshot expiry, obtain a
+fresh selection. Legacy selections that omit the field select an occurrence
+from current history.
 
 ```json
 {
@@ -374,9 +378,13 @@ A user-text selection identifies the exact retained occurrence.
   "session_id": "session-1",
   "event_id": "exact-event-id-from-the-prompt-list",
   "revision": 1,
-  "kind": { "kind": "user_text" }
+  "kind": { "kind": "user_text", "snapshot_id": "r1:0123456789abcdef0123456789abcdef:17" }
 }
 ```
+
+An OpenCode SQLite prompt with a retained admission digest can reopen after
+unrelated native writes or later sweeps. The broker verifies the original
+native row, turn and exact bytes against the digest before delivering text.
 
 For Codex operation details, use `codex_mcp_payload`, `codex_edit_detail`,
 or `codex_command_detail`

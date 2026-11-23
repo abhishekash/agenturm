@@ -391,12 +391,14 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
                 "revision": 0,
                 "turn_id": "turn-1",
                 "observed_at_unix_ns": 1795176000000000000u64,
+                "snapshot_id": snapshot,
             },
             {
                 "event_id": event("turn-safe"),
                 "revision": 0,
                 "turn_id": "turn-safe",
                 "observed_at_unix_ns": 1795176001500000000u64,
+                "snapshot_id": snapshot,
             },
         ])
     );

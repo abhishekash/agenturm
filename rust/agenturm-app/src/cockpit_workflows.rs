@@ -267,6 +267,7 @@ pub(super) fn execute_prompt(
                             event_id: prompt.event_id,
                             revision: prompt.revision,
                             timestamp: prompt.observed_at_unix_ns,
+                            snapshot_id: prompt.snapshot_id,
                         }
                     })
                     .collect(),
@@ -283,6 +284,7 @@ pub(super) fn execute_prompt(
                     session_id: &prompt.anchor.session,
                     event_id: &prompt.event_id,
                     revision: prompt.revision,
+                    snapshot_id: prompt.snapshot_id,
                 },
                 &mut delivery,
                 writer,
