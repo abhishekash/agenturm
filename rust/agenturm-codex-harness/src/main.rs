@@ -38,7 +38,13 @@ impl<const LEGACY: bool> SourceFormat for CodexFormat<LEGACY> {
         let (mut facts, context) = codex::translate_line(raw, context, origin, offset)?;
         if LEGACY {
             facts.retain_mut(|fact| match fact["kind"].as_str() {
-                Some("file_edit" | "mcp_call" | "pull_request_raised") => false,
+                Some(
+                    "file_edit"
+                    | "mcp_call"
+                    | "pull_request_raised"
+                    | "internal_review"
+                    | "native_request",
+                ) => false,
                 Some("check") => {
                     if let Some(identity) = fact["identity"].as_object_mut() {
                         identity.remove("operation_id");

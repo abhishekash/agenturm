@@ -2,6 +2,8 @@
 //! Completion and interruption require explicit source events. A PR, tool
 //! result, EOF or ordinary assistant message never supplies a terminal state.
 
+mod approval;
+
 use agenturm_jsonl_source::Result;
 use agenturm_protocol::observation::{
     FileEdit, McpCall, McpMethod, RelationshipKind, is_github_pull_request, is_mcp_identifier,
@@ -32,6 +34,7 @@ pub(crate) struct Context {
     pub worker_id: String,
     pub turn_id: String,
     parent_thread: Option<String>,
+    guardian: Option<approval::Guardian>,
     header_bytes: usize,
     in_copied_context: bool,
 }
@@ -96,6 +99,7 @@ pub(crate) fn header_identity(raw: &[u8]) -> Result<Context> {
             .and_then(Value::as_str)
             .filter(|parent| identifier(parent) && *parent != thread)
             .map(str::to_owned),
+        guardian: approval::Guardian::from_header(raw, thread)?,
         header_bytes: raw.len(),
         in_copied_context: false,
     })
@@ -511,6 +515,28 @@ pub(crate) fn translate_line(
     let mut next = context.clone();
     if kind == "session_meta" {
         let header = header_identity(raw)?;
+        if let Some(guardian) = &context.guardian {
+            if header.session_id != context.session_id
+                || header.worker_id != context.worker_id
+                || header.guardian.as_ref() != Some(guardian)
+            {
+                return Err(invalid("Codex guardian identity changed inside one file"));
+            }
+            let facts = if offset == 0 {
+                stamp(&row)
+                    .or_else(|_| stamp(&row["payload"]))
+                    .ok()
+                    .map(|time| guardian.classification(context, origin, &time))
+                    .into_iter()
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            return Ok((facts, next));
+        }
+        if header.guardian.is_some() {
+            return Err(invalid("Codex guardian header changed inside one file"));
+        }
         if header.session_id != context.session_id || header.worker_id != context.worker_id {
             // A forked worker can embed the parent's rollout immediately
             // after its own header. Preserve the worker's original identity.
@@ -542,6 +568,9 @@ pub(crate) fn translate_line(
         return Ok((Vec::new(), next));
     }
     let base = format!("codex:{origin}:{offset}");
+    if let Some(guardian) = &context.guardian {
+        return guardian.translate(raw, &row, context, kind, &base);
+    }
     if context.in_copied_context {
         let payload = &row["payload"];
         if kind == "event_msg"
@@ -721,6 +750,9 @@ pub(crate) fn translate_line(
                     }
                 }
                 "approval_request" | "request_user_input" => {
+                    if let Some(request) = approval::request(raw, &row_context, &base, &time_ns) {
+                        facts.push(request);
+                    }
                     if historical_turn(payload, context) {
                         facts.push(diagnostic(
                             format!("{base}:historical-wait"),
@@ -1300,6 +1332,135 @@ mod tests {
             "call_id":"c1","isError":"false"}),
         );
         assert!(translate_line(&bad_result, &context, "generation", 1).is_err());
+    }
+
+    #[test]
+    fn guardian_rows_keep_scope_and_lifecycle_without_private_content_or_decisions() {
+        let header = row(
+            "session_meta",
+            json!({"id":"guardian-thread","session_id":"parent-thread",
+                "parent_thread_id":"parent-thread","thread_source":"guardian_review",
+                "source":{"subagent":{"other":"guardian"}}}),
+        );
+        let context = header_identity(&header).unwrap();
+        let (facts, _) = translate_line(&header, &context, "generation", 0).unwrap();
+        assert_eq!(facts[0]["kind"], "internal_review");
+        assert!(facts[0].get("identity").is_none());
+        assert_eq!(
+            facts[0]["payload"],
+            json!({
+                "state":"classified","session_id":"guardian-thread",
+                "worker_id":"guardian-thread","parent_session_id":"parent-thread",
+            })
+        );
+        let (facts, next) = translate(
+            json!({"type":"task_started","turn_id":"review-turn"}),
+            &context,
+        );
+        assert_eq!(facts[0]["payload"]["state"], "started");
+        assert_eq!(facts[0]["payload"]["turn_id"], "review-turn");
+        let mut resumed = header_identity(&header).unwrap();
+        resumed.restore(&next.checkpoint());
+        assert_eq!(resumed, next);
+        for payload in [
+            json!({"type":"item_completed","turn_id":"review-turn","item":{
+                "type":"AgentMessage","phase":"final_answer","text":"approved private"},
+            }),
+            json!({"type":"approval_request","turn_id":"review-turn","request_id":"private"}),
+            json!({"type":"task_complete","last_agent_message":"approved private"}),
+            json!({"type":"task_complete","turn_id":"review-turn","error":{"message":"private"}}),
+        ] {
+            assert!(translate(payload, &resumed).0.is_empty());
+        }
+        let (facts, _) = translate(
+            json!({"type":"task_complete","turn_id":"review-turn",
+            "last_agent_message":"approved private"}),
+            &resumed,
+        );
+        assert_eq!(facts[0]["payload"]["state"], "completed");
+        assert_eq!(facts[0]["payload"]["turn_id"], "review-turn");
+        assert!(!facts[0].to_string().contains("approved"));
+        assert!(!facts[0].to_string().contains("private"));
+        let (facts, _) = translate(
+            json!({"type":"turn_aborted","turn_id":"previous-turn",
+            "reason":"private"}),
+            &resumed,
+        );
+        assert_eq!(facts[0]["payload"]["turn_id"], "previous-turn");
+        assert_eq!(facts[0]["payload"]["state"], "interrupted");
+        assert!(!facts[0].to_string().contains("private"));
+    }
+
+    #[test]
+    fn native_requests_require_exact_identity_and_never_invent_resolution() {
+        let context = header_identity(&row(
+            "session_meta",
+            json!({
+                "id":"native-thread","session_id":"parent-thread",
+            }),
+        ))
+        .unwrap();
+        let (_, current) = translate(
+            json!({"type":"task_started","turn_id":"active-turn"}),
+            &context,
+        );
+        let request = json!({"type":"approval_request","turn_id":"previous-turn",
+            "request_id":"approval-one","prompt":"private sentinel"});
+        let (facts, next) = translate(request, &current);
+        assert_eq!(next.turn_id, "active-turn");
+        assert_eq!(facts[0]["kind"], "native_request");
+        assert_eq!(
+            facts[0]["identity"],
+            json!({"session_id":"native-thread",
+            "worker_id":"native-thread","turn_id":"previous-turn"})
+        );
+        assert_eq!(
+            facts[0]["payload"],
+            json!({"request_kind":"approval","state":"requested",
+            "request_id":opaque_operation("approval-one").unwrap()})
+        );
+        assert!(!facts[0].to_string().contains("private sentinel"));
+        assert_eq!(facts[1]["payload"]["code"], "codex_historical_wait");
+        for payload in [
+            json!({"type":"approval_request","turn_id":"active-turn","call_id":"not-a-request-id"}),
+            json!({"type":"approval_request","request_id":"no-turn"}),
+            json!({"type":"approval_response","turn_id":"active-turn","request_id":"approval-one","decision":"approve"}),
+            json!({"type":"item_completed","turn_id":"active-turn","item":{
+                "type":"AgentMessage","phase":"final_answer","text":"approved"},
+            }),
+        ] {
+            assert!(
+                translate(payload, &current)
+                    .0
+                    .iter()
+                    .all(|row| row["kind"] != "native_request")
+            );
+        }
+        let (facts, _) = translate(
+            json!({"type":"request_user_input","turn_id":"active-turn",
+            "request_id":"input-one","questions":["private"]}),
+            &current,
+        );
+        assert_eq!(facts[0]["payload"]["request_kind"], "user_input");
+        assert_eq!(facts[0]["payload"]["state"], "requested");
+        assert!(!facts[0].to_string().contains("private"));
+    }
+
+    #[test]
+    fn duplicate_scope_fields_cannot_create_a_request_or_hide_a_guardian() {
+        let context =
+            header_identity(br#"{"type":"session_meta","payload":{"id":"thread"}}"#).unwrap();
+        let request = br#"{"type":"event_msg","timestamp":"2026-11-14T10:00:00Z","payload":{
+            "type":"approval_request","turn_id":"turn","request_id":"one","request_id":"two"}}"#;
+        let (facts, _) = translate_line(request, &context, "generation", 10).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0]["kind"], "lifecycle");
+        for header in [
+            br#"{"type":"session_meta","payload":{"id":"thread","thread_source":"guardian_review","thread_source":"cli"}}"#.as_slice(),
+            br#"{"type":"session_meta","payload":{"id":"thread","source":{"subagent":{"other":"guardian","other":"ordinary"}}}}"#.as_slice(),
+        ] {
+            assert!(header_identity(header).is_err());
+        }
     }
 
     #[test]
