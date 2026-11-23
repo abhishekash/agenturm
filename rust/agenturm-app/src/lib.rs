@@ -19,6 +19,8 @@ mod handoff_export;
 mod inspector_activity;
 mod investigate_cli;
 mod private_output;
+#[cfg(target_os = "linux")]
+mod remote_history;
 mod retention_cli;
 mod review_receipt;
 mod session_evidence;
@@ -42,6 +44,8 @@ pub use discovery::{discover, execute_discover};
 pub use eval_import::{EvalOptions, execute_evals};
 pub use investigate_cli::{InvestigationOptions, execute_investigation};
 pub use private_output::with_private_stdout;
+#[cfg(target_os = "linux")]
+pub use remote_history::{RemoteHistoryOptions, execute_remote_cockpit};
 pub use retention_cli::{RetentionOptions, execute_retention};
 pub use review_receipt::ReviewOutput;
 pub use span_jsonl_import::{SpanJsonlImportOptions, execute_span_jsonl_import};
@@ -204,6 +208,8 @@ pub enum Command {
         db: Option<PathBuf>,
         extensions: ResolvedExtensionCatalog,
     },
+    #[cfg(target_os = "linux")]
+    RemoteCockpit(RemoteHistoryOptions),
     Query(HistoryQueryOptions),
     #[cfg(target_os = "linux")]
     Broker(broker_cli::BrokerOptions),
@@ -780,6 +786,14 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
             db: None,
             extensions: ResolvedExtensionCatalog::default(),
         }),
+        #[cfg(target_os = "linux")]
+        Some("cockpit")
+            if args[1..]
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "--endpoint" | "--token-file")) =>
+        {
+            remote_history::parse_attach(&args[1..]).map(Command::RemoteCockpit)
+        }
         Some("cockpit") => parse_inspect_options(&args[1..]).map(|options| Command::Cockpit {
             db: Some(options.db),
             extensions: options.extensions,
@@ -1876,6 +1890,9 @@ fn load_session_catalog(
 }
 
 trait HistoryReader: ObservationStore {
+    fn local_host_data(&self) -> bool {
+        true
+    }
     fn workspace_ledger(
         &self,
         marker: &std::path::Path,
@@ -2049,7 +2066,9 @@ fn load_workspace_history(
         HistorySelection::All(view) => {
             let mut snapshot = app.refresh_history_query(store, query);
             let ids = session_evidence::add_workspace_panes(&mut snapshot);
-            let host = cockpit_host::add_host_pane(&mut snapshot);
+            let host = store
+                .local_host_data()
+                .then(|| cockpit_host::add_host_pane(&mut snapshot));
             let mut page = inspector_activity::overview_page(snapshot);
             page.initial_pane = Some(match view {
                 WorkspaceView::Overview => {
@@ -2059,7 +2078,7 @@ fn load_workspace_history(
                 WorkspaceView::Mcp => ids.mcp,
                 WorkspaceView::Operations => ids.operations,
                 WorkspaceView::Findings => ids.findings,
-                WorkspaceView::Host => host,
+                WorkspaceView::Host => host.ok_or("Host data is unavailable from this receiver")?,
                 WorkspaceView::Usage => ids.usage,
                 WorkspaceView::Traces => ids.traces,
             });
@@ -3296,7 +3315,9 @@ pub fn render(command: Command) -> String {
             "Usage: agenturm [--help|--version|status]\n",
             "       agenturm adapter install --manifest <local-json> --sha256 <digest> --root <private-directory>\n",
             "       agenturm broker <collect|query|review|cockpit|task|grant|content|backup|integrity|prune> --broker-config <json> [command options]\n",
+            "       agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path>\n",
             "       agenturm cockpit [--db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]]\n",
+            "       agenturm cockpit --endpoint http://<loopback-IP:port> --token-file <path>\n",
             "       agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]\n",
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
             "       agenturm review --db <path> --harness-id <id> --session-id <id> (--turn-id <id> | --turn-of-trace <trace-id> --trace-source-id <id>) [--worker-id <id>] [--linked-traces] [--format text|json|markdown|html] [--output <new-directory>] [query paging options]\n",
@@ -3315,6 +3336,7 @@ pub fn render(command: Command) -> String {
             "       agenturm evals --db <path> --source-id otlp.<id> --trace-id <id> [--json]\n",
             "       agenturm attention status --db <path>\n",
             "       agenturm attention watch --db <path> [--once | --max-polls <1..10000>] [--interval-ms <100..60000>]\n",
+            "       agenturm attention <status|watch> --endpoint http://<loopback-IP:port> --token-file <path> [watch options]\n",
             "       agenturm task <list|add|show|complete|reopen|link|unlink|handoffs|export> [options]\n",
             "       agenturm discover [--follow] [--sessions-per-harness <1..8>]\n",
             "       agenturm collect --config <json-path> --db <path>\n",
@@ -3351,6 +3373,8 @@ pub fn render(command: Command) -> String {
         | Command::Retention(_)
         | Command::Content(_) => String::new(),
         Command::Discover { .. } | Command::Cockpit { .. } => String::new(),
+        #[cfg(target_os = "linux")]
+        Command::RemoteCockpit(_) => String::new(),
         Command::Inspect(_) => String::new(),
         #[cfg(target_os = "linux")]
         Command::Broker(_) | Command::InstallAdapter(_) => String::new(),

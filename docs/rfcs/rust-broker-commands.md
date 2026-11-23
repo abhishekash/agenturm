@@ -97,6 +97,58 @@ endpoint and the broker's persistent history identity. A fresh database at
 the same socket opens a fresh workspace. A running cockpit pins its remote
 reads and exact link validation to the selected history identity.
 
+## Read history through an SSH tunnel
+
+Configure `--native-reader <uid>:<gid>` on the broker and run the read gateway
+as that identity. Share a randomly generated 64-digit lowercase hex token
+with the intended client. Place a copy in an owner-only file on each machine
+and grant the gateway access to the native reader socket. Each token holder
+can read metadata for the sources granted to that reader.
+
+```sh
+agenturm broker serve-history --broker-config broker.json \
+  --listen 127.0.0.1:14319 --token-file reader-token
+```
+
+Connect through an authenticated SSH session, then direct the client to the
+active local forward. The HTTP client dials the literal loopback address and
+uses the bearer file for this receiver. Keep the forward active while using
+the client, since TCP loopback does not identify the process listening on a
+port. Use a different secret for each receiver.
+
+```sh
+ssh -N -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:14329:127.0.0.1:14319 receiver-host
+agenturm cockpit --endpoint http://127.0.0.1:14329 --token-file receiver-token
+agenturm attention status --endpoint http://127.0.0.1:14329 --token-file receiver-token
+agenturm attention watch --endpoint http://127.0.0.1:14329 --token-file receiver-token --once
+```
+
+Session navigation, exact worker and turn history, Review, linked traces and
+attention read the receiver's retained metadata. Tasks, review records and
+request seen state are local to the client and scoped to the loopback endpoint
+and persistent history ID. An active client checks that ID on each request.
+Restart the gateway and reconnect after offline history restoration.
+
+The version 1 read API accepts one bearer-authenticated JSON `POST` to
+`/v1/history/read` per connection. First send `{"version":1,"request":{"op":"identity"}}`.
+Use the returned `history_identity` in subsequent requests and the returned
+snapshot ID when traversing a page. Session, observation, exact trace Review
+and workspace anchor checks follow the broker's source and history rules.
+Headers are limited to 8 KiB, request bodies to 16 KiB and replies to 4 MiB.
+The gateway applies five-second HTTP input and output budgets and disables
+response caching.
+
+Protected content, broker administration and observation admission use
+their own native broker commands. Receiver host inspection and native
+terminal routing are unavailable from the attached cockpit. Direct TLS and
+compatibility with the Python `/api/*` connection, metrics and Review
+endpoints remain open cutover work.
+
+Run `python3 scripts/validate_rust_remote_history.py --bin-dir /opt/agenturm/bin`
+in a disposable Linux guest to verify the read gateway and a separately
+credentialed 60-column cockpit and attention client.
+
 ## Import trace files
 
 Add `otlp.exported` to `--native-sources` and run these commands as the configured collector UID and primary GID. The CLI reads and validates the file and submits bounded structural span records. The broker opens history and commits each import as one batch. Client files can also be read on stdin with `--file -`.

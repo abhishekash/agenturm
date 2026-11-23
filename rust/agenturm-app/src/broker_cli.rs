@@ -15,6 +15,7 @@ const USAGE: &str = concat!(
     "       agenturm broker run --broker-config <json> --source-id otlp.<id> -- <program> [args...]\n",
     "       agenturm broker import-evals --broker-config <json> --file <results.json|-> --source-id otlp.<id>\n",
     "       agenturm broker evals --broker-config <json> --source-id otlp.<id> --trace-id <id> [--json]\n",
+    "       agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path>\n",
     "       agenturm broker grant <check|approve|revoke> --broker-config <json> --binding <json>\n",
     "       agenturm broker content list --broker-config <json> --source-id <id> --session-id <id>\n",
     "       agenturm broker content preview --broker-config <json> --selection <json>\n",
@@ -72,6 +73,7 @@ pub struct BrokerOptions {
 enum BrokerCommand {
     Application(Box<Command>),
     ServeTraces(trace_receiver::BrokerTraceReceiverOptions),
+    ServeHistory(remote_history::ReadServerOptions),
     Run(trace_run::TraceInvocation),
     Investigation(Box<InvestigationOptions>),
     Retention(RetentionOptions),
@@ -154,6 +156,12 @@ pub(super) fn parse_os(args: &[OsString]) -> Result<BrokerOptions, String> {
         return Ok(BrokerOptions {
             config,
             command: BrokerCommand::ServeTraces(trace_receiver::parse_broker(&command[1..])?),
+        });
+    }
+    if command.first().is_some_and(|verb| verb == "serve-history") {
+        return Ok(BrokerOptions {
+            config,
+            command: BrokerCommand::ServeHistory(remote_history::parse_server(&command[1..])?),
         });
     }
     if command.first().is_some_and(|verb| verb == "investigate") {
@@ -277,7 +285,6 @@ fn workspace_identity(
     state: &Path,
 ) -> Result<PathBuf, String> {
     use sha2::{Digest, Sha256};
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 
     if history_identity.len() != 32
         || !history_identity
@@ -297,19 +304,28 @@ fn workspace_identity(
     .map_err(|error| error.to_string())?;
     let namespace = format!("{:x}", Sha256::digest(encoded));
     let directory = state.join("brokers").join(&namespace);
+    let expected = format!("agenturm-broker-workspace/1\n{namespace}\n");
+    private_workspace_marker(&directory, &expected)
+}
+
+pub(super) fn private_workspace_marker(
+    directory: &Path,
+    expected: &str,
+) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(&directory)
-        .map_err(|error| format!("Create broker workspace: {error}"))?;
-    let metadata = std::fs::symlink_metadata(&directory).map_err(|error| error.to_string())?;
+        .create(directory)
+        .map_err(|error| format!("Create history workspace: {error}"))?;
+    let metadata = std::fs::symlink_metadata(directory).map_err(|error| error.to_string())?;
     // SAFETY: geteuid has no arguments or preconditions.
     let uid = unsafe { libc::geteuid() };
     if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
-        return Err("Broker workspace directory must be private and owned by the client".into());
+        return Err("History workspace directory must be private and owned by the client".into());
     }
     let marker = directory.join("identity");
-    let expected = format!("agenturm-broker-workspace/1\n{namespace}\n");
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| error.to_string())?
@@ -346,7 +362,7 @@ fn workspace_identity(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.to_string()),
     }
-    File::open(&directory)
+    File::open(directory)
         .and_then(|file| file.sync_all())
         .map_err(|error| error.to_string())?;
     let mut file = std::fs::OpenOptions::new()
@@ -360,7 +376,7 @@ fn workspace_identity(
         || metadata.nlink() != 1
         || metadata.mode() & 0o077 != 0
     {
-        return Err("Invalid broker workspace identity file".into());
+        return Err("Invalid history workspace identity file".into());
     }
     let mut contents = String::new();
     (&mut file)
@@ -368,7 +384,7 @@ fn workspace_identity(
         .read_to_string(&mut contents)
         .map_err(|error| error.to_string())?;
     if contents != expected {
-        return Err("Broker workspace identity changed".into());
+        return Err("History workspace identity changed".into());
     }
     Ok(marker)
 }
@@ -403,6 +419,10 @@ pub fn execute(options: &BrokerOptions) -> Result<ExitCode, BrokerExecutionError
     let (mut store, config) = connect(&options.config)?;
     let command = match &options.command {
         BrokerCommand::Application(command) => command.as_ref(),
+        BrokerCommand::ServeHistory(options) => {
+            remote_history::execute_server(options, store)?;
+            return Ok(ExitCode::SUCCESS);
+        }
         BrokerCommand::ServeTraces(options) => {
             let commit = trace_commit(store, &options.settings.source)?;
             let token = trace_receiver::ProducerToken::from_file(&options.token_file)?;

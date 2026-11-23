@@ -16,11 +16,15 @@ pub mod native_read;
 #[cfg(target_os = "linux")]
 mod native_store;
 #[cfg(target_os = "linux")]
+mod reader_history;
+#[cfg(target_os = "linux")]
 pub use native_admin::{AdminFailure, BackupReceipt, GrantBinding, GrantStatus};
 #[cfg(target_os = "linux")]
 pub use native_content::{PrivateEvidenceFailure, PrivateEvidenceKind, PrivateEvidenceSelection};
 #[cfg(target_os = "linux")]
-pub use native_store::{NativeClientError, NativeStore};
+pub use native_store::{NativeClientError, NativeSelection, NativeStore};
+#[cfg(target_os = "linux")]
+pub use reader_history::{ReaderHistoryReply, ReaderHistoryRequest};
 
 #[cfg(target_os = "linux")]
 mod linux {

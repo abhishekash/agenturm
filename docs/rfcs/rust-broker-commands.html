@@ -78,6 +78,47 @@ under the client's state directory. Their namespace binds the authenticated
 endpoint and the broker's persistent history identity. A fresh database at
 the same socket opens a fresh workspace. A running cockpit pins its remote
 reads and exact link validation to the selected history identity.</p>
+<h2>Read history through an SSH tunnel</h2>
+<p>Configure <code>--native-reader &lt;uid&gt;:&lt;gid&gt;</code> on the broker and run the read gateway
+as that identity. Share a randomly generated 64-digit lowercase hex token
+with the intended client. Place a copy in an owner-only file on each machine
+and grant the gateway access to the native reader socket. Each token holder
+can read metadata for the sources granted to that reader.</p>
+<pre><code class="language-sh">agenturm broker serve-history --broker-config broker.json \
+  --listen 127.0.0.1:14319 --token-file reader-token
+</code></pre>
+<p>Connect through an authenticated SSH session, then direct the client to the
+active local forward. The HTTP client dials the literal loopback address and
+uses the bearer file for this receiver. Keep the forward active while using
+the client, since TCP loopback does not identify the process listening on a
+port. Use a different secret for each receiver.</p>
+<pre><code class="language-sh">ssh -N -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:14329:127.0.0.1:14319 receiver-host
+agenturm cockpit --endpoint http://127.0.0.1:14329 --token-file receiver-token
+agenturm attention status --endpoint http://127.0.0.1:14329 --token-file receiver-token
+agenturm attention watch --endpoint http://127.0.0.1:14329 --token-file receiver-token --once
+</code></pre>
+<p>Session navigation, exact worker and turn history, Review, linked traces and
+attention read the receiver's retained metadata. Tasks, review records and
+request seen state are local to the client and scoped to the loopback endpoint
+and persistent history ID. An active client checks that ID on each request.
+Restart the gateway and reconnect after offline history restoration.</p>
+<p>The version 1 read API accepts one bearer-authenticated JSON <code>POST</code> to
+<code>/v1/history/read</code> per connection. First send <code>{&quot;version&quot;:1,&quot;request&quot;:{&quot;op&quot;:&quot;identity&quot;}}</code>.
+Use the returned <code>history_identity</code> in subsequent requests and the returned
+snapshot ID when traversing a page. Session, observation, exact trace Review
+and workspace anchor checks follow the broker's source and history rules.
+Headers are limited to 8 KiB, request bodies to 16 KiB and replies to 4 MiB.
+The gateway applies five-second HTTP input and output budgets and disables
+response caching.</p>
+<p>Protected content, broker administration and observation admission use
+their own native broker commands. Receiver host inspection and native
+terminal routing are unavailable from the attached cockpit. Direct TLS and
+compatibility with the Python <code>/api/*</code> connection, metrics and Review
+endpoints remain open cutover work.</p>
+<p>Run <code>python3 scripts/validate_rust_remote_history.py --bin-dir /opt/agenturm/bin</code>
+in a disposable Linux guest to verify the read gateway and a separately
+credentialed 60-column cockpit and attention client.</p>
 <h2>Import trace files</h2>
 <p>Add <code>otlp.exported</code> to <code>--native-sources</code> and run these commands as the configured collector UID and primary GID. The CLI reads and validates the file and submits bounded structural span records. The broker opens history and commits each import as one batch. Client files can also be read on stdin with <code>--file -</code>.</p>
 <pre><code class="language-sh">agenturm broker import-jsonl --broker-config broker.json \
@@ -85,7 +126,7 @@ reads and exact link validation to the selected history identity.</p>
 agenturm broker import-traces --broker-config broker.json \
   --file otlp.json --source-id otlp.exported
 </code></pre>
-<p>The same structural import and replay rules apply to local and broker history. <a href="rust-cutover-workflows.html#import-exported-spans">Span export format</a></p>
+<p>The same structural import and replay rules apply to local and broker history. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md#import-exported-spans">Span export format</a></p>
 <h2>Grant administration</h2>
 <p>The service can authorize separate reader, grant administrator and maintenance
 identities using <code>--native-reader UID:GID</code>,

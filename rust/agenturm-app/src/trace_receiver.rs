@@ -49,7 +49,7 @@ impl ProducerToken {
         use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 
         const INVALID: &str =
-            "OTLP token file must be an owner-only regular file with 64 lowercase hex digits";
+            "Bearer token file must be an owner-only regular file with 64 lowercase hex digits";
         let file = OpenOptions::new()
             .read(true)
             .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
@@ -97,7 +97,12 @@ impl ProducerToken {
         format!("authorization=Bearer%20{}", self.0)
     }
 
-    fn authorizes(&self, header: &str) -> bool {
+    #[cfg(target_os = "linux")]
+    pub(super) fn bearer_header(&self) -> String {
+        format!("Bearer {}", self.0)
+    }
+
+    pub(super) fn authorizes(&self, header: &str) -> bool {
         let Some((scheme, provided)) = header.split_once(' ') else {
             return false;
         };

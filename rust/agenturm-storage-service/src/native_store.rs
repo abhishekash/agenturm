@@ -9,6 +9,7 @@ use crate::native_content::{
     PrivateEvidenceSelection, PrivatePromptSelection,
 };
 use crate::native_read::{self, HistorySelection, ReadFailure};
+use crate::reader_history::{self, ReaderHistoryReply, ReaderHistoryRequest};
 use agenturm_kernel::{
     ExtensionId, Observation, ObservationPage, ObservationQuery, ObservationStore, StoreCommit,
 };
@@ -63,6 +64,10 @@ pub(crate) enum NativeOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_history_identity: Option<String>,
     },
+    ReaderHistory {
+        expected_history_identity: Option<String>,
+        request: ReaderHistoryRequest,
+    },
     CheckWorkspace {
         history_identity: String,
         anchor: WorkspaceAnchor,
@@ -101,7 +106,7 @@ pub(crate) enum WorkspaceSelection {
 
 #[derive(Debug, Serialize, Deserialize)]
 #[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
-pub(crate) enum NativeSelection {
+pub enum NativeSelection {
     Observations,
     AllWorkers {
         turn_id: String,
@@ -117,6 +122,24 @@ pub(crate) enum NativeSelection {
     },
 }
 
+impl NativeSelection {
+    pub(crate) fn as_history(&self) -> HistorySelection<'_> {
+        match self {
+            Self::Observations => HistorySelection::Observations,
+            Self::AllWorkers { turn_id } => HistorySelection::AllWorkers { turn_id },
+            Self::Worker { turn_id, worker_id } => HistorySelection::Turn {
+                turn_id,
+                worker_id: worker_id.as_deref(),
+            },
+            Self::LinkedTraces => HistorySelection::LinkedTraces,
+            Self::LinkedTurnTraces { turn_id, worker_id } => HistorySelection::LinkedTurnTraces {
+                turn_id,
+                worker_id: worker_id.as_deref(),
+            },
+        }
+    }
+}
+
 #[derive(Serialize)]
 #[serde(untagged)]
 pub(crate) enum NativeReply {
@@ -127,6 +150,7 @@ pub(crate) enum NativeReply {
     EvalImported(Result<EvalImportReport, ReadFailure>),
     EvalOutcome(Result<Option<RetainedEvalOutcome>, ReadFailure>),
     Identity(Result<String, ReadFailure>),
+    ReaderHistory(Result<ReaderHistoryReply, ReadFailure>),
     Workspace(Result<bool, ReadFailure>),
     PrivatePrompts(Result<Vec<agenturm_content::PromptReference>, PrivateEvidenceFailure>),
     Admin(Result<AdminReply, AdminFailure>),
@@ -233,23 +257,11 @@ pub(crate) fn dispatch(
             if let Err(error) = authorize_read(store, role, expected_history_identity.as_deref()) {
                 return NativeReply::History(Err(error));
             }
-            let selection = match &selection {
-                NativeSelection::Observations => HistorySelection::Observations,
-                NativeSelection::AllWorkers { turn_id } => HistorySelection::AllWorkers { turn_id },
-                NativeSelection::Worker { turn_id, worker_id } => HistorySelection::Turn {
-                    turn_id,
-                    worker_id: worker_id.as_deref(),
-                },
-                NativeSelection::LinkedTraces => HistorySelection::LinkedTraces,
-                NativeSelection::LinkedTurnTraces { turn_id, worker_id } => {
-                    HistorySelection::LinkedTurnTraces {
-                        turn_id,
-                        worker_id: worker_id.as_deref(),
-                    }
-                }
-            };
             return NativeReply::History(native_read::query_history(
-                store, allowed, &query, selection,
+                store,
+                allowed,
+                &query,
+                selection.as_history(),
             ));
         }
         NativeOperation::QuerySessions {
@@ -309,6 +321,18 @@ pub(crate) fn dispatch(
                         .map_err(|_| ReadFailure::Unavailable)
                 }),
             );
+        }
+        NativeOperation::ReaderHistory {
+            expected_history_identity,
+            request,
+        } => {
+            return NativeReply::ReaderHistory(reader_history::dispatch(
+                store,
+                allowed,
+                role,
+                expected_history_identity.as_deref(),
+                request,
+            ));
         }
         NativeOperation::CheckWorkspace {
             history_identity,
@@ -649,6 +673,19 @@ impl NativeStore {
             return Err(NativeClientError::InvalidReply);
         }
         Ok(identity)
+    }
+
+    /// Reads metadata only, and only when the service authenticated this
+    /// process as the dedicated reader principal.
+    pub fn reader_history(
+        &self,
+        request: ReaderHistoryRequest,
+    ) -> Result<ReaderHistoryReply, NativeClientError> {
+        self.exchange::<Result<ReaderHistoryReply, ReadFailure>>(NativeOperation::ReaderHistory {
+            expected_history_identity: self.workspace_identity.clone(),
+            request,
+        })?
+        .map_err(NativeClientError::Read)
     }
 
     pub fn list_private_prompts(

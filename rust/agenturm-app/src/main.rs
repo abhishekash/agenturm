@@ -47,6 +47,13 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+        #[cfg(target_os = "linux")]
+        Command::RemoteCockpit(options) => {
+            if let Err(message) = agenturm_app::execute_remote_cockpit(&options) {
+                eprintln!("cockpit failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
         Command::Task(options) => {
             if let Err(message) = execute_task_stdout(&options) {
                 eprintln!("task failed: {message}");

@@ -1,6 +1,7 @@
-//! Read-only local attention snapshots and bounded change notifications.
+//! Read-only attention snapshots and bounded change notifications.
 
 use crate::{WatchSignalRegistrations, cockpit_workflows::pending_requests_with_seen};
+use agenturm_kernel::ObservationStore;
 use agenturm_store::{Store, WorkspaceLedger};
 use serde::Serialize;
 use std::io::{self, Write};
@@ -15,6 +16,8 @@ const USAGE: &str = concat!(
     "usage: agenturm attention status --db <path>\n",
     "       agenturm attention watch --db <path> [--once | --max-polls <1..10000>] ",
     "[--interval-ms <100..60000>]\n",
+    "       agenturm attention <status|watch> --endpoint http://<loopback-IP:port> ",
+    "--token-file <path> [watch options]\n",
 );
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -27,9 +30,21 @@ pub enum AttentionOptions {
         interval: Duration,
         max_polls: usize,
     },
+    #[cfg(target_os = "linux")]
+    Remote {
+        receiver: crate::RemoteHistoryOptions,
+        watch: Option<(Duration, usize)>,
+    },
 }
 
 pub(super) fn parse(args: &[String]) -> Result<AttentionOptions, String> {
+    #[cfg(target_os = "linux")]
+    if args
+        .iter()
+        .any(|arg| matches!(arg.as_str(), "--endpoint" | "--token-file"))
+    {
+        return parse_remote(args);
+    }
     match args
         .split_first()
         .map(|(verb, values)| (verb.as_str(), values))
@@ -37,12 +52,22 @@ pub(super) fn parse(args: &[String]) -> Result<AttentionOptions, String> {
         Some(("status", [flag, path])) if flag == "--db" && valid_value(path) => {
             Ok(AttentionOptions::Status { db: path.into() })
         }
-        Some(("watch", values)) => parse_watch(values),
+        Some(("watch", values)) => {
+            let (db, interval, max_polls) = parse_watch(values, true)?;
+            Ok(AttentionOptions::Watch {
+                db: db.ok_or(USAGE)?,
+                interval,
+                max_polls,
+            })
+        }
         _ => Err(USAGE.into()),
     }
 }
 
-fn parse_watch(mut args: &[String]) -> Result<AttentionOptions, String> {
+fn parse_watch(
+    mut args: &[String],
+    local: bool,
+) -> Result<(Option<PathBuf>, Duration, usize), String> {
     let (mut db, mut interval, mut max_polls) = (None, None, None);
     while let Some((flag, rest)) = args.split_first() {
         args = rest;
@@ -56,7 +81,7 @@ fn parse_watch(mut args: &[String]) -> Result<AttentionOptions, String> {
             .ok_or(USAGE)?;
         args = rest;
         match flag.as_str() {
-            "--db" if db.is_none() => db = Some(PathBuf::from(value)),
+            "--db" if local && db.is_none() => db = Some(PathBuf::from(value)),
             "--interval-ms" if interval.is_none() => {
                 interval = Some(Duration::from_millis(
                     value
@@ -78,10 +103,46 @@ fn parse_watch(mut args: &[String]) -> Result<AttentionOptions, String> {
             _ => return Err(USAGE.into()),
         }
     }
-    Ok(AttentionOptions::Watch {
-        db: db.ok_or(USAGE)?,
-        interval: interval.unwrap_or(Duration::from_secs(2)),
-        max_polls: max_polls.unwrap_or(MAX_POLLS),
+    Ok((
+        db,
+        interval.unwrap_or(Duration::from_secs(2)),
+        max_polls.unwrap_or(MAX_POLLS),
+    ))
+}
+
+#[cfg(target_os = "linux")]
+fn parse_remote(args: &[String]) -> Result<AttentionOptions, String> {
+    let (verb, mut args) = args.split_first().ok_or(USAGE)?;
+    let mut receiver = Vec::new();
+    let mut polling = Vec::new();
+    while let Some((flag, rest)) = args.split_first() {
+        if flag == "--once" {
+            polling.push(flag.clone());
+            args = rest;
+            continue;
+        }
+        let (value, trailer) = rest
+            .split_first()
+            .filter(|(value, _)| valid_value(value))
+            .ok_or(USAGE)?;
+        if matches!(flag.as_str(), "--endpoint" | "--token-file") {
+            receiver.extend([flag.clone(), value.clone()]);
+        } else {
+            polling.extend([flag.clone(), value.clone()]);
+        }
+        args = trailer;
+    }
+    let watch = match verb.as_str() {
+        "status" if polling.is_empty() => None,
+        "watch" => {
+            let (_, interval, limit) = parse_watch(&polling, false)?;
+            Some((interval, limit))
+        }
+        _ => return Err(USAGE.into()),
+    };
+    Ok(AttentionOptions::Remote {
+        receiver: crate::remote_history::parse_attach(&receiver)?,
+        watch,
     })
 }
 
@@ -125,13 +186,22 @@ pub fn execute_attention(options: &AttentionOptions, mut output: impl Write) -> 
             db,
             interval,
             max_polls,
+        } => watch(*interval, *max_polls, output, || read_snapshot(db)),
+        #[cfg(target_os = "linux")]
+        AttentionOptions::Remote {
+            receiver,
+            watch: polling,
         } => {
-            if !(1..=MAX_POLLS).contains(max_polls)
-                || !(Duration::from_millis(100)..=Duration::from_secs(60)).contains(interval)
-            {
-                return Err(USAGE.into());
+            use crate::HistoryReader;
+            let (store, marker) = crate::remote_history::open_workspace(receiver)?;
+            let ledger = store.workspace_ledger(&marker)?;
+            let read = || snapshot_from(&store, &ledger);
+            if let Some((interval, limit)) = polling {
+                watch(*interval, *limit, output, read)
+            } else {
+                emit(&mut output, "snapshot", &read()?)
+                    .map_err(|error| format!("write attention snapshot failed: {error}"))
             }
-            watch(db, *interval, *max_polls, output)
         }
     }
 }
@@ -141,7 +211,14 @@ fn read_snapshot(db: &Path) -> Result<Snapshot, String> {
         .map_err(|error| format!("open workflow state failed: {error}"))?;
     let store =
         Store::open_read_only(db).map_err(|error| format!("open history failed: {error}"))?;
-    let (requests, partial) = pending_requests_with_seen(&store, &ledger)?;
+    snapshot_from(&store, &ledger)
+}
+
+fn snapshot_from(
+    store: &impl ObservationStore,
+    ledger: &WorkspaceLedger,
+) -> Result<Snapshot, String> {
+    let (requests, partial) = pending_requests_with_seen(store, ledger)?;
     let pending = requests
         .into_iter()
         .map(|row| Pending {
@@ -173,11 +250,16 @@ fn emit(writer: &mut impl Write, kind: &'static str, snapshot: &Snapshot) -> io:
 }
 
 fn watch(
-    db: &Path,
     interval: Duration,
     max_polls: usize,
     mut output: impl Write,
+    mut read_snapshot: impl FnMut() -> Result<Snapshot, String>,
 ) -> Result<(), String> {
+    if !(1..=MAX_POLLS).contains(&max_polls)
+        || !(Duration::from_millis(100)..=Duration::from_secs(60)).contains(&interval)
+    {
+        return Err(USAGE.into());
+    }
     let stop = Arc::new(AtomicBool::new(false));
     let _signals = WatchSignalRegistrations::new(Arc::clone(&stop))?;
     let mut previous = None;
@@ -185,7 +267,7 @@ fn watch(
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        let snapshot = read_snapshot(db)?;
+        let snapshot = read_snapshot()?;
         if previous.as_ref() != Some(&snapshot) {
             let kind = if previous.is_none() {
                 "snapshot"
