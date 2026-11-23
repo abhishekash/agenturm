@@ -35,12 +35,13 @@ const EVENTS_SQL: &str = "CREATE TABLE agenturm_native_attention_events (
     kind TEXT NOT NULL CHECK(kind IN ('approval_requested','reply_requested','request_resolved','turn_started','turn_completed','turn_interrupted')),
     request_digest BLOB CHECK(request_digest IS NULL OR length(request_digest)=32),
     receipt_time_unix_ns INTEGER CHECK(receipt_time_unix_ns IS NULL OR receipt_time_unix_ns>0),
+    source_time_unix_ns INTEGER CHECK(source_time_unix_ns IS NULL OR source_time_unix_ns>=0),
     source_id TEXT,
     session_id TEXT,
     turn_id TEXT,
     worker_id TEXT,
     CHECK((kind IN ('approval_requested','reply_requested','request_resolved')) = (request_digest IS NOT NULL)),
-    CHECK((source_id IS NULL AND session_id IS NULL AND turn_id IS NULL AND worker_id IS NULL AND receipt_time_unix_ns IS NULL)
+    CHECK((source_id IS NULL AND session_id IS NULL AND turn_id IS NULL AND worker_id IS NULL AND receipt_time_unix_ns IS NULL AND source_time_unix_ns IS NULL)
         OR (source_id IS NOT NULL AND session_id IS NOT NULL AND turn_id IS NOT NULL AND receipt_time_unix_ns IS NOT NULL)),
     FOREIGN KEY(collector_id,sender_id) REFERENCES agenturm_native_attention_senders(collector_id,sender_id),
     UNIQUE(collector_id,sender_id,source_sequence)
@@ -84,6 +85,9 @@ pub struct NativeAttentionPending {
     pub event_id: String,
     pub kind: NativeAttentionKind,
     pub receipt_time_unix_ns: u64,
+    /// Caller-reported clock metadata. Admission and eligibility use the receiver clock.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub source_time_unix_ns: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -125,17 +129,16 @@ pub(super) fn validate_schema(connection: &Connection) -> Result<()> {
 pub(super) fn prune_before(connection: &Connection, cutoff: i64) -> Result<()> {
     connection.execute(
         "UPDATE agenturm_native_attention_events
-            SET receipt_time_unix_ns=NULL, source_id=NULL, session_id=NULL, turn_id=NULL, worker_id=NULL
+            SET receipt_time_unix_ns=NULL, source_time_unix_ns=NULL, source_id=NULL,
+                session_id=NULL, turn_id=NULL, worker_id=NULL
             WHERE receipt_time_unix_ns<?1",
         [cutoff],
     )?;
     Ok(())
 }
 
-pub(super) fn retain_sources(
-    connection: &Connection,
-    allowed: &BTreeSet<ExtensionId>,
-) -> Result<()> {
+#[cfg(test)]
+fn retain_sources(connection: &Connection, allowed: &BTreeSet<ExtensionId>) -> Result<()> {
     if !table_exists(connection)? {
         return Ok(());
     }
@@ -340,11 +343,12 @@ impl Store {
         transaction.execute(
             "INSERT INTO agenturm_native_attention_events
              (event_id,event_digest,collector_id,sender_id,source_sequence,history_sequence,kind,request_digest,
-              receipt_time_unix_ns,source_id,session_id,turn_id,worker_id)
-              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13)",
+              receipt_time_unix_ns,source_id,session_id,turn_id,worker_id,source_time_unix_ns)
+              VALUES(?1,?2,?3,?4,?5,?6,?7,?8,?9,?10,?11,?12,?13,?14)",
             params![event_id, digest, collector.as_str(), capture.sender_id, capture.sequence, sequence,
                     capture.kind.as_str(), request_digest, timestamp, capture.scope.source_id,
-                    capture.scope.session_id, capture.scope.turn_id, capture.scope.worker_id],
+                    capture.scope.session_id, capture.scope.turn_id, capture.scope.worker_id,
+                    capture.source_time_unix_ns],
         )?;
         transaction.commit()?;
         Ok(NativeAttentionReceipt {
@@ -380,7 +384,7 @@ impl Store {
         let mut pending = Vec::new();
         if table_exists(&transaction)? {
             let sql = format!(
-                "SELECT event_id,o.kind,receipt_time_unix_ns,source_id,session_id,turn_id,worker_id
+                "SELECT event_id,o.kind,receipt_time_unix_ns,source_id,session_id,turn_id,worker_id,source_time_unix_ns
                 FROM agenturm_native_attention_events o WHERE {PENDING}
                   AND (?2 IS NULL OR o.source_id=?2)
                   AND (?3 IS NULL OR o.session_id=?3)
@@ -410,6 +414,7 @@ impl Store {
                     event_id: row.get(0)?,
                     kind,
                     receipt_time_unix_ns: row.get(2)?,
+                    source_time_unix_ns: row.get(7)?,
                     scope: NativeAttentionScope {
                         source_id: row.get(3)?,
                         session_id: row.get(4)?,
@@ -557,7 +562,7 @@ mod tests {
             sequence: 1,
             kind: NativeAttentionKind::ApprovalRequested,
             request_id: Some("native-request-id".into()),
-            source_time_unix_ns: Some(1),
+            source_time_unix_ns: Some(0),
         };
         (store, collector, target, capture)
     }
@@ -602,6 +607,7 @@ mod tests {
         assert_eq!(pending.pending.len(), 1);
         assert_eq!(pending.pending[0].scope, capture.scope);
         assert!(pending.pending[0].receipt_time_unix_ns > 1);
+        assert_eq!(pending.pending[0].source_time_unix_ns, Some(0));
         let replay = store
             .admit_native_attention(&collector, &capture, Some(&allowed))
             .unwrap();
@@ -800,15 +806,15 @@ mod tests {
                 .unwrap()
                 .replayed
         );
-        let retained_scope: Option<String> = store
+        let retained: (Option<String>, Option<u64>) = store
             .connection
             .query_row(
-                "SELECT source_id FROM agenturm_native_attention_events WHERE event_id=?1",
+                "SELECT source_id,source_time_unix_ns FROM agenturm_native_attention_events WHERE event_id=?1",
                 [&receipt.event_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .unwrap();
-        assert_eq!(retained_scope, None);
+        assert_eq!(retained, (None, None));
         retain_sources(&store.connection, &BTreeSet::from([collector, target])).unwrap();
         assert_eq!(
             store
