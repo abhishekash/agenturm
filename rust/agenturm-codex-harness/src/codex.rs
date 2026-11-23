@@ -380,16 +380,28 @@ fn check_category(item: &Value) -> Option<&'static str> {
         (program, args) => (program, args),
     };
     if args.iter().any(|arg| {
+        let option = arg.split_once('=').map_or(*arg, |(option, _)| option);
         matches!(
-            *arg,
+            option,
             "-h" | "--help"
+                | "-V"
                 | "--version"
                 | "--collect-only"
                 | "--co"
+                | "--fixtures"
+                | "--fixtures-per-test"
+                | "--markers"
+                | "--trace-config"
                 | "--dry-run"
                 | "--list"
+                | "--listTests"
+                | "--listFilesOnly"
+                | "--showConfig"
+                | "--show-files"
+                | "--show-settings"
+                | "--if-present"
                 | "--no-run"
-        )
+        ) || (program == "go" && matches!(option, "-list" | "-n"))
     }) {
         return None;
     }
@@ -399,6 +411,22 @@ fn check_category(item: &Value) -> Option<&'static str> {
         | ("python" | "python3", ["-m", "pytest" | "unittest", ..])
         | ("npm" | "pnpm", ["test", ..]) => Some("test"),
         ("cargo", ["clippy", ..]) | ("ruff", ["check", ..]) => Some("lint"),
+        ("cargo", ["fmt", flags @ ..]) | ("ruff", ["format", flags @ ..])
+            if flags.contains(&"--check") =>
+        {
+            Some("lint")
+        }
+        ("git", ["diff", flags @ ..])
+            if flags.contains(&"--check")
+                && !flags.iter().any(|flag| {
+                    matches!(
+                        *flag,
+                        "--quiet" | "--exit-code" | "--no-patch" | "--name-only" | "--name-status"
+                    )
+                }) =>
+        {
+            Some("lint")
+        }
         ("cargo" | "go", ["build", ..]) => Some("build"),
         ("npm" | "pnpm", ["run", name]) | ("yarn", [name]) => {
             if *name == "check" || *name == "typecheck" || *name == "lint" {
@@ -421,7 +449,7 @@ fn check_result(item: &Value) -> Option<&'static str> {
         item.get("exit_code").and_then(Value::as_i64),
     ) {
         (Some("completed" | "success" | "ok"), Some(0)) => Some("passed"),
-        (Some("failed" | "error"), Some(code)) if code > 0 => Some("failed"),
+        (Some("failed" | "error"), Some(1..=255)) => Some("failed"),
         _ => None,
     }
 }
@@ -1243,6 +1271,51 @@ mod tests {
             if expected.is_some() {
                 assert_eq!(facts[0]["identity"], facts[1]["identity"]);
             }
+        }
+    }
+
+    #[test]
+    fn check_modes_require_validation_and_keep_read_only_lints_typed() {
+        let context =
+            header_identity(br#"{"type":"session_meta","payload":{"id":"thread-1"}}"#).unwrap();
+        for (command, status, exit, expected) in [
+            ("cargo fmt --all -- --check", "completed", 0, Some("passed")),
+            ("ruff format --check tests", "failed", 1, Some("failed")),
+            ("git diff --cached --check", "completed", 0, Some("passed")),
+            ("cargo fmt --all", "completed", 0, None),
+            ("ruff format tests", "completed", 0, None),
+            ("git diff --check --exit-code", "failed", 1, None),
+            ("git diff --check --name-only", "completed", 0, None),
+            ("pytest --fixtures", "completed", 0, None),
+            ("pytest --markers", "completed", 0, None),
+            ("go test -list=Test ./...", "completed", 0, None),
+            ("go test -n ./...", "completed", 0, None),
+            ("npm test --if-present", "completed", 0, None),
+            ("cargo fmt --all -- --check", "failed", 256, None),
+            ("ruff format --check tests && true", "completed", 0, None),
+        ] {
+            let (facts, _) = translate(
+                json!({"type":"item_completed","turn_id":"turn-1",
+                "item":{"type":"CommandExecution","id":"operation", "status":status,"exit_code":exit,
+                    "command":["/usr/bin/zsh","-lc",command],"aggregated_output":"private result"}}),
+                &context,
+            );
+            let check = facts.iter().find(|fact| fact["kind"] == "check");
+            assert_eq!(
+                check.and_then(|fact| fact["payload"]["result"].as_str()),
+                expected,
+                "{command}"
+            );
+            assert_eq!(facts[0]["kind"], "tool");
+            if let Some(check) = check {
+                assert_eq!(check["payload"]["category"], "lint");
+                assert_eq!(check["identity"], facts[0]["identity"]);
+            }
+            assert!(
+                !serde_json::to_string(&facts)
+                    .unwrap()
+                    .contains("private result")
+            );
         }
     }
 

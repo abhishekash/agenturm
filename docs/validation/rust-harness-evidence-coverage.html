@@ -28,7 +28,7 @@ detected.</p>
 <tr>
 <td>Codex</td>
 <td>The rollout header supplies thread identity and can identify a worker. Native turn IDs attach when present. Task completion, structured task errors, explicit final answers and aborts produce bounded lifecycle evidence. The adapter diagnoses late outcomes it cannot attribute to the current turn.</td>
-<td>User and assistant roles, token and cache counters, tool activity, a bounded set of explicit test, lint and build results, and a typed work result for an explicitly successful GitHub PR creation. Checks require a recognized command, its operation ID, and a consistent terminal status and exit code.</td>
+<td>User and assistant roles, token and cache counters, tool activity, a bounded set of explicit test, lint and build results, and a typed work result for an explicitly successful GitHub PR creation. Checks require a recognized command, its operation ID, and a consistent terminal status and exit code. Formatting and whitespace checks require an explicit check mode. Informational, dry-run and optional invocations supply tool evidence.</td>
 <td>Shared JSONL continuity diagnostics and unsupported, historical or unknown-result diagnostics. Explicit delegation and fork relationships retain child and parent thread IDs. Complete check coverage is open.</td>
 <td><a href="https://github.com/abhishekash/agenturm/blob/main/rust/agenturm-codex-harness/src/codex.rs">Adapter tests</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/rust/agenturm-runtime/tests/codex_process.rs">commit, retry, ACK and reopen through the real adapter</a>. Actual rollouts retained delegation, interruptions, a task failure, a later completion, and typed unittest results.</td>
 </tr>
@@ -91,7 +91,9 @@ contained Task or Agent results with a child agent ID. An exact spawn relation
 therefore needs a worker-to-worker edge within a shared session and correlation
 with the spawning call. The current durable relationship contract represents
 distinct sessions. The sampled Bash results exposed output and interruption
-metadata without a native exit field.</p>
+metadata without a native exit field. The adapter retains the exact worker
+and owning session. Message ancestry does not establish a worker-parent edge,
+and a Bash output excerpt does not establish a check outcome.</p>
 <h2>Native qualification on Ubuntu 24.04.5 x86-64</h2>
 <p>The Rust 1.100.0 development archive had SHA-256
 <code>87a11b63f765d69669152d5bd24455a7b994bb0abf7e612b77e5718378821912</code>.
