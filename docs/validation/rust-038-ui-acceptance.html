@@ -1,0 +1,136 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust 038 Ui Acceptance</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / Rust 0.3.8 candidate</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-038-ui-acceptance.md">Markdown source ↗</a></nav><h1>Rust 0.3.8 UI acceptance</h1>
+<p>Status: opt-in candidate, 23 November 2026. Runtime code is frozen at
+<code>1df22a4</code>; later changes update documentation and acceptance fixtures only.
+The default Rust cutover remains gated. Comparative performance benchmarks
+are deferred.</p>
+<h2>Implemented behavior</h2>
+<p>The first screen follows the user's command-center reference in Agenturm's
+colors: a full-width task table, project headings and counts, All / Needs you /
+Working / Ready / Inactive filters, explicit unknown counts, and selectable
+Show more. <code>G</code> cycles project, source and ungrouped views. Enter opens the
+exact selected inspector; Escape restores its group, filter and source/session.
+Compact help exposes every control at 60×18.</p>
+<p>Task titles use unambiguous exact saved task links or retained structural
+facts. Project paths use an explicit operator-saved Git root linked at session
+level to the current local history. The UI labels this <strong>Operator task
+workspace</strong>. Invalid, conflicting, archived, worker/turn-only and foreign
+history candidates remain unavailable. Notes, diffs, prompts and process cwd
+are outside this projection.</p>
+<p>The candidate integrates Python keyboard navigation, selectable MCP and
+Operations tables, and recorded Activity, Traces, Usage, Findings and Host
+inspectors. <code>Ctrl+F</code> investigates retained failures or grant-verified source
+evidence. Search, More and source opening pin logical history identity and
+read snapshot; local source proof also checks the held writer's current path.
+<code>X</code> acknowledges one exact current pending request, with a chooser for
+ambiguity; native lifecycle state remains intact and new revisions can alert
+again. Authenticated Python receiver attachment supports <code>v</code> for captured
+internal reviews. Native capture reports its current limitation.</p>
+<p><code>z</code> switches the same granted prompt between Readable and original captured
+layout, preserving newline/tab layout and independent scroll positions. It
+does not extend the 25-second display lifetime. Escape, quit, interrupt and
+expiry redact the modal before acknowledging the private delivery fence.
+<code>c</code> requests terminal clipboard copy of bounded loaded metadata; <code>x</code> writes
+that metadata as Markdown, HTML and JSON into a new private directory. These
+exports exclude private modal bodies, never overwrite a destination, and are
+explicitly distinct from evidence receipts.</p>
+<h2>Local qualification</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Offline locked full workspace</td>
+<td><strong>634 passed</strong>, 93 suites, zero failed or ignored</td>
+</tr>
+<tr>
+<td>Strict workspace Clippy, all targets</td>
+<td>Passed with <code>-D warnings</code></td>
+</tr>
+<tr>
+<td>UI library</td>
+<td>39 tests passed, including populated / empty / loading / unavailable / cached-error states at 120×32, 80×24 and 60×18</td>
+</tr>
+<tr>
+<td>Actual terminal evidence views</td>
+<td>Passed at 120×32, 80×24, 60×18 and 60×18 <code>NO_COLOR</code>; selection, expand/back, recorded Host return and terminal restoration</td>
+</tr>
+<tr>
+<td>Actual task workspace grouping</td>
+<td>Exact linked root/title/provenance, duplicate agreement, conflicts, archive, G selection, no note/diff promotion and clean exit passed</td>
+</tr>
+<tr>
+<td>Actual X request handling</td>
+<td>Exact source/revision, ambiguity chooser, Seen persistence, new-revision alerting, preserved Paused state and native resolution passed at both widths</td>
+</tr>
+<tr>
+<td>Actual clipboard/export</td>
+<td>Metadata-only OSC52, query/form ownership, cancel, private 0700 directory / 0600 files, spaces in paths, no overwrite, quit/interrupt passed at three widths</td>
+</tr>
+<tr>
+<td>Actual history replacement</td>
+<td>Independent databases with equal snapshot numbers are rejected before matches or bodies, from both roster and inspector; Ctrl+C restores the terminal</td>
+</tr>
+<tr>
+<td>Actual prompt layouts</td>
+<td>Readable/original, pan, resize, Esc, q, Ctrl+C, denied revoke while visible, revoke after redaction and late-z expiry passed; no clipboard body disclosure</td>
+</tr>
+<tr>
+<td>Extracted Linux x86-64 archive</td>
+<td>Empty startup, rolling collection, both native sources, exact inspector selection, restart/replay, backup, follow discovery and prior 0.3.7 history upgrade passed</td>
+</tr>
+<tr>
+<td>Offline source installer</td>
+<td>Install/update receipt checks, SHA pinning, replay, private prefixes, guarded uninstall and retained history passed on extracted 0.3.8</td>
+</tr>
+<tr>
+<td>Distinct-UID KVM package suite</td>
+<td>All seven cases passed: native granted investigations, private span payloads, private eval bodies, Host collection/history, authenticated remote history, opt-in remote Host, and bounded eval inventory</td>
+</tr>
+<tr>
+<td>Actual Python 0.2.8 receiver</td>
+<td>Passed in a KVM guest: exact native requests, explicit review visibility, two viewport sizes, stalled-read quit and protocol/history identity denial</td>
+</tr>
+</tbody>
+</table></div>
+<p>The packaged terminal tests use the release executable and packaged adapters.
+The acceptance controllers use Python outside the installed application's
+empty <code>PATH</code>; the runtime and collector do not require Python or Rust.
+Terminal checks reconstruct actual cells instead of assuming complete words
+are contiguous in Ratatui's cursor and style deltas.</p>
+<h2>Candidate integrity</h2>
+<p>The final archive is <code>agenturm-0.3.8-linux-x86_64.tar.gz</code>.</p>
+<ul>
+<li>Archive SHA-256: <code>528d4c7057d280258788d44e684505b7c552bc5f4dc8f730c9a24d568fc0d657</code>.</li>
+<li>App SHA-256: <code>2bf3d1df191ba45ce9723f3daabd76caa106ebff3f411282352119c44e53b93f</code>.</li>
+<li>All nine runtime executables match the first qualified runtime archive
+byte for byte; the final archive updates its bundled installation guide.</li>
+<li>Publication and final native CI results are recorded when complete.</li>
+</ul>
+<p>CI run <a href="https://github.com/abhishekash/agenturm/actions/runs/45118512825">45118512825</a>
+passed Rust protocol/adapters, OTLP end-to-end, both Node versions, and all
+five required SDK jobs: automatic CLI capture, Pydantic AI, LangChain,
+OpenAI Agents and Google ADK. That revision uses the same frozen Rust runtime.
+The Python application matrix and corrected native bundle rerun were still
+pending when this candidate record was prepared.</p>
+<h2>Remaining acceptance</h2>
+<p>This is not a claim of complete Python UI parity. The user-selected command
+center intentionally replaces the initial split inspector. Remaining UI work
+includes configured-but-idle MCP inventory and per-call related traces;
+generic OTLP metric point/history/exemplar browsing and the seven-day usage
+chart; grouped/generated Findings with occurrence counts; per-process project
+labels; and native internal approval review capture. Missing native producer
+project metadata remains explicitly unavailable without an operator task link.</p>
+<p>The execution plan also retains real Kiro transcript qualification, supported
+production connector endpoint evidence, and additional platform qualification.
+No production connector delivery is authorized by these local fixtures. These
+requirements are not retired. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md">execution plan</a>
+and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">workflow inventory</a>.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

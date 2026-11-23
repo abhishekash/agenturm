@@ -16,15 +16,16 @@ collection is available on Linux systems without a user manager.
 
 ## Build and install
 
-The recommended published bundle is Rust 0.3.7 on both Linux architectures.
-Use the opt-in source installer from a checkout.
+This guide covers the Rust 0.3.8 Linux candidate. After its release assets are
+published, use the opt-in source installer from a checkout. The previous
+published 0.3.7 digests are retained below as a separate reference.
 
 ~~~sh
-agenturm=$(bash scripts/install-rust.sh install --version 0.3.7)
+agenturm=$(bash scripts/install-rust.sh install --version 0.3.8)
 "$agenturm" --version
 ~~~
 
-[Published Rust 0.3.7 bundles](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.7)
+[Rust 0.3.8 release assets](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.8)
 
 It installs the complete versioned bundle and an agenturm-rust launcher,
 preserving the existing agenturm command and leaving services and history
@@ -42,7 +43,7 @@ From the directory containing the published archive and its checksum, use
 the matching asset for your architecture. This example uses x86-64.
 
 ```sh
-archive="agenturm-0.3.7-linux-x86_64.tar.gz"
+archive="agenturm-0.3.8-linux-x86_64.tar.gz"
 sha256sum -c "$archive.sha256"
 mkdir -p "$HOME/.local/opt"
 tar -xzf "$archive" -C "$HOME/.local/opt"
@@ -50,17 +51,20 @@ agenturm="$HOME/.local/opt/${archive%.tar.gz}/bin/agenturm"
 "$agenturm" --version
 ```
 
-Use `agenturm-0.3.7-linux-aarch64.tar.gz` and its sidecar on ARM64. Keep the
-catalog and binaries in the extracted directory. The published Linux archives
-have these SHA-256 digests.
+Use `agenturm-0.3.8-linux-aarch64.tar.gz` and its sidecar on ARM64. Keep the
+catalog and binaries in the extracted directory. Verify the matching release
+sidecar for the version being installed.
+
+For reference, the previously published **Rust 0.3.7** Linux archives have
+these SHA-256 digests:
 
 | Platform | SHA-256 |
 | --- | --- |
 | Linux x86-64 | `936ad6f90e49bea8acdaf44b2fdc08e11c50df50987d7a5aa53ac8e65bef1791` |
 | Linux ARM64 / aarch64 | `56d1dcddc934e9c590c1247063ec78c35532201a04361a5de4c2aee5f40dda28` |
 
-The tag run passed archive qualification and the offline installer check on
-both native Linux architectures. The published assets match the digests above.
+The 0.3.7 tag run passed archive qualification and the offline installer check on
+both native Linux architectures. Its published assets match the digests above.
 [Native tag qualification](https://github.com/abhishekash/agenturm/actions/runs/45110581824)
 
 ## Open the cockpit
@@ -71,7 +75,7 @@ From a terminal, run the installed binary.
 "$agenturm"
 ```
 
-The cockpit opens on Agents. It uses
+The cockpit opens on the Agenturm command center (Agents). It uses
 `${XDG_STATE_HOME:-$HOME/.local/state}/agenturm-rust/history.sqlite`.
 It starts session-owned collection of supported local harnesses when the default database is
 available for writing. When another writer owns the database, the cockpit
@@ -109,9 +113,9 @@ Reader and collector identities can inspect the broker policy. Its
 maintenance identity owns changes and explicit cleanup. Backups preserve the
 policy; a broker owner can disable it before starting a restored history.
 
-### Rust 0.3.8 candidate keyboard
+### Keyboard navigation
 
-These controls apply to the 0.3.8 UI candidate. The published 0.3.7 controls remain in its [tagged guide](https://github.com/abhishekash/agenturm/blob/rust-v0.3.7/docs/rfcs/rust-linux-bundle.md).
+These controls apply to Rust 0.3.8. The previous 0.3.7 controls remain in its [tagged guide](https://github.com/abhishekash/agenturm/blob/rust-v0.3.7/docs/rfcs/rust-linux-bundle.md).
 
 Use `↑` and `↓` to choose a session, `/` to search the loaded roster,
 and Enter to open its Overview. The newest roster page refreshes while open.

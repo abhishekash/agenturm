@@ -22,6 +22,8 @@ import termios
 import time
 from urllib.parse import urlsplit
 
+from validate_rust_private_eval_details import TerminalCells
+
 SOURCE = "otlp.producer-payload"
 HARNESS = "harness.codex"
 TRACE = "1234567890abcdef1234567890abcdef"
@@ -70,35 +72,51 @@ def cockpit_preview(args, principal, state, *, columns, rows, close):
            "TERM": "xterm-256color"}
     process = subprocess.Popen(args, cwd=state, stdin=slave, stdout=slave, stderr=slave,
                                env=env, **principal)
+    screen = TerminalCells(columns, rows)
+    private_text = (INPUT, OUTPUT, UNRELATED)
 
-    def until(marker):
-        frame = bytearray()
+    def until(*markers, public=True):
+        wire = bytearray()
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
             if select.select([master], [], [], .05)[0]:
-                frame.extend(os.read(master, 8192))
-            if marker in frame:
-                return bytes(frame)
-            assert process.poll() is None, bytes(frame)
-        raise AssertionError((marker, bytes(frame)))
+                chunk = os.read(master, 8192)
+                wire.extend(chunk)
+                screen.feed(chunk)
+            frame = screen.contents()
+            if frame is not None and all(marker in frame for marker in markers):
+                if public:
+                    for text in private_text:
+                        assert text not in frame and text.encode() not in wire, markers
+                return frame
+            assert process.poll() is None, (markers, frame)
+        raise AssertionError((markers, screen.contents()))
 
     try:
-        assert INPUT.encode() not in until(SESSION.encode())
+        until("Agenturm command center", SESSION)
         os.write(master, b"4")
-        assert INPUT.encode() not in until(b"d captured text")
+        until("Traces", TRACE, "d captured text")
         os.write(master, b"d")
-        assert INPUT.encode() not in until(b"Enter reveal")
+        until("Captured span text", SPAN, "Enter reveal")
         os.write(master, b"\r")
-        frame = until(OUTPUT.encode())
-        assert b"Producer-captured text" in frame and INPUT.encode() in frame
+        frame = until("Producer-captured text", INPUT, OUTPUT, public=False)
+        assert UNRELATED not in frame
         os.write(master, close)
         if close == b"\x1b":
-            clear = until(b"Enter reveal")
-            assert INPUT.encode() not in clear and OUTPUT.encode() not in clear
+            until("Captured span text", "Enter reveal")
             os.write(master, b"q")
-        tail = until(b"\x1b[?1049l")
-        assert INPUT.encode() not in tail and OUTPUT.encode() not in tail
-        assert process.wait(timeout=8) == 0
+        # Drain the complete final draw and alternate-screen exit, including
+        # bytes already queued after the child has terminated.
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            if select.select([master], [], [], .05)[0]:
+                screen.feed(os.read(master, 65536))
+            if process.poll() is not None and not select.select([master], [], [], 0)[0]:
+                break
+        assert process.wait(timeout=1) == 0
+        final = screen.departed
+        assert final is not None and "Captured span text" in final and "Enter reveal" in final, final
+        assert all(text not in final for text in private_text), final
         assert termios.tcgetattr(slave) == original
     finally:
         if process.poll() is None:

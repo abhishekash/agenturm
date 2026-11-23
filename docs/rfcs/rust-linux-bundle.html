@@ -41,12 +41,13 @@ collection is available on Linux systems without a user manager.</p>
 </tbody>
 </table></div>
 <h2>Build and install</h2>
-<p>The recommended published bundle is Rust 0.3.7 on both Linux architectures.
-Use the opt-in source installer from a checkout.</p>
-<pre><code class="language-sh">agenturm=$(bash scripts/install-rust.sh install --version 0.3.7)
+<p>This guide covers the Rust 0.3.8 Linux candidate. After its release assets are
+published, use the opt-in source installer from a checkout. The previous
+published 0.3.7 digests are retained below as a separate reference.</p>
+<pre><code class="language-sh">agenturm=$(bash scripts/install-rust.sh install --version 0.3.8)
 &quot;$agenturm&quot; --version
 </code></pre>
-<p><a href="https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.7">Published Rust 0.3.7 bundles</a></p>
+<p><a href="https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.8">Rust 0.3.8 release assets</a></p>
 <p>It installs the complete versioned bundle and an agenturm-rust launcher,
 preserving the existing agenturm command and leaving services and history
 unchanged. Use an exact version; there is no automatic latest selection.
@@ -59,16 +60,18 @@ build toolchain, run <code>scripts/build-rust-linux-bundle.sh ./dist</code>. The
 builds for the local Linux architecture and emits a tarball and checksum.</p>
 <p>From the directory containing the published archive and its checksum, use
 the matching asset for your architecture. This example uses x86-64.</p>
-<pre><code class="language-sh">archive=&quot;agenturm-0.3.7-linux-x86_64.tar.gz&quot;
+<pre><code class="language-sh">archive=&quot;agenturm-0.3.8-linux-x86_64.tar.gz&quot;
 sha256sum -c &quot;$archive.sha256&quot;
 mkdir -p &quot;$HOME/.local/opt&quot;
 tar -xzf &quot;$archive&quot; -C &quot;$HOME/.local/opt&quot;
 agenturm=&quot;$HOME/.local/opt/${archive%.tar.gz}/bin/agenturm&quot;
 &quot;$agenturm&quot; --version
 </code></pre>
-<p>Use <code>agenturm-0.3.7-linux-aarch64.tar.gz</code> and its sidecar on ARM64. Keep the
-catalog and binaries in the extracted directory. The published Linux archives
-have these SHA-256 digests.</p>
+<p>Use <code>agenturm-0.3.8-linux-aarch64.tar.gz</code> and its sidecar on ARM64. Keep the
+catalog and binaries in the extracted directory. Verify the matching release
+sidecar for the version being installed.</p>
+<p>For reference, the previously published <strong>Rust 0.3.7</strong> Linux archives have
+these SHA-256 digests:</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
 <tr>
@@ -87,14 +90,14 @@ have these SHA-256 digests.</p>
 </tr>
 </tbody>
 </table></div>
-<p>The tag run passed archive qualification and the offline installer check on
-both native Linux architectures. The published assets match the digests above.
+<p>The 0.3.7 tag run passed archive qualification and the offline installer check on
+both native Linux architectures. Its published assets match the digests above.
 <a href="https://github.com/abhishekash/agenturm/actions/runs/45110581824">Native tag qualification</a></p>
 <h2>Open the cockpit</h2>
 <p>From a terminal, run the installed binary.</p>
 <pre><code class="language-sh">&quot;$agenturm&quot;
 </code></pre>
-<p>The cockpit opens on Agents. It uses
+<p>The cockpit opens on the Agenturm command center (Agents). It uses
 <code>${XDG_STATE_HOME:-$HOME/.local/state}/agenturm-rust/history.sqlite</code>.
 It starts session-owned collection of supported local harnesses when the default database is
 available for writing. When another writer owns the database, the cockpit
@@ -124,8 +127,8 @@ the policy while the service is running:</p>
 <p>Reader and collector identities can inspect the broker policy. Its
 maintenance identity owns changes and explicit cleanup. Backups preserve the
 policy; a broker owner can disable it before starting a restored history.</p>
-<h3>Rust 0.3.8 candidate keyboard</h3>
-<p>These controls apply to the 0.3.8 UI candidate. The published 0.3.7 controls remain in its <a href="https://github.com/abhishekash/agenturm/blob/rust-v0.3.7/docs/rfcs/rust-linux-bundle.md">tagged guide</a>.</p>
+<h3>Keyboard navigation</h3>
+<p>These controls apply to Rust 0.3.8. The previous 0.3.7 controls remain in its <a href="https://github.com/abhishekash/agenturm/blob/rust-v0.3.7/docs/rfcs/rust-linux-bundle.md">tagged guide</a>.</p>
 <p>Use <code>↑</code> and <code>↓</code> to choose a session, <code>/</code> to search the loaded roster,
 and Enter to open its Overview. The newest roster page refreshes while open.
 Press <code>R</code> in Agents to refresh it immediately. Open selected Activity with <code>s</code> or

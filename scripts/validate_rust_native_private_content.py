@@ -65,12 +65,13 @@ def cockpit_investigate(endpoint, home, binding, columns, lines):
                              stdin=slave, stdout=slave, stderr=slave)
     screen = TerminalCells(columns, lines)
 
-    def until(*markers, absent=()):
+    def until(*markers, absent=(), forbidden=()):
         deadline = time.monotonic() + 12
         while time.monotonic() < deadline:
             if select.select([master], [], [], .05)[0]:
                 screen.feed(os.read(master, 65536))
             contents = screen.contents()
+            assert all(marker not in contents for marker in forbidden), (forbidden, contents)
             if all(marker in contents for marker in markers) and all(
                 marker not in contents for marker in absent
             ):
@@ -99,8 +100,12 @@ def cockpit_investigate(endpoint, home, binding, columns, lines):
         os.write(master, b'\x1b')
         until('Investigate retained history', 'Verified instruction match', absent=(body,))
         assert revoke.wait(timeout=10) == 0, revoke.stderr.read()
+        # Redaction acknowledges the broker before the cockpit consumes the
+        # completed reveal request. Coverage returns once Enter is actionable.
+        protected = (body, 'Verified source evidence')
+        until('Verified instruction match', '1 verified / 0 unavailable', forbidden=protected)
         os.write(master, b'\r')
-        until('Current approved source evidence is unavailable', absent=(body,))
+        until('Current approved source evidence is unavailable', forbidden=protected)
         os.write(master, b'\x1b')
         until('Agenturm', 'private-session', absent=(body, 'Investigate retained history'))
         os.write(master, b'q')
