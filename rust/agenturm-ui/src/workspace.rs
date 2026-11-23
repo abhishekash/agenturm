@@ -884,12 +884,16 @@ impl Workspace {
                     WorkspaceRequest::Work(WorkCommand::Investigate(request)),
                     Change::Investigation,
                 ),
-                InvestigationInput::Reveal(reference) => {
+                InvestigationInput::Reveal {
+                    reference,
+                    history_identity,
+                } => {
                     let (delivery, receiver) = prompt_channel(PromptKind::Investigation);
                     self.request(
                         sender,
                         WorkspaceRequest::Work(WorkCommand::RevealInvestigation {
                             reference,
+                            history_identity,
                             delivery,
                         }),
                         Change::Investigation,
@@ -1326,7 +1330,7 @@ impl Workspace {
         if self.pending.is_some() {
             return;
         }
-        let (owner, snapshot) = match self.history.last() {
+        let (owner, identity, snapshot) = match self.history.last() {
             Some(view) => {
                 if view.page.ui.help
                     || view.page.turn_picker.is_some()
@@ -1345,17 +1349,25 @@ impl Workspace {
                         turn: Some(row.turn_id.clone()),
                     }),
                 };
-                (owner, Some(view.page.snapshot_id))
+                (
+                    owner,
+                    view.page.history_identity.clone(),
+                    Some(view.page.snapshot_id),
+                )
             }
             None => {
                 if self.agents.help || self.agents.editing {
                     return;
                 }
                 let row = self.agents.current();
-                (row.map(WorkAnchor::from), row.map(|row| row.snapshot_id))
+                (
+                    row.map(WorkAnchor::from),
+                    row.and_then(|row| row.history_identity.clone()),
+                    row.map(|row| row.snapshot_id),
+                )
             }
         };
-        self.investigation = Some(Investigation::new(owner, snapshot));
+        self.investigation = Some(Investigation::new(owner, identity, snapshot));
         self.message = None;
     }
 
@@ -2057,6 +2069,7 @@ mod tests {
 
     fn empty_history_page() -> HistoryPage {
         HistoryPage {
+            history_identity: None,
             snapshot: Snapshot::default(),
             turns: Vec::new(),
             initial_pane: None,
@@ -2122,7 +2135,8 @@ mod tests {
     #[test]
     fn investigation_keeps_exact_turn_scope_and_returns_to_the_same_inspector() {
         let mut workspace = Workspace::new();
-        let session = session("harness.pi", "retained-session", "completed", None);
+        let mut session = session("harness.pi", "retained-session", "completed", None);
+        session.history_identity = Some("catalog-history".into());
         let turn = RecordedTurn {
             harness_id: session.harness_id.clone(),
             session_id: session.session_id.clone(),
@@ -2138,6 +2152,7 @@ mod tests {
         ));
         let mut page = empty_history_page();
         page.snapshot.history_snapshot_id = turn.snapshot_id;
+        page.history_identity = Some("inspector-history".into());
         workspace
             .history
             .push(HistoryView::new(HistorySelection::Turn(turn.clone()), page));
@@ -2155,6 +2170,7 @@ mod tests {
         };
         assert_eq!(read.kind, InvestigationKind::Instruction);
         assert_eq!(read.query, "qx1");
+        assert_eq!(read.history_identity.as_deref(), Some("inspector-history"));
         assert_eq!(read.snapshot_id, Some(turn.snapshot_id));
         assert_eq!(
             read.owner,
@@ -2167,6 +2183,7 @@ mod tests {
         );
         workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::Investigation(
             Box::new(InvestigationPage {
+                history_identity: Some("inspector-history".into()),
                 rows: vec![InvestigationMatch {
                     position: ObservationPosition {
                         observed_at_unix_ns: 10,
@@ -2216,12 +2233,16 @@ mod tests {
             assert!(!screen.contains("opaque-reference"));
         }
         assert!(!press(&mut workspace, &sender, KeyCode::Enter));
-        let WorkspaceRequest::Work(WorkCommand::RevealInvestigation { reference, .. }) =
-            requests.try_recv().unwrap()
+        let WorkspaceRequest::Work(WorkCommand::RevealInvestigation {
+            reference,
+            history_identity,
+            ..
+        }) = requests.try_recv().unwrap()
         else {
             panic!("expected an exact protected reveal request");
         };
         assert_eq!(reference, "opaque-reference");
+        assert_eq!(history_identity.as_deref(), Some("inspector-history"));
         workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::Status(
             String::new(),
         ))));
@@ -2231,6 +2252,7 @@ mod tests {
             panic!("expected a continuation request");
         };
         assert_eq!(read.cursor.as_deref(), Some("older-page"));
+        assert_eq!(read.history_identity.as_deref(), Some("inspector-history"));
         assert_eq!(read.snapshot_id, Some(turn.snapshot_id));
         assert!(!press(&mut workspace, &sender, KeyCode::Esc));
         workspace.finish(Err("late reply after back".into()));
@@ -2255,6 +2277,7 @@ mod tests {
             panic!("expected an investigation request from the roster");
         };
         assert_eq!(read.query, "cxq");
+        assert_eq!(read.history_identity.as_deref(), Some("catalog-history"));
     }
 
     #[test]
@@ -2547,6 +2570,7 @@ mod tests {
                         .collect::<Vec<_>>()
                 };
                 let build_page = |table| HistoryPage {
+                    history_identity: None,
                     snapshot: Snapshot {
                         observations_truncated: true,
                         panes: [(
@@ -2716,6 +2740,7 @@ mod tests {
                 })
                 .collect();
             workspace.finish(Ok(WorkspaceResponse::History(HistoryPage {
+                history_identity: None,
                 snapshot: Snapshot {
                     panes,
                     ..Snapshot::default()

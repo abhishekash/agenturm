@@ -417,7 +417,7 @@ impl Store {
     /// Retains the writer lease and serializes proof and delivery with
     /// admission, grants, and retention on other same-process connections.
     pub fn with_user_content_fence<T>(&self, use_current: impl FnOnce(&Self) -> T) -> Result<T> {
-        self.require_content_writer()?;
+        self.verify_content_writer()?;
         let fence =
             rusqlite::Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
         let response = use_current(self);
@@ -459,7 +459,7 @@ impl Store {
         grant: &ContentGrant,
         selection: &CodexOperationSelection<'_>,
     ) -> Result<Option<CodexOperationEvidence>> {
-        self.require_content_writer()?;
+        self.verify_content_writer()?;
         let observation_kind = match scope.kind {
             ContentKind::CodexMcpPayload => "mcp_call",
             ContentKind::CodexEditDetail if selection.turn_id.is_some() => "file_edit",
@@ -515,7 +515,8 @@ impl Store {
             .map_err(Into::into)
     }
 
-    fn require_content_writer(&self) -> Result<()> {
+    /// Checks the held content writer lease against its current database path.
+    pub fn verify_content_writer(&self) -> Result<()> {
         #[cfg(target_os = "linux")]
         if self.writer_lease.is_none() {
             return Err(StoreError::WriterLease(std::io::Error::other(
@@ -533,7 +534,7 @@ impl Store {
         session_id: Option<&str>,
         revision: Option<u32>,
     ) -> Result<Vec<(String, UserTextEvidence)>> {
-        self.require_content_writer()?;
+        self.verify_content_writer()?;
         if matches!(
             scope.kind,
             ContentKind::CodexMcpPayload

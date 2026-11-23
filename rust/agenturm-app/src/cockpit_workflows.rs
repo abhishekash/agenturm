@@ -83,12 +83,7 @@ pub(super) fn execute(
         WorkCommand::Evaluations(request) => crate::eval_import::workspace_evals(store, *request),
         #[cfg(target_os = "linux")]
         WorkCommand::Investigate(request) if !request.kind.is_private() => {
-            crate::investigate_cli::cockpit::failures(
-                &request,
-                store,
-                db,
-                store.allows_private_capture(),
-            )
+            crate::investigate_cli::cockpit::failures(&request, store, db)
         }
         WorkCommand::HostHistory(before) => store
             .query_host_history(&ObservationQuery {

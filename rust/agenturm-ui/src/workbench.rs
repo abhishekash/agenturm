@@ -201,6 +201,7 @@ pub enum WorkCommand {
     Investigate(Box<investigation::InvestigationRead>),
     RevealInvestigation {
         reference: String,
+        history_identity: Option<String>,
         delivery: PromptDelivery,
     },
     ExportView {

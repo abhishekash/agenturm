@@ -549,6 +549,9 @@ mod linux {
         if !retained {
             return Err(ProofError::Unavailable);
         }
+        store.verify_content_writer().map_err(|_| {
+            ProofError::Failed("Investigation history changed during source proof".into())
+        })?;
         consume().map_err(ProofError::Failed)
     }
 

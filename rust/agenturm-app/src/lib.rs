@@ -1888,6 +1888,7 @@ fn workspace_response(
         }
         WorkspaceRequest::History { selection, before } => {
             let mut page = load_workspace_history(app, store, selection, before)?;
+            page.history_identity = store.workspace_history_identity();
             page.private_telemetry_history = store.private_telemetry_history();
             Ok(WorkspaceResponse::History(page))
         }

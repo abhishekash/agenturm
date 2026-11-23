@@ -61,6 +61,7 @@ pub struct InvestigationRead {
     pub kind: InvestigationKind,
     pub query: String,
     pub owner: Option<WorkAnchor>,
+    pub history_identity: Option<String>,
     pub snapshot_id: Option<ReadSnapshot>,
     pub cursor: Option<String>,
 }
@@ -76,6 +77,7 @@ pub struct InvestigationMatch {
 
 pub struct InvestigationPage {
     pub rows: Vec<InvestigationMatch>,
+    pub history_identity: Option<String>,
     pub snapshot_id: ReadSnapshot,
     pub inspected: usize,
     pub verified: Option<usize>,
@@ -86,13 +88,17 @@ pub struct InvestigationPage {
 pub(crate) enum InvestigationInput {
     Close,
     Read(Box<InvestigationRead>),
-    Reveal(String),
+    Reveal {
+        reference: String,
+        history_identity: Option<String>,
+    },
     Edited,
     Handled,
 }
 
 pub(crate) struct Investigation {
     owner: Option<WorkAnchor>,
+    history_identity: Option<String>,
     snapshot_id: Option<ReadSnapshot>,
     all_sources: bool,
     kind: usize,
@@ -102,10 +108,15 @@ pub(crate) struct Investigation {
 }
 
 impl Investigation {
-    pub fn new(owner: Option<WorkAnchor>, snapshot_id: Option<ReadSnapshot>) -> Self {
+    pub fn new(
+        owner: Option<WorkAnchor>,
+        history_identity: Option<String>,
+        snapshot_id: Option<ReadSnapshot>,
+    ) -> Self {
         Self {
             all_sources: owner.is_none(),
             owner,
+            history_identity,
             snapshot_id,
             kind: 0,
             query: String::new(),
@@ -115,6 +126,10 @@ impl Investigation {
     }
 
     pub fn apply(&mut self, page: InvestigationPage) {
+        self.snapshot_id.get_or_insert(page.snapshot_id);
+        if self.history_identity.is_none() {
+            self.history_identity.clone_from(&page.history_identity);
+        }
         self.selection = ListState::default().with_selected((!page.rows.is_empty()).then_some(0));
         self.page = Some(page);
     }
@@ -130,6 +145,7 @@ impl Investigation {
                 String::new()
             },
             owner: if all { None } else { self.owner.clone() },
+            history_identity: self.history_identity.clone(),
             snapshot_id: self.snapshot_id,
             cursor,
         }))
@@ -171,7 +187,10 @@ impl Investigation {
                     .and_then(|page| page.rows.get(self.selection.selected()?))
                     .and_then(|row| row.source_reference.as_ref())
                 {
-                    return InvestigationInput::Reveal(reference.clone());
+                    return InvestigationInput::Reveal {
+                        reference: reference.clone(),
+                        history_identity: self.history_identity.clone(),
+                    };
                 }
                 self.page = None;
                 return self.request(None);

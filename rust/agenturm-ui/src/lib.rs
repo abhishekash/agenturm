@@ -335,6 +335,7 @@ pub struct RecordedTurn {
 
 pub struct HistoryPage {
     pub snapshot: Snapshot,
+    pub history_identity: Option<String>,
     pub turns: Vec<RecordedTurn>,
     pub initial_pane: Option<ExtensionId>,
     pub review_pane: Option<ExtensionId>,
@@ -346,6 +347,7 @@ pub struct HistoryPage {
 
 struct PageView {
     snapshot_id: ReadSnapshot,
+    history_identity: Option<String>,
     ui: UiModel,
     turns: Vec<RecordedTurn>,
     turn_picker: Option<ListState>,
@@ -400,6 +402,7 @@ impl PageView {
         ui.turn_available = !in_turn && !page.turns.is_empty();
         Self {
             snapshot_id,
+            history_identity: page.history_identity,
             ui,
             turns: page.turns,
             turn_picker: None,
@@ -429,6 +432,7 @@ pub fn run_with_history(
     mut load_older: impl FnMut(&ObservationPosition) -> io::Result<Option<Snapshot>>,
 ) -> io::Result<()> {
     let initial = HistoryPage {
+        history_identity: None,
         snapshot,
         turns: Vec::new(),
         initial_pane: None,
@@ -443,6 +447,7 @@ pub fn run_with_history(
             return Ok(None);
         };
         Ok(load_older(cursor)?.map(|snapshot| HistoryPage {
+            history_identity: None,
             snapshot,
             turns: Vec::new(),
             initial_pane: None,
