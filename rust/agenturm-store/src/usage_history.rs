@@ -456,6 +456,19 @@ mod tests {
             latest.days[6].traces.tokens.input_tokens.as_deref(),
             Some("0")
         );
+        // A later span excludes this trace from an earlier UTC window when
+        // that span is visible at the snapshot watermark. The older watermark
+        // still qualifies it, with both reads using the same time interval.
+        query.end_unix_ns = 9 * DAY_NS + 20;
+        let historical = store.query_usage_history(&query, Some(&allowed)).unwrap();
+        assert_eq!(historical.days[6].traces.traces, 0);
+        query.snapshot_id = Some(initial.snapshot_id);
+        let historical = store.query_usage_history(&query, Some(&allowed)).unwrap();
+        assert_eq!(historical.days[6].traces.traces, 1);
+        assert_eq!(
+            historical.days[6].traces.tokens.input_tokens.as_deref(),
+            Some("0")
+        );
     }
 
     #[test]

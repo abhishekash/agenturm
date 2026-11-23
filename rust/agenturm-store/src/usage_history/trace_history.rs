@@ -14,6 +14,11 @@ const MAX_LOGS: usize = 8_192;
 
 // Linked telemetry must have the same retained native owner at this watermark.
 // This is the same session/turn/worker proof as the raw usage query.
+const STRUCTURAL: &str = "o.scope='session' AND json_extract(o.kind_json,'$.kind')='trace_span'
+     AND o.revision=0 AND substr(o.source_id,1,5)='otlp.'
+     AND o.event_id='otlp:' || json_extract(o.kind_json,'$.trace_id') || ':' ||
+        json_extract(o.kind_json,'$.span_id')";
+
 const SCOPE: &str = "
     AND (?4 IS NULL OR o.source_id=?4 OR (
         ?5 IS NOT NULL AND json_extract(o.kind_json,'$.target_source_id')=?4
@@ -95,15 +100,28 @@ impl Window<'_> {
 
     fn traces(&self, allowed: &Option<String>, totals: &mut DailyTelemetry) -> Result<()> {
         let cohort_sql = format!(
-            "SELECT o.source_id, json_extract(o.kind_json,'$.trace_id'), max(o.observed_at_unix_ns) AS last
-             FROM agenturm_observations o JOIN agenturm_history_batches b USING (request_id)
-             WHERE o.scope='session' AND json_extract(o.kind_json,'$.kind')='trace_span'
-               AND o.revision=0 AND substr(o.source_id,1,5)='otlp.'
-               AND o.event_id='otlp:' || json_extract(o.kind_json,'$.trace_id') || ':' ||
-                   json_extract(o.kind_json,'$.span_id')
-               AND o.observed_at_unix_ns>=?1 AND b.sequence<=?3 {SCOPE}
-             GROUP BY o.source_id, json_extract(o.kind_json,'$.trace_id')
-             HAVING last<?2 ORDER BY last DESC, o.source_id, json_extract(o.kind_json,'$.trace_id') LIMIT ?7"
+            "WITH candidates AS MATERIALIZED (
+                SELECT o.source_id, json_extract(o.kind_json,'$.trace_id') AS trace_id,
+                       o.observed_at_unix_ns AS time
+                FROM agenturm_observations o JOIN agenturm_history_batches b USING (request_id)
+                WHERE {STRUCTURAL} AND o.observed_at_unix_ns>=?1 AND o.observed_at_unix_ns<?2
+                    AND b.sequence<=?3 {SCOPE}
+                ORDER BY o.observed_at_unix_ns DESC,o.source_id DESC,o.event_id DESC LIMIT ?7
+             ), cohort AS (
+                SELECT source_id, trace_id, max(time) AS last FROM candidates
+                GROUP BY source_id, trace_id ORDER BY last DESC,source_id,trace_id LIMIT ?8
+             )
+             SELECT c.source_id, c.trace_id, c.last,
+                EXISTS (
+                    SELECT 1 FROM agenturm_observations o
+                    JOIN agenturm_history_batches b USING (request_id)
+                    WHERE {STRUCTURAL} AND o.source_id=c.source_id
+                        AND json_extract(o.kind_json,'$.trace_id')=c.trace_id
+                        AND o.observed_at_unix_ns>=?2 AND b.sequence<=?3 {SCOPE}
+                ),
+                CASE WHEN (SELECT count(*) FROM candidates)>=?7
+                    THEN (SELECT min(time) FROM candidates) END
+             FROM cohort c ORDER BY c.last DESC,c.source_id,c.trace_id"
         );
         let mut cohort = self.connection.prepare(&cohort_sql)?;
         let mut cohorts = cohort.query(params![
@@ -113,6 +131,7 @@ impl Window<'_> {
             self.query.source_id.as_ref().map(ExtensionId::as_str),
             self.query.session_id,
             allowed,
+            (MAX_MEMBERS + 1) as i64,
             (MAX_TRACES + 1) as i64,
         ])?;
         let members_sql = format!(
@@ -143,9 +162,21 @@ impl Window<'_> {
         for index in 0..=MAX_TRACES {
             let Some(group) = cohorts.next()? else { break };
             let day = self.day(group.get(2)?)?;
+            if index == 0
+                && let Some(cutoff) = group.get::<_, Option<u64>>(4)?
+            {
+                totals.partial_before_day = Some(self.day(cutoff)?);
+            }
             if index == MAX_TRACES {
-                totals.partial_before_day = Some(day);
+                totals.partial_before_day = Some(
+                    totals
+                        .partial_before_day
+                        .map_or(day, |other| other.max(day)),
+                );
                 break;
+            }
+            if group.get::<_, bool>(3)? {
+                continue;
             }
             let capacity = remaining.min(MAX_PER_TRACE);
             let mut group_members = Vec::with_capacity(capacity.min(32));
