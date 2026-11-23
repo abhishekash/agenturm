@@ -11,7 +11,7 @@ use sha2::{Digest, Sha256};
 use std::{collections::BTreeMap, fmt};
 
 pub const MAX_TELEMETRY_PAYLOAD_TEXT_BYTES: usize = 2_048;
-const MAX_BATCH_BYTES: usize = 64 * 1024;
+pub const MAX_TELEMETRY_PAYLOAD_BATCH_BYTES: usize = 64 * 1024;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -152,7 +152,7 @@ pub(super) fn build_admission<'a>(
     let mut bytes = 0;
     for record in records {
         bytes += record.payload.validate()?;
-        if bytes > MAX_BATCH_BYTES || !spans.contains(record.event_id.as_str()) {
+        if bytes > MAX_TELEMETRY_PAYLOAD_BATCH_BYTES || !spans.contains(record.event_id.as_str()) {
             return Err(StoreError::Invalid(
                 "telemetry payload exceeds the batch scope or size",
             ));

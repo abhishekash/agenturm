@@ -234,7 +234,12 @@ agenturm broker import-traces --broker-config broker.json \
   --file otlp.json --source-id otlp.exported
 ```
 
-The same structural import and replay rules apply to local and broker history. [Span export format](rust-cutover-workflows.md#import-exported-spans)
+The same structural import and replay rules apply to local and broker history.
+For private JSONL text, configure the exact source and binding in
+`--native-telemetry-payload-sources` and pass the corresponding `--payload-scope`
+to `broker import-jsonl`. The collector can admit text and the configured reader
+can preview it after the grant administrator approves the telemetry binding.
+[Span export format](rust-cutover-workflows.md#import-exported-spans)
 
 ## Record and read Host history
 

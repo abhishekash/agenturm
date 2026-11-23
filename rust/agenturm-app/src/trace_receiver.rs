@@ -232,7 +232,7 @@ pub fn execute_trace_receiver(options: &TraceReceiverOptions) -> Result<(), Stri
         token,
         Some(options.db.clone()),
         |source, rows, payloads| match &options.settings.payload_binding {
-            Some(binding) => commit_payloads(&options.db, binding, &rows, &payloads),
+            Some(binding) => commit_payloads(&options.db, binding, &rows, &payloads).map(|_| ()),
             None => commit(&options.db, source, &rows).map(|_| ()),
         },
     )

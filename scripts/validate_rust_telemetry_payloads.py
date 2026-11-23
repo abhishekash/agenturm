@@ -362,11 +362,50 @@ def main():
             assert preview() == {"input": INPUT, "output": OUTPUT}
             run(maintenance, *command("prune", "--before-unix-ns", str(started + 2)))
             preview(code=1)
+
+            imported_path = root / "imported.jsonl"
+            imported_span = {
+                "trace_id": TRACE, "span_id": "3333333333333333", "parent_span_id": None,
+                "start_unix_nano": started + 3, "end_unix_nano": started + 4,
+                "status": "OK", "attributes": {
+                    "session.id": SESSION, "agenturm.payload.input": INPUT,
+                    "agenturm.payload.output": OUTPUT, "input.value": UNRELATED,
+                },
+            }
+
+            def import_payload(uid, scope, code=0):
+                imported_path.write_text(json.dumps(imported_span) + "\n")
+                imported_path.chmod(0o644)
+                reply = run(uid, *command("import-jsonl", "--file", imported_path,
+                                          "--source-id", SOURCE, "--payload-scope", scope), code=code)
+                assert all(text not in reply.stdout + reply.stderr for text in [INPUT, OUTPUT, UNRELATED])
+                return reply.stdout
+
+            # The collector may admit this source only with its exact private binding.
+            assert not import_payload(collector, "standalone", code=1)
+            imported_span["attributes"].update({
+                "agenturm.source.id": HARNESS, "agenturm.turn.id": "turn-fixture",
+                "agenturm.worker.id": "worker-fixture",
+            })
+            assert not import_payload(reader, HARNESS, code=1)
+            assert "Imported 1 spans" in import_payload(collector, HARNESS)
+            selected.update(span_id=imported_span["span_id"], snapshot_id=snapshot())
+            selector_path.write_text(json.dumps(selected))
+            assert preview() == {"input": INPUT, "output": OUTPUT}
+            assert "Imported 0 spans" in import_payload(collector, HARNESS)
+            assert snapshot() == selected["snapshot_id"]
+            run(maintenance, *command("prune", "--before-unix-ns", str(started + 5)))
+            preview(code=1)
+            assert "Imported 0 spans" in import_payload(collector, HARNESS)
+            imported_span["attributes"]["agenturm.payload.input"] = "Different imported text"
+            assert not import_payload(collector, HARNESS, code=1)
+            preview(code=1)
+
         finally:
             for process in (receiver, gateway, service):
                 if process is not None:
                     stop(process)
-        print("PASS private payload and exact reported cost, stable replay, all disclosure exits, broker fencing and restore",
+        print("PASS live and JSONL private payload, exact cost, replay, disclosure, broker fencing and restore",
               flush=True)
 
 

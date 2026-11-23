@@ -73,7 +73,7 @@ exact native scope exists in the selected history snapshot.</p>
 <code>python3 scripts/validate_rust_broker_otlp.py --bin-dir /opt/agenturm/bin</code>
 to check the installed binaries with separate storage, collector and
 reader identities.</p>
-<h3>Preview opted-in telemetry text</h3>
+<h3 id="preview-opted-in-telemetry-text">Preview opted-in telemetry text</h3>
 <p>The trace receiver defaults to metadata. To accept private captured text,
 enable the exact source at the broker with
 <code>--native-telemetry-payload-sources otlp.example=harness.codex</code>. For a
@@ -189,7 +189,12 @@ credentialed 60-column cockpit and attention client.</p>
 agenturm broker import-traces --broker-config broker.json \
   --file otlp.json --source-id otlp.exported
 </code></pre>
-<p>The same structural import and replay rules apply to local and broker history. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md#import-exported-spans">Span export format</a></p>
+<p>The same structural import and replay rules apply to local and broker history.
+For private JSONL text, configure the exact source and binding in
+<code>--native-telemetry-payload-sources</code> and pass the corresponding <code>--payload-scope</code>
+to <code>broker import-jsonl</code>. The collector can admit text and the configured reader
+can preview it after the grant administrator approves the telemetry binding.
+<a href="rust-cutover-workflows.html#import-exported-spans">Span export format</a></p>
 <h2>Record and read Host history</h2>
 <p>Run explicit Linux capture using the account that owns the processes you
 want to observe. In broker mode give that collector a <code>host.&lt;label&gt;</code> source

@@ -50,8 +50,8 @@ pub use session_catalog::{
     SessionSummary,
 };
 pub use telemetry_payload::{
-    MAX_TELEMETRY_PAYLOAD_TEXT_BYTES, TelemetryBinding, TelemetryPayload, TelemetryPayloadRecord,
-    TelemetryPayloadSelection,
+    MAX_TELEMETRY_PAYLOAD_BATCH_BYTES, MAX_TELEMETRY_PAYLOAD_TEXT_BYTES, TelemetryBinding,
+    TelemetryPayload, TelemetryPayloadRecord, TelemetryPayloadSelection,
 };
 pub use workspace_ledger::{
     ApprovedTaskDraft, MAX_WORKSPACE_GIT_DIFF_BYTES, MAX_WORKSPACE_PAGE_SIZE, SavedHandoff,

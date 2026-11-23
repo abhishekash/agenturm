@@ -34,7 +34,7 @@ migration of Python-era databases remains outside the Rust-only product scope.</
 </tr>
 <tr>
 <td><code>import-jsonl</code></td>
-<td>Use <code>import-jsonl</code> for supported native span exports and <code>import-traces</code> for OTLP JSON. Both retain structural trace metadata with exact session scope. Legacy payload and cost import parity remains open.</td>
+<td>Use <code>import-jsonl</code> for supported native span exports and <code>import-traces</code> for OTLP JSON. Both retain structural trace metadata with exact session scope. JSONL can also capture supported private text with explicit opt-in. Legacy amounts without a currency remain unknown.</td>
 </tr>
 <tr>
 <td><code>import-evals</code></td>
@@ -113,13 +113,19 @@ options as in the current terminal. The command reports terminal launcher
 errors and returns the launcher's status. tmux returns after creating the
 window. The cockpit exits in the new window.</p>
 <p>Use <code>cockpit --once</code> for a report in the current shell.</p>
-<h3>Import exported spans</h3>
+<h3 id="import-exported-spans">Import exported spans</h3>
 <p>Use <code>import-jsonl</code> with one exported native span object per line. The importer accepts a regular file or stdin (<code>--file -</code>) up to 4 MiB and 1,024 span records. It validates the complete batch before opening history for admission.</p>
 <pre><code class="language-sh">agenturm import-jsonl --file spans.jsonl --db history.sqlite --source-id otlp.exported
 </code></pre>
 <p>Rows carry <code>trace_id</code>, <code>span_id</code>, optional <code>parent_span_id</code>, <code>start_unix_nano</code> and <code>end_unix_nano</code>, and optional <code>status</code> (<code>UNSET</code>, <code>OK</code> or <code>ERROR</code>). Timestamps accept integers or decimal strings. IDs use 32 hexadecimal characters for the trace and 16 for each span. A parent outside the file is valid for a partial export.</p>
 <p>A span needs an exact session ID from its <code>attributes</code> or the explicit <code>--session-id</code> argument. Span-level session aliases must agree, including <code>session.id</code>, <code>gen_ai.conversation.id</code>, and the legacy session, conversation and thread aliases. The argument fills missing session IDs and must match any IDs carried by the file. A native turn link requires <code>agenturm.source.id</code> and <code>agenturm.turn.id</code>. A worker link adds <code>agenturm.worker.id</code>.</p>
-<p>Imports retain trace structure, timing, status, exact scope, and explicitly reported cost and token usage. Import discards span names, payloads, events, links, and eval results. Those legacy fields and workflows have separate cutover coverage. Exact structural replays deduplicate across JSONL and OTLP JSON under the same source ID. Conflicting retained identities reject the entire import.</p>
+<p>The default import retains trace structure, timing, status, exact scope, and explicitly reported cost and token usage. Span names, events, links, and eval results are outside this import. Exact structural replays deduplicate across JSONL and OTLP JSON under the same source ID. Conflicting retained identities reject the entire import.</p>
+<p>Use <code>--payload-scope standalone</code> to opt in to the two private text attributes <code>agenturm.payload.input</code> and <code>agenturm.payload.output</code>. Use <code>--payload-scope harness.codex</code> for rows that explicitly carry that <code>agenturm.source.id</code>. The session comes from an exact row attribute or the operator's <code>--session-id</code>. The scope flag must match the source of every captured span. Each slot is limited to 2 KiB and the captured text in a batch to 64 KiB. Invalid or credential-like selected text rejects the batch with an error that omits its contents.</p>
+<pre><code class="language-sh">agenturm import-jsonl --file spans.jsonl --db history.sqlite --source-id otlp.exported \
+  --session-id demo --payload-scope standalone
+</code></pre>
+<p>Add <code>--payload-format agent-harness</code> to select the legacy agent-harness fields instead. For <code>agent.run</code>, <code>agent.task</code> and <code>agent.summary</code> fill Input and Output. For <code>tool.call</code>, the exported executed <code>tool.arguments</code> and <code>tool.result</code> fill those slots. Empty legacy slots are omitted. The format excludes proposed arguments, approval rationales, exceptions, other attributes, and event bodies. Agent-harness exports without a session ID need the explicit <code>--session-id</code> option.</p>
+<p>Text is stored with its exact span occurrence in the private telemetry vault. A <a href="rust-broker-commands.html#preview-opted-in-telemetry-text">telemetry text grant</a> is required to view it. Select capture on the first import. Replaying the same text deduplicates, changing the text or adding it to a metadata-only occurrence conflicts, and reimporting pruned text leaves it retired. Metadata queries and import output omit text.</p>
 <h3>Publish live progress</h3>
 <p>The Python and Node manual SDKs publish <code>Run.progress</code> immediately to the
 Rust trace receiver. The progress route uses the same loopback authority
@@ -165,7 +171,11 @@ producers, including the Python OpenTelemetry metadata exporter, forward
 these fields as bounded scalars. The amount accepts a decimal string or
 number. The currency is a three-letter uppercase code. The receiver also
 accepts <code>llm.cost_usd</code>, <code>llm.cost.total</code> with <code>llm.cost.currency</code>, and
-<code>gen_ai.usage.cost</code> with <code>gen_ai.usage.cost.currency</code>.</p>
+<code>gen_ai.usage.cost</code> with <code>gen_ai.usage.cost.currency</code>.
+The agent-harness JSONL exporter calculates its leaf <code>llm.cost_usd</code> from
+its own price table. The importer keeps that producer-reported amount in
+USD. It omits <code>agent.cost_usd</code> and <code>agent.usage.*</code> run roll-ups, which can
+repeat the measurements on leaf spans.</p>
 <p>Amounts use integer nano-units, with nine decimal places. Explicit zero
 is a cost record. Missing or invalid amounts, conflicting values, or an
 explicit <code>llm.cost_known</code> value other than true leave the span without a

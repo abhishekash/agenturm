@@ -1,11 +1,16 @@
-//! Offline import of structural spans from the native JSONL export format.
+//! Offline import of structural spans and opted-in text from native JSONL.
 
 use crate::trace_import::{
-    self, Attribute, MAX_EXPORT_BYTES, MAX_EXPORT_SPANS, OtlpSpan, Status, Timestamp,
+    self, Attribute, MAX_EXPORT_BYTES, MAX_EXPORT_SPANS, OtlpSpan, PAYLOAD_INPUT, PAYLOAD_OUTPUT,
+    Status, Timestamp,
 };
-#[cfg(target_os = "linux")]
-use agenturm_kernel::ObservationStore;
+use crate::trace_receiver::parse_payload_scope;
 use agenturm_kernel::{ExtensionId, Observation, ObservationKind};
+#[cfg(target_os = "linux")]
+use agenturm_storage_service::NativeStore;
+use agenturm_store::{
+    MAX_TELEMETRY_PAYLOAD_BATCH_BYTES, TelemetryBinding, TelemetryPayload, TelemetryPayloadRecord,
+};
 use serde::de::{Error, IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::value::RawValue;
@@ -15,7 +20,8 @@ use std::path::PathBuf;
 
 pub(super) const USAGE: &str = concat!(
     "agenturm import-jsonl --file <span-jsonl-path|-> --db <path> ",
-    "--source-id otlp.<id> [--session-id <id>]"
+    "--source-id otlp.<id> [--session-id <id>] ",
+    "[--payload-scope <standalone|harness-id> [--payload-format agent-harness]]"
 );
 const COMMIT_ERROR: &str = "Cannot commit span JSONL. Check the Rust history, source ownership, and retained span identities.";
 
@@ -25,6 +31,20 @@ pub struct SpanJsonlImportOptions {
     db: PathBuf,
     source_id: ExtensionId,
     session_id: Option<String>,
+    payload_binding: Option<TelemetryBinding>,
+    payload_format: PayloadFormat,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+enum PayloadFormat {
+    #[default]
+    Telemetry,
+    AgentHarness,
+}
+
+struct PreparedImport {
+    observations: Vec<Observation>,
+    payloads: Vec<TelemetryPayloadRecord>,
 }
 
 pub(super) fn parse(args: &[String]) -> Result<SpanJsonlImportOptions, String> {
@@ -33,6 +53,8 @@ pub(super) fn parse(args: &[String]) -> Result<SpanJsonlImportOptions, String> {
         return Err(USAGE.into());
     }
     let (mut file, mut db, mut source_id, mut session_id) = (None, None, None, None);
+    let mut payload_scope = None;
+    let mut payload_format = None;
     for [flag, value] in pairs {
         if value.is_empty() || value.starts_with("--") {
             return Err(USAGE.into());
@@ -48,32 +70,74 @@ pub(super) fn parse(args: &[String]) -> Result<SpanJsonlImportOptions, String> {
             "--session-id" if session_id.is_none() && trace_import::valid_session_id(value) => {
                 session_id = Some(value.clone());
             }
+            "--payload-scope" if payload_scope.is_none() => payload_scope = Some(value.as_str()),
+            "--payload-format" if payload_format.is_none() && value == "agent-harness" => {
+                payload_format = Some(PayloadFormat::AgentHarness);
+            }
             _ => return Err(USAGE.into()),
         }
+    }
+    let source_id = source_id.ok_or(USAGE)?;
+    let payload_binding = payload_scope
+        .map(|scope| parse_payload_scope(&source_id, scope))
+        .transpose()?;
+    if payload_format.is_some() && payload_binding.is_none() {
+        return Err(USAGE.into());
     }
     Ok(SpanJsonlImportOptions {
         file: file.ok_or(USAGE)?,
         db: db.ok_or(USAGE)?,
-        source_id: source_id.ok_or(USAGE)?,
+        source_id,
         session_id,
+        payload_binding,
+        payload_format: payload_format.unwrap_or_default(),
     })
 }
 
 pub fn execute_span_jsonl_import(options: &SpanJsonlImportOptions) -> Result<String, String> {
-    let observations = prepare(options)?;
-    let inserted = trace_import::commit(&options.db, &options.source_id, &observations)
-        .map_err(|_| COMMIT_ERROR)?;
+    let PreparedImport {
+        observations,
+        payloads,
+    } = prepare(options)?;
+    let inserted = match options.payload_binding.as_ref() {
+        Some(binding) => {
+            trace_import::commit_payloads(&options.db, binding, &observations, &payloads)
+        }
+        None => trace_import::commit(&options.db, &options.source_id, &observations),
+    }
+    .map_err(|_| COMMIT_ERROR)?;
     Ok(report(inserted, &observations))
 }
 
 #[cfg(target_os = "linux")]
 pub(super) fn execute_with_store(
     options: &SpanJsonlImportOptions,
-    store: &mut impl ObservationStore,
+    store: &mut NativeStore,
 ) -> Result<String, String> {
-    let observations = prepare(options)?;
-    let inserted = trace_import::commit_with_store(store, &options.source_id, &observations)
-        .map_err(|_| COMMIT_ERROR)?;
+    let PreparedImport {
+        observations,
+        payloads,
+    } = prepare(options)?;
+    if let Some(binding) = &options.payload_binding {
+        store
+            .check_telemetry_admission(binding)
+            .map_err(|error| error.to_string())?;
+    }
+    let binding = options
+        .payload_binding
+        .as_ref()
+        .filter(|_| !payloads.is_empty());
+    let inserted = match binding {
+        Some(binding) => {
+            let batch = trace_import::prepare_payload_batch(store, binding, &observations)
+                .map_err(|_| COMMIT_ERROR)?;
+            store
+                .commit_telemetry_batch(binding, batch, payloads)
+                .map_err(|_| COMMIT_ERROR.to_owned())
+        }
+        None => trace_import::commit_with_store(store, &options.source_id, &observations),
+    }
+    .map_err(|_| COMMIT_ERROR)?;
     Ok(report(inserted, &observations))
 }
 
@@ -86,25 +150,18 @@ fn report(inserted: usize, observations: &[Observation]) -> String {
     }
 }
 
-fn prepare(options: &SpanJsonlImportOptions) -> Result<Vec<Observation>, String> {
-    let source = &options.source_id;
-    let session = options.session_id.as_deref();
+fn prepare(options: &SpanJsonlImportOptions) -> Result<PreparedImport, String> {
     if options.file.as_os_str() == "-" {
-        decode(io::stdin().lock(), source, session)
+        decode(io::stdin().lock(), options)
     } else {
         decode(
             trace_import::open_regular_export(&options.file, "Span JSONL input")?,
-            source,
-            session,
+            options,
         )
     }
 }
 
-fn decode(
-    reader: impl Read,
-    source: &ExtensionId,
-    session: Option<&str>,
-) -> Result<Vec<Observation>, String> {
+fn decode(reader: impl Read, options: &SpanJsonlImportOptions) -> Result<PreparedImport, String> {
     let mut bytes = Vec::new();
     reader
         .take(MAX_EXPORT_BYTES + 1)
@@ -121,16 +178,142 @@ fn decode(
         if spans.len() == MAX_EXPORT_SPANS {
             return Err("Span JSONL input exceeds 1,024 records".into());
         }
-        let span: JsonlSpan = serde_json::from_slice(line)
-            .map_err(|_| format!("Invalid span JSONL record at line {}", index + 1))?;
-        spans.push(span.into_otlp(session));
+        let malformed = || format!("Invalid span JSONL record at line {}", index + 1);
+        let span: JsonlSpan = serde_json::from_slice(line).map_err(|_| malformed())?;
+        let mut span = span.into_otlp(options.session_id.as_deref());
+        if options.payload_binding.is_some() {
+            let payload = decode_payload(line, options.payload_format).map_err(|_| malformed())?;
+            if let Some(input) = payload.input {
+                span.attributes.push(Attribute::text(PAYLOAD_INPUT, input));
+            }
+            if let Some(output) = payload.output {
+                span.attributes
+                    .push(Attribute::text(PAYLOAD_OUTPUT, output));
+            }
+        }
+        spans.push(span);
     }
-    let (observations, unscoped) = trace_import::project(spans, source, None)?;
+    let (observations, unscoped, payloads) = trace_import::project_payloads(
+        spans,
+        &options.source_id,
+        None,
+        options.payload_binding.as_ref(),
+    )?;
     if unscoped != 0 {
         return Err("Every span needs an explicit session identity or --session-id".into());
     }
+    let payload_bytes: usize = payloads
+        .iter()
+        .flat_map(|record| [&record.payload.input, &record.payload.output])
+        .filter_map(Option::as_ref)
+        .map(String::len)
+        .sum();
+    if payload_bytes > MAX_TELEMETRY_PAYLOAD_BATCH_BYTES {
+        return Err("Span JSONL payload exceeds 64 KiB".into());
+    }
     validate_ancestry(&observations)?;
-    Ok(observations)
+    Ok(PreparedImport {
+        observations,
+        payloads,
+    })
+}
+
+fn decode_payload(line: &[u8], format: PayloadFormat) -> serde_json::Result<TelemetryPayload> {
+    // Borrow the original attribute object. Decode only the two slots for the
+    // selected format and span type, without retaining arbitrary attributes.
+    #[derive(Deserialize)]
+    struct PayloadSpan<'a> {
+        #[serde(borrow)]
+        name: Option<&'a RawValue>,
+        #[serde(borrow)]
+        attributes: Option<&'a RawValue>,
+    }
+    let span: PayloadSpan<'_> = serde_json::from_slice(line)?;
+    let Some(attributes) = span.attributes else {
+        return Ok(TelemetryPayload {
+            input: None,
+            output: None,
+        });
+    };
+    match format {
+        PayloadFormat::Telemetry => {
+            let fields: CanonicalPayload = serde_json::from_str(attributes.get())?;
+            Ok(TelemetryPayload {
+                input: fields.input,
+                output: fields.output,
+            })
+        }
+        PayloadFormat::AgentHarness => match span
+            .name
+            .map(|name| serde_json::from_str::<LegacySpanName>(name.get()))
+            .transpose()?
+        {
+            Some(LegacySpanName::AgentRun) => {
+                let fields: LegacyRunPayload = serde_json::from_str(attributes.get())?;
+                Ok(TelemetryPayload {
+                    input: fields.task.filter(|text| !text.is_empty()),
+                    output: fields.summary.filter(|text| !text.is_empty()),
+                })
+            }
+            Some(LegacySpanName::ToolCall) => {
+                let fields: LegacyToolPayload = serde_json::from_str(attributes.get())?;
+                Ok(TelemetryPayload {
+                    input: fields.arguments.filter(|text| !text.is_empty()),
+                    output: fields.result.filter(|text| !text.is_empty()),
+                })
+            }
+            _ => Ok(TelemetryPayload {
+                input: None,
+                output: None,
+            }),
+        },
+    }
+}
+
+#[derive(Deserialize)]
+struct CanonicalPayload {
+    #[serde(
+        default,
+        rename = "agenturm.payload.input",
+        deserialize_with = "present_text"
+    )]
+    input: Option<String>,
+    #[serde(
+        default,
+        rename = "agenturm.payload.output",
+        deserialize_with = "present_text"
+    )]
+    output: Option<String>,
+}
+
+#[derive(Deserialize)]
+enum LegacySpanName {
+    #[serde(rename = "agent.run")]
+    AgentRun,
+    #[serde(rename = "tool.call")]
+    ToolCall,
+    #[serde(other)]
+    Other,
+}
+
+#[derive(Deserialize)]
+struct LegacyRunPayload {
+    #[serde(default, rename = "agent.task", deserialize_with = "present_text")]
+    task: Option<String>,
+    #[serde(default, rename = "agent.summary", deserialize_with = "present_text")]
+    summary: Option<String>,
+}
+
+#[derive(Deserialize)]
+struct LegacyToolPayload {
+    #[serde(default, rename = "tool.arguments", deserialize_with = "present_text")]
+    arguments: Option<String>,
+    #[serde(default, rename = "tool.result", deserialize_with = "present_text")]
+    result: Option<String>,
+}
+
+fn present_text<'de, D: Deserializer<'de>>(deserializer: D) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
 }
 
 /// Missing parents are valid in a partial export. Cycles among rows present

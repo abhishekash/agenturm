@@ -17,7 +17,7 @@ migration of Python-era databases remains outside the Rust-only product scope.
 | Bare `agenturm`, `cockpit`, global `--db` | Keep local startup, discovery, one-shot snapshots and explicit history selection. Bare Rust startup, global `--db` and `cockpit --db` select local history. `cockpit --once` prints a bounded session report, with JSON and page coverage on request. The same report works through a broker or trusted remote reader. Use `query` for raw machine-readable history. `cockpit --endpoint` attaches through a trusted loopback listener or SSH tunnel. On Linux, `cockpit --new-window` opens the same cockpit with the selected history. Compatibility with a Python receiver remains open. [Remote history setup](rust-broker-commands.md#read-history-through-an-ssh-tunnel) |
 | `serve` | Keep local OTLP collection and source watch through `serve-traces`, `discover --follow` and `collect --watch` or the Linux user service. `broker serve-history` serves the native broker's retained metadata on loopback through a dedicated reader. The Python `/api/*` wire surface, direct remote TLS and arbitrary legacy JSONL tail remain open. |
 | `run` | Keep command launch, exit status, local trace delivery and exact source/session linkage. Rust `run` configures OTLP for an instrumented producer. Python-specific script and module injection requires a product decision. |
-| `import-jsonl` | Use `import-jsonl` for supported native span exports and `import-traces` for OTLP JSON. Both retain structural trace metadata with exact session scope. Legacy payload and cost import parity remains open. |
+| `import-jsonl` | Use `import-jsonl` for supported native span exports and `import-traces` for OTLP JSON. Both retain structural trace metadata with exact session scope. JSONL can also capture supported private text with explicit opt-in. Legacy amounts without a currency remain unknown. |
 | `import-evals` | Import bounded `agent-evals` result metadata into an exact retained OTLP trace source. Use `evals` to read the current outcome in text or JSON. `evals --history` pages retained revisions and `evals --summary` reports current source outcomes with page counts. In the cockpit, `E` opens evaluations and `d` opens approved private result text. Cross-source aggregation remains open. |
 | `migrate-db` | Retired by the Rust-only product decision. Rust `backup` and `restore` operate on Rust-owned state. |
 | `prune` | Keep explicit age-based retention. Rust `prune --before-unix-ns` and persisted `retention set\|disable\|run\|status` are available. New default cockpit histories use 14 days; existing histories retain their policy. Collector, cockpit, local receiver and broker writer ticks apply it, while receipts and checkpoints survive cleanup. Broker policy changes require maintenance authority. |
@@ -92,7 +92,18 @@ Rows carry `trace_id`, `span_id`, optional `parent_span_id`, `start_unix_nano` a
 
 A span needs an exact session ID from its `attributes` or the explicit `--session-id` argument. Span-level session aliases must agree, including `session.id`, `gen_ai.conversation.id`, and the legacy session, conversation and thread aliases. The argument fills missing session IDs and must match any IDs carried by the file. A native turn link requires `agenturm.source.id` and `agenturm.turn.id`. A worker link adds `agenturm.worker.id`.
 
-Imports retain trace structure, timing, status, exact scope, and explicitly reported cost and token usage. Import discards span names, payloads, events, links, and eval results. Those legacy fields and workflows have separate cutover coverage. Exact structural replays deduplicate across JSONL and OTLP JSON under the same source ID. Conflicting retained identities reject the entire import.
+The default import retains trace structure, timing, status, exact scope, and explicitly reported cost and token usage. Span names, events, links, and eval results are outside this import. Exact structural replays deduplicate across JSONL and OTLP JSON under the same source ID. Conflicting retained identities reject the entire import.
+
+Use `--payload-scope standalone` to opt in to the two private text attributes `agenturm.payload.input` and `agenturm.payload.output`. Use `--payload-scope harness.codex` for rows that explicitly carry that `agenturm.source.id`. The session comes from an exact row attribute or the operator's `--session-id`. The scope flag must match the source of every captured span. Each slot is limited to 2 KiB and the captured text in a batch to 64 KiB. Invalid or credential-like selected text rejects the batch with an error that omits its contents.
+
+```sh
+agenturm import-jsonl --file spans.jsonl --db history.sqlite --source-id otlp.exported \
+  --session-id demo --payload-scope standalone
+```
+
+Add `--payload-format agent-harness` to select the legacy agent-harness fields instead. For `agent.run`, `agent.task` and `agent.summary` fill Input and Output. For `tool.call`, the exported executed `tool.arguments` and `tool.result` fill those slots. Empty legacy slots are omitted. The format excludes proposed arguments, approval rationales, exceptions, other attributes, and event bodies. Agent-harness exports without a session ID need the explicit `--session-id` option.
+
+Text is stored with its exact span occurrence in the private telemetry vault. A [telemetry text grant](rust-broker-commands.md#preview-opted-in-telemetry-text) is required to view it. Select capture on the first import. Replaying the same text deduplicates, changing the text or adding it to a metadata-only occurrence conflicts, and reimporting pruned text leaves it retired. Metadata queries and import output omit text.
 
 ### Publish live progress
 
@@ -150,6 +161,10 @@ these fields as bounded scalars. The amount accepts a decimal string or
 number. The currency is a three-letter uppercase code. The receiver also
 accepts `llm.cost_usd`, `llm.cost.total` with `llm.cost.currency`, and
 `gen_ai.usage.cost` with `gen_ai.usage.cost.currency`.
+The agent-harness JSONL exporter calculates its leaf `llm.cost_usd` from
+its own price table. The importer keeps that producer-reported amount in
+USD. It omits `agent.cost_usd` and `agent.usage.*` run roll-ups, which can
+repeat the measurements on leaf spans.
 
 Amounts use integer nano-units, with nine decimal places. Explicit zero
 is a cost record. Missing or invalid amounts, conflicting values, or an
