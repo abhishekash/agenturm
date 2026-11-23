@@ -45,6 +45,7 @@ const MAX_VALIDATED_MEMBERS: usize = 256;
 /// rotation does not remove names from the roster immediately.
 #[derive(Default)]
 pub(super) struct StartupMembers {
+    follow: Option<super::discovery::FollowDiscovery>,
     codex_home: Option<PathBuf>,
     members: VecDeque<AuthorizedSource>,
 }
@@ -55,9 +56,10 @@ impl StartupMembers {
             *self = Self::default();
             return None;
         };
-        if self.codex_home != authority.codex_home {
+        if self.codex_home != authority.codex_home || self.follow != authority.follow {
             self.members.clear();
         }
+        self.follow = authority.follow;
         self.codex_home = authority.codex_home;
         for source in authority.sources {
             self.members
@@ -68,6 +70,7 @@ impl StartupMembers {
             }
         }
         Some(SourceAuthority {
+            follow: self.follow.clone(),
             sources: self.members.iter().cloned().collect(),
             codex_home: self.codex_home.clone(),
         })
@@ -88,6 +91,7 @@ pub(super) fn configured_sources(history: &Path) -> Option<SourceAuthority> {
             .flatten()
     });
     Some(SourceAuthority {
+        follow: config.follow.as_ref().map(|follow| follow.selection.clone()),
         sources: config
             .sources
             .into_iter()
@@ -110,6 +114,7 @@ mod tests {
     fn startup_members_retain_rotated_bindings_and_clear_across_authority_changes() {
         let mut remembered = StartupMembers::default();
         let make = |home: &str, id: &str| SourceAuthority {
+            follow: None,
             sources: vec![AuthorizedSource {
                 source_id: id.into(),
                 plugin_id: "example.rust-codex-harness".into(),

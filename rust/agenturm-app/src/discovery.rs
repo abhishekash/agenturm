@@ -35,6 +35,7 @@ pub(crate) struct AuthorizedSource {
 
 #[derive(Clone, Debug)]
 pub(crate) struct SourceAuthority {
+    pub(crate) follow: Option<FollowDiscovery>,
     pub(crate) sources: Vec<AuthorizedSource>,
     pub(crate) codex_home: Option<PathBuf>,
 }
@@ -103,7 +104,7 @@ struct Candidate {
     open: bool,
 }
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FollowDiscovery {
     pub(crate) codex_root: PathBuf,

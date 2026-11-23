@@ -2923,6 +2923,7 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
 
     fn source_authority(&self) -> discovery::SourceAuthority {
         discovery::SourceAuthority {
+            follow: self.follow.as_ref().map(|follow| follow.selection.clone()),
             sources: self.authorized_sources.clone(),
             codex_home: self
                 .follow
