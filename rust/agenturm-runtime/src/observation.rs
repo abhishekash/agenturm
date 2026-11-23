@@ -228,6 +228,20 @@ fn project_record(record: ObservationRecord, source_id: &str) -> Result<Option<R
             }
             ObservationKind::NativeRequest(request)
         }
+        ObservationFact::SessionDiscovered(_) => {
+            if record.revision != 0
+                || identity.scope != ObservationScope::Session
+                || identity.turn_id.is_some()
+                || identity.operation_id.is_some()
+            {
+                return Err(RuntimeError::new(
+                    "source session discovery identity is invalid",
+                ));
+            }
+            ObservationKind::Activity {
+                category: "session_discovered".into(),
+            }
+        }
         ObservationFact::Lifecycle(lifecycle) => {
             if !is_lifecycle_state(&lifecycle.state)
                 || lifecycle
@@ -413,6 +427,93 @@ mod tests {
             let error = parse_source_batch(&batch.to_string(), "harness.codex").unwrap_err();
             assert!(!error.to_string().contains("private sentinel"));
         }
+    }
+
+    #[test]
+    fn header_discovery_creates_unknown_roster_evidence_without_overriding_lifecycle() {
+        let source = "harness.codex";
+        let mut batch = json!({"type":"batch","protocol":1,"source_id":source,"cursor":"verified-header",
+            "records":[{"event_id":"header","revision":0,"kind":"session_discovered","time_ns":"100",
+                "identity":{"session_id":"thread-1","worker_id":"thread-1"}, "payload":{}}]});
+        let prepared = parse_source_batch(&batch.to_string(), source).unwrap();
+        let original = batch["records"][0].clone();
+        for (field, invalid) in [
+            ("revision", json!(1)),
+            ("identity", json!(null)),
+            (
+                "identity",
+                json!({"session_id":"thread-1","turn_id":"unproved"}),
+            ),
+            (
+                "identity",
+                json!({"session_id":"thread-1","operation_id":"unproved"}),
+            ),
+            (
+                "payload",
+                json!({"state":"running","body":"private fixture"}),
+            ),
+            ("payload", json!([])),
+        ] {
+            batch["records"][0] = original.clone();
+            batch["records"][0][field] = invalid;
+            let message = parse_source_batch(&batch.to_string(), source)
+                .unwrap_err()
+                .to_string();
+            assert!(!message.contains("private fixture"));
+        }
+        let raw = prepared.observations.into_iter().next().unwrap();
+        let row = Observation {
+            harness_id: ExtensionId::parse(source).unwrap(),
+            event_id: raw.event_id,
+            revision: raw.revision,
+            identity: raw.identity,
+            observed_at_unix_ns: raw.observed_at_unix_ns,
+            kind: raw.kind,
+        };
+        assert_eq!(
+            row.kind,
+            ObservationKind::Activity {
+                category: "session_discovered".into()
+            }
+        );
+        let mut store = Store::open(":memory:").unwrap();
+        store
+            .commit(
+                source,
+                None,
+                &prepared.next_cursor,
+                std::slice::from_ref(&row),
+            )
+            .unwrap();
+        let query = SessionQuery::latest(1);
+        let page = store.query_sessions(&query).unwrap();
+        assert_eq!(page.sessions.len(), 1);
+        assert_eq!(page.sessions[0].session_id, "thread-1");
+        assert_eq!(page.sessions[0].observed_at_unix_ns, 100);
+        assert!(page.sessions[0].lifecycle.is_none());
+
+        let mut started = row.clone();
+        started.event_id = "explicit-turn-start".into();
+        started.identity.turn_id = Some("turn-1".into());
+        // Source clocks can record the real turn before the metadata header.
+        started.observed_at_unix_ns = 99;
+        started.kind = ObservationKind::Lifecycle {
+            state: "running".into(),
+            reason_code: None,
+        };
+        store
+            .commit(
+                source,
+                Some(&prepared.next_cursor),
+                "verified-turn",
+                &[started],
+            )
+            .unwrap();
+        let page = store.query_sessions(&query).unwrap();
+        let lifecycle = page.sessions[0].lifecycle.as_ref().unwrap();
+        assert_eq!(lifecycle.state, "running");
+        assert_eq!(lifecycle.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(lifecycle.observed_at_unix_ns, 99);
     }
 
     #[test]

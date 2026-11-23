@@ -37,6 +37,7 @@ pub(crate) struct Context {
     guardian: Option<approval::Guardian>,
     header_bytes: usize,
     in_copied_context: bool,
+    header_discovered: bool,
 }
 
 impl Context {
@@ -46,22 +47,34 @@ impl Context {
         format!("fork-copy:{:0>200}", self.session_id)
     }
 
+    fn discovery_checkpoint(&self) -> String {
+        // Longer than every native turn ID and distinct from copied context.
+        format!("session-discovered:{:0>200}", self.session_id)
+    }
+
     pub(crate) fn checkpoint(&self) -> String {
         if self.in_copied_context {
             self.copied_checkpoint()
+        } else if self.turn_id.is_empty() && self.header_discovered {
+            self.discovery_checkpoint()
         } else {
             self.turn_id.clone()
         }
     }
 
     pub(crate) fn restore(&mut self, checkpoint: &str) {
+        self.header_discovered = checkpoint == self.discovery_checkpoint();
         self.in_copied_context =
             self.parent_thread.is_some() && checkpoint == self.copied_checkpoint();
-        self.turn_id = if self.in_copied_context {
+        self.turn_id = if self.in_copied_context || self.header_discovered {
             String::new()
         } else {
             checkpoint.to_owned()
         };
+    }
+
+    pub(crate) fn omit_discovery(&mut self) {
+        self.header_discovered = false;
     }
 }
 
@@ -102,6 +115,7 @@ pub(crate) fn header_identity(raw: &[u8]) -> Result<Context> {
         guardian: approval::Guardian::from_header(raw, thread)?,
         header_bytes: raw.len(),
         in_copied_context: false,
+        header_discovered: false,
     })
 }
 
@@ -147,6 +161,43 @@ fn stamp(row: &Value) -> Result<String> {
         return Err(invalid("Codex timestamp outside supported range"));
     }
     Ok(nanos.to_string())
+}
+
+fn discovered(context: &mut Context, origin: &str, time_ns: &str) -> Value {
+    context.header_discovered = true;
+    fact(
+        format!("codex:{origin}:0:discovered"),
+        "session_discovered",
+        time_ns,
+        context,
+        json!({}),
+        None,
+    )
+}
+
+pub(crate) fn resume_verified_header(
+    raw: &[u8],
+    context: &mut Context,
+    origin: &str,
+) -> Result<Option<Value>> {
+    if context.guardian.is_some()
+        || context.header_discovered
+        || context.in_copied_context
+        || !context.turn_id.is_empty()
+    {
+        return Ok(None);
+    }
+    let row: Value = serde_json::from_slice(raw)?;
+    let payload = &row["payload"];
+    // Older readers already admitted this header's relationship as a
+    // session-scoped fact. Those sessions already appear on the roster.
+    if header_relationship(payload, &context.session_id).is_some() {
+        return Ok(None);
+    }
+    Ok(stamp(&row)
+        .or_else(|_| stamp(payload))
+        .ok()
+        .map(|time_ns| discovered(context, origin, &time_ns)))
 }
 
 fn header_relationship(payload: &Value, child: &str) -> Option<Value> {
@@ -549,23 +600,23 @@ pub(crate) fn translate_line(
             return Ok((Vec::new(), next));
         }
         let payload = &row["payload"];
+        let mut facts = Vec::new();
         if offset == 0
-            && let Some(relationship) = header_relationship(payload, &header.session_id)
             && let Ok(time_ns) = stamp(&row).or_else(|_| stamp(payload))
         {
-            return Ok((
-                vec![fact(
+            facts.push(discovered(&mut next, origin, &time_ns));
+            if let Some(relationship) = header_relationship(payload, &header.session_id) {
+                facts.push(fact(
                     format!("codex:{origin}:{offset}:relationship"),
                     "relationship",
                     &time_ns,
                     &header,
                     relationship,
                     None,
-                )],
-                next,
-            ));
+                ));
+            }
         }
-        return Ok((Vec::new(), next));
+        return Ok((facts, next));
     }
     let base = format!("codex:{origin}:{offset}");
     if let Some(guardian) = &context.guardian {
@@ -998,11 +1049,12 @@ mod tests {
             let raw = row("session_meta", payload);
             let context = header_identity(&raw).unwrap();
             let (facts, _) = translate_line(&raw, &context, "generation", 0).unwrap();
-            assert_eq!(facts.len(), 1);
+            assert_eq!(facts.len(), 2);
             assert_eq!(facts[0]["identity"]["session_id"], "child");
-            assert_eq!(facts[0]["kind"], "relationship");
+            assert_eq!(facts[0]["kind"], "session_discovered");
+            assert_eq!(facts[1]["kind"], "relationship");
             assert_eq!(
-                facts[0]["payload"],
+                facts[1]["payload"],
                 json!({"relationship_kind":relationship_kind,"parent_session_id":"parent"}),
             );
             assert!(
@@ -1016,7 +1068,7 @@ mod tests {
         let nested_only = br#"{"type":"session_meta","payload":{"id":"child","timestamp":"2026-11-14T10:00:00Z","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}}}"#;
         let context = header_identity(nested_only).unwrap();
         let (facts, _) = translate_line(nested_only, &context, "generation", 0).unwrap();
-        assert_eq!(facts[0]["payload"]["relationship_kind"], "delegated");
+        assert_eq!(facts[1]["payload"]["relationship_kind"], "delegated");
     }
 
     #[test]
@@ -1031,7 +1083,8 @@ mod tests {
             let raw = row("session_meta", payload);
             let context = header_identity(&raw).unwrap();
             let (facts, _) = translate_line(&raw, &context, "generation", 0).unwrap();
-            assert!(facts.is_empty());
+            assert_eq!(facts.len(), 1);
+            assert_eq!(facts[0]["kind"], "session_discovered");
         }
     }
 

@@ -46,6 +46,16 @@ pub trait SourceFormat {
     /// Empty or a bounded ASCII identifier accepted by the durable cursor.
     fn checkpoint(context: &Self::Context) -> String;
     fn restore(context: &mut Self::Context, checkpoint: &str) -> Result<()>;
+    /// Optionally upgrade a cursor committed at the end of only its first
+    /// complete line. The caller has verified the original file and prefix.
+    /// The adapter must update its checkpoint to distinguish a committed upgrade.
+    fn resume_verified_header(
+        _raw: &[u8],
+        _context: &mut Self::Context,
+        _origin: &str,
+    ) -> Result<Option<Value>> {
+        Ok(None)
+    }
     fn translate_line(
         raw: &[u8],
         context: &Self::Context,
@@ -413,6 +423,26 @@ fn poll_inner<F: SourceFormat>(
         previous.as_ref().map_or(0, |cursor| cursor.offset)
     };
     let mut prefix = prefix_hasher(&mut file, offset).map_err(classify_read)?;
+    let upgraded_header = if let Some(prior) = &previous
+        && !changed
+        && offset == header.len() as u64
+    {
+        let upgrade = F::resume_verified_header(&header, &mut context, origin)?;
+        if upgrade.is_some()
+            && (max_records == 0 || checked_checkpoint::<F>(&context)? == prior.checkpoint)
+        {
+            return Err(invalid(
+                "source header upgrade must fit and advance its checkpoint",
+            ));
+        }
+        upgrade
+    } else {
+        None
+    };
+    // Commit the newly established identity before parsing additional rows.
+    // This also prevents an unrelated malformed append from blocking it.
+    let upgrading_header = upgraded_header.is_some();
+    records.extend(upgraded_header);
     if changed {
         let evidence = format!("{}|({}, {})", raw_cursor, device, inode);
         let id = format!("{}:{:x}", F::GAP_EVENT_PREFIX, Sha256::digest(evidence));
@@ -426,7 +456,7 @@ fn poll_inner<F: SourceFormat>(
                             "payload":{"code":"possible_source_gap","severity":"warning"}}));
     }
     let mut position = offset;
-    while records.len() < max_records && position - offset < MAX_SCAN {
+    while !upgrading_header && records.len() < max_records && position - offset < MAX_SCAN {
         let Some(line) = read_line(&mut file, position).map_err(classify_read)? else {
             break;
         };

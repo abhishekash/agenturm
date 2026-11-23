@@ -136,6 +136,7 @@ impl<'de> Deserialize<'de> for ObservationRecord {
             TraceSpan,
             InternalReview,
             NativeRequest,
+            SessionDiscovered,
             Lifecycle,
             Check,
             PullRequestRaised,
@@ -166,6 +167,14 @@ impl<'de> Deserialize<'de> for ObservationRecord {
             }
             FactKind::NativeRequest => {
                 serde_json::from_str(payload).map(ObservationFact::NativeRequest)
+            }
+            FactKind::SessionDiscovered => {
+                if !payload.trim_start().starts_with('{') {
+                    return Err(serde::de::Error::custom(
+                        "invalid session discovery payload",
+                    ));
+                }
+                serde_json::from_str(payload).map(ObservationFact::SessionDiscovered)
             }
             FactKind::Lifecycle => serde_json::from_str(payload).map(ObservationFact::Lifecycle),
             FactKind::Check => serde_json::from_str(payload).map(ObservationFact::Check),
@@ -227,6 +236,7 @@ pub enum ObservationFact {
     TraceSpan(TraceSpan),
     InternalReview(crate::native_review::InternalReview),
     NativeRequest(crate::native_review::NativeRequest),
+    SessionDiscovered(SessionDiscovered),
     Lifecycle(Lifecycle),
     Check(Check),
     PullRequestRaised(PullRequestRaised),
@@ -234,6 +244,11 @@ pub enum ObservationFact {
     Message(Message),
     Diagnostic(Diagnostic),
 }
+
+/// A validated native header established an identity, without execution state.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionDiscovered {}
 
 /// Counts from one explicitly successful file edit. Native paths and diffs
 /// stay in the source transcript and are outside this observation contract.
