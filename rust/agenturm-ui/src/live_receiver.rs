@@ -64,6 +64,7 @@ struct LiveView {
     include_reviews: bool,
     notice: Option<&'static str>,
     error: Option<String>,
+    investigation_notice: bool,
 }
 
 impl LiveView {
@@ -401,6 +402,14 @@ impl LiveView {
         } else {
             "↑↓ select · 2 Activity · 4 Traces · w Pending · Esc Agents"
         };
+        if self.investigation_notice {
+            frame.render_widget(
+                Paragraph::new("Investigations require retained Rust history. This receiver supplies live metadata.")
+                    .wrap(Wrap { trim: true }),
+                footer,
+            );
+            return;
+        }
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(if self.include_reviews && self.notice.is_none() {
@@ -452,6 +461,7 @@ pub fn run_live_receiver(
             include_reviews: false,
             notice: None,
             error: None,
+            investigation_notice: false,
         };
         let mut next_read = Instant::now();
         let mut explicit_refresh = false;
@@ -492,6 +502,13 @@ pub fn run_live_receiver(
                     });
                     if keymap::interrupt(key) || code == KeyCode::Char('q') {
                         break Ok(());
+                    }
+                    view.investigation_notice = !view.help
+                        && key.code == KeyCode::Char('f')
+                        && key.modifiers == KeyModifiers::CONTROL;
+                    if view.investigation_notice {
+                        dirty = true;
+                        continue;
                     }
                     if !view.help && matches!(code, KeyCode::Char('R') | keymap::LATEST) {
                         explicit_refresh = true;
@@ -593,6 +610,7 @@ mod tests {
             include_reviews: false,
             notice: None,
             error: Some("HTTP 404".into()),
+            investigation_notice: false,
         };
         for (width, height) in [(120, 32), (60, 18)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();

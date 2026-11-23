@@ -81,6 +81,15 @@ pub(super) fn execute(
             directory,
         } => crate::view_export::export(&document, &directory),
         WorkCommand::Evaluations(request) => crate::eval_import::workspace_evals(store, *request),
+        #[cfg(target_os = "linux")]
+        WorkCommand::Investigate(request) if !request.kind.is_private() => {
+            crate::investigate_cli::cockpit::failures(
+                &request,
+                store,
+                db,
+                store.allows_private_capture(),
+            )
+        }
         WorkCommand::HostHistory(before) => store
             .query_host_history(&ObservationQuery {
                 snapshot_id: before.as_ref().map(|position| position.snapshot_id),
@@ -225,7 +234,8 @@ pub(super) fn is_prompt_command(command: &WorkCommand) -> bool {
             | WorkCommand::RevealOperation(_, _)
             | WorkCommand::RevealTelemetry(_, _)
             | WorkCommand::RevealEvalDetail(_, _)
-    )
+            | WorkCommand::RevealInvestigation { .. }
+    ) || matches!(command, WorkCommand::Investigate(request) if request.kind.is_private())
 }
 
 pub(super) fn execute_prompt(
@@ -234,6 +244,14 @@ pub(super) fn execute_prompt(
     command: WorkCommand,
 ) -> Result<WorkResult, String> {
     match command {
+        #[cfg(target_os = "linux")]
+        command @ (WorkCommand::Investigate(_) | WorkCommand::RevealInvestigation { .. }) => {
+            crate::investigate_cli::cockpit::local(command, db, writer, &prompt_config(db)?)
+        }
+        #[cfg(not(target_os = "linux"))]
+        WorkCommand::Investigate(_) | WorkCommand::RevealInvestigation { .. } => {
+            Err("Retained investigations require Linux".into())
+        }
         WorkCommand::Prompts(owner) => {
             let config = prompt_config(db)?;
             let source = ExtensionId::parse(&owner.source).map_err(string)?;

@@ -3,6 +3,7 @@
 use super::*;
 use crate::keymap::{self, Destination};
 use crate::workbench::{PromptKind, PromptReceiver, WorkInput, Workbench, prompt_channel};
+use crate::workbench::investigation::{Investigation, InvestigationInput};
 use agenturm_kernel::{ReadSnapshot, RelationshipKind};
 use ratatui::buffer::CellWidth;
 use ratatui::widgets::{Row, Table, TableState};
@@ -480,7 +481,7 @@ fn agent_rows(
     rows
 }
 
-fn move_selection(selection: &mut ListState, count: usize, down: bool) {
+pub(super) fn move_selection(selection: &mut ListState, count: usize, down: bool) {
     if count != 0 {
         let current = selection.selected().unwrap_or_default();
         let next = if down {
@@ -526,6 +527,7 @@ enum Change {
     LatestHistory,
     MarkReviewed(RecordedSession),
     Work(Option<WorkAnchor>),
+    Investigation,
 }
 
 struct Workspace {
@@ -535,6 +537,7 @@ struct Workspace {
     browsing_older: bool,
     history: Vec<HistoryView>,
     work: Option<Workbench>,
+    investigation: Option<Investigation>,
     discard_work_result: bool,
     prompt_receiver: Option<PromptReceiver>,
     queued_prompt: Option<PromptEntry>,
@@ -555,6 +558,7 @@ impl Workspace {
             browsing_older: false,
             history: Vec::new(),
             work: None,
+            investigation: None,
             discard_work_result: false,
             prompt_receiver: None,
             queued_prompt: None,
@@ -595,6 +599,9 @@ impl Workspace {
         };
         self.refresh_after = Instant::now() + REFRESH_INTERVAL;
         if matches!(change, Change::Work(_)) && std::mem::take(&mut self.discard_work_result) {
+            return;
+        }
+        if matches!(change, Change::Investigation) && self.investigation.is_none() {
             return;
         }
         match (change, result) {
@@ -678,9 +685,20 @@ impl Workspace {
                 }
                 self.message = Some("Review saved for this evidence".into());
             }
-            (Change::Work(_), Ok(WorkspaceResponse::Work(WorkResult::Status(status)))) => {
+            (
+                Change::Work(_) | Change::Investigation,
+                Ok(WorkspaceResponse::Work(WorkResult::Status(status))),
+            ) => {
                 self.prompt_receiver = None;
                 self.message = (!status.is_empty()).then_some(status);
+            }
+            (
+                Change::Investigation,
+                Ok(WorkspaceResponse::Work(WorkResult::Investigation(page))),
+            ) => {
+                if let Some(investigation) = &mut self.investigation {
+                    investigation.apply(*page);
+                }
             }
             (Change::Work(_), Ok(WorkspaceResponse::Work(WorkResult::Seen(entry)))) => {
                 if let Some(work) = &mut self.work {
@@ -829,7 +847,9 @@ impl Workspace {
         if keymap::interrupt(key) {
             return true;
         }
-        if let Some(quit) = self.view_io_key(sender, key) {
+        if self.investigation.is_none()
+            && let Some(quit) = self.view_io_key(sender, key)
+        {
             return quit;
         }
         let code = keymap::plain(key).unwrap_or(KeyCode::Null);
@@ -841,6 +861,35 @@ impl Workspace {
                 }
                 KeyCode::Char('q') => return true,
                 _ => prompt.key(code),
+            }
+            return false;
+        }
+        if let Some(investigation) = &mut self.investigation {
+            match investigation.key(key, self.pending.is_some()) {
+                InvestigationInput::Close => {
+                    self.investigation = None;
+                    self.prompt_receiver = None;
+                    self.message = None;
+                }
+                InvestigationInput::Read(request) => self.request(
+                    sender,
+                    WorkspaceRequest::Work(WorkCommand::Investigate(request)),
+                    Change::Investigation,
+                ),
+                InvestigationInput::Reveal(reference) => {
+                    let (delivery, receiver) = prompt_channel(PromptKind::Investigation);
+                    self.request(
+                        sender,
+                        WorkspaceRequest::Work(WorkCommand::RevealInvestigation {
+                            reference,
+                            delivery,
+                        }),
+                        Change::Investigation,
+                    );
+                    self.prompt_receiver = Some(receiver);
+                }
+                InvestigationInput::Edited => self.message = None,
+                InvestigationInput::Handled => {}
             }
             return false;
         }
@@ -930,6 +979,10 @@ impl Workspace {
                     self.request(sender, WorkspaceRequest::Work(command), Change::Work(None))
                 }
             }
+            return false;
+        }
+        if key.code == KeyCode::Char('f') && key.modifiers == KeyModifiers::CONTROL {
+            self.open_investigation();
             return false;
         }
         if self.history.is_empty() {
@@ -1261,6 +1314,43 @@ impl Workspace {
         false
     }
 
+    fn open_investigation(&mut self) {
+        if self.pending.is_some() {
+            return;
+        }
+        let (owner, snapshot) = match self.history.last() {
+            Some(view) => {
+                if view.page.ui.help
+                    || view.page.turn_picker.is_some()
+                    || view.page.operation_picker.is_some()
+                    || view.page.evaluation_picker.is_some()
+                {
+                    return;
+                }
+                let owner = match &view.selection {
+                    HistorySelection::All(_) => None,
+                    HistorySelection::Session(row, _) => Some(WorkAnchor::from(row)),
+                    HistorySelection::Turn(row) => Some(WorkAnchor {
+                        source: row.harness_id.clone(),
+                        session: row.session_id.clone(),
+                        worker: row.worker_id.clone(),
+                        turn: Some(row.turn_id.clone()),
+                    }),
+                };
+                (owner, Some(view.page.snapshot_id))
+            }
+            None => {
+                if self.agents.help || self.agents.editing {
+                    return;
+                }
+                let row = self.agents.current();
+                (row.map(WorkAnchor::from), row.map(|row| row.snapshot_id))
+            }
+        };
+        self.investigation = Some(Investigation::new(owner, snapshot));
+        self.message = None;
+    }
+
     fn agent_key(
         &mut self,
         sender: &mpsc::Sender<WorkspaceRequest>,
@@ -1512,6 +1602,7 @@ pub fn run_workspace(
                 }
                 if workspace.history.is_empty()
                     && workspace.work.is_none()
+                    && workspace.investigation.is_none()
                     && workspace.pending.is_none()
                     && !workspace.browsing_older
                     && !workspace.agents.paused
@@ -1600,6 +1691,14 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
     }
     if let Some(form) = &workspace.view_io.form {
         view_io::draw(frame, form, workspace.message.as_deref());
+        return;
+    }
+    if let Some(investigation) = &mut workspace.investigation {
+        investigation.draw(
+            frame,
+            workspace.pending.is_some(),
+            workspace.message.as_deref(),
+        );
         return;
     }
     if let Some(work) = &mut workspace.work {
@@ -1696,7 +1795,7 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
             let primary = keymap::navigation_hints(&keymap::NAVIGATION[..5]);
             let secondary = keymap::navigation_hints(&keymap::NAVIGATION[5..]);
             let mut help = format!(
-                "{primary}\n{secondary} · d Recorded diagnostics\n←/→ or Ctrl+←/→ Pane · ↑/↓ Scroll\n[ Newer · ] Older · l Latest · R Refresh · p Pause\nEsc or Alt+← Back · q Quit"
+                "{primary}\n{secondary} · d Recorded diagnostics\n←/→ or Ctrl+←/→ Pane · ↑/↓ Scroll\n[ Newer · ] Older · l Latest · R Refresh · p Pause\nCtrl+F Investigate · Esc or Alt+← Back · q Quit"
             );
             if matches!(view.selection, HistorySelection::Session(_, _)) {
                 help.push_str("\nCtrl+R Review · t Traces · m Inspector mode · P Prompts");
@@ -2011,6 +2110,143 @@ mod tests {
         assert_eq!(row.pending_requests.len(), 1);
         assert!(row.pending_requests[0].seen);
     }
+
+    #[test]
+    fn investigation_keeps_exact_turn_scope_and_returns_to_the_same_inspector() {
+        let mut workspace = Workspace::new();
+        let session = session("harness.pi", "retained-session", "completed", None);
+        let turn = RecordedTurn {
+            harness_id: session.harness_id.clone(),
+            session_id: session.session_id.clone(),
+            turn_id: "chosen-turn".into(),
+            worker_id: Some("worker-1".into()),
+            snapshot_id: 17.into(),
+            lifecycle: None,
+        };
+        workspace.agents.update(catalog(vec![session.clone()]));
+        workspace.history.push(HistoryView::new(
+            HistorySelection::Session(session.clone(), SessionView::Overview),
+            empty_history_page(),
+        ));
+        let mut page = empty_history_page();
+        page.snapshot.history_snapshot_id = turn.snapshot_id;
+        workspace
+            .history
+            .push(HistoryView::new(HistorySelection::Turn(turn.clone()), page));
+        let (sender, requests) = mpsc::channel();
+        let ctrl_f = event::KeyEvent::new(KeyCode::Char('f'), KeyModifiers::CONTROL);
+        assert!(!workspace.key(&sender, ctrl_f));
+        assert!(!press(&mut workspace, &sender, KeyCode::Tab));
+        for ch in ['q', 'x', '1'] {
+            assert!(!press(&mut workspace, &sender, KeyCode::Char(ch)));
+        }
+        assert!(!press(&mut workspace, &sender, KeyCode::Enter));
+        let WorkspaceRequest::Work(WorkCommand::Investigate(read)) = requests.try_recv().unwrap()
+        else {
+            panic!("expected an investigation request");
+        };
+        assert_eq!(read.kind, InvestigationKind::Instruction);
+        assert_eq!(read.query, "qx1");
+        assert_eq!(read.snapshot_id, Some(turn.snapshot_id));
+        assert_eq!(
+            read.owner,
+            Some(WorkAnchor {
+                source: turn.harness_id.clone(),
+                session: turn.session_id.clone(),
+                worker: turn.worker_id.clone(),
+                turn: Some(turn.turn_id.clone()),
+            })
+        );
+        workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::Investigation(
+            Box::new(InvestigationPage {
+                rows: vec![InvestigationMatch {
+                    position: ObservationPosition {
+                        observed_at_unix_ns: 10,
+                        harness_id: turn.harness_id.clone(),
+                        event_id: "exact-event".into(),
+                        revision: 3,
+                        snapshot_id: turn.snapshot_id,
+                    },
+                    session: Some(turn.session_id.clone()),
+                    turn: Some(turn.turn_id.clone()),
+                    worker: turn.worker_id.clone(),
+                    label: "Verified instruction match",
+                    source_reference: Some("opaque-reference".into()),
+                }],
+                snapshot_id: turn.snapshot_id,
+                inspected: 3,
+                verified: Some(2),
+                unavailable: 1,
+                next_cursor: Some("older-page".into()),
+            }),
+        ))));
+        for (width, height) in [(120, 32), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| draw_workspace(frame, &mut workspace))
+                .unwrap();
+            let screen = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            for label in [
+                "Investigate retained history",
+                "qx1",
+                "exact-event",
+                "2 verified / 1 unavailable",
+                "PgDn more",
+                "Enter open source",
+            ] {
+                assert!(
+                    screen.contains(label),
+                    "missing {label} at {width}×{height}"
+                );
+            }
+            assert!(!screen.contains("opaque-reference"));
+        }
+        assert!(!press(&mut workspace, &sender, KeyCode::Enter));
+        let WorkspaceRequest::Work(WorkCommand::RevealInvestigation { reference, .. }) =
+            requests.try_recv().unwrap()
+        else {
+            panic!("expected an exact protected reveal request");
+        };
+        assert_eq!(reference, "opaque-reference");
+        workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::Status(
+            String::new(),
+        ))));
+        assert!(!press(&mut workspace, &sender, KeyCode::PageDown));
+        let WorkspaceRequest::Work(WorkCommand::Investigate(read)) = requests.try_recv().unwrap()
+        else {
+            panic!("expected a continuation request");
+        };
+        assert_eq!(read.cursor.as_deref(), Some("older-page"));
+        assert_eq!(read.snapshot_id, Some(turn.snapshot_id));
+        assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+        workspace.finish(Err("late reply after back".into()));
+        assert!(workspace.message.is_none());
+        assert_eq!(workspace.history.len(), 2);
+        assert!(
+            matches!(&workspace.history.last().unwrap().selection, HistorySelection::Turn(row) if row == &turn)
+        );
+        assert_eq!(workspace.agents.current(), Some(&session));
+
+        workspace.history.clear();
+        assert!(!workspace.key(&sender, ctrl_f));
+        assert!(!press(&mut workspace, &sender, KeyCode::Tab));
+        for ch in ['c', 'x', 'q'] {
+            assert!(!press(&mut workspace, &sender, KeyCode::Char(ch)));
+        }
+        assert!(workspace.view_io.clipboard.is_none());
+        assert!(workspace.view_io.form.is_none());
+        assert!(!press(&mut workspace, &sender, KeyCode::Enter));
+        let WorkspaceRequest::Work(WorkCommand::Investigate(read)) = requests.try_recv().unwrap()
+        else {
+            panic!("expected an investigation request from the roster");
+        };
+        assert_eq!(read.query, "cxq");    }
 
     #[test]
     fn numeric_shortcuts_route_recorded_views_and_return_to_the_same_agent() {

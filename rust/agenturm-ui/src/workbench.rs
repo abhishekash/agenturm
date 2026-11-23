@@ -123,6 +123,7 @@ pub(super) enum PromptKind {
     Edit,
     Telemetry,
     Evaluation,
+    Investigation,
 }
 
 impl PromptKind {
@@ -133,6 +134,7 @@ impl PromptKind {
             Self::Edit => "Granted file edit",
             Self::Telemetry => "Producer-captured text",
             Self::Evaluation => "Imported evaluation text",
+            Self::Investigation => "Verified source evidence",
         }
     }
 }
@@ -193,8 +195,14 @@ impl io::Write for PromptDelivery {
 
 pub(crate) mod evaluation;
 mod host;
+pub(crate) mod investigation;
 
 pub enum WorkCommand {
+    Investigate(Box<investigation::InvestigationRead>),
+    RevealInvestigation {
+        reference: String,
+        delivery: PromptDelivery,
+    },
     ExportView {
         document: crate::LoadedView,
         directory: String,
@@ -261,6 +269,7 @@ pub struct ReviewNoteEntry {
 }
 
 pub enum WorkResult {
+    Investigation(Box<investigation::InvestigationPage>),
     Evaluations(Box<evaluation::EvaluationPage>),
     HostHistory(agenturm_kernel::ObservationPage),
     ReviewNotes {
@@ -454,7 +463,7 @@ impl Workbench {
             }
             WorkResult::Prompts(items) => items.len(),
             WorkResult::TelemetrySpans(spans) => spans.len(),
-            WorkResult::Seen(_) | WorkResult::Status(_) => 0,
+            WorkResult::Investigation(_) | WorkResult::Seen(_) | WorkResult::Status(_) => 0,
         }
     }
 
@@ -1083,7 +1092,10 @@ impl Workbench {
                     .unwrap_or_default(),
                 "No spans in the loaded trace page",
             ),
-            WorkResult::HostHistory(_) | WorkResult::Seen(_) | WorkResult::Status(_) => return,
+            WorkResult::HostHistory(_)
+            | WorkResult::Investigation(_)
+            | WorkResult::Seen(_)
+            | WorkResult::Status(_) => return,
         };
         frame.render_widget(Paragraph::new(format!(" Agenturm / {title}")), header);
         let [list, detail] =

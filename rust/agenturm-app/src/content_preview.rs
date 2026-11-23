@@ -204,6 +204,13 @@ pub(super) fn open_source_authority<'a>(
 }
 
 #[cfg(target_os = "linux")]
+pub(super) fn source_resolver(
+    config: &Path,
+) -> impl Fn(&ExtensionId) -> Result<agenturm_content::ResolvedSource, String> + '_ {
+    linux::resolver(config)
+}
+
+#[cfg(target_os = "linux")]
 pub(super) fn with_verified_prompt<T>(
     db: &Path,
     config: &Path,

@@ -19,6 +19,8 @@ import subprocess
 import tempfile
 import time
 
+from validate_rust_private_eval_details import TerminalCells
+
 parser=argparse.ArgumentParser(description=__doc__)
 parser.add_argument('--bin-dir',type=Path,required=True)
 args=parser.parse_args()
@@ -51,6 +53,67 @@ def drop(uid,gid=GID,groups=()):
         os.setgid(gid)
         os.setuid(uid)
     return prepare
+
+def cockpit_investigate(endpoint, home, binding, columns, lines):
+    body = 'Review the bounded broker fixture'
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack('HHHH', lines, columns, 0, 0))
+    original = termios.tcgetattr(slave)
+    env = {'HOME': str(home), 'PATH': '', 'TERM': 'xterm-256color'}
+    command = [APP, 'broker', 'cockpit', '--broker-config', endpoint]
+    child = subprocess.Popen(command, preexec_fn=drop(READER), env=env,
+                             stdin=slave, stdout=slave, stderr=slave)
+    screen = TerminalCells(columns, lines)
+
+    def until(*markers, absent=()):
+        deadline = time.monotonic() + 12
+        while time.monotonic() < deadline:
+            if select.select([master], [], [], .05)[0]:
+                screen.feed(os.read(master, 65536))
+            contents = screen.contents()
+            if all(marker in contents for marker in markers) and all(
+                marker not in contents for marker in absent
+            ):
+                return
+            assert child.poll() is None, (markers, contents)
+        raise AssertionError((markers, absent, screen.contents()))
+
+    revoke = None
+    try:
+        until('Agenturm', 'private-session', absent=(body,))
+        os.write(master, b'\x06')
+        until('Investigate retained history', 'Failures', 'harness.pi / private-session')
+        os.write(master, b's\r')
+        until('All authorized sources', 'Tool failed', 'end of scope', absent=(body, 'failed-fixture'))
+        os.write(master, b'\t')
+        until('Instruction', 'harness.pi / private-session')
+        os.write(master, b'bounded broker fixture\r')
+        until('Verified instruction match', 'Enter open source', '1 verified / 0 unavailable', absent=(body,))
+        os.write(master, b'\r')
+        until('Verified source evidence', body)
+        revoke = subprocess.Popen([APP, 'broker', 'grant', 'revoke', '--broker-config', endpoint,
+                                  '--binding', binding], preexec_fn=drop(ADMIN),
+                                 stdout=subprocess.PIPE, stderr=subprocess.PIPE)
+        time.sleep(.25)
+        assert revoke.poll() is None, 'revoke completed before cockpit redaction'
+        os.write(master, b'\x1b')
+        until('Investigate retained history', 'Verified instruction match', absent=(body,))
+        assert revoke.wait(timeout=10) == 0, revoke.stderr.read()
+        os.write(master, b'\r')
+        until('Current approved source evidence is unavailable', absent=(body,))
+        os.write(master, b'\x1b')
+        until('Agenturm', 'private-session', absent=(body, 'Investigate retained history'))
+        os.write(master, b'q')
+        assert child.wait(timeout=10) == 0
+        assert termios.tcgetattr(slave) == original
+        print(f'PASS broker Ctrl-F metadata, exact protected evidence, revoke, and back at {columns}×{lines}', flush=True)
+    finally:
+        for process in [child, revoke]:
+            if process is not None and process.poll() is None:
+                process.kill()
+                process.wait(timeout=5)
+        os.close(master)
+        os.close(slave)
 
 with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
     root=Path(tmp);root.chmod(0o755)
@@ -181,6 +244,9 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
         for uid in [COLLECTOR,ADMIN]:
             run(uid,*instruction,ok=False)
             run(uid,*prompt_source,ok=False)
+        for columns, lines in [(120,32),(60,18)]:
+            cockpit_investigate(endpoint, homes[READER], binding, columns, lines)
+            run(ADMIN,'grant','approve','--binding',binding)
         edit_binding=root/'edit-binding.json'
         edit_binding.write_text(run(COLLECTOR,'content','binding','--config',config,
                                     '--source-id','harness.codex','--kind','codex.edit_detail',broker=False).stdout)
@@ -201,6 +267,10 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
         failure,coverage=map(json.loads,run(READER,*failed_search).stdout.splitlines())
         assert failure['confirmed_failure'] and coverage['matched']==1,(failure,coverage)
         assert failure['recorded_invocation']==['pytest','failed-fixture']
+        failed_match_source=['investigate','source',failure['event_id'],
+                             '--reference',failure['source_reference']]
+        reopened=json.loads(run(READER,*failed_match_source).stdout)
+        assert reopened['confirmed_failure'] and reopened['evidence']=={'recorded_invocation':['pytest','failed-fixture']}
         confirmed=json.loads(run(READER,*failed_source).stdout)
         assert confirmed['confirmed_failure'] and confirmed['evidence']=={'recorded_invocation':['pytest','failed-fixture']}
         for uid in [COLLECTOR,ADMIN]:run(uid,*failed_source,ok=False)
@@ -221,6 +291,9 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
         run(READER,*command_source,ok=False)
         run(READER,*solo_source,ok=False)
         run(READER,*failed_source,ok=False)
+        run(ADMIN,'grant','approve','--binding',command_binding)
+        run(READER,*failed_match_source,ok=False)
+        run(ADMIN,'grant','revoke','--binding',command_binding)
         draft=json.loads(run(READER,'task','draft','--source-id','harness.pi','--session-id','private-session','--turn-id','prompt-1','--event-id',prompt['event_id'],'--revision',prompt['revision']).stdout)
         assert draft['excerpt']=='Review the bounded broker fixture'
         draft['continuation']='Verify the next bounded step'

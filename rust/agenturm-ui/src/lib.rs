@@ -23,6 +23,9 @@ pub use workbench::evaluation::{
     EvaluationDetailEntry, EvaluationPage, EvaluationRead, EvaluationRow, EvaluationView,
     TraceEvaluationEntry,
 };
+pub use workbench::investigation::{
+    InvestigationKind, InvestigationMatch, InvestigationPage, InvestigationRead,
+};
 
 pub use workbench::{
     HandoffEntry, OperationDetailEntry, OperationDetailKind, PromptDelivery, PromptEntry,
@@ -342,6 +345,7 @@ pub struct HistoryPage {
 }
 
 struct PageView {
+    snapshot_id: ReadSnapshot,
     ui: UiModel,
     turns: Vec<RecordedTurn>,
     turn_picker: Option<ListState>,
@@ -386,6 +390,7 @@ impl PageView {
             Vec::new()
         };
         let evaluation_traces = workbench::evaluation::trace_entries(&page.snapshot);
+        let snapshot_id = page.snapshot.history_snapshot_id;
         let mut ui = UiModel::from_snapshot(page.snapshot);
         ui.evidence = page.evidence_tables;
         if let Some(selected) = selected {
@@ -394,6 +399,7 @@ impl PageView {
         ui.in_turn = in_turn;
         ui.turn_available = !in_turn && !page.turns.is_empty();
         Self {
+            snapshot_id,
             ui,
             turns: page.turns,
             turn_picker: None,
