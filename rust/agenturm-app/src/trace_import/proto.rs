@@ -2,14 +2,14 @@
 //! are skipped without decoding names, events, links, or arbitrary attributes.
 
 use super::{
-    Attribute, AttributeValue, MAX_EXPORT_SPANS, OtlpSpan, PAYLOAD_INPUT, PAYLOAD_OUTPUT, Status,
-    TURN_KEY, Timestamp, WORKER_KEY,
+    Attribute, AttributeValue, MAX_EXPORT_SPANS, OPERATION_KEY, OtlpSpan, PAYLOAD_INPUT,
+    PAYLOAD_OUTPUT, Status, TURN_KEY, Timestamp, WORKER_KEY,
 };
 use std::fmt::Write as _;
 
 const MALFORMED: &str = "invalid OTLP protobuf trace export";
 
-enum Field<'a> {
+pub(crate) enum Field<'a> {
     Varint(u64),
     Fixed64(u64),
     Bytes(&'a [u8]),
@@ -22,7 +22,7 @@ fn split<'a>(input: &mut &'a [u8], size: usize) -> Result<&'a [u8], &'static str
     Ok(head)
 }
 
-fn varint(input: &mut &[u8]) -> Result<u64, &'static str> {
+pub(crate) fn varint(input: &mut &[u8]) -> Result<u64, &'static str> {
     let mut value = 0;
     for shift in (0..=63).step_by(7) {
         let byte = split(input, 1)?[0];
@@ -37,7 +37,9 @@ fn varint(input: &mut &[u8]) -> Result<u64, &'static str> {
     Err(MALFORMED)
 }
 
-fn fields<'a>(mut input: &'a [u8]) -> impl Iterator<Item = Result<(u64, Field<'a>), &'static str>> {
+pub(crate) fn fields<'a>(
+    mut input: &'a [u8],
+) -> impl Iterator<Item = Result<(u64, Field<'a>), &'static str>> {
     std::iter::from_fn(move || {
         if input.is_empty() {
             return None;
@@ -159,6 +161,7 @@ fn decode_attribute(input: &[u8]) -> Result<Option<Attribute>, &'static str> {
                 | "agenturm.source.id"
                 | TURN_KEY
                 | WORKER_KEY
+                | OPERATION_KEY
                 | PAYLOAD_INPUT
                 | PAYLOAD_OUTPUT
         )
@@ -265,6 +268,9 @@ mod tests {
         span.push(8 << 3 | 1);
         span.extend(20_u64.to_le_bytes());
         span.extend(attribute("session.id", &message(1, b"usage-session")));
+        span.extend(attribute("agenturm.source.id", &message(1, b"harness.codex")));
+        span.extend(attribute(TURN_KEY, &message(1, b"native-turn")));
+        span.extend(attribute(OPERATION_KEY, &message(1, b"native-mcp-call")));
         span.extend(attribute("llm.token_count.prompt", &[3 << 3, 0]));
         span.extend(attribute(
             "gen_ai.usage.cache_read.input_tokens",
@@ -282,6 +288,13 @@ mod tests {
         assert_eq!(rows.len(), 2);
         assert_eq!(unscoped, 0);
         assert!(payloads.is_empty());
+        assert_eq!(rows[0].identity, rows[1].identity);
+        assert!(rows[0].identity.operation_id.is_none());
+        assert!(rows.iter().any(|row| matches!(
+            &row.kind,
+            agenturm_kernel::ObservationKind::TraceSpan(span)
+                if span.target_operation_id.as_deref() == Some("native-mcp-call")
+        )));
         let usage = rows
             .iter()
             .find_map(|row| match &row.kind {

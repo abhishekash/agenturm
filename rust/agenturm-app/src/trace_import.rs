@@ -1,7 +1,7 @@
 //! Explicit, bounded import of structural OTLP trace evidence.
 
 pub(super) mod cost;
-mod proto;
+pub(crate) mod proto;
 pub(super) mod token_usage;
 
 use agenturm_kernel::{
@@ -25,6 +25,7 @@ pub(super) const MAX_EXPORT_SPANS: usize = agenturm_store::MAX_OTLP_BATCH_SPANS;
 const CURSOR_PREFIX: &str = "otlp-json/1:";
 const TURN_KEY: &str = "agenturm.turn.id";
 const WORKER_KEY: &str = "agenturm.worker.id";
+pub(super) const OPERATION_KEY: &str = "agenturm.operation.id";
 pub(super) const PAYLOAD_INPUT: &str = "agenturm.payload.input";
 pub(super) const PAYLOAD_OUTPUT: &str = "agenturm.payload.output";
 
@@ -387,6 +388,9 @@ pub(super) fn project_payloads(
         if scope.worker_id.is_some() && scope.turn_id.is_none() {
             return Err("An OTLP span worker requires an explicit turn".into());
         }
+        if scope.operation_id.is_some() && scope.turn_id.is_none() {
+            return Err("An OTLP span operation requires an explicit turn".into());
+        }
         let Some(session_id) = scope
             .session_id
             .or_else(|| launch_session.map(str::to_owned))
@@ -406,6 +410,7 @@ pub(super) fn project_payloads(
                 .filter(|id| !id.is_empty())
                 .map(|id| id.to_ascii_lowercase()),
             target_source_id: scope.target_source_id,
+            target_operation_id: scope.operation_id,
             started_at_unix_ns: span
                 .start_time_unix_nano
                 .value()
@@ -515,6 +520,7 @@ struct TraceScope {
     target_source_id: Option<String>,
     turn_id: Option<String>,
     worker_id: Option<String>,
+    operation_id: Option<String>,
     input: Option<String>,
     output: Option<String>,
 }
@@ -542,6 +548,11 @@ fn trace_scope(attributes: &[Attribute]) -> Result<TraceScope, String> {
                 &mut scope.worker_id,
                 valid_execution_id,
                 "invalid or conflicting OTLP span worker identity",
+            ),
+            OPERATION_KEY => (
+                &mut scope.operation_id,
+                valid_execution_id,
+                "invalid or conflicting OTLP span operation identity",
             ),
             PAYLOAD_INPUT => (
                 &mut scope.input,
@@ -739,6 +750,7 @@ mod tests {
                 span_id: "83d69f6fc3261111".into(),
                 parent_span_id: Some("83d69f6fc3261212".into()),
                 target_source_id: None,
+                target_operation_id: None,
                 started_at_unix_ns: 1_795_300_000_000_000_000,
                 status: TraceStatus::Error,
             })
@@ -924,26 +936,35 @@ mod tests {
         let session = attribute("session.id", "turn-session");
         let turn = attribute(TURN_KEY, "turn/1");
         let worker = attribute(WORKER_KEY, "worker/1");
+        let operation = attribute(OPERATION_KEY, "mcp-call/1");
         let valid = vec![
             source.clone(),
             session.clone(),
             turn.clone(),
             worker.clone(),
+            operation.clone(),
         ];
         let observation = decode_attributes(json!(valid), None).unwrap();
         assert_eq!(observation.identity.turn_id.as_deref(), Some("turn/1"));
         assert_eq!(observation.identity.worker_id.as_deref(), Some("worker/1"));
+        assert!(observation.identity.operation_id.is_none());
+        assert!(matches!(
+            &observation.kind,
+            ObservationKind::TraceSpan(span) if span.target_operation_id.as_deref() == Some("mcp-call/1")
+        ));
 
         for invalid in [
             vec![source.clone(), turn.clone()],
             vec![session.clone(), turn],
             vec![source.clone(), session.clone(), worker],
+            vec![source.clone(), session.clone(), operation],
             vec![
                 source.clone(),
                 session.clone(),
                 attribute(TURN_KEY, "contains space"),
             ],
             [&valid[..], &[attribute(WORKER_KEY, "another-worker")]].concat(),
+            [&valid[..], &[attribute(OPERATION_KEY, "another-call")]].concat(),
             [
                 &valid[..],
                 &[json!({"key": TURN_KEY,"value":{"intValue":"1"}})],

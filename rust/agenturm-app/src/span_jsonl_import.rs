@@ -444,7 +444,10 @@ fn jsonl_identity_key(key: &str) -> Option<&str> {
         | "langgraph.thread_id"
         | "langchain.session_id"
         | "cursor.conversation.id" => Some("session.id"),
-        "agenturm.source.id" | "agenturm.turn.id" | "agenturm.worker.id" => Some(key),
+        "agenturm.source.id"
+        | "agenturm.turn.id"
+        | "agenturm.worker.id"
+        | trace_import::OPERATION_KEY => Some(key),
         _ => None,
     }
 }
