@@ -1,0 +1,451 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>UI-03 lane notes · command center and session inspector</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --bg: #f7f6f4;
+    --surface: #ffffff;
+    --panel: #eeece8;
+    --text: #1f2328;
+    --muted: #5b6573;
+    --border: #d7d3cd;
+    --accent: #245a8a;
+    --accent-soft: #dce9f5;
+    --ok: #1f6b45;
+    --warn: #8a5a12;
+    --code-bg: #efede9;
+    --shadow: 0 1px 2px rgb(0 0 0 / 8%);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --bg: #16181c;
+      --surface: #1e2126;
+      --panel: #262a31;
+      --text: #e6e4e0;
+      --muted: #a5adba;
+      --border: #3a4048;
+      --accent: #8fc2ee;
+      --accent-soft: #203345;
+      --ok: #7fd2a4;
+      --warn: #e9bd72;
+      --code-bg: #22262c;
+      --shadow: 0 1px 2px rgb(0 0 0 / 45%);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--bg);
+    color: var(--text);
+    font: 16px/1.55 system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
+  }
+  .wrap { max-width: 1040px; margin: 0 auto; padding: 2rem 1.25rem 4rem; }
+  header.hero {
+    border-bottom: 1px solid var(--border);
+    padding-bottom: 1.25rem;
+    margin-bottom: 1.75rem;
+  }
+  .eyebrow {
+    color: var(--muted);
+    font-size: .78rem;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+    margin: 0 0 .5rem;
+  }
+  h1 { font-size: clamp(1.55rem, 3.4vw, 2.3rem); line-height: 1.2; margin: 0 0 .6rem; }
+  h2 { font-size: 1.3rem; margin: 2.2rem 0 .7rem; padding-bottom: .3rem; border-bottom: 1px solid var(--border); }
+  h3 { font-size: 1.05rem; margin: 1.5rem 0 .45rem; }
+  p { margin: .55rem 0 .85rem; }
+  a { color: var(--accent); text-underline-offset: 2px; }
+  a:hover { text-decoration-thickness: 2px; }
+  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
+  code { background: var(--code-bg); border-radius: 4px; padding: .08em .35em; font-size: .9em; }
+  pre {
+    background: var(--code-bg);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    padding: .85rem 1rem;
+    overflow-x: auto;
+    font-size: .86rem;
+    line-height: 1.45;
+  }
+  pre code { background: none; padding: 0; }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 8px;
+    overflow: hidden;
+    margin: .8rem 0 1.3rem;
+    font-size: .93rem;
+    box-shadow: var(--shadow);
+    display: block;
+    overflow-x: auto;
+  }
+  thead th {
+    text-align: left;
+    background: var(--panel);
+    font-size: .8rem;
+    letter-spacing: .04em;
+    text-transform: uppercase;
+    color: var(--muted);
+  }
+  th, td { padding: .65rem .8rem; border-bottom: 1px solid var(--border); vertical-align: top; }
+  tbody tr:last-child td { border-bottom: none; }
+  tbody tr:hover { background: var(--accent-soft); }
+  .grid { display: grid; gap: .9rem; grid-template-columns: repeat(auto-fit, minmax(240px, 1fr)); }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: .95rem 1.05rem;
+    box-shadow: var(--shadow);
+  }
+  .card h3 { margin-top: 0; }
+  .tag {
+    display: inline-block;
+    border: 1px solid var(--border);
+    border-radius: 999px;
+    padding: .1rem .55rem;
+    font-size: .75rem;
+    color: var(--muted);
+    margin-right: .3rem;
+    white-space: nowrap;
+  }
+  .ok { color: var(--ok); font-weight: 600; }
+  .warn { color: var(--warn); font-weight: 600; }
+  nav.toc {
+    background: var(--surface);
+    border: 1px solid var(--border);
+    border-radius: 10px;
+    padding: .8rem 1rem;
+    margin-bottom: 1.8rem;
+    box-shadow: var(--shadow);
+  }
+  nav.toc ul { columns: 2 220px; margin: .3rem 0 0; padding-left: 1.1rem; }
+  nav.toc li { margin: .18rem 0; }
+  .note {
+    border-left: 3px solid var(--accent);
+    background: var(--accent-soft);
+    padding: .7rem .9rem;
+    border-radius: 0 8px 8px 0;
+    margin: 1rem 0;
+  }
+  .muted { color: var(--muted); }
+  footer { margin-top: 3rem; padding-top: 1rem; border-top: 1px solid var(--border); color: var(--muted); font-size: .85rem; }
+  @media (max-width: 620px) {
+    .wrap { padding: 1.25rem .85rem 3rem; }
+    th, td { padding: .5rem .6rem; }
+    nav.toc ul { columns: 1; }
+  }
+  @media print {
+    body { background: #fff; color: #000; }
+    nav.toc { display: none; }
+    .card, table { box-shadow: none; }
+    a { color: inherit; text-decoration: none; }
+  }
+</style>
+</head>
+<body>
+<div class="wrap">
+
+<header class="hero">
+  <p class="eyebrow">Agenturm Rust cockpit · UI-03 lane notes</p>
+  <h1>Command center and the session inspector</h1>
+  <p class="muted">24 November 2026 · branch <code>work/ui03-command-center</code> · Python reference <strong>v0.2.8</strong> at <code>2802d79</code> · integrated parity baseline <code>546ea48</code></p>
+  <p>
+    <span class="tag">Today / History time scopes</span>
+    <span class="tag">searchable session chooser</span>
+    <span class="tag">exact agent + delegated subtree</span>
+    <span class="tag">Overview / Prompts / Details</span>
+    <span class="tag">one action inventory</span>
+  </p>
+</header>
+
+<nav class="toc" aria-label="Contents">
+  <strong>Contents</strong>
+  <ul>
+    <li><a href="#changed">What changed</a></li>
+    <li><a href="#time">Time scope, errors and search</a></li>
+    <li><a href="#chooser">Session chooser</a></li>
+    <li><a href="#scope">Agent scope and relationships</a></li>
+    <li><a href="#inspector">Inspector</a></li>
+    <li><a href="#projection">App projection</a></li>
+    <li><a href="#dispatch">Shared dispatch added</a></li>
+    <li><a href="#tests">Tests run</a></li>
+    <li><a href="#remains">What remains</a></li>
+    <li><a href="#hooks">Integration hooks</a></li>
+    <li><a href="#seams">Pluggable seams</a></li>
+    <li><a href="#differences">Intentional differences</a></li>
+  </ul>
+</nav>
+
+<section id="changed">
+  <h2>What changed</h2>
+  <p>
+    This lane completes the command-center time scopes, the searchable session
+    chooser, the exact-agent/subtree scope and the three-section session
+    inspector. It follows the published <a href="../rfcs/rust-ui-parity-shared-contracts.md">shared shell contracts</a>
+    and keeps the shell generic over model data: no provider switch, no captured-text
+    read and no second key or help table were added.
+  </p>
+
+  <h3>Command center</h3>
+  <table>
+    <thead><tr><th>Area</th><th>Behavior</th></tr></thead>
+    <tbody>
+      <tr><td>Names</td><td>Task title, then native nickname, then <code>Codex session · payments-api</code>, <code>Claude Code worker · agenturm</code> or <code>Codex worker w-1 · project</code>. A literal <code>Name unavailable</code> is never rendered. Unknown metadata stays explicit in Details and the inspector.</td></tr>
+      <tr><td>Project headings</td><td>Rows without a project heading read <code>No recorded project</code>; the heading is a coverage label, not a name.</td></tr>
+      <tr><td>Order</td><td>Unchanged approved order: project group by newest row, then row recency, then depth and exact source/session for deterministic ties. <code>Updated ↓</code> remains fixed.</td></tr>
+      <tr><td>Coverage</td><td>The footer says <code>page counts · newest retained page</code> or <code>page counts · older sessions not loaded</code>. A loaded page is never presented as complete history.</td></tr>
+      <tr><td>Liveness</td><td>Footer and help state <code>recorded lifecycle, not live process state</code>. <code>Working</code> is a recorded state, not a claim that a process is alive.</td></tr>
+      <tr><td>Selection</td><td>Exact <code>(harness_id, session_id)</code> survives refresh, paging, Time scope, Errors, status filters, subtree scope and rename. A vanished identity selects the nearest deterministic row and reports it.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="time">
+  <h2>Time scope, Errors and search</h2>
+  <div class="grid">
+    <div class="card">
+      <h3>Today</h3>
+      <p>Current work of any age, pending input of any age, and only today's non-acknowledged outcomes. A reviewed outcome or acknowledged pending request drops out. Verified with a fixed clock and fixed UTC offsets.</p>
+    </div>
+    <div class="card">
+      <h3>History</h3>
+      <p>Everything retained, including earlier unreviewed completions and failures. History is the approved landing scope.</p>
+    </div>
+    <div class="card">
+      <h3>Independent facets</h3>
+      <p>Time scope, status filter, errors-only, search and exact session scope are separate fields. Counts describe the loaded page and say which facets they ignore.</p>
+    </div>
+  </div>
+  <p>
+    <strong>Keys:</strong> <code>T</code> Today, <code>O</code> History, <code>E</code> Errors only,
+    <code>S</code> subtree scope. Each is an inventory row and a palette row. The chip strip also shows
+    <code>Today N</code>, <code>History N</code>, the status filters, <code>Errors N</code> and <code>Unknown N</code>.
+  </p>
+  <p>
+    <strong>Search</strong> covers task title, project path, provider label, exact source,
+    exact session, worker identity, native name/role/path/model provider, state and reason.
+    Empty states distinguish no catalog page, empty collection, an active search with no
+    match, errors-only empty, Today empty and a status-filter miss.
+  </p>
+  <div class="note">
+    The kernel owns the boundary: <code>agenturm_kernel::session_scope</code> is data-only and
+    provider-free. The host resolves the local calendar day for the read instant (including the
+    offset at local midnight) and sends it as <code>SessionCatalog::day_start_unix_ns</code>.
+  </div>
+</section>
+
+<section id="chooser">
+  <h2>Session chooser</h2>
+  <p>
+    <code>Ctrl+P → Choose agent session</code> opens <code>palette::Kind::Sessions</code>. Entries
+    are frozen at open in roster order.
+  </p>
+  <table>
+    <thead><tr><th>Requirement</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td>Search</td><td>Title, project, provider, session and worker text.</td></tr>
+      <tr><td>Identity</td><td>Stable key <code>session|&lt;harness&gt;|&lt;session&gt;</code>; duplicate titles and equal session IDs across sources stay distinct.</td></tr>
+      <tr><td>Compact</td><td>Empty results stay open; <code>Ctrl+A</code> clears; <code>Enter</code> confirms; <code>Esc</code> cancels. Covered at 60×18.</td></tr>
+      <tr><td>Vanished</td><td><code>That session is no longer available. Choose another session.</code> Changes nothing.</td></tr>
+      <tr><td>Rows</td><td>Human name plus provider, project, native context, worker identity, exact source and session.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="scope">
+  <h2>Agent scope and relationships</h2>
+  <ul>
+    <li>Exact-agent scope selects one recorded <code>(source, session)</code>.</li>
+    <li><code>S</code> adds only confirmed <code>delegated</code> descendants whose parent is retained on the page and in the same source family.</li>
+    <li><code>forked</code>, cross-source and chain-incomplete relationships are counted and reported in the footer, never guessed into the subtree.</li>
+    <li>Alt+↑/↓/→ parent/child/attention paths and tree/flat/expand/collapse are unchanged. A cycle stays a separate row with no invented root.</li>
+  </ul>
+</section>
+
+<section id="inspector">
+  <h2>Inspector</h2>
+  <p><code>Enter</code> or <code>e</code> opens the exact selected session with three discoverable sections.</p>
+  <table>
+    <thead><tr><th>Section</th><th>Content</th></tr></thead>
+    <tbody>
+      <tr>
+        <td><strong>Overview</strong></td>
+        <td>Human name, provider, project, recorded state/reason, last recorded update; recorded turns; latest attributable progress; checks with pass/fail counts; edit counts; recorded failure count; usage summary with coverage; latest turn end; page/partial coverage; and links <code>s Activity · Ctrl+R Review · t Traces · u Usage · P Prompts</code>.</td>
+      </tr>
+      <tr>
+        <td><strong>Prompts</strong></td>
+        <td>An entry point, not a second reader. <code>Enter</code>/<code>Down</code> on the tab, or <code>P</code>, sends <code>WorkCommand::Prompts(WorkAnchor)</code> for the exact session. UI-04 owns the navigator and reader.</td>
+      </tr>
+      <tr>
+        <td><strong>Details</strong></td>
+        <td>Exact source, session and worker; task title; display name; provider; project and provenance; native name/role/path/model; parent and relationship kind; recorded state and reason; last update and latest observation; review sequence/state; snapshot and history identity; pending-request count; collection coverage; capture-policy limit; usage coverage; diagnostic count.</td>
+      </tr>
+    </tbody>
+  </table>
+
+  <h3>Navigation</h3>
+  <ul>
+    <li>The tab strip is one focus stop; the active tab is always visible and the focused strip shows <code>›</code> plus <code>READ: Enter</code>.</li>
+    <li><code>←</code>/<code>→</code> choose on the tab strip. <code>Enter</code>/<code>Down</code> enter content; on Prompts they open UI-04’s navigator. <code>↑</code> on Prompts also opens it.</li>
+    <li>From content, <code>Ctrl+←</code>/<code>Ctrl+→</code> and <code>m</code> switch sections. Plain <code>←</code>/<code>→</code> stay with content.</li>
+    <li><code>Esc</code> returns one layer: prompt overlay → inspector → roster. The roster keeps filter, grouping, selection and display offset. Footer hints come from <code>keymap::hint</code>; only the read-state cue and page coverage are inspector-local.</li>
+    <li>Section changes reload in place with <code>Change::SessionMode</code>; a pushed Activity/Review/Traces/Usage page returns to the same section.</li>
+  </ul>
+  <pre><code>Agenturm · Implement payments retry     Codex · payments-api · recorded failed · 2m ago
+  ›Overview    Prompts ▸request nav    Details    READ: Enter
+┌Session overview─────────────────────────────────────────────┐
+│Recorded state   failed · tool_error                          │
+│Checks           2 checks · 1 failed · latest cargo clippy... │
+│Usage            3 token records · total 30                  │
+└─────────────────────────────────────────────────────────────┘
+←/→ Choose section · Enter/Down enter · Esc back · F1 help</code></pre>
+</section>
+
+<section id="projection">
+  <h2>App projection</h2>
+  <p>
+    <code>session_evidence::add_session_panes(snapshot, &amp;RecordedSession)</code> now emits
+    <code>app.session-overview</code>, <code>app.session-details</code>, activity, review, usage, and the
+    MCP/operation/trace panes. <code>session_display::add_context</code> prepends the human name,
+    provider, native context, project provenance and recorded state/reason to Overview.
+    Exact identity stays in Details.
+  </p>
+  <p>
+    Overview and Details are generic <code>PaneModel</code> rows produced from typed observations and
+    the session record. A new adapter contributes observations; it never edits the inspector.
+  </p>
+</section>
+
+<section id="dispatch">
+  <h2>Shared dispatch added</h2>
+  <p>One <code>keymap::ACTIONS</code> row, one dispatch arm and one palette entry per action.</p>
+  <table>
+    <thead><tr><th>Action id</th><th>Keys</th><th>Context</th></tr></thead>
+    <tbody>
+      <tr><td><code>session.today</code></td><td><code>T</code></td><td>Command center</td></tr>
+      <tr><td><code>session.history</code></td><td><code>O</code></td><td>Command center</td></tr>
+      <tr><td><code>session.errors</code></td><td><code>E</code></td><td>Command center</td></tr>
+      <tr><td><code>evidence.scope.subtree</code></td><td><code>S</code></td><td>Command center</td></tr>
+      <tr><td><code>session.sections</code></td><td><code>← / →</code></td><td>History</td></tr>
+    </tbody>
+  </table>
+  <p>
+    <code>session.inspector-mode</code> (<code>m</code>) keeps its id; its behavior is now the section cycle,
+    documented in help. The legacy command-center help body was replaced with a pointer to the shared
+    scrollable reference, so there is one help source.
+  </p>
+  <div class="note">
+    <strong>Deliberate narrowing.</strong> <code>session.today</code>/<code>session.history</code> are
+    inventory rows in the CommandCenter context only. <code>T</code> already means “choose recorded turn”
+    in History; a second meaning would violate one-key-one-owner.
+  </div>
+</section>
+
+<section id="tests">
+  <h2>Tests run</h2>
+  <pre><code>cargo build --offline
+cargo test --offline -p agenturm-ui -p agenturm-app</code></pre>
+  <table>
+    <thead><tr><th>Check</th><th>Result</th></tr></thead>
+    <tbody>
+      <tr><td><code>cargo build --offline</code></td><td class="ok">success</td></tr>
+      <tr><td><code>agenturm-kernel</code> session-scope tests</td><td class="ok">3 passed</td></tr>
+      <tr><td><code>agenturm-ui</code> lib</td><td class="ok">106 passed</td></tr>
+      <tr><td><code>agenturm-app</code> lib</td><td class="ok">178 passed</td></tr>
+      <tr><td>App integration binaries</td><td class="ok">all passed</td></tr>
+      <tr><td><code>cargo fmt --check</code> (UI, app, kernel)</td><td class="ok">clean</td></tr>
+    </tbody>
+  </table>
+  <p>Focused cases added in this lane:</p>
+  <ul>
+    <li><code>session_scope::tests::*</code> — fixed UTC/+01:00/−05:00 boundary matrix.</li>
+    <li><code>today_scope_uses_the_host_local_boundary_and_keeps_active_work_of_any_age</code></li>
+    <li><code>errors_and_subtree_scopes_publish_unsupported_relationships_and_keep_identity</code></li>
+    <li><code>session_chooser_searches_worker_identity_and_stays_usable_at_the_floor</code></li>
+    <li><code>inspector_sections_navigate_enter_and_return_with_the_same_roster_state</code></li>
+    <li><code>unnamed_sessions_render_human_context_never_a_name_unavailable_label</code></li>
+    <li><code>session_overview_and_details_keep_human_context_and_exact_identity_apart</code></li>
+  </ul>
+</section>
+
+<section id="remains">
+  <h2>What remains</h2>
+  <ol>
+    <li><strong>Evidence primary-event pinning.</strong> Overview links open exact session Activity, but do not yet pin a failed call, request or interruption.</li>
+    <li><strong>Locate and acknowledgement from the inspector.</strong> <code>X</code>/<code>Y</code> remain roster actions. Dismissed failures are not a separate retention state, so Errors is a recorded <code>failed</code>/<code>interrupted</code> filter, not Python’s two-conversation unseen-error reminder.</li>
+    <li><strong>Evidence subtree membership.</strong> Roster and chooser honour exact agent + delegated subtree. Activity/MCP/Traces/Findings remain exact-session/turn; subtree evidence needs a kernel/query capability.</li>
+    <li><strong>AI summary.</strong> Not implemented; it requires an optional extension capability with explicit egress policy.</li>
+    <li><strong>Capture policy in Details.</strong> The roster projection has no capture-policy field, so Details says it is not reported here rather than inferring it.</li>
+    <li><strong>Mouse.</strong> Still keyboard-first; any mouse route must call the same action id.</li>
+    <li><strong>Provider payload/detail.</strong> Unchanged and owned by UI-05/FD2.</li>
+    <li><strong>Installed paired boundary run.</strong> A fixed-zone PTY run against the installed candidate remains UI-Q work.</li>
+  </ol>
+</section>
+
+<section id="hooks">
+  <h2>Exact hooks for the integration pass</h2>
+  <h3>UI-02 · shared shell</h3>
+  <ul>
+    <li>Keep the five new inventory ids and contexts. <code>keymap::hint</code> is unchanged. <code>Focus</code> gained no variant: inspector tab focus lives in <code>Workspace::inspector</code>, because it is screen-local navigation, not a modal owner.</li>
+    <li><code>ui::render_selected_pane</code> is <code>pub(crate)</code> and tolerates an empty pane list. The inspector reuses it; no shell layout was duplicated.</li>
+    <li>The command center no longer renders <code>agents.help</code>; <code>F1</code> routes to the shared <code>help::Help</code>. The field remains only for direct-render compatibility.</li>
+    <li>Palette: <code>session.sections</code> focuses the tab strip; the other four run their documented dispatch.</li>
+  </ul>
+  <h3>UI-04 · Prompts</h3>
+  <ul>
+    <li>Entry hook: <code>WorkCommand::Prompts(WorkAnchor { source, session, worker: None, turn: None })</code> for the exact inspector session, also reachable with <code>P</code>.</li>
+    <li>The shell sets <code>inspector.tab = Prompts</code> before the request. When the navigator closes, the tab strip remains focused on Prompts; <code>Esc</code> then returns to the inspector section, then the roster.</li>
+    <li>Do not render a second section reader: replace or overlay the inspector body inside the existing <code>Workbench</code> flow, keeping the same anchor semantics for worker/turn scope.</li>
+  </ul>
+  <h3>UI-05 / UI-06</h3>
+  <ul>
+    <li>Use <code>RecordedSession::provider_label()</code> and <code>display_name()</code> for human labels; do not add <code>Name unavailable</code>.</li>
+    <li><code>SessionCatalog::day_start_unix_ns</code> is the resolved local boundary; reuse it rather than recomputing UTC midnight.</li>
+    <li><code>RecordedSession::worker_id</code> is the exact recorded lifecycle worker; it does not establish live process ownership.</li>
+    <li><code>session_scope::in_session_time_scope</code> is the neutral policy for saved-task run lists and workflow incidents.</li>
+  </ul>
+</section>
+
+<section id="seams">
+  <h2>Pluggable-seam implications</h2>
+  <table>
+    <thead><tr><th>Seam</th><th>Implication</th></tr></thead>
+    <tbody>
+      <tr><td>Kernel time policy</td><td><code>agenturm-kernel::session_scope</code> is data-only, provider-free and testable with a fixed day start. The host resolves timezone; the UI never assumes UTC.</td></tr>
+      <tr><td>Session catalog</td><td><code>day_start_unix_ns</code>, <code>worker_id</code> and the provider/native labels derive from recorded data; the shell names no adapter.</td></tr>
+      <tr><td>Inspector sections</td><td>Overview and Details are generic <code>PaneModel</code> rows from typed observations and the session record. A new adapter contributes observations; it never edits the inspector.</td></tr>
+      <tr><td>Prompts</td><td>The inspector only requests an exact <code>WorkAnchor</code>; UI-04’s adapter-backed prompt capability owns paging, grants and presentation.</td></tr>
+      <tr><td>Scope honesty</td><td>Subtree membership uses only reported relationships. A missing capability reports an unsupported relationship instead of falling back to a provider-specific hierarchy.</td></tr>
+      <tr><td>Display labels</td><td><code>provider_label()</code> keeps the existing source-family mapping as presentation only; it never routes or selects evidence. A harness display-name capability would remove the last label mapping from the UI.</td></tr>
+    </tbody>
+  </table>
+</section>
+
+<section id="differences">
+  <h2>Intentional differences to accept</h2>
+  <ol>
+    <li>The approved landing order remains project-grouped, newest-first with fixed <code>Updated ↓</code>; Python offers status-first and selectable direction.</li>
+    <li>Today/History are independent time-scope chips with <code>T</code>/<code>O</code>, not members of Python’s single filter select. Status filters stay independent.</li>
+    <li>The inspector’s Prompts section opens the shared UI-04 navigator overlay instead of embedding the reader in the tab body in this change.</li>
+    <li><code>session.today</code>/<code>session.history</code> stay command-center scoped to avoid overloading History’s <code>T</code> turn picker.</li>
+    <li>Recorded lifecycle wording never implies live process health; the inspector labels every state as recorded.</li>
+  </ol>
+</section>
+
+<footer>
+  <p>UI-03 lane deliverable · source worktree <code>/tmp/agenturm-ui03-command-center</code> · no external assets · this file is self-contained and responds to the operating-system light or dark preference.</p>
+</footer>
+
+</div>
+</body>
+</html>

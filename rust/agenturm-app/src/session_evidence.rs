@@ -1,14 +1,16 @@
 use agenturm_kernel::{
-    ExtensionId, MetricRow, Observation, ObservationKind, ObservationScope, PaneModel, Snapshot,
-    SpanTokenUsage, TraceProgress, TraceSpan, format_credits, format_reported_cost,
+    ExtensionId, MetricRow, Observation, ObservationKind, ObservationScope, PaneModel,
+    RelationshipKind, Snapshot, SpanTokenUsage, TraceProgress, TraceSpan, format_credits,
+    format_reported_cost,
 };
-use agenturm_ui::{EvidenceTable, EvidenceTables, OperationRow, OperationTables};
+use agenturm_ui::{EvidenceTable, EvidenceTables, OperationRow, OperationTables, RecordedSession};
 
 mod table;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) struct SessionPaneIds {
     pub(super) overview: ExtensionId,
+    pub(super) details: ExtensionId,
     pub(super) activity: ExtensionId,
     pub(super) tables: OperationTables,
     pub(super) evidence: EvidenceTables,
@@ -137,9 +139,10 @@ pub(super) fn add_workspace_panes(snapshot: &mut Snapshot) -> WorkspacePaneIds {
 
 pub(super) fn add_session_panes(
     snapshot: &mut Snapshot,
-    source_id: &str,
-    session_id: &str,
+    session: &RecordedSession,
 ) -> SessionPaneIds {
+    let source_id = session.harness_id.as_str();
+    let session_id = session.session_id.as_str();
     let mut evidence: Vec<_> = snapshot
         .observations
         .iter()
@@ -151,41 +154,8 @@ pub(super) fn add_session_panes(
         .collect();
     evidence.sort_unstable_by_key(|&row| observation_order(row));
 
-    let mut overview = vec![metric("Source", source_id), metric("Session", session_id)];
-    let turns = evidence
-        .iter()
-        .filter_map(|row| turn_identity(row))
-        .collect::<BTreeSet<_>>();
-    overview.push(metric("Recorded turns on page", turns.len().to_string()));
-    if let Some(latest) = evidence.last() {
-        overview.push(metric("Latest activity on page", timestamp(latest)));
-    }
-    let latest_lifecycle = evidence.iter().rev().find_map(|row| match &row.kind {
-        ObservationKind::SessionStarted => Some((row, "started", None)),
-        ObservationKind::SessionEnded => Some((row, "ended", None)),
-        ObservationKind::Lifecycle { state, reason_code } => {
-            Some((row, state.as_str(), reason_code.as_deref()))
-        }
-        _ => None,
-    });
-    if let Some((row, state, reason)) = latest_lifecycle {
-        overview.push(metric(
-            "Latest recorded state",
-            with_turn(row, lifecycle(state, reason)),
-        ));
-    }
-    let turn_endings = recorded_turn_endings(&evidence);
-    if let Some((row, state, reason)) = evidence.iter().rev().find_map(|row| turn_end(row)) {
-        overview.push(metric(
-            "Latest recorded turn end",
-            with_turn(row, lifecycle(state, reason)),
-        ));
-    } else {
-        overview.push(metric("Turn end", "No turn end recorded on this page"));
-    }
-    if snapshot.observations_truncated {
-        overview.push(metric("History", "Earlier observations are available"));
-    }
+    let details = session_details_rows(session, &evidence, snapshot.observations_truncated);
+    let mut overview = session_overview_rows(session, &evidence, snapshot.observations_truncated);
     overview.extend(declared_worker_rows(&evidence));
 
     let activity = rows_or_empty(
@@ -195,6 +165,7 @@ pub(super) fn add_session_panes(
             .collect(),
         "No observations for this session on this page",
     );
+    let turn_endings = recorded_turn_endings(&evidence);
     let review = review_rows(&evidence, &turn_endings);
     let (mcp, calls) = mcp_rows(&evidence, ViewScope::Session);
     let mut tables = OperationTables::new();
@@ -232,10 +203,386 @@ pub(super) fn add_session_panes(
             "Session overview",
             overview,
         ),
+        details: insert_pane(snapshot, "app.session-details", "Session details", details),
         activity,
         review: insert_pane(snapshot, "app.session-review", "Review", review),
         usage,
     }
+}
+
+/// Overview leads with recorded work and coverage. Exact identifiers belong to
+/// the Details section; a missing value is labelled as unknown, never invented.
+fn session_overview_rows(
+    session: &RecordedSession,
+    evidence: &[&Observation],
+    truncated: bool,
+) -> Vec<MetricRow> {
+    let mut rows = Vec::new();
+    rows.push(metric(
+        "Last recorded update",
+        timestamp_at(session.updated_at_unix_ns),
+    ));
+    let turns = evidence
+        .iter()
+        .filter_map(|row| turn_identity(row))
+        .collect::<BTreeSet<_>>();
+    rows.push(metric("Recorded turns on page", turns.len().to_string()));
+    if let Some(turn) = evidence
+        .iter()
+        .rev()
+        .find_map(|row| row.identity.turn_id.as_deref())
+    {
+        rows.push(metric("Latest recorded turn", turn));
+    }
+    if let Some((row, label, value)) = latest_progress(evidence) {
+        rows.push(metric(
+            "Latest attributable progress",
+            format!(
+                "{label} · {value} · {}{}",
+                timestamp(row),
+                row.identity
+                    .turn_id
+                    .as_deref()
+                    .map_or_else(String::new, |turn| format!(" · turn {turn}"))
+            ),
+        ));
+    } else {
+        rows.push(metric(
+            "Latest attributable progress",
+            "No work record on this page; missing evidence does not establish what the agent did",
+        ));
+    }
+    rows.push(metric("Checks", checks_summary(evidence)));
+    rows.push(metric("File edits", edits_summary(evidence)));
+    rows.push(metric("Failures", failures_summary(evidence)));
+    rows.push(metric("Usage", usage_summary(evidence)));
+    if let Some((row, state, reason)) = evidence.iter().rev().find_map(|row| turn_end(row)) {
+        rows.push(metric(
+            "Latest recorded turn end",
+            with_turn(row, lifecycle(state, reason)),
+        ));
+    } else {
+        rows.push(metric(
+            "Latest recorded turn end",
+            "No turn end recorded on this page",
+        ));
+    }
+    rows.push(metric(
+        "Evidence coverage",
+        if truncated {
+            "Loaded page · earlier observations are available"
+        } else {
+            "Latest loaded page · no earlier observations on this read"
+        },
+    ));
+    rows.push(metric(
+        "Open",
+        "s Activity · Ctrl+R Review · t Traces · u Usage · P Prompts",
+    ));
+    rows
+}
+
+fn latest_progress<'a>(
+    evidence: &[&'a Observation],
+) -> Option<(&'a Observation, &'static str, String)> {
+    evidence.iter().rev().find_map(|row| match &row.kind {
+        ObservationKind::Usage { .. }
+        | ObservationKind::CreditUsage { .. }
+        | ObservationKind::ReportedCost(_)
+        | ObservationKind::SpanTokenUsage(_)
+        | ObservationKind::MetricPoint(_)
+        | ObservationKind::MetricDescriptor(_)
+        | ObservationKind::HostSample(_)
+        | ObservationKind::InternalReview(_) => None,
+        kind => {
+            let (label, value) = describe_observation(kind);
+            Some((*row, label, value))
+        }
+    })
+}
+
+fn checks_summary(evidence: &[&Observation]) -> String {
+    let checks = evidence
+        .iter()
+        .filter_map(|row| match &row.kind {
+            ObservationKind::Check { category, result } => Some((row, category, result)),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if checks.is_empty() {
+        return "No checks on this page".into();
+    }
+    let failed = checks
+        .iter()
+        .filter(|(_, _, result)| *result == "failed")
+        .count();
+    let latest = checks
+        .iter()
+        .rev()
+        .take(2)
+        .map(|(row, category, result)| format!("{category} {result} ({})", timestamp(row)))
+        .collect::<Vec<_>>()
+        .join("; ");
+    format!(
+        "{} check{} · {failed} failed · latest {latest}",
+        checks.len(),
+        if checks.len() == 1 { "" } else { "s" }
+    )
+}
+
+fn edits_summary(evidence: &[&Observation]) -> String {
+    let edits = evidence
+        .iter()
+        .filter_map(|row| match &row.kind {
+            ObservationKind::FileEdit(edit) => Some(edit),
+            _ => None,
+        })
+        .collect::<Vec<_>>();
+    if edits.is_empty() {
+        return "No file edits on this page".into();
+    }
+    let added: u32 = edits.iter().map(|edit| u32::from(edit.added)).sum();
+    let updated: u32 = edits.iter().map(|edit| u32::from(edit.updated)).sum();
+    let deleted: u32 = edits.iter().map(|edit| u32::from(edit.deleted)).sum();
+    let moved: u32 = edits.iter().map(|edit| u32::from(edit.moved)).sum();
+    format!(
+        "{} edit record{} · +{added} ~{updated} -{deleted} moved {moved}",
+        edits.len(),
+        if edits.len() == 1 { "" } else { "s" }
+    )
+}
+
+fn failure_count(evidence: &[&Observation]) -> usize {
+    let mut failures = 0;
+    for row in evidence {
+        match &row.kind {
+            ObservationKind::Lifecycle { state, .. }
+                if matches!(state.as_str(), "failed" | "interrupted") =>
+            {
+                failures += 1
+            }
+            ObservationKind::Check { result, .. } if result == "failed" => failures += 1,
+            ObservationKind::Diagnostic { severity, .. } if severity == "error" => failures += 1,
+            _ => {}
+        }
+    }
+    failures
+}
+
+fn failures_summary(evidence: &[&Observation]) -> String {
+    let failures = failure_count(evidence);
+    if failures == 0 {
+        "No failures recorded on this page".into()
+    } else {
+        format!(
+            "{failures} recorded failure signal{} on this page · open Activity or Review for exact evidence",
+            if failures == 1 { "" } else { "s" }
+        )
+    }
+}
+
+fn usage_summary(evidence: &[&Observation]) -> String {
+    let mut input = 0u64;
+    let mut output = 0u64;
+    let mut cache_read = 0u64;
+    let mut cache_write = 0u64;
+    let mut total = 0u64;
+    let mut tokens = 0usize;
+    let mut credits = 0u64;
+    let mut costs = 0usize;
+    for row in evidence {
+        match &row.kind {
+            ObservationKind::Usage {
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                total_tokens,
+            } => {
+                tokens += 1;
+                input += input_tokens.unwrap_or(0);
+                output += output_tokens.unwrap_or(0);
+                cache_read += cache_read_tokens.unwrap_or(0);
+                cache_write += cache_write_tokens.unwrap_or(0);
+                total += total_tokens.unwrap_or(0);
+            }
+            ObservationKind::SpanTokenUsage(usage) => {
+                tokens += 1;
+                input += usage.input_tokens.unwrap_or(0);
+                output += usage.output_tokens.unwrap_or(0);
+                cache_read += usage.cache_read_input_tokens.unwrap_or(0);
+                cache_write += usage.cache_write_input_tokens.unwrap_or(0);
+                total += usage.total_tokens.unwrap_or(0);
+            }
+            ObservationKind::CreditUsage { nanocredits } => credits += nanocredits,
+            ObservationKind::ReportedCost(_) => costs += 1,
+            _ => {}
+        }
+    }
+    if tokens == 0 && costs == 0 && credits == 0 {
+        return "No usage recorded on this page".into();
+    }
+    let mut value = format!(
+        "{tokens} token record{} · in {input} · out {output} · cache read {cache_read} · write {cache_write} · total {total}",
+        if tokens == 1 { "" } else { "s" }
+    );
+    if credits > 0 {
+        value.push_str(&format!(" · {} credits", format_credits(credits)));
+    }
+    if costs > 0 {
+        value.push_str(&format!(
+            " · {costs} reported cost record{}",
+            if costs == 1 { "" } else { "s" }
+        ));
+    }
+    value.push_str(" · unreported fields stay unknown");
+    value
+}
+
+/// Details keeps exact identity, provenance, collection status and coverage
+/// separate from the Overview summary. Unknown values are named explicitly.
+fn session_details_rows(
+    session: &RecordedSession,
+    evidence: &[&Observation],
+    truncated: bool,
+) -> Vec<MetricRow> {
+    let mut rows = vec![
+        metric("Source", session.harness_id.as_str()),
+        metric("Session", session.session_id.as_str()),
+        metric(
+            "Worker",
+            session.worker_id.as_deref().unwrap_or("Unreported"),
+        ),
+        metric(
+            "Task title",
+            session.task_title.as_deref().unwrap_or("Unreported"),
+        ),
+        metric("Display name", session.display_name().into_owned()),
+        metric("Provider", session.provider_label()),
+        metric(
+            "Project",
+            session
+                .project_path
+                .as_deref()
+                .unwrap_or("No recorded project"),
+        ),
+        metric(
+            "Project source",
+            session.project_origin.map_or(
+                "No recorded project provenance",
+                |origin| match origin {
+                    agenturm_ui::ProjectOrigin::OperatorTaskWorkspace => "Operator task workspace",
+                    agenturm_ui::ProjectOrigin::NativeRecordedWorkspace => {
+                        "Native session workspace"
+                    }
+                },
+            ),
+        ),
+    ];
+    if let Some(context) = &session.native_context {
+        for (label, value) in [
+            ("Agent name", context.agent_name.as_deref()),
+            ("Agent role", context.agent_role.as_deref()),
+            ("Agent path", context.agent_path.as_deref()),
+            ("Model provider", context.model_provider.as_deref()),
+            ("Last recorded activity", context.last_activity.as_deref()),
+        ] {
+            rows.push(metric(label, value.unwrap_or("Unreported")));
+        }
+    } else {
+        rows.push(metric("Native context", "Not reported for this source"));
+    }
+    rows.push(metric(
+        "Parent session",
+        session
+            .parent_session_id
+            .as_deref()
+            .unwrap_or("No recorded parent"),
+    ));
+    rows.push(metric(
+        "Relationship",
+        session
+            .relationship_kind
+            .map_or("No relationship recorded", RelationshipKind::as_str),
+    ));
+    rows.push(metric(
+        "Recorded state",
+        session.state.as_deref().unwrap_or("Unknown"),
+    ));
+    rows.push(metric(
+        "Recorded reason",
+        session.reason.as_deref().unwrap_or("No reason recorded"),
+    ));
+    rows.push(metric(
+        "Last recorded update",
+        timestamp_at(session.updated_at_unix_ns),
+    ));
+    if let Some(latest) = evidence.last() {
+        rows.push(metric("Latest observation", timestamp(latest)));
+    } else {
+        rows.push(metric("Latest observation", "No observation on this page"));
+    }
+    rows.push(metric(
+        "Review evidence",
+        format!(
+            "sequence {} · {} retained observations",
+            session.review_version.receipt_sequence, session.review_version.retained_observations
+        ),
+    ));
+    rows.push(metric(
+        "Review state",
+        if session.reviewed {
+            "Reviewed for this record"
+        } else {
+            "Not reviewed for this record"
+        },
+    ));
+    rows.push(metric("Snapshot", session.snapshot_id.to_string()));
+    rows.push(metric(
+        "History identity",
+        session
+            .history_identity
+            .as_deref()
+            .unwrap_or("History identity unreported"),
+    ));
+    let unseen = session
+        .pending_requests
+        .iter()
+        .filter(|request| !request.seen)
+        .count();
+    rows.push(metric(
+        "Pending requests",
+        if session.pending_requests.is_empty() {
+            "None recorded".to_owned()
+        } else {
+            format!(
+                "{} recorded · {unseen} unseen",
+                session.pending_requests.len()
+            )
+        },
+    ));
+    rows.push(metric(
+        "Collection",
+        if truncated {
+            "Loaded page · earlier observations are available"
+        } else {
+            "Latest loaded page · no earlier observations on this read"
+        },
+    ));
+    rows.push(metric(
+        "Capture policy",
+        "Not reported in this roster projection · content actions still require a current grant",
+    ));
+    rows.push(metric("Usage coverage", usage_summary(evidence)));
+    let failures = failure_count(evidence);
+    rows.push(metric(
+        "Diagnostics",
+        format!(
+            "{failures} recorded failure signal{} on this page · open Findings or Activity for exact evidence",
+            if failures == 1 { "" } else { "s" }
+        ),
+    ));
+    rows
 }
 
 fn declared_worker_rows(evidence: &[&Observation]) -> Vec<MetricRow> {
@@ -1178,6 +1525,32 @@ mod tests {
         &snapshot.panes[&ExtensionId::parse(format!("app.session-{name}")).unwrap()]
     }
 
+    fn recorded_session(source: &str, id: &str) -> RecordedSession {
+        RecordedSession {
+            harness_id: source.into(),
+            session_id: id.into(),
+            worker_id: None,
+            task_title: None,
+            native_context: None,
+            project_path: None,
+            project_origin: None,
+            updated_at_unix_ns: 0,
+            snapshot_id: Default::default(),
+            state: None,
+            reason: None,
+            turn_id: None,
+            parent_session_id: None,
+            relationship_kind: None,
+            review_version: agenturm_ui::ReviewVersion {
+                receipt_sequence: 0,
+                retained_observations: 0,
+            },
+            reviewed: false,
+            history_identity: None,
+            pending_requests: Vec::new(),
+        }
+    }
+
     #[test]
     fn declared_worker_links_keep_exact_parent_scope_and_page_coverage() {
         let source = ExtensionId::parse("harness.claude.worker-fixture").unwrap();
@@ -1210,10 +1583,16 @@ mod tests {
             observations_truncated: true,
             ..Snapshot::default()
         };
-        let panes = add_session_panes(&mut snapshot, source.as_str(), "session-a");
+        let panes = add_session_panes(
+            &mut snapshot,
+            &recorded_session(source.as_str(), "session-a"),
+        );
         let overview = &snapshot.panes[&panes.overview].rows;
         assert!(overview.contains(&metric("Declared child workers on page", "2")));
-        assert!(overview.contains(&metric("History", "Earlier observations are available")));
+        assert!(overview.contains(&metric(
+            "Evidence coverage",
+            "Loaded page · earlier observations are available"
+        )));
         let links = overview
             .iter()
             .filter(|row| row.label == "Declared child worker")
@@ -1320,7 +1699,10 @@ mod tests {
             observations_truncated: true,
             ..Snapshot::default()
         };
-        add_session_panes(&mut snapshot, "harness.codex", "session-a");
+        add_session_panes(
+            &mut snapshot,
+            &recorded_session("harness.codex", "session-a"),
+        );
 
         let activity = &pane(&snapshot, "activity").rows;
         assert_eq!(
@@ -1363,9 +1745,12 @@ mod tests {
         for expected in ["1 added", "2 updated", "turn-2", "edit-call"] {
             assert!(review[1].value.contains(expected));
         }
-        assert_eq!(
-            pane(&snapshot, "overview").rows.last().unwrap().label,
-            "History"
+        assert!(
+            pane(&snapshot, "overview")
+                .rows
+                .iter()
+                .any(|row| row.label == "Evidence coverage"
+                    && row.value.contains("earlier observations are available"))
         );
     }
 
@@ -1380,7 +1765,10 @@ mod tests {
             ..Snapshot::default()
         };
         snapshot.observations[2].identity.operation_id = Some("shell-call".into());
-        add_session_panes(&mut snapshot, "harness.codex", "session-a");
+        add_session_panes(
+            &mut snapshot,
+            &recorded_session("harness.codex", "session-a"),
+        );
 
         let mcp = &pane(&snapshot, "mcp").rows;
         assert_eq!(mcp.len(), 2);
@@ -1403,7 +1791,10 @@ mod tests {
             observations: ambiguous,
             ..Snapshot::default()
         };
-        add_session_panes(&mut snapshot, "harness.codex", "session-a");
+        add_session_panes(
+            &mut snapshot,
+            &recorded_session("harness.codex", "session-a"),
+        );
         assert_eq!(
             pane(&snapshot, "operations")
                 .rows
@@ -1414,9 +1805,16 @@ mod tests {
         );
 
         let mut empty = Snapshot::default();
-        add_session_panes(&mut empty, "harness.codex", "session-a");
-        assert_eq!(empty.panes.len(), 4);
-        assert_eq!(pane(&empty, "overview").rows[1].value, "session-a");
+        add_session_panes(&mut empty, &recorded_session("harness.codex", "session-a"));
+        assert_eq!(empty.panes.len(), 5);
+        let overview = &pane(&empty, "overview").rows;
+        assert!(
+            overview
+                .iter()
+                .any(|row| row.label == "Latest attributable progress")
+        );
+        assert!(overview.iter().any(|row| row.label == "Usage"));
+        assert_eq!(pane(&empty, "details").rows[1].value, "session-a");
         assert!(
             pane(&empty, "activity").rows[0]
                 .value
@@ -1435,10 +1833,14 @@ mod tests {
         snapshot
             .panes
             .insert(extension_id.clone(), extension.clone());
-        let panes = add_session_panes(&mut snapshot, "harness.codex", "session-a");
+        let panes = add_session_panes(
+            &mut snapshot,
+            &recorded_session("harness.codex", "session-a"),
+        );
         assert_ne!(panes.overview, extension_id);
         assert_eq!(snapshot.panes[&extension_id], extension);
         assert_eq!(snapshot.panes[&panes.overview].title, "Session overview");
+        assert_eq!(snapshot.panes[&panes.details].title, "Session details");
         assert_eq!(snapshot.panes[&panes.activity].title, "Activity");
         assert_eq!(snapshot.panes[&panes.review].title, "Review");
         assert_eq!(snapshot.panes[&panes.usage].title, "Usage");
@@ -1552,5 +1954,129 @@ mod tests {
         assert_eq!(usage[2].label, "Reported cost");
         assert!(usage[2].value.contains(" · 0 USD · "));
         assert!(usage[3].value.contains(" · 1.23456789 EUR · "));
+    }
+    #[test]
+    fn session_overview_and_details_keep_human_context_and_exact_identity_apart() {
+        let mut session = recorded_session("harness.codex", "session-a");
+        session.worker_id = Some("worker-1".into());
+        session.task_title = Some("Implement payments retry".into());
+        session.project_path = Some("/work/payments-api".into());
+        session.project_origin = Some(agenturm_ui::ProjectOrigin::NativeRecordedWorkspace);
+        session.state = Some("failed".into());
+        session.reason = Some("tool_error".into());
+        session.updated_at_unix_ns = 5_000_000_000;
+        session.reviewed = true;
+        session.review_version = agenturm_ui::ReviewVersion {
+            receipt_sequence: 9,
+            retained_observations: 4,
+        };
+        let usage = ObservationKind::Usage {
+            input_tokens: Some(10),
+            output_tokens: Some(20),
+            cache_read_tokens: None,
+            cache_write_tokens: None,
+            total_tokens: Some(30),
+        };
+        let mut snapshot = Snapshot {
+            observations: vec![
+                observation(
+                    1,
+                    ObservationKind::Message {
+                        role: "user".into(),
+                    },
+                    Some("turn-1"),
+                ),
+                observation(
+                    2,
+                    ObservationKind::Check {
+                        category: "cargo test".into(),
+                        result: "passed".into(),
+                    },
+                    Some("turn-1"),
+                ),
+                observation(
+                    3,
+                    ObservationKind::FileEdit(agenturm_kernel::FileEdit {
+                        added: 2,
+                        updated: 1,
+                        deleted: 0,
+                        moved: 0,
+                    }),
+                    Some("turn-1"),
+                ),
+                observation(4, usage, Some("turn-1")),
+                observation(
+                    5,
+                    ObservationKind::Check {
+                        category: "cargo clippy".into(),
+                        result: "failed".into(),
+                    },
+                    Some("turn-1"),
+                ),
+                observation(
+                    6,
+                    ObservationKind::Diagnostic {
+                        code: "tool_error".into(),
+                        severity: "error".into(),
+                    },
+                    Some("turn-1"),
+                ),
+                observation(
+                    7,
+                    ObservationKind::Lifecycle {
+                        state: "failed".into(),
+                        reason_code: Some("tool_error".into()),
+                    },
+                    Some("turn-1"),
+                ),
+            ],
+            observations_truncated: true,
+            ..Snapshot::default()
+        };
+        let panes = add_session_panes(&mut snapshot, &session);
+
+        let overview = &snapshot.panes[&panes.overview].rows;
+        let value = |label: &str| {
+            overview
+                .iter()
+                .find(|row| row.label == label)
+                .map(|row| row.value.as_str())
+                .unwrap_or("")
+        };
+        assert!(value("Recorded turns on page").starts_with('1'));
+        assert!(value("Latest attributable progress").contains("Lifecycle"));
+        assert!(value("Checks").contains("2 checks · 1 failed"));
+        assert!(value("File edits").contains("+2 ~1 -0 moved 0"));
+        assert!(value("Failures").starts_with("3 recorded failure signals"));
+        assert!(value("Usage").contains("total 30"));
+        assert!(value("Usage").contains("unreported fields stay unknown"));
+        assert!(value("Evidence coverage").contains("earlier observations are available"));
+        assert!(value("Open").contains("Prompts"));
+
+        let details = &snapshot.panes[&panes.details].rows;
+        let details_value = |label: &str| {
+            details
+                .iter()
+                .find(|row| row.label == label)
+                .map(|row| row.value.as_str())
+                .unwrap_or("")
+        };
+        assert_eq!(details_value("Source"), "harness.codex");
+        assert_eq!(details_value("Session"), "session-a");
+        assert_eq!(details_value("Worker"), "worker-1");
+        assert_eq!(details_value("Task title"), "Implement payments retry");
+        assert_eq!(details_value("Project"), "/work/payments-api");
+        assert_eq!(details_value("Project source"), "Native session workspace");
+        assert_eq!(details_value("Recorded state"), "failed");
+        assert_eq!(details_value("Recorded reason"), "tool_error");
+        assert_eq!(details_value("Review state"), "Reviewed for this record");
+        assert!(details_value("Review evidence").contains("sequence 9"));
+        assert_eq!(
+            details_value("History identity"),
+            "History identity unreported"
+        );
+        assert!(details_value("Capture policy").contains("require a current grant"));
+        assert!(details_value("Diagnostics").starts_with("3 recorded failure signals"));
+        assert_eq!(details_value("Last recorded update").is_empty(), false);
     }
 }

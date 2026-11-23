@@ -234,6 +234,7 @@ mod tests {
             sessions: Vec::new(),
             older: None,
             notice: None,
+            day_start_unix_ns: 0,
         });
         let (sender, receiver) = mpsc::channel();
         let key = |code| event::KeyEvent::new(code, KeyModifiers::NONE);

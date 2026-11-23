@@ -841,8 +841,16 @@ fn draw_view_bar(frame: &mut Frame, model: &UiModel, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(tabs)), area);
 }
 
-fn render_selected_pane(frame: &mut Frame, model: &UiModel, area: Rect) {
-    let pane = &model.panes[model.selected];
+pub(crate) fn render_selected_pane(frame: &mut Frame, model: &UiModel, area: Rect) {
+    let Some(pane) = model.panes.get(model.selected) else {
+        frame.render_widget(
+            Paragraph::new("No section content is available for this session.")
+                .wrap(Wrap { trim: true })
+                .block(panel("Session inspector")),
+            area,
+        );
+        return;
+    };
     let content_width = area.width.saturating_sub(2);
     frame.render_widget(
         Paragraph::new(pane_lines(pane, content_width))

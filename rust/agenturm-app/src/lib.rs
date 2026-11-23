@@ -2135,9 +2135,15 @@ fn load_session_catalog_with_sources(
         .into_iter()
         .zip(keys)
         .map(|(session, key)| {
-            let (state, reason, turn_id) = session.lifecycle.map_or((None, None, None), |life| {
-                (Some(life.state), life.reason_code, life.turn_id)
-            });
+            let (state, reason, turn_id, worker_id) =
+                session.lifecycle.map_or((None, None, None, None), |life| {
+                    (
+                        Some(life.state),
+                        life.reason_code,
+                        life.turn_id,
+                        life.worker_id,
+                    )
+                });
             let session_key = (session.harness_id.clone(), session.session_id.clone());
             let metadata = native.remove(&session_key);
             let task_title = titles
@@ -2175,6 +2181,7 @@ fn load_session_catalog_with_sources(
                 project_path,
                 task_title,
                 native_context,
+                worker_id,
                 pending_requests: pending
                     .remove(&(
                         session.harness_id.as_str().to_owned(),
@@ -2208,7 +2215,46 @@ fn load_session_catalog_with_sources(
         sessions,
         older,
         notice,
+        day_start_unix_ns: local_day_start_unix_ns(),
     })
+}
+
+/// The host resolves the local calendar boundary once per catalog read. The
+/// UI and kernel never assume UTC. Resolve the offset at the read instant and
+/// then at local midnight so a daylight-saving transition is reflected, and
+/// fall back to UTC with a deterministic boundary if the platform cannot
+/// report an offset.
+fn local_day_start_unix_ns() -> u64 {
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let fallback = agenturm_kernel::session_scope::local_day_start_unix_ns(
+        u64::try_from(now_ns).unwrap_or(u64::MAX),
+        0,
+    );
+    let Ok(now) = time::OffsetDateTime::from_unix_timestamp_nanos(now_ns as i128) else {
+        return fallback;
+    };
+    let Ok(offset) = time::UtcOffset::local_offset_at(now) else {
+        return fallback;
+    };
+    let date = now.to_offset(offset).date();
+    // Interpret local midnight with the offset in effect at midnight. Repeat
+    // once because the offset used for the guess can cross a DST boundary.
+    let mut midnight = date.midnight().assume_offset(offset);
+    for _ in 0..2 {
+        let Ok(resolved) = time::UtcOffset::local_offset_at(midnight) else {
+            break;
+        };
+        let next = date.midnight().assume_offset(resolved);
+        if next == midnight {
+            break;
+        }
+        midnight = next;
+    }
+    let start = midnight.unix_timestamp_nanos();
+    u64::try_from(start.max(0)).unwrap_or(fallback)
 }
 
 trait HistoryReader: ObservationStore {
@@ -2663,6 +2709,7 @@ fn load_workspace_history(
         HistorySelection::Session(session, view) => {
             let select_pane: fn(session_evidence::SessionPaneIds) -> ExtensionId = match view {
                 SessionView::Overview => |ids| ids.overview,
+                SessionView::Details => |ids| ids.details,
                 SessionView::Activity => |ids| ids.activity,
                 SessionView::Review => |ids| ids.review,
                 SessionView::Usage => |ids| ids.usage,
@@ -2694,11 +2741,7 @@ fn load_workspace_history(
                 app.refresh_history_query(store, query),
                 include_reviews,
             )?;
-            let mut panes = session_evidence::add_session_panes(
-                &mut snapshot,
-                &session.harness_id,
-                &session.session_id,
-            );
+            let mut panes = session_evidence::add_session_panes(&mut snapshot, &session);
             session_display::add_context(&mut snapshot, &panes.overview, &session);
             let mut page = inspector_activity::overview_page(snapshot);
             page.features.continuation = continuation.map(Box::new);

@@ -18,6 +18,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod analytics;
 mod command_center;
+mod inspector;
 pub(crate) mod prompt;
 mod review_visibility;
 mod view_io;
@@ -28,6 +29,8 @@ use prompt::PromptScreen;
 pub struct RecordedSession {
     pub harness_id: String,
     pub session_id: String,
+    /// Exact worker identity when the recorded lifecycle names one.
+    pub worker_id: Option<String>,
     pub task_title: Option<Box<str>>,
     pub native_context: Option<Box<NativeSessionContext>>,
     /// Operator-linked project or the exact native session’s recorded workspace.
@@ -51,6 +54,12 @@ impl RecordedSession {
     /// Human-readable primary label; stable identity stays in details and links.
     pub fn display_name(&self) -> std::borrow::Cow<'_, str> {
         command_center::name(self)
+    }
+
+    /// Human provider label derived from the recorded source family. This is a
+    /// presentation fallback, never a routing decision.
+    pub fn provider_label(&self) -> &str {
+        command_center::provider(self)
     }
 }
 
@@ -88,6 +97,10 @@ pub struct SessionCatalog {
     pub sessions: Vec<RecordedSession>,
     pub older: Option<SessionCursor>,
     pub notice: Option<String>,
+    /// Local calendar-day start in Unix nanoseconds, resolved by the host for
+    /// the instant this page was read. It keeps the Today boundary off the UI
+    /// thread and out of provider code.
+    pub day_start_unix_ns: u64,
 }
 
 #[derive(Clone, Debug)]
@@ -131,9 +144,10 @@ impl McpSearchScope {
     }
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum SessionView {
     Overview,
+    Details,
     Activity,
     Review,
     Usage,
@@ -172,34 +186,26 @@ impl TimeScope {
         }
     }
 
-    /// Scope `Today` includes active work and pending input from earlier, plus
-    /// outcomes recorded since the UTC day began. The final tagged boundary is
-    /// UI-03's; this keeps the shell behavior deterministic and disclosed.
-    fn accepts(self, row: &RecordedSession) -> bool {
+    fn kernel(self) -> agenturm_kernel::session_scope::SessionTimeScope {
         match self {
-            Self::All => true,
-            Self::Today => {
-                let now = SystemTime::now()
-                    .duration_since(UNIX_EPOCH)
-                    .unwrap_or_default()
-                    .as_secs();
-                let start = now.saturating_sub(now % 86_400);
-                row.pending_requests.iter().any(|request| !request.seen)
-                    || matches!(
-                        row.state.as_deref(),
-                        Some(
-                            "running"
-                                | "started"
-                                | "restored"
-                                | "waiting"
-                                | "blocked"
-                                | "failed"
-                                | "interrupted"
-                        )
-                    )
-                    || row.updated_at_unix_ns / 1_000_000_000 >= start
-            }
+            Self::Today => agenturm_kernel::session_scope::SessionTimeScope::Today,
+            Self::All => agenturm_kernel::session_scope::SessionTimeScope::History,
         }
+    }
+
+    /// The neutral kernel rule consumes the host-resolved local day start.
+    /// `History` (the approved landing scope) always accepts.
+    fn accepts(self, row: &RecordedSession, day_start_unix_ns: u64) -> bool {
+        agenturm_kernel::session_scope::in_session_time_scope(
+            self.kernel(),
+            agenturm_kernel::session_scope::SessionScopeFacts {
+                state: row.state.as_deref(),
+                updated_at_unix_ns: row.updated_at_unix_ns,
+                pending_input: row.pending_requests.iter().any(|request| !request.seen),
+                reviewed: row.reviewed,
+            },
+            day_start_unix_ns,
+        )
     }
 }
 
@@ -329,6 +335,12 @@ struct AgentList {
     collapsed: BTreeSet<(String, String)>,
     time_scope: TimeScope,
     session_scope: Option<(String, String)>,
+    errors_only: bool,
+    /// Include confirmed delegated descendants of `session_scope`.
+    subtree_scope: bool,
+    scope_members: Option<BTreeSet<(String, String)>>,
+    subtree_unsupported: usize,
+    subtree_outside_page: usize,
     lost_selection: bool,
 }
 
@@ -351,54 +363,108 @@ impl AgentList {
         self.lost_selection
     }
 
+    /// Exact-agent or evidence-backed subtree membership, without time scope.
+    fn in_identity_scope(&self, session: &RecordedSession) -> bool {
+        match &self.session_scope {
+            None => true,
+            Some(_) => self
+                .scope_members
+                .as_ref()
+                .is_some_and(|members| members.contains(&session_key(session))),
+        }
+    }
+
+    /// Membership and time scope, without the status, error or search facets.
+    fn in_session_scope(&self, session: &RecordedSession) -> bool {
+        self.in_identity_scope(session) && self.time_scope.accepts(session, self.day_start())
+    }
+
+    fn matches_search(&self, session: &RecordedSession) -> bool {
+        let query = self.search.to_ascii_lowercase();
+        query.is_empty()
+            || session.session_id.to_ascii_lowercase().contains(&query)
+            || session.harness_id.to_ascii_lowercase().contains(&query)
+            || session
+                .worker_id
+                .as_deref()
+                .is_some_and(|worker| worker.to_ascii_lowercase().contains(&query))
+            || command_center::provider(session)
+                .to_ascii_lowercase()
+                .contains(&query)
+            || session
+                .task_title
+                .as_deref()
+                .is_some_and(|title| title.to_ascii_lowercase().contains(&query))
+            || session
+                .project_path
+                .as_deref()
+                .is_some_and(|project| project.to_ascii_lowercase().contains(&query))
+            || session.native_context.as_deref().is_some_and(|context| {
+                [
+                    context.agent_name.as_deref(),
+                    context.agent_role.as_deref(),
+                    context.agent_path.as_deref(),
+                    context.model_provider.as_deref(),
+                ]
+                .iter()
+                .flatten()
+                .any(|name| name.to_ascii_lowercase().contains(&query))
+            })
+            || session
+                .state
+                .as_ref()
+                .is_some_and(|state| state.contains(&query))
+            || session
+                .reason
+                .as_ref()
+                .is_some_and(|reason| reason.contains(&query))
+    }
+
     fn accepts_scope(&self, session: &RecordedSession) -> bool {
-        self.session_scope
+        self.in_session_scope(session)
+            && (!self.errors_only || errors_only(session))
+            && self.matches_search(session)
+    }
+
+    fn day_start(&self) -> u64 {
+        self.catalog
             .as_ref()
-            .is_none_or(|(source, id)| session.harness_id == *source && session.session_id == *id)
-            && self.time_scope.accepts(session)
+            .map_or(0, |catalog| catalog.day_start_unix_ns)
+    }
+
+    /// Recomputes the exact-agent or evidence-backed subtree membership once
+    /// per filter pass. Unsupported and off-page relationships stay counted so
+    /// the footer can disclose them instead of silently widening the scope.
+    fn refresh_scope_members(&mut self) {
+        let Some(root) = self.session_scope.clone() else {
+            self.scope_members = None;
+            self.subtree_unsupported = 0;
+            self.subtree_outside_page = 0;
+            return;
+        };
+        let Some(catalog) = &self.catalog else {
+            self.scope_members = Some(BTreeSet::from([root]));
+            self.subtree_unsupported = 0;
+            self.subtree_outside_page = 0;
+            return;
+        };
+        let (members, unsupported, outside) =
+            scope_members(&catalog.sessions, &root, self.subtree_scope);
+        self.scope_members = Some(members);
+        self.subtree_unsupported = unsupported;
+        self.subtree_outside_page = outside;
     }
 
     fn apply_filters(&mut self, identity: Option<&(String, String)>) {
+        self.refresh_scope_members();
         let previous = self.selection.selected().unwrap_or_default();
-        let query = self.search.to_ascii_lowercase();
         self.visible = self.catalog.as_ref().map_or_else(Vec::new, |catalog| {
             let matching = catalog
                 .sessions
                 .iter()
                 .enumerate()
                 .filter_map(|(index, session)| {
-                    let matches = self.accepts_scope(session)
-                        && self.filter.accepts(session)
-                        && (query.is_empty()
-                            || session.session_id.to_ascii_lowercase().contains(&query)
-                            || session.harness_id.to_ascii_lowercase().contains(&query)
-                            || session
-                                .task_title
-                                .as_deref()
-                                .is_some_and(|title| title.to_ascii_lowercase().contains(&query))
-                            || session.project_path.as_deref().is_some_and(|project| {
-                                project.to_ascii_lowercase().contains(&query)
-                            })
-                            || session.native_context.as_deref().is_some_and(|context| {
-                                [
-                                    context.agent_name.as_deref(),
-                                    context.agent_role.as_deref(),
-                                    context.agent_path.as_deref(),
-                                    context.model_provider.as_deref(),
-                                ]
-                                .iter()
-                                .flatten()
-                                .any(|name| name.to_ascii_lowercase().contains(&query))
-                            })
-                            || session
-                                .state
-                                .as_ref()
-                                .is_some_and(|state| state.contains(&query))
-                            || session
-                                .reason
-                                .as_ref()
-                                .is_some_and(|reason| reason.contains(&query)));
-                    matches.then_some(index)
+                    (self.accepts_scope(session) && self.filter.accepts(session)).then_some(index)
                 })
                 .collect::<Vec<_>>();
             agent_rows(&catalog.sessions, &matching, self.flat, &self.collapsed)
@@ -550,6 +616,71 @@ impl AgentList {
 
 fn session_key(row: &RecordedSession) -> (String, String) {
     (row.harness_id.clone(), row.session_id.clone())
+}
+
+/// Recorded failure filter. This is a page filter over recorded lifecycle, not
+/// a claim about unseen errors or current process health; the footer and help
+/// say so.
+fn errors_only(row: &RecordedSession) -> bool {
+    matches!(row.state.as_deref(), Some("failed" | "interrupted"))
+}
+
+/// Exact-agent membership or an evidence-backed delegated subtree.
+///
+/// Only a `delegated` relationship with a parent retained on this page joins
+/// the subtree. `forked`, cross-family and off-page parents are counted, not
+/// guessed. This keeps the scope honest: an unsupported relationship never
+/// silently becomes a descendant, and a recorded lifecycle never proves a live
+/// process.
+fn scope_members(
+    sessions: &[RecordedSession],
+    root: &(String, String),
+    subtree: bool,
+) -> (BTreeSet<(String, String)>, usize, usize) {
+    let mut members = BTreeSet::from([root.clone()]);
+    if !subtree {
+        return (members, 0, 0);
+    }
+    let identities = sessions
+        .iter()
+        .map(|row| {
+            (
+                source_family(&row.harness_id).to_owned(),
+                row.session_id.clone(),
+            )
+        })
+        .collect::<BTreeSet<_>>();
+    let mut unsupported = 0;
+    let mut outside = 0;
+    let mut frontier = vec![root.1.clone()];
+    while let Some(parent) = frontier.pop() {
+        for row in sessions {
+            if row.parent_session_id.as_deref() != Some(parent.as_str()) {
+                continue;
+            }
+            let same_family = source_family(&row.harness_id) == source_family(&root.0);
+            if !same_family || row.relationship_kind != Some(RelationshipKind::Delegated) {
+                unsupported += 1;
+                continue;
+            }
+            if members.insert(session_key(row)) {
+                frontier.push(row.session_id.clone());
+            }
+        }
+    }
+    // A delegated row whose parent is not retained on this page cannot be
+    // attributed to any root on this page. Report the coverage gap rather than
+    // attaching it to the nearest relationship.
+    for row in sessions {
+        if row.relationship_kind == Some(RelationshipKind::Delegated)
+            && source_family(&row.harness_id) == source_family(&root.0)
+            && let Some(parent) = row.parent_session_id.as_deref()
+            && !identities.contains(&(source_family(&row.harness_id).to_owned(), parent.to_owned()))
+        {
+            outside += 1;
+        }
+    }
+    (members, unsupported, outside)
 }
 
 fn source_family(source: &str) -> &str {
@@ -771,6 +902,7 @@ struct Workspace {
     refresh_after: Instant,
     palette: palette::Palette,
     help: help::Help,
+    inspector: inspector::State,
     theme_request: bool,
     generation: u64,
     pending_generation: Option<u64>,
@@ -798,6 +930,7 @@ impl Workspace {
             refresh_after: Instant::now(),
             palette: palette::Palette::default(),
             help: help::Help::default(),
+            inspector: inspector::State::default(),
             theme_request: false,
             generation: 0,
             pending_generation: None,
@@ -1114,6 +1247,13 @@ impl Workspace {
     }
 
     fn open(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, selection: HistorySelection) {
+        if let HistorySelection::Session(_, view) = &selection
+            && inspector::Tab::from_view(*view).is_some()
+        {
+            // A fresh inspector starts on its tab strip; the content reader is
+            // one Enter away. Section switches preserve the current focus.
+            self.inspector = inspector::State::focused(*view);
+        }
         self.request(
             sender,
             self.history_request(selection.clone(), None),
@@ -1126,6 +1266,7 @@ impl Workspace {
             Destination::Agents => {
                 if self.pending.is_none() {
                     self.history.clear();
+                    self.inspector = inspector::State::default();
                     self.generation = self.generation.wrapping_add(1);
                     self.message = None;
                 }
@@ -1161,12 +1302,178 @@ impl Workspace {
         session: RecordedSession,
         mode: SessionView,
     ) {
+        if let Some(tab) = inspector::Tab::from_view(mode) {
+            self.inspector.tab = tab;
+        }
         let selection = HistorySelection::Session(session, mode);
         self.request(
             sender,
             self.history_request(selection.clone(), None),
             Change::SessionMode(selection),
         );
+    }
+
+    fn inspector_session(&self) -> Option<(RecordedSession, SessionView)> {
+        match self.history.last().map(|view| &view.selection) {
+            Some(HistorySelection::Session(row, view))
+                if matches!(view, SessionView::Overview | SessionView::Details) =>
+            {
+                Some((row.clone(), *view))
+            }
+            _ => None,
+        }
+    }
+
+    /// Enters the prompt navigator for the exact inspector session. This is the
+    /// hook UI-04 owns: the shell supplies the exact anchor and does not read
+    /// captured text itself.
+    fn open_inspector_prompts(&mut self, sender: &mpsc::Sender<WorkspaceRequest>) {
+        if self.pending.is_some() {
+            return;
+        }
+        let Some((session, _)) = self.inspector_session() else {
+            return;
+        };
+        let anchor = WorkAnchor::from(&session);
+        self.inspector.tab = inspector::Tab::Prompts;
+        self.request(
+            sender,
+            WorkspaceRequest::Work(WorkCommand::Prompts(anchor.clone())),
+            Change::Work(Some(anchor)),
+        );
+    }
+
+    fn enter_inspector(&mut self, sender: &mpsc::Sender<WorkspaceRequest>) {
+        match self.inspector.tab {
+            inspector::Tab::Prompts => self.open_inspector_prompts(sender),
+            _ => self.inspector.tabs_focused = false,
+        }
+    }
+
+    fn move_inspector_tab(
+        &mut self,
+        sender: &mpsc::Sender<WorkspaceRequest>,
+        forward: bool,
+        focus_tabs: bool,
+    ) {
+        let Some((session, current)) = self.inspector_session() else {
+            return;
+        };
+        if self.pending.is_some() {
+            return;
+        }
+        let next = if forward {
+            self.inspector.tab.next()
+        } else {
+            self.inspector.tab.previous()
+        };
+        self.inspector.tab = next;
+        self.inspector.tabs_focused = focus_tabs;
+        self.message = None;
+        match next.view() {
+            Some(view) if view != current => {
+                self.select_session_mode(sender, session, view);
+            }
+            Some(_) => {}
+            None => {
+                self.message =
+                    Some("Prompts · Enter or Down opens the recorded request navigator".into());
+            }
+        }
+    }
+
+    fn focus_inspector_tabs(&mut self) {
+        if self.inspector_session().is_none() {
+            return;
+        }
+        self.inspector.tabs_focused = true;
+        self.message = Some("Inspector sections · ←/→ choose · Enter read".into());
+    }
+
+    fn open_inspector_activity(&mut self, sender: &mpsc::Sender<WorkspaceRequest>) {
+        let Some((session, _)) = self.inspector_session() else {
+            return;
+        };
+        self.open(
+            sender,
+            HistorySelection::Session(session, SessionView::Activity),
+        );
+    }
+
+    fn open_inspector_usage(&mut self, sender: &mpsc::Sender<WorkspaceRequest>) {
+        let Some((session, _)) = self.inspector_session() else {
+            return;
+        };
+        self.open(
+            sender,
+            HistorySelection::Session(session, SessionView::Usage),
+        );
+    }
+
+    /// Inspector key handling. The tab strip is one focus stop; content owns
+    /// scrolling. Ctrl+Left/Right and `m` switch sections from content, and
+    /// plain Left/Right never steals a reader's horizontal keys.
+    fn inspector_key(
+        &mut self,
+        sender: &mpsc::Sender<WorkspaceRequest>,
+        key: event::KeyEvent,
+    ) -> bool {
+        if self.inspector_session().is_none() {
+            return false;
+        }
+        let control = key.modifiers == KeyModifiers::CONTROL;
+        let code = keymap::plain(key).unwrap_or(KeyCode::Null);
+        if control && matches!(key.code, KeyCode::Left | KeyCode::Right) {
+            self.move_inspector_tab(
+                sender,
+                key.code == KeyCode::Right,
+                self.inspector.tabs_focused,
+            );
+            return true;
+        }
+        if self.inspector.tabs_focused {
+            match code {
+                KeyCode::Left => {
+                    self.move_inspector_tab(sender, false, true);
+                    return true;
+                }
+                KeyCode::Right => {
+                    self.move_inspector_tab(sender, true, true);
+                    return true;
+                }
+                KeyCode::Enter | KeyCode::Down => {
+                    self.enter_inspector(sender);
+                    return true;
+                }
+                KeyCode::Up if self.inspector.tab == inspector::Tab::Prompts => {
+                    self.enter_inspector(sender);
+                    return true;
+                }
+                KeyCode::Char('m') => {
+                    self.move_inspector_tab(sender, true, true);
+                    return true;
+                }
+                _ => {}
+            }
+        } else {
+            match code {
+                KeyCode::Char('m') => {
+                    let forward = true;
+                    self.move_inspector_tab(sender, forward, false);
+                    return true;
+                }
+                KeyCode::Char('s' | 'A') if self.focus() != keymap::Focus::HistorySearch => {
+                    self.open_inspector_activity(sender);
+                    return true;
+                }
+                KeyCode::Char('u') => {
+                    self.open_inspector_usage(sender);
+                    return true;
+                }
+                _ => {}
+            }
+        }
+        false
     }
 
     fn toggle_pause(&mut self) {
@@ -1708,6 +2015,10 @@ impl Workspace {
             return false;
         }
 
+        if self.inspector_key(sender, key) {
+            return false;
+        }
+
         if self.analytics_key(sender, key, code) {
             return false;
         }
@@ -1934,6 +2245,9 @@ impl Workspace {
             KeyCode::Esc => {}
             KeyCode::Char('p') => self.toggle_pause(),
             KeyCode::Char('b' | 'P') => {
+                if code == KeyCode::Char('P') {
+                    self.inspector.tab = inspector::Tab::Prompts;
+                }
                 let target = match &view.selection {
                     HistorySelection::Session(session, _) => Some(WorkAnchor::from(session)),
                     HistorySelection::Turn(turn) => Some(WorkAnchor {
@@ -2242,6 +2556,20 @@ impl Workspace {
                     visible_text(&session.session_id),
                     mode
                 ));
+                if matches!(mode, SessionView::Overview | SessionView::Details) {
+                    current.push(format!(
+                        "Inspector section {} · ←/→ tabs · Enter/Down read · m next · Esc roster",
+                        self.inspector.tab.label()
+                    ));
+                    current.push(
+                        "Overview links: s Activity · Ctrl+R Review · t Traces · u Usage · P Prompts"
+                            .into(),
+                    );
+                    current.push(
+                        "Recorded lifecycle describes stored evidence, not live process state."
+                            .into(),
+                    );
+                }
             }
             if view.page.ui.in_turn {
                 current.push("Recorded turn scope · Esc returns to the containing page".into());
@@ -2307,6 +2635,17 @@ impl Workspace {
             keymap::id::SESSION_CHOOSER | keymap::id::SCOPE_TODAY | keymap::id::SCOPE_HISTORY => {
                 (!catalog_ready).then_some("No session page is loaded")
             }
+            keymap::id::SESSION_ERRORS => (!catalog_ready).then_some("No session page is loaded"),
+            keymap::id::SESSION_SUBTREE => (self.agents.session_scope.is_none())
+                .then_some("Choose an exact agent session first"),
+            keymap::id::INSPECTOR_SECTIONS => (!matches!(
+                self.history.last().map(|view| &view.selection),
+                Some(HistorySelection::Session(
+                    _,
+                    SessionView::Overview | SessionView::Details
+                ))
+            ))
+            .then_some("Open the session inspector first"),
             keymap::id::SCOPE_SELECTED => (!anchor).then_some("Select an exact session or turn"),
             keymap::id::SCOPE_ALL => (!history).then_some("Open a retained evidence view first"),
             keymap::id::LIVE_REFRESH | keymap::id::RETRY_CONNECTION => {
@@ -2482,6 +2821,10 @@ impl Workspace {
                 detail.push_str(" · ");
                 detail.push_str(&native);
             }
+            if let Some(worker) = row.worker_id.as_deref().filter(|id| !id.trim().is_empty()) {
+                detail.push_str(" · worker ");
+                detail.push_str(&visible_text(worker));
+            }
             detail.push_str(&format!(
                 " · {} · {}",
                 visible_text(&row.harness_id),
@@ -2504,9 +2847,11 @@ impl Workspace {
     fn choose_session(&mut self, choice: &str) {
         if choice == "session|all" {
             self.agents.session_scope = None;
+            self.agents.subtree_scope = false;
             let identity = self.agents.current().map(session_key);
             self.agents.apply_filters(identity.as_ref());
-            self.message = Some("Session scope cleared".into());
+            self.message =
+                Some("Session scope cleared · showing all sessions in this time scope".into());
             return;
         }
         let mut parts = choice.splitn(3, '|');
@@ -2528,6 +2873,7 @@ impl Workspace {
             return;
         }
         self.agents.session_scope = Some(identity.clone());
+        self.agents.subtree_scope = false;
         self.agents.apply_filters(Some(&identity));
         if self.agents.visible.is_empty() {
             self.message = Some(
@@ -2552,8 +2898,8 @@ impl Workspace {
         let identity = self.agents.current().map(session_key);
         self.agents.time_scope = scope;
         self.agents.apply_filters(identity.as_ref());
-        self.message = Some(format!(
-            "Time scope: {} · {} session{}",
+        let mut message = format!(
+            "Time scope: {} · {} session{} on this page",
             scope.label(),
             self.agents.visible.len(),
             if self.agents.visible.len() == 1 {
@@ -2561,7 +2907,60 @@ impl Workspace {
             } else {
                 "s"
             }
-        ));
+        );
+        if scope == TimeScope::Today && self.agents.visible.is_empty() {
+            message.push_str(" · nothing pending today · O History shows earlier work");
+        }
+        self.message = Some(message);
+    }
+
+    fn toggle_errors(&mut self) {
+        self.agents.errors_only = !self.agents.errors_only;
+        let identity = self.agents.current().map(session_key);
+        self.agents.apply_filters(identity.as_ref());
+        self.message = Some(if self.agents.errors_only {
+            "Errors only · recorded failed or interrupted runs on this page".into()
+        } else {
+            "Errors filter cleared".into()
+        });
+    }
+
+    fn toggle_subtree(&mut self) {
+        if self.agents.session_scope.is_none() {
+            self.message = Some("Choose an agent session before selecting a subtree scope".into());
+            return;
+        }
+        self.agents.subtree_scope = !self.agents.subtree_scope;
+        let identity = self.agents.current().map(session_key);
+        self.agents.apply_filters(identity.as_ref());
+        let mut message = if self.agents.subtree_scope {
+            "Evidence scope: exact agent + confirmed delegated descendants".to_owned()
+        } else {
+            "Evidence scope: exact agent only".to_owned()
+        };
+        if self.agents.subtree_unsupported > 0 {
+            message.push_str(&format!(
+                " · {} non-delegated or cross-source relationship{} excluded",
+                self.agents.subtree_unsupported,
+                if self.agents.subtree_unsupported == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ));
+        }
+        if self.agents.subtree_outside_page > 0 {
+            message.push_str(&format!(
+                " · {} delegated parent{} outside this page",
+                self.agents.subtree_outside_page,
+                if self.agents.subtree_outside_page == 1 {
+                    ""
+                } else {
+                    "s"
+                }
+            ));
+        }
+        self.message = Some(message);
     }
 
     fn refresh_current(&mut self, sender: &mpsc::Sender<WorkspaceRequest>) {
@@ -2613,6 +3012,8 @@ impl Workspace {
             keymap::id::SESSION_CHOOSER => self.open_session_chooser(),
             keymap::id::SCOPE_TODAY => self.set_time_scope(TimeScope::Today),
             keymap::id::SCOPE_HISTORY => self.set_time_scope(TimeScope::All),
+            keymap::id::SESSION_ERRORS => self.toggle_errors(),
+            keymap::id::SESSION_SUBTREE => self.toggle_subtree(),
             keymap::id::SCOPE_SELECTED => {
                 let turn = self.history.last().and_then(|view| match &view.selection {
                     HistorySelection::Turn(turn) => Some(turn.clone()),
@@ -2675,6 +3076,7 @@ impl Workspace {
             keymap::id::SESSION_USAGE => return self.send_key(sender, plain_key('u')),
             keymap::id::HOST_NOW => return self.send_key(sender, plain_key('H')),
             keymap::id::INSPECTOR_MODE => return self.send_key(sender, plain_key('m')),
+            keymap::id::INSPECTOR_SECTIONS => self.focus_inspector_tabs(),
             keymap::id::SEARCH => return self.send_key(sender, plain_key('/')),
             keymap::id::INSPECT => return self.send_key(sender, plain_code(KeyCode::Enter)),
             keymap::id::BACK => return self.send_key(sender, plain_code(KeyCode::Esc)),
@@ -2750,6 +3152,10 @@ impl Workspace {
                 };
                 self.agents.apply_filters(identity.as_ref());
             }
+            KeyCode::Char('T') => self.set_time_scope(TimeScope::Today),
+            KeyCode::Char('O') => self.set_time_scope(TimeScope::All),
+            KeyCode::Char('E') => self.toggle_errors(),
+            KeyCode::Char('S') => self.toggle_subtree(),
             KeyCode::Char('Y') => {
                 self.agents.filter = Filter::ToReview;
                 self.agents.apply_filters(None);
@@ -3068,6 +3474,12 @@ pub fn run_workspace_with_stop(
 fn pending_evidence_titles(selection: &HistorySelection) -> Option<(&'static str, &'static str)> {
     match selection {
         HistorySelection::ReviewEdits(_) => Some(("Review file edits", "Retained edit evidence")),
+        HistorySelection::Session(_, SessionView::Overview) => {
+            Some(("Session inspector", "Session overview"))
+        }
+        HistorySelection::Session(_, SessionView::Details) => {
+            Some(("Session inspector", "Session details"))
+        }
         HistorySelection::All(WorkspaceView::Activity)
         | HistorySelection::Session(_, SessionView::Activity) => Some(("Activity", "Event detail")),
         HistorySelection::All(WorkspaceView::Findings) => Some(("Findings", "Evidence inspector")),
@@ -3343,6 +3755,24 @@ fn draw_workspace_base(frame: &mut Frame, workspace: &mut Workspace) {
             analytics.draw(frame, loading, workspace.message.as_deref());
             return;
         }
+        if area.width >= MIN_WIDTH
+            && area.height >= MIN_HEIGHT
+            && view.page.turn_picker.is_none()
+            && let HistorySelection::Session(session, session_view) = &view.selection
+            && inspector::Tab::from_view(*session_view).is_some()
+        {
+            view.page.ui.set_viewport(area.width, area.height);
+            inspector::draw(
+                frame,
+                session,
+                &view.page.ui,
+                workspace.inspector,
+                !view.newer.is_empty(),
+                workspace.pending.is_some(),
+                workspace.message.as_deref(),
+            );
+            return;
+        }
         view.page.ui.set_viewport(area.width, area.height);
         let draw_findings = !view.page.ui.help
             && view.page.turn_picker.is_none()
@@ -3584,6 +4014,7 @@ mod tests {
             },
             reviewed: false,
             history_identity: None,
+            worker_id: None,
             pending_requests: Vec::new(),
         }
     }
@@ -3593,6 +4024,53 @@ mod tests {
             sessions,
             older: None,
             notice: None,
+            // Fixed far-future boundary: a page test opts into outcomes by
+            // pinning its own day start.
+            day_start_unix_ns: u64::MAX,
+        }
+    }
+
+    fn catalog_at(sessions: Vec<RecordedSession>, day_start_unix_ns: u64) -> SessionCatalog {
+        SessionCatalog {
+            sessions,
+            older: None,
+            notice: None,
+            day_start_unix_ns,
+        }
+    }
+
+    fn session_history_page(titles: &[&str]) -> HistoryPage {
+        let panes = titles
+            .iter()
+            .enumerate()
+            .map(|(index, title)| {
+                let id =
+                    agenturm_kernel::ExtensionId::parse(format!("app.session-{index}")).unwrap();
+                let pane = agenturm_kernel::PaneModel {
+                    title: (*title).into(),
+                    rows: vec![MetricRow {
+                        label: format!("{title} field"),
+                        value: format!("{title} value"),
+                    }],
+                };
+                (id, pane)
+            })
+            .collect::<std::collections::BTreeMap<_, _>>();
+        let initial_pane = panes.keys().next().cloned();
+        HistoryPage {
+            features: Default::default(),
+            history_identity: None,
+            snapshot: Snapshot {
+                panes,
+                ..Snapshot::default()
+            },
+            turns: Vec::new(),
+            initial_pane,
+            review_pane: None,
+            operation_details: Vec::new(),
+            private_telemetry_history: None,
+            operation_tables: Default::default(),
+            evidence_tables: Default::default(),
         }
     }
 
@@ -4886,15 +5364,27 @@ mod tests {
             })
         ));
         workspace.finish(Ok(WorkspaceResponse::History(empty_history_page())));
+        // `m` cycles sections while keeping the tab strip focused; Prompts is
+        // an entry point, so Enter/Down opens the UI-04 navigator.
+        assert_eq!(workspace.inspector.tab, inspector::Tab::Overview);
         assert!(!press(&mut workspace, &sender, KeyCode::Char('m')));
+        assert_eq!(workspace.inspector.tab, inspector::Tab::Prompts);
+        assert!(requests.try_recv().is_err());
+        assert!(!press(&mut workspace, &sender, KeyCode::Enter));
         assert!(
             matches!(requests.try_recv(), Ok(WorkspaceRequest::Work(WorkCommand::Prompts(owner))) if owner.source == "harness.pi" && owner.session == "selected")
         );
         workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::Prompts(Vec::new()))));
+        assert!(workspace.work.is_some());
+        // The UI-04 navigator is an overlay; Esc returns to the same inspector
+        // section before a section switch is available.
+        assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+        assert!(workspace.work.is_none());
         assert!(!press(&mut workspace, &sender, KeyCode::Char('m')));
         assert!(
-            matches!(requests.try_recv(), Ok(WorkspaceRequest::History { selection: HistorySelection::Session(row, SessionView::Activity), .. }) if row.session_id == "selected")
+            matches!(requests.try_recv(), Ok(WorkspaceRequest::History { selection: HistorySelection::Session(row, SessionView::Details), .. }) if row.session_id == "selected")
         );
+        assert_eq!(workspace.inspector.tab, inspector::Tab::Details);
         workspace.finish(Ok(WorkspaceResponse::History(empty_history_page())));
         assert_eq!(workspace.history.len(), 1);
         assert!(!press(&mut workspace, &sender, KeyCode::Char('m')));
@@ -5364,6 +5854,9 @@ mod tests {
                 evidence_tables: Default::default(),
             })));
             let _ = frame(&mut workspace);
+            // The inspector opens on its tab strip; Enter enters the content
+            // reader before Left/Right/Down reach panes or scrolling.
+            assert!(!press(&mut workspace, KeyCode::Enter));
             assert!(!press(&mut workspace, KeyCode::Right));
             assert!(!press(&mut workspace, KeyCode::Down));
             assert_eq!(workspace.history[0].page.ui.selected_title(), Some("Usage"));
@@ -5550,7 +6043,7 @@ mod tests {
                 "Inactive 1",
                 "/projects/alpha",
                 "/projects/beta",
-                "Project unavailable",
+                "No recorded project",
                 "Unknown",
             ] {
                 assert!(
@@ -5675,7 +6168,32 @@ mod tests {
         }
     }
     #[test]
-    fn command_center_help_exposes_all_controls_at_compact_sizes() {
+    fn command_center_help_points_at_the_shared_inventory_at_compact_sizes() {
+        // The command center no longer owns a second help body: the shell's
+        // scrollable reference is built from keymap::ACTIONS. A direct render
+        // still shows a deterministic pointer instead of duplicating text.
+        let inventory = keymap::help_sections(keymap::Context::CommandCenter)
+            .into_iter()
+            .flat_map(|(heading, lines)| std::iter::once(heading.to_owned()).chain(lines))
+            .collect::<Vec<_>>()
+            .join("\n");
+        for key in [
+            "Ctrl+F",
+            "Mark request seen",
+            "Grouping",
+            "Refresh now",
+            "Saved tasks",
+            "Workflow inbox",
+            "Copy selected view",
+            "Export selected view",
+            "Quit",
+            "Internal reviews",
+            "Choose agent session",
+            "Show Today",
+            "Errors only",
+        ] {
+            assert!(inventory.contains(key), "missing {key} in shared inventory");
+        }
         for (width, height) in [(120, 32), (80, 24), (60, 18)] {
             let mut agents = AgentList {
                 help: true,
@@ -5692,20 +6210,10 @@ mod tests {
                 .iter()
                 .map(|cell| cell.symbol())
                 .collect::<String>();
-            for key in [
-                "Ctrl+F",
-                "X Mark",
-                "G Group",
-                "R Refresh",
-                "b Tasks",
-                "w Workflow",
-                "c Copy",
-                "x Export",
-                "q Quit",
-                "Internal reviews",
-            ] {
-                assert!(text.contains(key), "missing {key} at {width}: {text}");
-            }
+            assert!(
+                text.contains("F1 / ? opens the scrollable cockpit reference"),
+                "{width}: {text}"
+            );
         }
     }
 
@@ -6212,6 +6720,413 @@ mod tests {
                 .collect();
             assert!(text.contains("Command palette"), "{width}: {text}");
             assert!(text.contains("Esc cancel"), "{width}: {text}");
+        }
+    }
+    fn pending_request(owner: &RecordedSession) -> RequestEntry {
+        RequestEntry {
+            owner: WorkAnchor::from(owner),
+            event_id: "approval".into(),
+            revision: 1,
+            timestamp: 1,
+            reason: "approval".into(),
+            seen: false,
+            proof: RequestProof {
+                snapshot_id: owner.snapshot_id,
+                history_identity: owner.history_identity.clone(),
+            },
+        }
+    }
+
+    #[test]
+    fn today_scope_uses_the_host_local_boundary_and_keeps_active_work_of_any_age() {
+        let day = 1_700_000_000_000_000_000u64;
+        let mut active = session("harness.codex", "active", "running", None);
+        active.updated_at_unix_ns = day - 10 * 86_400 * 1_000_000_000;
+        let mut pending = session("harness.claude", "pending", "waiting", None);
+        pending.updated_at_unix_ns = day - 10 * 86_400 * 1_000_000_000;
+        pending.pending_requests.push(pending_request(&pending));
+        let mut reviewed_pending = session("harness.claude", "reviewed-input", "waiting", None);
+        reviewed_pending.updated_at_unix_ns = day - 10 * 86_400 * 1_000_000_000;
+        let mut request = pending_request(&reviewed_pending);
+        request.seen = true;
+        reviewed_pending.pending_requests.push(request);
+        let mut outcome_today = session("harness.pi", "outcome-today", "completed", None);
+        outcome_today.updated_at_unix_ns = day + 1;
+        let mut outcome_yesterday = session("harness.pi", "outcome-yesterday", "completed", None);
+        outcome_yesterday.updated_at_unix_ns = day - 1;
+        let mut reviewed_failure = session("harness.pi", "reviewed-failure", "failed", None);
+        reviewed_failure.updated_at_unix_ns = day + 1;
+        reviewed_failure.reviewed = true;
+
+        let mut agents = AgentList::default();
+        agents.update(catalog_at(
+            vec![
+                active.clone(),
+                pending.clone(),
+                reviewed_pending,
+                outcome_today.clone(),
+                outcome_yesterday,
+                reviewed_failure,
+            ],
+            day,
+        ));
+        assert_eq!(agents.time_scope, TimeScope::All);
+        agents.time_scope = TimeScope::Today;
+        agents.apply_filters(None);
+        let visible = agents
+            .visible
+            .iter()
+            .map(|item| {
+                let row = &agents.catalog.as_ref().unwrap().sessions[item.index];
+                row.session_id.as_str()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(visible, ["outcome-today", "pending", "active"]);
+        // Selecting the outcome and returning to History keeps exact identity,
+        // and the reviewed failure returns only in History.
+        let selected = outcome_today.clone();
+        agents.selection.select(Some(2));
+        agents.time_scope = TimeScope::All;
+        agents.apply_filters(Some(&session_key(&selected)));
+        assert_eq!(agents.current(), Some(&selected));
+        assert_eq!(agents.visible.len(), 6);
+        assert!(!agents.lost_selection);
+        assert_eq!(agents.time_scope, TimeScope::All);
+        // Active work of any age is still Today, not a liveness claim.
+        assert_eq!(active.state.as_deref(), Some("running"));
+    }
+
+    #[test]
+    fn errors_and_subtree_scopes_publish_unsupported_relationships_and_keep_identity() {
+        let root = session("harness.codex", "root", "running", None);
+        let child = session("harness.codex", "child", "running", Some("root"));
+        let grandchild = session("harness.codex", "grandchild", "completed", Some("child"));
+        let mut forked = session("harness.codex", "forked", "completed", Some("root"));
+        forked.relationship_kind = Some(RelationshipKind::Forked);
+        let mut cross_source = session("harness.pi", "cross-source", "failed", Some("root"));
+        cross_source.relationship_kind = Some(RelationshipKind::Delegated);
+        let mut orphan = session("harness.codex", "orphan", "completed", Some("missing"));
+        orphan.relationship_kind = Some(RelationshipKind::Delegated);
+        let failed = session("harness.pi", "failed", "failed", None);
+        let mut workspace = Workspace::new();
+        workspace.agents.update(catalog(vec![
+            root.clone(),
+            child.clone(),
+            grandchild.clone(),
+            forked,
+            cross_source,
+            orphan,
+            failed.clone(),
+        ]));
+        let (sender, _requests) = mpsc::channel();
+        workspace.run_action(
+            &sender,
+            &format!("session|{}|{}", root.harness_id, root.session_id),
+        );
+        assert_eq!(workspace.agents.visible.len(), 1);
+        workspace.run_action(&sender, keymap::id::SESSION_SUBTREE);
+        let visible = workspace
+            .agents
+            .visible
+            .iter()
+            .map(|item| {
+                let row = &workspace.agents.catalog.as_ref().unwrap().sessions[item.index];
+                row.session_id.as_str()
+            })
+            .collect::<Vec<_>>();
+        assert_eq!(visible, ["root", "child", "grandchild"]);
+        assert_eq!(workspace.agents.subtree_unsupported, 2);
+        assert_eq!(workspace.agents.subtree_outside_page, 1);
+        let message = workspace.message.clone().unwrap();
+        assert!(message.contains("2 non-delegated or cross-source relationships excluded"));
+        assert!(message.contains("1 delegated parent outside this page"));
+
+        // Exact identity survives a subtree refresh with a title change.
+        let position = workspace
+            .agents
+            .visible
+            .iter()
+            .position(|item| {
+                workspace.agents.catalog.as_ref().unwrap().sessions[item.index].session_id
+                    == "child"
+            })
+            .unwrap();
+        workspace.agents.selection.select(Some(position));
+        let mut renamed = child.clone();
+        renamed.task_title = Some("Renamed child".into());
+        workspace.agents.update(catalog_at(
+            vec![
+                root.clone(),
+                renamed.clone(),
+                grandchild.clone(),
+                failed.clone(),
+            ],
+            u64::MAX,
+        ));
+        assert_eq!(workspace.agents.current(), Some(&renamed));
+        assert!(!workspace.agents.lost_selection);
+
+        // Errors is an independent facet over recorded failure states.
+        workspace.agents.session_scope = None;
+        workspace.agents.subtree_scope = false;
+        workspace.agents.apply_filters(Some(&session_key(&failed)));
+        workspace.run_action(&sender, keymap::id::SESSION_ERRORS);
+        assert!(workspace.agents.errors_only);
+        assert_eq!(workspace.agents.current(), Some(&failed));
+        assert!(
+            workspace
+                .agents
+                .visible
+                .iter()
+                .filter_map(|item| workspace
+                    .agents
+                    .catalog
+                    .as_ref()
+                    .map(|c| &c.sessions[item.index]))
+                .all(|row| errors_only(row))
+        );
+        workspace.run_action(&sender, keymap::id::SESSION_ERRORS);
+        assert!(!workspace.agents.errors_only);
+        assert_eq!(workspace.agents.current(), Some(&failed));
+    }
+
+    #[test]
+    fn session_chooser_searches_worker_identity_and_stays_usable_at_the_floor() {
+        let mut first = session("harness.codex", "session-a", "running", None);
+        first.task_title = Some("Payments API".into());
+        first.project_path = Some("/work/payments-api".into());
+        first.project_origin = Some(ProjectOrigin::OperatorTaskWorkspace);
+        first.worker_id = Some("worker-9f2a".into());
+        let mut second = session("harness.claude", "session-b", "completed", None);
+        second.task_title = Some("Payments API".into());
+        second.project_path = Some("/work/payments-api".into());
+        second.project_origin = Some(ProjectOrigin::NativeRecordedWorkspace);
+        second.worker_id = Some("worker-other".into());
+        let mut workspace = Workspace::new();
+        workspace
+            .agents
+            .update(catalog(vec![first.clone(), second.clone()]));
+        let (sender, _requests) = mpsc::channel();
+        assert!(!workspace.key(&sender, ctrl(KeyCode::Char('p'))));
+        for ch in "choose agent session".chars() {
+            press(&mut workspace, &sender, KeyCode::Char(ch));
+        }
+        assert!(!press(&mut workspace, &sender, KeyCode::Enter));
+        assert_eq!(workspace.palette.kind(), Some(palette::Kind::Sessions));
+        for ch in "claude".chars() {
+            press(&mut workspace, &sender, KeyCode::Char(ch));
+        }
+        assert_eq!(
+            workspace.palette.selected().map(|entry| entry.key.clone()),
+            Some("session|harness.claude|session-b".into())
+        );
+        workspace.key(&sender, ctrl(KeyCode::Char('a')));
+        for ch in "worker-9f2a".chars() {
+            press(&mut workspace, &sender, KeyCode::Char(ch));
+        }
+        assert_eq!(
+            workspace.palette.selected().map(|entry| entry.key.clone()),
+            Some("session|harness.codex|session-a".into())
+        );
+        let mut terminal = Terminal::new(TestBackend::new(60, 18)).unwrap();
+        terminal
+            .draw(|frame| draw_workspace(frame, &mut workspace))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("Choose agent session"), "{text}");
+        assert!(text.contains("Payments API"), "{text}");
+        assert!(!press(&mut workspace, &sender, KeyCode::Enter));
+        assert_eq!(
+            workspace.agents.session_scope,
+            Some(("harness.codex".into(), "session-a".into()))
+        );
+        assert_eq!(workspace.agents.current(), Some(&first));
+
+        // An empty result stays open and clear/cancel work at 60x18.
+        assert!(!workspace.key(&sender, ctrl(KeyCode::Char('p'))));
+        for ch in "choose agent session".chars() {
+            press(&mut workspace, &sender, KeyCode::Char(ch));
+        }
+        press(&mut workspace, &sender, KeyCode::Enter);
+        for ch in "zzzz".chars() {
+            press(&mut workspace, &sender, KeyCode::Char(ch));
+        }
+        assert!(workspace.palette.is_open());
+        terminal
+            .draw(|frame| draw_workspace(frame, &mut workspace))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("No matches"), "{text}");
+        workspace.key(&sender, ctrl(KeyCode::Char('a')));
+        assert!(workspace.palette.query().is_empty());
+        assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+        assert!(!workspace.palette.is_open());
+        assert_eq!(
+            workspace.agents.session_scope,
+            Some(("harness.codex".into(), "session-a".into()))
+        );
+    }
+
+    #[test]
+    fn inspector_sections_navigate_enter_and_return_with_the_same_roster_state() {
+        let selected = session("harness.codex", "selected", "running", None);
+        let mut workspace = Workspace::new();
+        workspace.agents.update(catalog(vec![
+            session("harness.pi", "other", "completed", None),
+            selected.clone(),
+        ]));
+        workspace.agents.display_offset = 0;
+        workspace.agents.filter = Filter::Active;
+        workspace
+            .agents
+            .apply_filters(Some(&session_key(&selected)));
+        let (sender, requests) = mpsc::channel();
+        assert!(!press(&mut workspace, &sender, KeyCode::Enter));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::History {
+                selection: HistorySelection::Session(_, SessionView::Overview),
+                ..
+            })
+        ));
+        workspace.finish(Ok(WorkspaceResponse::History(session_history_page(&[
+            "Session overview",
+            "Session details",
+        ]))));
+        assert_eq!(workspace.inspector.tab, inspector::Tab::Overview);
+        assert!(workspace.inspector.tabs_focused);
+
+        let mut terminal = Terminal::new(TestBackend::new(60, 18)).unwrap();
+        terminal
+            .draw(|frame| draw_workspace(frame, &mut workspace))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        for expected in [
+            "Overview",
+            "Prompts",
+            "Details",
+            "READ: Enter",
+            "Codex session",
+        ] {
+            assert!(text.contains(expected), "missing {expected}: {text}");
+        }
+
+        // Right selects Prompts without loading; Down enters the UI-04
+        // navigator; Esc returns to the same tab strip.
+        assert!(!press(&mut workspace, &sender, KeyCode::Right));
+        assert_eq!(workspace.inspector.tab, inspector::Tab::Prompts);
+        assert!(requests.try_recv().is_err());
+        assert!(!press(&mut workspace, &sender, KeyCode::Down));
+        assert!(
+            matches!(requests.try_recv(), Ok(WorkspaceRequest::Work(WorkCommand::Prompts(owner))) if owner.session == "selected")
+        );
+        workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::Prompts(Vec::new()))));
+        assert!(workspace.work.is_some());
+        press(&mut workspace, &sender, KeyCode::Esc);
+        assert!(workspace.work.is_none());
+
+        // `m` from the section content loads Details in place and preserves
+        // content focus. Enter from the tab strip sets read focus.
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('m')));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::History {
+                selection: HistorySelection::Session(_, SessionView::Details),
+                ..
+            })
+        ));
+        workspace.finish(Ok(WorkspaceResponse::History(session_history_page(&[
+            "Session details",
+        ]))));
+        assert_eq!(workspace.inspector.tab, inspector::Tab::Details);
+        terminal
+            .draw(|frame| draw_workspace(frame, &mut workspace))
+            .unwrap();
+        let text: String = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect();
+        assert!(text.contains("Session details value"), "{text}");
+
+        assert!(!press(&mut workspace, &sender, KeyCode::Enter));
+        assert!(!workspace.inspector.tabs_focused);
+        // Ctrl+Left/Right switch sections from content without returning to the
+        // tab strip or losing content focus.
+        assert!(!workspace.key(&sender, ctrl(KeyCode::Right)));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::History {
+                selection: HistorySelection::Session(_, SessionView::Overview),
+                ..
+            })
+        ));
+        workspace.finish(Ok(WorkspaceResponse::History(session_history_page(&[
+            "Session overview",
+        ]))));
+        assert_eq!(workspace.inspector.tab, inspector::Tab::Overview);
+        assert!(!workspace.inspector.tabs_focused);
+        assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+        assert!(workspace.history.is_empty());
+        assert_eq!(workspace.agents.current(), Some(&selected));
+        assert_eq!(workspace.agents.filter, Filter::Active);
+        assert_eq!(workspace.agents.current(), Some(&selected));
+        assert_eq!(workspace.agents.display_offset, 0);
+    }
+
+    #[test]
+    fn unnamed_sessions_render_human_context_never_a_name_unavailable_label() {
+        let mut unnamed = session("harness.codex", "unnamed", "running", None);
+        unnamed.project_path = Some("/work/payments-api".into());
+        unnamed.project_origin = Some(ProjectOrigin::NativeRecordedWorkspace);
+        unnamed.worker_id = Some("w-1".into());
+        let mut nickname_only = session("harness.claude", "nickname", "running", None);
+        nickname_only.native_context = Some(Box::new(NativeSessionContext {
+            agent_name: Some("payments-helper".into()),
+            ..NativeSessionContext::default()
+        }));
+        nickname_only.project_path = Some("/work/agenturm".into());
+        nickname_only.project_origin = Some(ProjectOrigin::NativeRecordedWorkspace);
+        let mut agents = AgentList::default();
+        agents.update(catalog(vec![unnamed, nickname_only]));
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| draw_agents(frame, &mut agents, false, None))
+                .unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(
+                text.contains("Codex worker w-1 · payments-api"),
+                "{width}: {text}"
+            );
+            assert!(text.contains("payments-helper"), "{width}: {text}");
+            assert!(!text.contains("Name unavailable"), "{width}: {text}");
         }
     }
 }

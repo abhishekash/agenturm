@@ -38,17 +38,23 @@ pub(super) fn project(row: &RecordedSession) -> &str {
     row.project_path
         .as_deref()
         .filter(|p| row.project_origin.is_some() && !p.trim().is_empty())
-        .unwrap_or("Project unavailable")
+        .unwrap_or("No recorded project")
 }
 
 pub(super) fn provider(row: &RecordedSession) -> &str {
-    match source_family(&row.harness_id) {
-        "harness.codex" => "Codex",
-        "harness.claude" => "Claude Code",
-        "harness.pi" => "Pi",
-        "harness.kiro" => "Kiro",
-        "harness.opencode" => "OpenCode",
-        source => source.strip_prefix("harness.").unwrap_or(source),
+    // Presentation fallback only: the leading source family names the adapter,
+    // and a per-file or variant suffix does not change the human label. Nothing
+    // here routes or selects evidence.
+    let source = source_family(&row.harness_id);
+    let family = source.strip_prefix("harness.").unwrap_or(source);
+    let root = family.split('.').next().unwrap_or(family);
+    match root {
+        "codex" => "Codex",
+        "claude" => "Claude Code",
+        "pi" => "Pi",
+        "kiro" => "Kiro",
+        "opencode" => "OpenCode",
+        other => other,
     }
 }
 
@@ -68,12 +74,25 @@ pub(super) fn name(row: &RecordedSession) -> std::borrow::Cow<'_, str> {
     {
         return nickname.into();
     }
-    let mut label = format!("{} session", provider(row));
+    // Never render a literal "Name unavailable". Derive the most specific
+    // human context the record actually has: provider, role and project.
+    let provider = provider(row);
+    let provider = if provider.trim().is_empty() {
+        "Agent"
+    } else {
+        provider.trim()
+    };
+    let mut label = if let Some(worker) = row.worker_id.as_deref().filter(|w| !w.trim().is_empty())
+    {
+        format!("{provider} worker {worker}")
+    } else {
+        format!("{provider} session")
+    };
     if let Some(role) = row
         .native_context
         .as_deref()
         .and_then(|context| context.agent_role.as_deref())
-        .filter(|value| !value.trim().is_empty())
+        .filter(|value| !value.trim().is_empty() && *value != provider)
     {
         label.push_str(&format!(" · {role}"));
     }
@@ -83,6 +102,7 @@ pub(super) fn name(row: &RecordedSession) -> std::borrow::Cow<'_, str> {
             .as_deref()
             .and_then(|path| std::path::Path::new(path).file_name())
             .and_then(|name| name.to_str())
+            .filter(|name| !name.is_empty())
     {
         label.push_str(&format!(" · {project}"));
     }
@@ -143,36 +163,88 @@ pub(super) fn group(row: &RecordedSession, grouping: Grouping) -> &str {
 }
 
 fn filter_lines(agents: &AgentList, width: u16) -> Vec<Line<'static>> {
-    let mut chips = FILTERS
-        .iter()
-        .map(|filter| {
-            let count = agents.catalog.as_ref().map_or("—".into(), |catalog| {
-                catalog
-                    .sessions
-                    .iter()
-                    .filter(|row| filter.accepts(row))
-                    .count()
-                    .to_string()
-            });
-            (
-                format!("{} {count}", filter.label()),
-                if *filter == agents.filter {
-                    selection_style()
-                } else {
-                    label_style()
-                },
-            )
-        })
-        .collect::<Vec<_>>();
-    if let Some(catalog) = &agents.catalog {
-        let unknown = catalog
-            .sessions
-            .iter()
-            .filter(|row| !FILTERS[1..].iter().any(|f| f.accepts(row)))
-            .count();
-        if unknown != 0 {
-            chips.push((format!("Unknown {unknown}"), label_style()));
+    let loaded = agents.catalog.is_some();
+    let sessions = agents
+        .catalog
+        .as_ref()
+        .map(|catalog| catalog.sessions.as_slice())
+        .unwrap_or(&[]);
+    let count = |value: usize| {
+        if loaded {
+            value.to_string()
+        } else {
+            "—".to_owned()
         }
+    };
+    let scoped = |row: &RecordedSession| agents.in_identity_scope(row);
+    let today = sessions
+        .iter()
+        .filter(|row| scoped(row))
+        .filter(|row| TimeScope::Today.accepts(row, agents.day_start()))
+        .count();
+    let history = sessions.iter().filter(|row| scoped(row)).count();
+    let in_time = |row: &RecordedSession| agents.in_session_scope(row);
+    let mut chips: Vec<(String, ratatui::style::Style)> = Vec::new();
+    let time_chip = |label: &str, value: String, active: bool| {
+        (
+            format!("{label} {value}"),
+            if active {
+                selection_style()
+            } else {
+                label_style()
+            },
+        )
+    };
+    chips.push(time_chip(
+        "Today",
+        count(today),
+        agents.time_scope == TimeScope::Today,
+    ));
+    chips.push(time_chip(
+        "History",
+        count(history),
+        agents.time_scope == TimeScope::All,
+    ));
+    for filter in FILTERS {
+        let matching = sessions
+            .iter()
+            .filter(|row| in_time(row) && filter.accepts(row))
+            .count();
+        chips.push((
+            format!("{} {}", filter.label(), count(matching)),
+            if filter == agents.filter {
+                selection_style()
+            } else {
+                label_style()
+            },
+        ));
+    }
+    if agents.filter == Filter::ToReview {
+        let matching = sessions
+            .iter()
+            .filter(|row| in_time(row) && Filter::ToReview.accepts(row))
+            .count();
+        chips.push((format!("To review {}", count(matching)), selection_style()));
+    }
+    let errors = sessions
+        .iter()
+        .filter(|row| in_time(row) && errors_only(row))
+        .count();
+    chips.push((
+        format!("Errors {}", count(errors)),
+        if agents.errors_only {
+            selection_style()
+        } else {
+            label_style()
+        },
+    ));
+    let unknown = sessions
+        .iter()
+        .filter(|row| in_time(row))
+        .filter(|row| !FILTERS[1..].iter().any(|f| f.accepts(row)))
+        .count();
+    if unknown != 0 {
+        chips.push((format!("Unknown {}", count(unknown)), label_style()));
     }
     let mut lines = Vec::new();
     let mut spans = vec![Span::raw(" ")];
@@ -232,7 +304,7 @@ pub(super) fn draw(
         Constraint::Length(lines.len() as u16),
         Constraint::Length(1),
         Constraint::Min(1),
-        Constraint::Length(3),
+        Constraint::Length(4),
     ])
     .areas(area);
     let [identity, appearance] =
@@ -276,16 +348,13 @@ pub(super) fn draw(
         navigation,
     );
     if agents.help {
-        let help = format!(
-            "{}\n{} · H Host · U Usage\nTab / Shift+Tab Status filter · / Search · a Reset\nCtrl+F Investigate retained evidence\nEnter Inspect · Esc Back · Ctrl+R / V Review · P Prompts\nX Mark request seen · v Internal reviews\nF2 Themes · Ctrl+P Appearance
-G Group project/source/none · f Tree/flat · newest first\n←/→ Collapse/expand · p Pause · Y To review\nAlt+↑/↓ Parent/child · Alt+→ Needs attention\n[ Newer · ] Show more · l Latest · R Refresh\nb Tasks · w Workflow · c Copy · x Export · q Quit",
-            keymap::navigation_hints(&keymap::NAVIGATION[..5]),
-            keymap::navigation_hints(&keymap::NAVIGATION[5..])
-        );
+        // The shell owns the scrollable reference (`F1` / `?`). A direct render
+        // of the command center keeps one deterministic pointer instead of a
+        // second, drifting help table.
         frame.render_widget(
-            Paragraph::new(help)
+            Paragraph::new("F1 / ? opens the scrollable cockpit reference · Esc closes")
                 .wrap(Wrap { trim: false })
-                .block(panel(HELP_CLOSE_HINT)),
+                .block(panel(" Help ")),
             area,
         );
         return;
@@ -414,6 +483,13 @@ G Group project/source/none · f Tree/flat · newest first\n←/→ Collapse/exp
             None if pending => "Loading session evidence…",
             None => "Session history unavailable · R retry",
             Some([]) => "No sessions collected yet · R refresh",
+            Some(_) if !agents.search.is_empty() => {
+                "No sessions match this search · Enter / Esc keeps it · a resets"
+            }
+            Some(_) if agents.errors_only => "No recorded failures on this page · E clears",
+            Some(_) if agents.time_scope == TimeScope::Today => {
+                "Nothing pending today · O History shows earlier work"
+            }
             Some(_) => "No tasks match this filter · a reset",
         };
         frame.render_widget(
@@ -431,7 +507,15 @@ G Group project/source/none · f Tree/flat · newest first\n←/→ Collapse/exp
             if agents.show_more_selected {
                 "Show more · next recorded page".into()
             } else {
-                "Counts cover the loaded evidence page".into()
+                format!(
+                    "{} · {} · page counts",
+                    agents.time_scope.label(),
+                    if agents.errors_only {
+                        "errors only"
+                    } else {
+                        "all recorded states"
+                    }
+                )
             }
         },
         |row| {
@@ -450,6 +534,67 @@ G Group project/source/none · f Tree/flat · newest first\n←/→ Collapse/exp
     } else {
         "Loaded page · R refresh"
     };
+    let complete = agents
+        .catalog
+        .as_ref()
+        .is_some_and(|catalog| catalog.older.is_none());
+    let coverage = if complete {
+        "page counts · newest retained page"
+    } else {
+        "page counts · older sessions not loaded"
+    };
+    let mut scope_line = format!(
+        "{} · {} · {} · recorded lifecycle, not live process state",
+        agents.time_scope.label(),
+        coverage,
+        if agents.errors_only {
+            "errors only"
+        } else {
+            "all states"
+        }
+    );
+    if !agents.search.is_empty() {
+        scope_line.push_str(&format!(
+            " · {} match{} for /{}",
+            agents.visible.len(),
+            if agents.visible.len() == 1 { "" } else { "es" },
+            visible_text(&agents.search)
+        ));
+    }
+    if let Some((source, id)) = &agents.session_scope {
+        let scoped_name = agents
+            .catalog
+            .as_ref()
+            .and_then(|catalog| {
+                catalog
+                    .sessions
+                    .iter()
+                    .find(|row| row.harness_id == *source && row.session_id == *id)
+            })
+            .map(|row| name(row).into_owned())
+            .unwrap_or_else(|| "selected session".into());
+        scope_line.push_str(&format!(
+            " · scope {} · {}",
+            if agents.subtree_scope {
+                "exact agent + delegated subtree"
+            } else {
+                "exact agent"
+            },
+            visible_text(&scoped_name)
+        ));
+        if agents.subtree_unsupported > 0 {
+            scope_line.push_str(&format!(
+                " · {} relationship(s) excluded",
+                agents.subtree_unsupported
+            ));
+        }
+        if agents.subtree_outside_page > 0 {
+            scope_line.push_str(&format!(
+                " · {} parent(s) outside page",
+                agents.subtree_outside_page
+            ));
+        }
+    }
     let detail = message.map(visible_text).unwrap_or_else(|| {
         agents
             .current()
@@ -463,7 +608,7 @@ G Group project/source/none · f Tree/flat · newest first\n←/→ Collapse/exp
                             Some(ProjectOrigin::OperatorTaskWorkspace) => "Operator task workspace",
                             Some(ProjectOrigin::NativeRecordedWorkspace) =>
                                 "Native session workspace",
-                            None => "Project unavailable",
+                            None => "No recorded project",
                         },
                         visible_text(project(row))
                     )
@@ -472,12 +617,17 @@ G Group project/source/none · f Tree/flat · newest first\n←/→ Collapse/exp
     });
     let hints = if agents.editing {
         "Enter / Esc done · Backspace edit"
+    } else if !agents.search.is_empty() {
+        "Enter / Esc search · a reset · q quit"
+    } else if area.width >= 110 {
+        "Tab filter · T Today · O History · E Errors · S subtree · Ctrl+P sessions · Enter inspect · / search · F1 help"
     } else {
-        "Tab filter · Enter inspect · / search · F1 help · q quit"
+        "T Today · O History · E Errors · / search · Enter inspect"
     };
     frame.render_widget(
         Paragraph::new(vec![
             Line::styled(roster_cell(&identity, area.width), label_style()),
+            Line::styled(roster_cell(&scope_line, area.width), theme::muted()),
             Line::from(hints),
             Line::from(detail),
         ]),
