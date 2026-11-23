@@ -495,6 +495,7 @@ fn pending_requests(
             session_id: owner.map(|value| value.session.clone()),
             snapshot_id: Some(page.snapshot_id),
             limit: MAX_REQUESTS,
+            include_receiver_clock: false,
         })?;
     if native.snapshot_id != page.snapshot_id {
         return Err("Native attention history changed; refresh Workflow".into());
