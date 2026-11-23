@@ -72,14 +72,15 @@ The final archive is `agenturm-0.3.8-linux-x86_64.tar.gz`.
 - App SHA-256: `2bf3d1df191ba45ce9723f3daabd76caa106ebff3f411282352119c44e53b93f`.
 - All nine runtime executables match the first qualified runtime archive
   byte for byte; the final archive updates its bundled installation guide.
-- Publication and final native CI results are recorded when complete.
+- Native Linux x86-64 and ARM64 qualification passed in [run 45120054721](https://github.com/abhishekash/agenturm/actions/runs/45120054721), including the ARM64 prior-release upgrade and systemd user service. Publication is recorded separately.
 
-CI run [45118512825](https://github.com/abhishekash/agenturm/actions/runs/45118512825)
+CI run [45120054720](https://github.com/abhishekash/agenturm/actions/runs/45120054720)
 passed Rust protocol/adapters, OTLP end-to-end, both Node versions, and all
 five required SDK jobs: automatic CLI capture, Pydantic AI, LangChain,
 OpenAI Agents and Google ADK. That revision uses the same frozen Rust runtime.
-The Python application matrix and corrected native bundle rerun were still
-pending when this candidate record was prepared.
+The Python 3.11–3.14 application matrix was still running when the qualified
+Rust candidate was prepared for merge. Both native bundle jobs and all required
+Rust and SDK jobs had completed successfully.
 
 ## Remaining acceptance
 
