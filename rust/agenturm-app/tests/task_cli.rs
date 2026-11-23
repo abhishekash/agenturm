@@ -139,6 +139,8 @@ fn source_backed_task_drafts_require_the_same_exact_live_grant_and_keep_authored
     let config = root.0.join("sources.json");
     let draft = root.0.join("draft.json");
     let unbound = root.0.join("unbound.json");
+    let review_file = root.0.join("review.json");
+    let pending_review_draft = root.0.join("pending-review-draft.json");
     let content = "synthetic retained prompt excerpt";
     let rows = concat!(
         "{\"type\":\"session\",\"id\":\"pi-draft\"}\n",
@@ -180,6 +182,32 @@ fn source_backed_task_drafts_require_the_same_exact_live_grant_and_keep_authored
         .unwrap()["event_id"]
         .as_str()
         .unwrap();
+    let review = invoke(&[
+        "review",
+        "--db",
+        db_arg,
+        "--harness-id",
+        "harness.pi",
+        "--session-id",
+        "pi-draft",
+        "--turn-id",
+        "turn-1",
+        "--format",
+        "json",
+    ]);
+    assert!(review.status.success());
+    assert!(!String::from_utf8_lossy(&review.stdout).contains(content));
+    let receipt: Value = serde_json::from_slice(&review.stdout).unwrap();
+    assert!(receipt["history_identity"].is_string());
+    std::fs::write(&review_file, &review.stdout).unwrap();
+    let review_args = [
+        "draft",
+        "--config",
+        config_arg,
+        "--review-file",
+        review_file.to_str().unwrap(),
+    ];
+    assert_failure(run(&db, &review_args));
     let task = self::json(
         &db,
         &[
@@ -233,6 +261,49 @@ fn source_backed_task_drafts_require_the_same_exact_live_grant_and_keep_authored
     assert_failure(prepare("turn-1"));
     assert!(!draft.exists());
     check(acquire());
+    let mut forged_review = receipt.clone();
+    for (name, altered) in [
+        ("history_identity", json!("1".repeat(32))),
+        ("history_identity", Value::Null),
+    ] {
+        forged_review[name] = altered;
+        std::fs::write(&review_file, forged_review.to_string()).unwrap();
+        assert_failure(run(&db, &review_args));
+    }
+    let mut forged_review = receipt.clone();
+    let selected = forged_review["observations"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row["event_id"] == event)
+        .unwrap();
+    selected["observed_at_unix_ns"] = json!("1");
+    std::fs::write(&review_file, forged_review.to_string()).unwrap();
+    assert_failure(run(&db, &review_args));
+    std::fs::write(&review_file, &review.stdout).unwrap();
+    let pinned = self::json(&db, &review_args);
+    assert_eq!(
+        pinned["review"]["history_identity"],
+        receipt["history_identity"]
+    );
+    assert_eq!(pinned["excerpt"], content);
+    assert_eq!(pinned["source"]["event_id"], event);
+    let restored_copy = root.0.join("restored-copy.sqlite");
+    Store::open_read_only(&db)
+        .unwrap()
+        .backup_to(&restored_copy)
+        .unwrap();
+    check(invoke(&[
+        "content",
+        "grant",
+        "--db",
+        restored_copy.to_str().unwrap(),
+        "--source-id",
+        "harness.pi",
+        "--config",
+        config_arg,
+    ]));
+    assert_failure(run(&restored_copy, &review_args));
     assert_failure(prepare("another-turn"));
     check(prepare("turn-1"));
     assert_failure(prepare("turn-1"));
@@ -287,7 +358,21 @@ fn source_backed_task_drafts_require_the_same_exact_live_grant_and_keep_authored
     ];
     assert_eq!(self::json(&db, &reveal_args)["excerpt"], content);
 
-    check(run(&db, &draft_args("turn-1", unbound_path)));
+    check(run(
+        &db,
+        &[
+            &review_args[..],
+            &[
+                "--event-id",
+                event,
+                "--revision",
+                "0",
+                "--output",
+                unbound_path,
+            ],
+        ]
+        .concat(),
+    ));
     let decision_args = [
         "decide",
         &id,
@@ -325,6 +410,14 @@ fn source_backed_task_drafts_require_the_same_exact_live_grant_and_keep_authored
             .len(),
         2
     );
+    check(run(
+        &db,
+        &[
+            &review_args[..],
+            &["--output", pending_review_draft.to_str().unwrap()],
+        ]
+        .concat(),
+    ));
     check(invoke(&[
         "content",
         "revoke",
@@ -334,8 +427,11 @@ fn source_backed_task_drafts_require_the_same_exact_live_grant_and_keep_authored
         "harness.pi",
     ]));
     assert_failure(run(&db, &reveal_args));
+    assert_failure(run(&db, &review_args));
+    assert_failure(approve(pending_review_draft.to_str().unwrap(), &db));
     check(acquire());
     assert_failure(run(&db, &reveal_args));
+    assert_failure(approve(pending_review_draft.to_str().unwrap(), &db));
     let metadata = self::json(&db, &["continuity", &id]);
     assert_eq!(
         metadata["approvals"][0]["continuation"],

@@ -1,9 +1,16 @@
 //! CLI composition of current source proofs and explicit task approvals.
 
 use super::*;
+use agenturm_kernel::ReadSnapshot;
 use agenturm_store::{TaskDraftApproval, TaskSourceProof, WorkspaceHistory};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
+
+mod review;
+pub(super) use review::ReviewFile;
+
+#[cfg(target_os = "linux")]
+use crate::content_preview::PromptSelection;
 
 const FORMAT: &str = "agenturm-rust-task-draft/1";
 const MAX_DRAFT_BYTES: u64 = 64 * 1024;
@@ -13,9 +20,7 @@ pub(crate) trait TaskPromptVerifier {
     fn with_prompt(
         &self,
         source: &ExtensionId,
-        session: &str,
-        event: &str,
-        revision: u32,
+        selection: PromptSelection<'_>,
         consume: &mut dyn FnMut(&agenturm_content::VerifiedPrompt) -> Result<(), String>,
     ) -> Result<(), String>;
 }
@@ -25,13 +30,23 @@ impl TaskPromptVerifier for agenturm_storage_service::NativeStore {
     fn with_prompt(
         &self,
         source: &ExtensionId,
-        session: &str,
-        event: &str,
-        revision: u32,
+        selection: PromptSelection<'_>,
         consume: &mut dyn FnMut(&agenturm_content::VerifiedPrompt) -> Result<(), String>,
     ) -> Result<(), String> {
-        self.with_verified_prompt(source, session, event, revision, consume)
-            .map_err(string)
+        if let Some(identity) = selection.history_identity
+            && self.history_identity().map_err(string)? != identity
+        {
+            return Err("The Review receipt belongs to a different history".into());
+        }
+        self.with_verified_prompt_at_snapshot(
+            source,
+            selection.session_id,
+            selection.event_id,
+            selection.revision,
+            selection.snapshot_id,
+            consume,
+        )
+        .map_err(string)
     }
 }
 
@@ -62,11 +77,26 @@ pub(super) struct ExactSource {
     pub anchor: WorkspaceAnchor,
     pub event_id: String,
     pub revision: u32,
+    pub review: Option<ReviewPin>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct ReviewPin {
+    history_identity: String,
+    snapshot_id: ReadSnapshot,
+    observed_at_unix_ns: u64,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) enum DraftSource {
+    Prompt(ExactSource),
+    Review(ReviewFile),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct DraftRequest {
-    pub source: ExactSource,
+    pub source: DraftSource,
     pub config: Option<PathBuf>,
     pub task_id: Option<u64>,
     pub output: Option<PathBuf>,
@@ -102,6 +132,8 @@ struct Draft {
     prepared_at_unix_ns: u64,
     target: Option<DraftTarget>,
     source: TaskSourceProof,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    review: Option<ReviewPin>,
     draft_sha256: String,
     excerpt: String,
     title: String,
@@ -110,13 +142,17 @@ struct Draft {
 
 impl Draft {
     fn binding(&self) -> TaskResult<String> {
-        let frozen = serde_json::to_vec(&(
+        let fields = (
             &self.format,
             &self.history_binding,
             self.prepared_at_unix_ns,
             &self.target,
             &self.source,
-        ))
+        );
+        let frozen = match &self.review {
+            Some(review) => serde_json::to_vec(&(fields, review)),
+            None => serde_json::to_vec(&fields),
+        }
         .map_err(string)?;
         Ok(hash(frozen))
     }
@@ -146,6 +182,10 @@ pub(super) fn draft(
     request: &DraftRequest,
     output: &mut dyn Write,
 ) -> TaskResult<()> {
+    let source = match &request.source {
+        DraftSource::Prompt(source) => source.clone(),
+        DraftSource::Review(receipt) => receipt.select()?,
+    };
     let target = request.task_id.map(|id| task(ledger, id)).transpose()?;
     let frozen_target = target.as_ref().map(|task| DraftTarget {
         task_id: task.id,
@@ -154,7 +194,7 @@ pub(super) fn draft(
     with_source(
         access,
         request.config.as_deref(),
-        &request.source,
+        &source,
         |proof, excerpt| {
             let prepared_at_unix_ns = std::time::SystemTime::now()
                 .duration_since(std::time::UNIX_EPOCH)
@@ -167,6 +207,7 @@ pub(super) fn draft(
                 prepared_at_unix_ns,
                 target: frozen_target,
                 source: proof,
+                review: source.review.clone(),
                 draft_sha256: String::new(),
                 excerpt: excerpt.into(),
                 title: target.map_or_else(|| "Continue recorded work".into(), |task| task.title),
@@ -213,6 +254,7 @@ pub(super) fn approve(
         request.config.as_deref(),
         ledger,
         &draft.source,
+        draft.review.as_ref(),
         |ledger| {
             let approved = TaskDraftApproval {
                 draft_sha256: draft.draft_sha256.clone(),
@@ -269,6 +311,7 @@ pub(super) fn add_decision(
         source.config.as_deref(),
         ledger,
         &draft.source,
+        draft.review.as_ref(),
         |ledger| {
             Ok(ledger
                 .add_task_decision_with_source(id, input, expected, Some(&draft.source))?
@@ -299,7 +342,7 @@ pub(super) fn read(
     with_source(
         access,
         config,
-        &from_proof(&approval.source),
+        &from_proof(&approval.source, None),
         |current, excerpt| {
             check_proof(&approval.source, &current)?;
             let retained = ledger.task_handoff(id)?.ok_or(MISSING_TASK)?;
@@ -319,9 +362,10 @@ fn with_frozen_source<T>(
     config: Option<&Path>,
     ledger: &WorkspaceLedger,
     frozen: &TaskSourceProof,
+    review: Option<&ReviewPin>,
     use_source: impl FnOnce(&WorkspaceLedger) -> TaskResult<T>,
 ) -> TaskResult<T> {
-    with_source(access, config, &from_proof(frozen), |current, _| {
+    with_source(access, config, &from_proof(frozen, review), |current, _| {
         check_proof(frozen, &current)?;
         if access.verifier.is_some() {
             // A broker waits for the callback's ACK. Verify the exact anchor
@@ -345,11 +389,12 @@ fn check_proof(frozen: &TaskSourceProof, current: &TaskSourceProof) -> TaskResul
     Ok(())
 }
 
-fn from_proof(proof: &TaskSourceProof) -> ExactSource {
+fn from_proof(proof: &TaskSourceProof, review: Option<&ReviewPin>) -> ExactSource {
     ExactSource {
         anchor: proof.anchor.clone(),
         event_id: proof.event_id.clone(),
         revision: proof.revision,
+        review: review.cloned(),
     }
 }
 
@@ -366,14 +411,31 @@ fn with_source<T>(
     }
     #[cfg(target_os = "linux")]
     {
-        use crate::content_preview::{PromptSelection, with_verified_prompt};
+        use crate::content_preview::with_verified_prompt;
         let selected = &source.anchor;
+        let selection = PromptSelection {
+            session_id: &selected.session_id,
+            event_id: &source.event_id,
+            revision: source.revision,
+            snapshot_id: source.review.as_ref().map(|review| review.snapshot_id),
+            history_identity: source
+                .review
+                .as_ref()
+                .map(|review| review.history_identity.as_str()),
+        };
         let consume = |current: &agenturm_content::VerifiedPrompt| {
             if selected.session_id != current.session_id
                 || selected.worker_id != current.worker_id
                 || selected.turn_id.as_deref() != Some(current.turn_id.as_str())
             {
                 return Err("The prompt is outside the selected session, worker, or turn".into());
+            }
+            if source
+                .review
+                .as_ref()
+                .is_some_and(|review| review.observed_at_unix_ns != current.observed_at_unix_ns)
+            {
+                return Err("The retained prompt timestamp differs from the frozen Review".into());
             }
             use_source(
                 TaskSourceProof {
@@ -393,19 +455,13 @@ fn with_source<T>(
             }
             let mut consume = Some(consume);
             let mut outcome = None;
-            let transport = verifier.with_prompt(
-                &selected.harness_id,
-                &selected.session_id,
-                &source.event_id,
-                source.revision,
-                &mut |proof| {
-                    let consume = consume.take().ok_or("Prompt proof was already delivered")?;
-                    let result = consume(proof);
-                    let status = result.as_ref().map(|_| ()).map_err(string);
-                    outcome = Some(result);
-                    status
-                },
-            );
+            let transport = verifier.with_prompt(&selected.harness_id, selection, &mut |proof| {
+                let consume = consume.take().ok_or("Prompt proof was already delivered")?;
+                let result = consume(proof);
+                let status = result.as_ref().map(|_| ()).map_err(string);
+                outcome = Some(result);
+                status
+            });
             return match outcome {
                 Some(Err(error)) => Err(error),
                 Some(Ok(value)) => {
@@ -423,13 +479,7 @@ fn with_source<T>(
             access.history,
             config,
             &selected.harness_id,
-            PromptSelection {
-                session_id: &selected.session_id,
-                event_id: &source.event_id,
-                revision: source.revision,
-                snapshot_id: None,
-                history_identity: None,
-            },
+            selection,
             consume,
         )?
     }

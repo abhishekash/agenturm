@@ -785,7 +785,7 @@ impl Display for NativeClientError {
             }
             Self::Read(ReadFailure::TraceScopeTooLarge { max_rows }) => write!(
                 formatter,
-                "trace exceeds the {max_rows}-row turn-resolution limit; select an explicit turn"
+                "trace exceeds the {max_rows}-row retained scope limit"
             ),
             Self::Read(ReadFailure::EvalTraceNotRetained) => formatter
                 .write_str("an evaluation trace is absent from the selected retained source"),

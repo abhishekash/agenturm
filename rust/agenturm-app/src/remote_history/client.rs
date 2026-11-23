@@ -250,7 +250,7 @@ fn read_error(error: ReadFailure) -> String {
             format!("History snapshot expired. Refresh at snapshot {minimum_snapshot_id} or later.")
         }
         ReadFailure::TraceScopeTooLarge { max_rows } => {
-            format!("Trace exceeds the {max_rows}-row turn-resolution limit")
+            format!("Trace exceeds the {max_rows}-row retained scope limit")
         }
         ReadFailure::Unavailable => "History receiver is unavailable".into(),
         ReadFailure::EvalTraceNotRetained => "Evaluation trace is no longer retained".into(),
