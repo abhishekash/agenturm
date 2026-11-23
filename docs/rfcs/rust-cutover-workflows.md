@@ -73,8 +73,10 @@ Evaluation pass/fail is independent of the execution status of the spans.
 Corrected metadata advances the outcome revision. An exact replay of any
 previous revision leaves the latest outcome unchanged. Plain `evals`
 prints the current outcome and `--json` returns its metadata or `null`.
-SQLite backups preserve outcomes. Pruning removes the outcome and its
-revisions when the trace loses its last retained span in that source.
+SQLite backups preserve outcomes and replay receipts. Pruning removes
+outcome metadata when the trace loses its last retained span in that source.
+Retained digests and revision numbers prevent an old import from reviving
+the outcome if a new span arrives under the same trace ID.
 Aggregate evaluation views, revision browsing, and private result detail
 remain outside this implementation.
 

@@ -147,9 +147,23 @@ fn evaluation_import_reopens_exact_retained_trace_and_preserves_execution_status
     assert_eq!(eval(&db, PRIMARY), Value::Null);
     assert_eq!(eval(&db, SIBLING)["outcome"]["passed"], false);
     assert!(
-        failed(import(PRIMARY, vec![correction]))
+        failed(import(PRIMARY, vec![correction.clone()]))
             .contains("absent from the selected retained source")
     );
+
+    import_traces(PRIMARY, vec![span(TRACE, "1111111111111113", 700)]);
+    assert_eq!(eval(&db, PRIMARY), Value::Null);
+    assert!(checked(import(PRIMARY, vec![original.clone()])).contains("Replayed 1"));
+    assert!(checked(import(PRIMARY, vec![correction.clone()])).contains("Replayed 1"));
+    assert_eq!(eval(&db, PRIMARY), Value::Null);
+
+    correction["scores"][0]["score"] = json!(0.75);
+    assert!(checked(import(PRIMARY, vec![correction])).contains("Corrected 1"));
+    let latest = eval(&db, PRIMARY);
+    assert_eq!(latest["revision"], 3);
+    assert_eq!(latest["outcome"]["scores"][0]["score"], 0.75);
+    assert!(checked(import(PRIMARY, vec![original])).contains("Replayed 1"));
+    assert_eq!(eval(&db, PRIMARY), latest);
 }
 
 #[test]

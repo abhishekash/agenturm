@@ -146,30 +146,31 @@ impl Store {
         if schema < 15 || !retained_trace(&transaction, source, trace_id)? {
             return Ok(None);
         }
-        let row: Option<(u64, String)> = transaction
+        let row: Option<(u64, Option<String>)> = transaction
             .query_row(
                 "SELECT revision,outcome_json FROM agenturm_eval_outcomes
-             WHERE trace_source_id=?1 AND trace_id=?2 ORDER BY revision DESC LIMIT 1",
+                 WHERE trace_source_id=?1 AND trace_id=?2
+                 ORDER BY revision DESC LIMIT 1",
                 params![source.as_str(), trace_id],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()?;
-        row.map(|(revision, content)| {
-            let outcome: EvalOutcome = serde_json::from_str(&content)
-                .map_err(|_| StoreError::Invalid("stored evaluation metadata is invalid"))?;
-            outcome.validate()?;
-            if outcome.trace_id != trace_id {
-                return Err(StoreError::Invalid(
-                    "stored evaluation trace identity differs",
-                ));
-            }
-            Ok(RetainedEvalOutcome {
-                trace_source_id: source.clone(),
-                revision,
-                outcome,
-            })
-        })
-        .transpose()
+        let Some((revision, Some(content))) = row else {
+            return Ok(None);
+        };
+        let outcome: EvalOutcome = serde_json::from_str(&content)
+            .map_err(|_| StoreError::Invalid("stored evaluation metadata is invalid"))?;
+        outcome.validate()?;
+        if outcome.trace_id != trace_id {
+            return Err(StoreError::Invalid(
+                "stored evaluation trace identity differs",
+            ));
+        }
+        Ok(Some(RetainedEvalOutcome {
+            trace_source_id: source.clone(),
+            revision,
+            outcome,
+        }))
     }
 }
 
@@ -227,7 +228,7 @@ pub(super) fn create_schema(connection: &Connection) -> Result<()> {
             trace_id TEXT NOT NULL,
             revision INTEGER NOT NULL CHECK(typeof(revision) = 'integer' AND revision > 0),
             outcome_digest BLOB NOT NULL CHECK(length(outcome_digest)=32),
-            outcome_json TEXT NOT NULL,
+            outcome_json TEXT,
             PRIMARY KEY (trace_source_id,trace_id,revision),
             UNIQUE (trace_source_id,trace_id,outcome_digest)
          ) WITHOUT ROWID;",
@@ -249,8 +250,11 @@ pub(super) fn validate_trace_index(connection: &Connection) -> Result<()> {
 }
 
 pub(super) fn purge_unretained(connection: &Connection) -> Result<()> {
+    // Keep the digest and revision as a replay receipt after dropping the
+    // payload. A newer span may arrive with the same trace identity.
     connection.execute(
-        "DELETE FROM agenturm_eval_outcomes AS evaluation WHERE NOT EXISTS (
+        "UPDATE agenturm_eval_outcomes AS evaluation SET outcome_json=NULL
+         WHERE outcome_json IS NOT NULL AND NOT EXISTS (
             SELECT 1 FROM agenturm_observations
             WHERE source_id=evaluation.trace_source_id AND scope='session'
               AND json_extract(kind_json,'$.kind')='trace_span'

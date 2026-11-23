@@ -605,7 +605,7 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
                 ("trace_id", "TEXT", 1, 2),
                 ("revision", "INTEGER", 1, 3),
                 ("outcome_digest", "BLOB", 1, 0),
-                ("outcome_json", "TEXT", 1, 0),
+                ("outcome_json", "TEXT", 0, 0),
             ],
         ));
         eval_outcome::validate_trace_index(connection)?;
@@ -2295,10 +2295,13 @@ mod tests {
         assert_eq!(
             store
                 .connection
-                .query_row("SELECT count(*) FROM agenturm_eval_outcomes", [], |row| row
-                    .get::<_, u64>(0),)
+                .query_row(
+                    "SELECT count(*), count(outcome_json) FROM agenturm_eval_outcomes",
+                    [],
+                    |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
+                )
                 .unwrap(),
-            0
+            (1, 0)
         );
     }
 
