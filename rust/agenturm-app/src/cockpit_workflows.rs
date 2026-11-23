@@ -32,7 +32,7 @@ fn review_notes(
             retained_observations: session.review_version.retained_observations,
         };
         ledger
-            .save_decision_note(&key, version, session.snapshot_id, note)
+            .save_decision_note(&key, version, session.snapshot_id.watermark(), note)
             .map_err(|error| format!("Save review decision failed: {error}"))?;
     }
     let items = ledger

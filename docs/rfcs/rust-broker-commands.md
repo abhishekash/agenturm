@@ -51,6 +51,8 @@ Continue a traversal with the same filters and watermark. The broker limits
 source-free reads to its configured allowlist. The inspector uses the
 background workspace request loop for session and turn navigation.
 
+Pass the returned `snapshot_id` back unchanged. Backup and restore give the published history a fresh read incarnation while preserving its logical workspace identity. A cursor from an earlier branch is rejected even when new writes reach the same numeric watermark. Reopen a pinned cockpit or history gateway after restoring its broker endpoint. Unrestored histories keep their existing numeric snapshot IDs.
+
 Use `broker review --linked-traces` with an exact turn to page its linked
 spans. Use `--turn-of-trace <trace-id> --trace-source-id <otlp-source>`
 in place of `--turn-id` to select the native turn from an explicitly

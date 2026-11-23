@@ -1,15 +1,15 @@
 //! Attach the existing cockpit and attention workflow to bounded metadata reads.
 
-use super::{
-    Reply, Request, VERSION, http, loopback_address, parse_address_and_token, valid_identity,
-};
+use super::{Reply, Request, VERSION, http, loopback_address, parse_address_and_token};
 use crate::trace_receiver::ProducerToken;
 use crate::{AgenturmApp, HistoryReader, cockpit_startup, cockpit_workflows, workspace_response};
 use agenturm_kernel::{
     Observation, ObservationPage, ObservationQuery, ObservationStore, StoreCommit,
 };
 use agenturm_storage_service::native_read::ReadFailure;
-use agenturm_storage_service::{NativeSelection, ReaderHistoryReply, ReaderHistoryRequest};
+use agenturm_storage_service::{
+    NativeSelection, ReaderHistoryReply, ReaderHistoryRequest, logical_read_identity,
+};
 use agenturm_store::{
     ResolvedTraceReview, SessionPage, SessionQuery, TraceReviewQuery, WorkspaceAnchor,
     WorkspaceHistory, WorkspaceLedger,
@@ -82,6 +82,7 @@ pub(crate) struct RemoteStore {
     endpoint: SocketAddr,
     token: ProducerToken,
     identity: String,
+    read_binding: String,
 }
 
 impl RemoteStore {
@@ -96,18 +97,24 @@ impl RemoteStore {
         let ReaderHistoryReply::Identity(identity) = reply.result.map_err(read_error)? else {
             return Err("History receiver sent an unexpected identity response".into());
         };
-        if identity != reply.history_identity {
+        if logical_read_identity(&reply.history_identity) != Some(identity.as_str()) {
             return Err("History receiver identity changed".into());
         }
         Ok(Self {
             endpoint: options.endpoint,
             token,
             identity,
+            read_binding: reply.history_identity,
         })
     }
 
     fn request(&self, request: ReaderHistoryRequest) -> Result<ReaderHistoryReply, String> {
-        let reply = exchange(self.endpoint, &self.token, Some(&self.identity), request)?;
+        let reply = exchange(
+            self.endpoint,
+            &self.token,
+            Some(&self.read_binding),
+            request,
+        )?;
         reply.result.map_err(read_error)
     }
 
@@ -172,11 +179,19 @@ fn exchange(
         .map_err(|_| "History receiver response was incomplete")?;
     let reply: Reply =
         serde_json::from_slice(&bytes).map_err(|_| "Invalid history receiver response")?;
-    if reply.version != VERSION || !valid_identity(&reply.history_identity) {
+    if reply.version != VERSION || logical_read_identity(&reply.history_identity).is_none() {
         return Err("Incompatible history receiver identity or protocol".into());
     }
-    if history_identity.is_some_and(|identity| reply.history_identity != identity) {
-        return Err("History receiver identity changed".into());
+    if let Some(binding) = history_identity
+        && binding != reply.history_identity
+    {
+        return Err(read_error(
+            if logical_read_identity(binding) == logical_read_identity(&reply.history_identity) {
+                ReadFailure::SnapshotReplaced
+            } else {
+                ReadFailure::HistoryReplaced
+            },
+        ));
     }
     Ok(reply)
 }
@@ -186,6 +201,9 @@ fn read_error(error: ReadFailure) -> String {
         ReadFailure::Unauthorized => "History scope is outside the receiver grant".into(),
         ReadFailure::InvalidRequest => "History receiver rejected the request parameters".into(),
         ReadFailure::HistoryReplaced => "History receiver identity changed".into(),
+        ReadFailure::SnapshotReplaced => {
+            "History was restored or replaced. Open a new read.".into()
+        }
         ReadFailure::ExpiredSnapshot {
             minimum_snapshot_id,
         } => {

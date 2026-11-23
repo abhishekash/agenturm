@@ -19,6 +19,7 @@ pub use workspace::{
     WorkspaceRequest, WorkspaceResponse, WorkspaceView, run_workspace,
 };
 
+use agenturm_kernel::ReadSnapshot;
 use agenturm_kernel::{ExtensionId, MetricRow, ObservationPosition, Snapshot};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
@@ -239,7 +240,7 @@ pub struct RecordedTurn {
     pub session_id: String,
     pub turn_id: String,
     pub worker_id: Option<String>,
-    pub snapshot_id: u64,
+    pub snapshot_id: ReadSnapshot,
     pub lifecycle: Option<(String, Option<String>)>,
 }
 
@@ -680,7 +681,7 @@ mod tests {
     fn older_history_cursor_is_exact_and_keeps_the_query_snapshot() {
         let mut snapshot = snapshot_with_panes();
         snapshot.observations_truncated = true;
-        snapshot.history_snapshot_id = 77;
+        snapshot.history_snapshot_id = 77.into();
         snapshot.observations.push(agenturm_kernel::Observation {
             harness_id: ExtensionId::parse("harness.codex").unwrap(),
             event_id: "event-1".into(),
@@ -704,7 +705,7 @@ mod tests {
                 harness_id: "harness.codex".into(),
                 event_id: "event-1".into(),
                 revision: 2,
-                snapshot_id: 77,
+                snapshot_id: 77.into(),
             })
         );
     }

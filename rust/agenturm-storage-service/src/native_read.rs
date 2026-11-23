@@ -1,5 +1,6 @@
 //! Scoped native history reads for an authenticated broker client.
 
+use agenturm_kernel::ReadSnapshot;
 use agenturm_kernel::{
     ExtensionId, MAX_DURABLE_SNAPSHOT_OBSERVATIONS, ObservationPage, ObservationQuery,
 };
@@ -35,7 +36,8 @@ pub enum ReadFailure {
     Unauthorized,
     InvalidRequest,
     HistoryReplaced,
-    ExpiredSnapshot { minimum_snapshot_id: u64 },
+    SnapshotReplaced,
+    ExpiredSnapshot { minimum_snapshot_id: ReadSnapshot },
     TraceScopeTooLarge { max_rows: usize },
     EvalTraceNotRetained,
     Unavailable,
@@ -150,6 +152,7 @@ fn authorize(
 pub(crate) fn failure(error: StoreError) -> ReadFailure {
     match error {
         StoreError::Invalid(_) => ReadFailure::InvalidRequest,
+        StoreError::SnapshotReplaced => ReadFailure::SnapshotReplaced,
         StoreError::ExpiredHistorySnapshot {
             minimum_snapshot_id,
         } => ReadFailure::ExpiredSnapshot {

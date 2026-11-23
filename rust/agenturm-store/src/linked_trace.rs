@@ -1,6 +1,7 @@
 //! Resolve only explicitly attributed, retained OTLP execution scope.
 
 use super::*;
+use agenturm_kernel::ReadSnapshot;
 
 const MAX_TRACE_SCOPE_ROWS: usize = 4096;
 
@@ -11,7 +12,7 @@ pub struct TraceTurnQuery {
     pub session_id: String,
     pub trace_source_id: String,
     pub trace_id: String,
-    pub snapshot_id: Option<u64>,
+    pub snapshot_id: Option<ReadSnapshot>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -19,7 +20,7 @@ pub struct TraceTurnQuery {
 pub struct ResolvedTraceTurn {
     pub turn_id: String,
     pub worker_id: Option<String>,
-    pub snapshot_id: u64,
+    pub snapshot_id: ReadSnapshot,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::workbench::{PromptReceiver, WorkInput, Workbench, prompt_channel};
+use agenturm_kernel::ReadSnapshot;
 use agenturm_kernel::RelationshipKind;
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, mpsc};
@@ -12,7 +13,7 @@ pub struct RecordedSession {
     pub harness_id: String,
     pub session_id: String,
     pub updated_at_unix_ns: u64,
-    pub snapshot_id: u64,
+    pub snapshot_id: ReadSnapshot,
     pub state: Option<String>,
     pub reason: Option<String>,
     pub turn_id: Option<String>,
@@ -33,7 +34,7 @@ pub struct SessionCursor {
     pub harness_id: String,
     pub session_id: String,
     pub updated_at_unix_ns: u64,
-    pub snapshot_id: u64,
+    pub snapshot_id: ReadSnapshot,
 }
 
 pub struct SessionCatalog {
@@ -1407,7 +1408,7 @@ mod tests {
             harness_id: source.into(),
             session_id: id.into(),
             updated_at_unix_ns: 1,
-            snapshot_id: 9,
+            snapshot_id: 9.into(),
             state: Some(state.into()),
             reason: None,
             turn_id: None,

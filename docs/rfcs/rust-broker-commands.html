@@ -41,6 +41,7 @@ An exact retry recovers the committed result after a lost reply.</p>
 Continue a traversal with the same filters and watermark. The broker limits
 source-free reads to its configured allowlist. The inspector uses the
 background workspace request loop for session and turn navigation.</p>
+<p>Pass the returned <code>snapshot_id</code> back unchanged. Backup and restore give the published history a fresh read incarnation while preserving its logical workspace identity. A cursor from an earlier branch is rejected even when new writes reach the same numeric watermark. Reopen a pinned cockpit or history gateway after restoring its broker endpoint. Unrestored histories keep their existing numeric snapshot IDs.</p>
 <p>Use <code>broker review --linked-traces</code> with an exact turn to page its linked
 spans. Use <code>--turn-of-trace &lt;trace-id&gt; --trace-source-id &lt;otlp-source&gt;</code>
 in place of <code>--turn-id</code> to select the native turn from an explicitly

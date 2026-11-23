@@ -56,6 +56,7 @@ pub use trace_import::{TraceImportOptions, execute_trace_import};
 pub use trace_receiver::{TraceReceiverOptions, execute_trace_receiver};
 pub use trace_run::{TraceRunOptions, execute_trace_run};
 
+use agenturm_kernel::ReadSnapshot;
 use agenturm_kernel::{
     Capability, ExtensionId, ExtensionPlugin, Harness, Kernel, MAX_DURABLE_SNAPSHOT_OBSERVATIONS,
     MetricRow, Observation, ObservationExtension, ObservationKind, ObservationPosition,
@@ -419,7 +420,7 @@ pub struct HistoryQueryOptions {
     pub harness_id: Option<String>,
     pub session_id: Option<String>,
     pub before: Option<ObservationPosition>,
-    pub snapshot_id: Option<u64>,
+    pub snapshot_id: Option<ReadSnapshot>,
     pub limit: usize,
 }
 
@@ -1494,7 +1495,7 @@ fn parse_query_options(args: &[String], review: bool) -> Result<Command, String>
     ];
     let snapshot_id = before_snapshot_id
         .as_deref()
-        .map(|value| value.parse::<u64>().map_err(|_| usage()))
+        .map(|value| value.parse::<ReadSnapshot>().map_err(|_| usage()))
         .transpose()?;
     let before = if before_parts.iter().all(Option::is_none) {
         None
@@ -1810,7 +1811,7 @@ fn workspace_response(
             let ledger =
                 ReviewLedger::open(db).map_err(|error| format!("Open reviews failed: {error}"))?;
             let saved = ledger
-                .mark_reviewed(&key, version, session.snapshot_id)
+                .mark_reviewed(&key, version, session.snapshot_id.watermark())
                 .map_err(|error| format!("Save review failed: {error}"))?;
             if !saved
                 && ledger
@@ -3740,7 +3741,7 @@ mod tests {
                 harness_id: None,
                 session_id: None,
                 before: None,
-                snapshot_id: Some(12),
+                snapshot_id: Some(12.into()),
                 limit: 500,
             })
         );
@@ -3776,9 +3777,9 @@ mod tests {
                     harness_id: "harness.codex".into(),
                     event_id: "event-1".into(),
                     revision: 0,
-                    snapshot_id: 1,
+                    snapshot_id: 1.into(),
                 }),
-                snapshot_id: Some(1),
+                snapshot_id: Some(1.into()),
                 limit: 10,
             })
         );

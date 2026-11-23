@@ -13,6 +13,7 @@ use crate::reader_history::{self, ReaderHistoryReply, ReaderHistoryRequest};
 use agenturm_kernel::{
     ExtensionId, Observation, ObservationPage, ObservationQuery, ObservationStore, StoreCommit,
 };
+use agenturm_kernel::{ReadIncarnation, ReadSnapshot};
 use agenturm_storage_service_contract::{ContractError, ServerPolicy, native};
 use agenturm_store::{
     AutomaticRetentionPolicy, AutomaticRetentionStatus, EvalImportReport, EvalOutcome,
@@ -64,6 +65,9 @@ pub(crate) enum NativeOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_history_identity: Option<String>,
     },
+    ReadBinding {
+        history_identity: String,
+    },
     ReaderHistory {
         expected_history_identity: Option<String>,
         request: ReaderHistoryRequest,
@@ -90,7 +94,7 @@ pub(crate) enum NativeOperation {
     VerifyPrivateOperation {
         history_identity: String,
         selection: PrivateEvidenceSelection,
-        snapshot_id: u64,
+        snapshot_id: ReadSnapshot,
     },
     Admin {
         request: AdminRequest,
@@ -150,6 +154,7 @@ pub(crate) enum NativeReply {
     EvalImported(Result<EvalImportReport, ReadFailure>),
     EvalOutcome(Result<Option<RetainedEvalOutcome>, ReadFailure>),
     Identity(Result<String, ReadFailure>),
+    ReadBinding(Result<String, ReadFailure>),
     ReaderHistory(Result<ReaderHistoryReply, ReadFailure>),
     Workspace(Result<bool, ReadFailure>),
     PrivatePrompts(Result<Vec<agenturm_content::PromptReference>, PrivateEvidenceFailure>),
@@ -322,6 +327,26 @@ pub(crate) fn dispatch(
                 }),
             );
         }
+        NativeOperation::ReadBinding { history_identity } => {
+            return NativeReply::ReadBinding(authorize_read(store, role, None).and_then(|()| {
+                if !valid_history_identity(&history_identity) {
+                    return Err(ReadFailure::InvalidRequest);
+                }
+                let identity = store
+                    .history_identity()
+                    .map_err(|_| ReadFailure::Unavailable)?;
+                if identity != history_identity {
+                    return Err(ReadFailure::HistoryReplaced);
+                }
+                let incarnation = store
+                    .read_incarnation()
+                    .map_err(|_| ReadFailure::Unavailable)?;
+                Ok(match incarnation {
+                    Some(incarnation) => format!("{identity}:{incarnation}"),
+                    None => identity,
+                })
+            }));
+        }
         NativeOperation::ReaderHistory {
             expected_history_identity,
             request,
@@ -391,7 +416,9 @@ fn authorize_private(
         return Err(PrivateEvidenceFailure::Unauthorized);
     }
     authorize_read(store, role, Some(history_identity)).map_err(|error| match error {
-        ReadFailure::HistoryReplaced => PrivateEvidenceFailure::HistoryReplaced,
+        ReadFailure::HistoryReplaced | ReadFailure::SnapshotReplaced => {
+            PrivateEvidenceFailure::HistoryReplaced
+        }
         _ => PrivateEvidenceFailure::Unavailable,
     })
 }
@@ -421,17 +448,41 @@ fn authorize_read(store: &Store, role: Role, expected: Option<&str>) -> Result<(
     if !role.reads_history() {
         return Err(ReadFailure::Unauthorized);
     }
-    if let Some(identity) = expected {
-        if !valid_history_identity(identity) {
-            return Err(ReadFailure::InvalidRequest);
-        }
-        if store
-            .history_identity()
-            .map_err(|_| ReadFailure::Unavailable)?
-            != identity
-        {
-            return Err(ReadFailure::HistoryReplaced);
-        }
+    if let Some(binding) = expected {
+        verify_read_binding(store, binding)?;
+    }
+    Ok(())
+}
+
+fn parse_read_binding(binding: &str) -> Option<(&str, Option<ReadIncarnation>)> {
+    let (identity, incarnation) = match binding.split_once(':') {
+        Some((identity, marker)) => (identity, Some(marker.parse().ok()?)),
+        None => (binding, None),
+    };
+    valid_history_identity(identity).then_some((identity, incarnation))
+}
+
+/// Extract the persistent workspace identity from a validated read binding.
+pub fn logical_read_identity(binding: &str) -> Option<&str> {
+    parse_read_binding(binding).map(|(identity, _)| identity)
+}
+
+pub(crate) fn verify_read_binding(store: &Store, expected: &str) -> Result<(), ReadFailure> {
+    let (identity, incarnation) =
+        parse_read_binding(expected).ok_or(ReadFailure::InvalidRequest)?;
+    if store
+        .history_identity()
+        .map_err(|_| ReadFailure::Unavailable)?
+        != identity
+    {
+        return Err(ReadFailure::HistoryReplaced);
+    }
+    if store
+        .read_incarnation()
+        .map_err(|_| ReadFailure::Unavailable)?
+        != incarnation
+    {
+        return Err(ReadFailure::SnapshotReplaced);
     }
     Ok(())
 }
@@ -478,6 +529,9 @@ impl Display for NativeClientError {
             }
             Self::Read(ReadFailure::HistoryReplaced) => {
                 formatter.write_str("broker history changed since this workspace opened")
+            }
+            Self::Read(ReadFailure::SnapshotReplaced) => {
+                formatter.write_str("broker history was restored or replaced; start a new query")
             }
             Self::Read(ReadFailure::ExpiredSnapshot {
                 minimum_snapshot_id,
@@ -549,7 +603,7 @@ pub struct NativeStore {
     socket_path: PathBuf,
     receiver_id: String,
     policy: ServerPolicy,
-    workspace_identity: Option<String>,
+    read_binding: Option<String>,
 }
 
 impl NativeStore {
@@ -576,7 +630,7 @@ impl NativeStore {
             NativeOperation::EvalOutcome {
                 source_id: source_id.clone(),
                 trace_id: trace_id.into(),
-                expected_history_identity: self.workspace_identity.clone(),
+                expected_history_identity: self.read_binding.clone(),
             },
         )?
         .map_err(NativeClientError::Read)
@@ -604,7 +658,7 @@ impl NativeStore {
             socket_path,
             receiver_id,
             policy: ServerPolicy::for_current_client(service_uid, service_gid)?,
-            workspace_identity: None,
+            read_binding: None,
         })
     }
 
@@ -614,8 +668,28 @@ impl NativeStore {
         if !valid_history_identity(identity) {
             return Err(NativeClientError::InvalidHistoryIdentity);
         }
-        self.workspace_identity = Some(identity.to_owned());
+        if let Some(bound) = self.read_binding.as_deref() {
+            return if logical_read_identity(bound) == Some(identity) {
+                Ok(self)
+            } else {
+                Err(NativeClientError::Read(ReadFailure::HistoryReplaced))
+            };
+        }
+        let binding = self
+            .exchange::<Result<String, ReadFailure>>(NativeOperation::ReadBinding {
+                history_identity: identity.to_owned(),
+            })?
+            .map_err(NativeClientError::Read)?;
+        if logical_read_identity(&binding) != Some(identity) {
+            return Err(NativeClientError::InvalidReply);
+        }
+        self.read_binding = Some(binding);
         Ok(self)
+    }
+
+    /// Read binding for a transport that forwards these pinned reads.
+    pub fn read_binding(&self) -> Option<&str> {
+        self.read_binding.as_deref()
     }
 
     fn request(&self, operation: NativeOperation) -> native::Request<NativeOperation> {
@@ -650,7 +724,7 @@ impl NativeStore {
         self.exchange::<Result<ObservationPage, ReadFailure>>(NativeOperation::QueryHistory {
             query: query.clone(),
             selection,
-            expected_history_identity: self.workspace_identity.clone(),
+            expected_history_identity: self.read_binding.clone(),
         })?
         .map_err(NativeClientError::Read)
     }
@@ -658,7 +732,7 @@ impl NativeStore {
     pub fn query_sessions(&self, query: &SessionQuery) -> Result<SessionPage, NativeClientError> {
         self.exchange::<Result<SessionPage, ReadFailure>>(NativeOperation::QuerySessions {
             query: query.clone(),
-            expected_history_identity: self.workspace_identity.clone(),
+            expected_history_identity: self.read_binding.clone(),
         })?
         .map_err(NativeClientError::Read)
     }
@@ -666,7 +740,7 @@ impl NativeStore {
     pub fn history_identity(&self) -> Result<String, NativeClientError> {
         let identity = self
             .exchange::<Result<String, ReadFailure>>(NativeOperation::HistoryIdentity {
-                expected_history_identity: self.workspace_identity.clone(),
+                expected_history_identity: self.read_binding.clone(),
             })?
             .map_err(NativeClientError::Read)?;
         if !valid_history_identity(&identity) {
@@ -682,7 +756,7 @@ impl NativeStore {
         request: ReaderHistoryRequest,
     ) -> Result<ReaderHistoryReply, NativeClientError> {
         self.exchange::<Result<ReaderHistoryReply, ReadFailure>>(NativeOperation::ReaderHistory {
-            expected_history_identity: self.workspace_identity.clone(),
+            expected_history_identity: self.read_binding.clone(),
             request,
         })?
         .map_err(NativeClientError::Read)
@@ -694,7 +768,7 @@ impl NativeStore {
         session_id: &str,
     ) -> Result<Vec<agenturm_content::PromptReference>, NativeClientError> {
         let history_identity = self
-            .workspace_identity
+            .read_binding
             .clone()
             .ok_or(NativeClientError::InvalidHistoryIdentity)?;
         self.exchange::<Result<Vec<agenturm_content::PromptReference>, PrivateEvidenceFailure>>(
@@ -755,7 +829,7 @@ impl NativeStore {
         session_id: &str,
         event_id: &str,
         revision: u32,
-        snapshot_id: Option<u64>,
+        snapshot_id: Option<ReadSnapshot>,
         consume: impl FnOnce(&agenturm_content::VerifiedPrompt) -> Result<T, String>,
     ) -> Result<T, NativeClientError> {
         self.consume_private(
@@ -782,7 +856,7 @@ impl NativeStore {
     pub fn with_verified_edit<T>(
         &self,
         selection: &PrivateEvidenceSelection,
-        snapshot_id: u64,
+        snapshot_id: ReadSnapshot,
         consume: impl FnOnce(&agenturm_content::VerifiedEdit) -> Result<T, String>,
     ) -> Result<T, NativeClientError> {
         self.consume_private_operation(selection, snapshot_id, consume)
@@ -792,7 +866,7 @@ impl NativeStore {
     pub fn with_verified_command<T>(
         &self,
         selection: &PrivateEvidenceSelection,
-        snapshot_id: u64,
+        snapshot_id: ReadSnapshot,
         consume: impl FnOnce(&agenturm_content::VerifiedCommand) -> Result<T, String>,
     ) -> Result<T, NativeClientError> {
         self.consume_private_operation(selection, snapshot_id, consume)
@@ -801,7 +875,7 @@ impl NativeStore {
     fn consume_private_operation<P: DeserializeOwned, T>(
         &self,
         selection: &PrivateEvidenceSelection,
-        snapshot_id: u64,
+        snapshot_id: ReadSnapshot,
         consume: impl FnOnce(&P) -> Result<T, String>,
     ) -> Result<T, NativeClientError> {
         self.consume_private(
@@ -815,7 +889,7 @@ impl NativeStore {
     }
 
     fn private_history_identity(&self) -> Result<String, NativeClientError> {
-        self.workspace_identity
+        self.read_binding
             .clone()
             .ok_or(NativeClientError::InvalidHistoryIdentity)
     }
@@ -845,7 +919,7 @@ impl NativeStore {
         selection: WorkspaceSelection,
     ) -> Result<bool, NativeClientError> {
         let history_identity = self
-            .workspace_identity
+            .read_binding
             .clone()
             .ok_or(NativeClientError::InvalidHistoryIdentity)?;
         self.exchange::<Result<bool, ReadFailure>>(NativeOperation::CheckWorkspace {
@@ -964,7 +1038,7 @@ impl NativeStore {
         query: &TraceReviewQuery,
     ) -> Result<Option<ResolvedTraceReview>, NativeClientError> {
         let identity = self
-            .workspace_identity
+            .read_binding
             .as_ref()
             .ok_or(NativeClientError::Read(ReadFailure::InvalidRequest))?;
         self.exchange::<Result<Option<ResolvedTraceReview>, ReadFailure>>(
@@ -1340,20 +1414,95 @@ mod tests {
                 &[native("rollback-branch", 4)],
             )
             .unwrap();
-        let split_read = NativeOperation::QueryHistory {
-            query: query.clone(),
+        let split_read = |query, binding| NativeOperation::QueryHistory {
+            query,
             selection: NativeSelection::Worker {
-                turn_id: resolved.turn_id,
-                worker_id: resolved.worker_id,
+                turn_id: resolved.turn_id.clone(),
+                worker_id: resolved.worker_id.clone(),
             },
-            expected_history_identity: Some(history_identity.clone()),
+            expected_history_identity: binding,
         };
+        let current = restored.observation_page(10).unwrap().snapshot_id;
+        assert_eq!(current.watermark(), resolved.snapshot_id.watermark());
+        assert_ne!(current, resolved.snapshot_id);
+        assert!(current.incarnation().is_some());
+        for binding in [None, Some(history_identity.clone())] {
+            assert!(matches!(
+                dispatch(
+                    &mut restored,
+                    &allowed,
+                    Role::Reader,
+                    split_read(query.clone(), binding),
+                    None,
+                    None
+                ),
+                NativeReply::History(Err(ReadFailure::SnapshotReplaced))
+            ));
+        }
+        let NativeReply::ReadBinding(Ok(current_binding)) = dispatch(
+            &mut restored,
+            &allowed,
+            Role::Reader,
+            NativeOperation::ReadBinding {
+                history_identity: history_identity.clone(),
+            },
+            None,
+            None,
+        ) else {
+            panic!("restored branch must allow a fresh read pin");
+        };
+        assert_eq!(
+            logical_read_identity(&current_binding),
+            Some(history_identity.as_str())
+        );
+        assert_ne!(current_binding, history_identity);
+        let mut fresh = query.clone();
+        fresh.snapshot_id = None;
         assert!(matches!(
-            dispatch(&mut restored, &allowed, Role::Reader, split_read, None, None),
+            dispatch(
+                &mut restored,
+                &allowed,
+                Role::Reader,
+                split_read(fresh.clone(), Some(history_identity.clone())),
+                None,
+                None
+            ),
+            NativeReply::History(Err(ReadFailure::SnapshotReplaced))
+        ));
+        assert!(matches!(
+            dispatch(&mut restored, &allowed, Role::Reader,
+                split_read(fresh.clone(), Some(current_binding.clone())), None, None),
             NativeReply::History(Ok(page))
-                if page.snapshot_id == resolved.snapshot_id
+                if page.snapshot_id == current
                     && page.observations.iter().any(|row| row.event_id == "rollback-branch")
         ));
+        for binding in [history_identity.clone(), current_binding.clone()] {
+            let answer = dispatch(
+                &mut restored,
+                &allowed,
+                Role::Reader,
+                NativeOperation::ReaderHistory {
+                    expected_history_identity: Some(binding.clone()),
+                    request: ReaderHistoryRequest::History {
+                        query: fresh.clone(),
+                        selection: NativeSelection::Observations,
+                    },
+                },
+                None,
+                None,
+            );
+            if binding == current_binding {
+                assert!(
+                    matches!(answer, NativeReply::ReaderHistory(Ok(ReaderHistoryReply::History(page)))
+                    if page.snapshot_id == current)
+                );
+            } else {
+                assert!(matches!(
+                    answer,
+                    NativeReply::ReaderHistory(Err(ReadFailure::SnapshotReplaced))
+                ));
+            }
+        }
         for linked_traces in [false, true] {
             assert!(matches!(
                 dispatch(
@@ -1364,7 +1513,7 @@ mod tests {
                     None,
                     None
                 ),
-                NativeReply::TraceReview(Ok(None))
+                NativeReply::TraceReview(Err(ReadFailure::SnapshotReplaced))
             ));
         }
         drop((original, restored));
@@ -1386,7 +1535,7 @@ mod tests {
         let mut query = ObservationQuery::latest(1);
         query.harness_id = Some("harness.codex".into());
         query.session_id = Some("session-1".into());
-        query.snapshot_id = Some(0);
+        query.snapshot_id = Some(0.into());
         let allowed = BTreeSet::from([
             ExtensionId::parse("harness.codex").unwrap(),
             ExtensionId::parse("otlp.test").unwrap(),
@@ -1415,7 +1564,7 @@ mod tests {
         ));
         assert!(matches!(
             dispatch(&mut original, &allowed, Role::Reader, linked(), None, None),
-            NativeReply::History(Ok(page)) if page.snapshot_id == 0
+            NativeReply::History(Ok(page)) if page.snapshot_id == 0.into()
         ));
         assert!(matches!(
             dispatch(

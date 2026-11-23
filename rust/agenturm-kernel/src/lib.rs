@@ -13,6 +13,9 @@
 
 #![forbid(unsafe_code)]
 
+mod read_snapshot;
+pub use read_snapshot::{ReadIncarnation, ReadSnapshot};
+
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -417,7 +420,7 @@ pub struct ObservationPage {
     pub observations: Vec<Observation>,
     pub has_more: bool,
     /// Highest durable batch receipt visible when this query began.
-    pub snapshot_id: u64,
+    pub snapshot_id: ReadSnapshot,
 }
 
 /// Exclusive keyset cursor for deterministic paging through durable history.
@@ -428,7 +431,7 @@ pub struct ObservationPosition {
     pub harness_id: String,
     pub event_id: String,
     pub revision: u32,
-    pub snapshot_id: u64,
+    pub snapshot_id: ReadSnapshot,
 }
 
 /// Bounded durable-history query. `before` selects rows older than its exact
@@ -439,7 +442,7 @@ pub struct ObservationQuery {
     pub harness_id: Option<String>,
     pub session_id: Option<String>,
     pub before: Option<ObservationPosition>,
-    pub snapshot_id: Option<u64>,
+    pub snapshot_id: Option<ReadSnapshot>,
     pub limit: usize,
 }
 
@@ -617,7 +620,7 @@ pub struct Snapshot {
     pub panes: BTreeMap<ExtensionId, PaneModel>,
     pub admissions: BTreeMap<ExtensionId, AdmissionStatus>,
     pub observations_truncated: bool,
-    pub history_snapshot_id: u64,
+    pub history_snapshot_id: ReadSnapshot,
     pub failures: Vec<ExtensionFailure>,
 }
 
@@ -1201,7 +1204,7 @@ impl Kernel {
         if !history_read_failed {
             let input = ObservationExtensionInput {
                 observations: &snapshot.observations,
-                snapshot_id: snapshot.history_snapshot_id,
+                snapshot_id: snapshot.history_snapshot_id.watermark(),
                 observations_truncated: snapshot.observations_truncated,
                 selection_scope,
             };
@@ -1698,7 +1701,7 @@ mod tests {
             Ok(ObservationPage {
                 observations: self.rows[start..].to_vec(),
                 has_more,
-                snapshot_id: 0,
+                snapshot_id: 0.into(),
             })
         }
 
@@ -1920,7 +1923,7 @@ mod tests {
         let store = OnePageStore(ObservationPage {
             observations: vec![],
             has_more: true,
-            snapshot_id: 23,
+            snapshot_id: 23.into(),
         });
         kernel.refresh_query_with_store(
             &store,
@@ -1932,9 +1935,9 @@ mod tests {
                     harness_id: "harness.pi".into(),
                     event_id: "event-9".into(),
                     revision: 1,
-                    snapshot_id: 23,
+                    snapshot_id: 23.into(),
                 }),
-                snapshot_id: Some(23),
+                snapshot_id: Some(23.into()),
                 limit: 10,
             },
         );

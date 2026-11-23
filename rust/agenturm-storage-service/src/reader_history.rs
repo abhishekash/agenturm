@@ -2,7 +2,7 @@
 
 use crate::native_admin::Role;
 use crate::native_read::{self, ReadFailure};
-use crate::native_store::NativeSelection;
+use crate::native_store::{NativeSelection, verify_read_binding};
 use agenturm_kernel::{ExtensionId, ObservationPage, ObservationQuery};
 use agenturm_store::{
     ResolvedTraceReview, SessionPage, SessionQuery, Store, TraceReviewQuery, WorkspaceAnchor,
@@ -60,18 +60,18 @@ pub(crate) fn dispatch(
     if role != Role::Reader {
         return Err(ReadFailure::Unauthorized);
     }
-    let identity = store
-        .history_identity()
-        .map_err(|_| ReadFailure::Unavailable)?;
     match expected_identity {
-        Some(expected) if identity != expected => return Err(ReadFailure::HistoryReplaced),
+        Some(expected) => verify_read_binding(store, expected)?,
         None if !matches!(request, ReaderHistoryRequest::Identity) => {
             return Err(ReadFailure::InvalidRequest);
         }
-        _ => {}
+        None => {}
     }
     match request {
-        ReaderHistoryRequest::Identity => Ok(ReaderHistoryReply::Identity(identity)),
+        ReaderHistoryRequest::Identity => store
+            .history_identity()
+            .map(ReaderHistoryReply::Identity)
+            .map_err(|_| ReadFailure::Unavailable),
         ReaderHistoryRequest::Sessions { query } => {
             native_read::query_sessions(store, allowed, &query).map(ReaderHistoryReply::Sessions)
         }

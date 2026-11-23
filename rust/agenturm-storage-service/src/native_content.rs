@@ -2,6 +2,7 @@
 
 use agenturm_content::{OperationDetailKind, PromptReference, ResolvedSource};
 use agenturm_kernel::ExtensionId;
+use agenturm_kernel::ReadSnapshot;
 use agenturm_storage_service_contract::native;
 use agenturm_store::{CodexOperationSelection, Store, StoreError};
 use serde::{Deserialize, Serialize};
@@ -35,7 +36,7 @@ pub(crate) struct PrivatePromptSelection {
     pub(crate) event_id: String,
     pub(crate) revision: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) snapshot_id: Option<u64>,
+    pub(crate) snapshot_id: Option<ReadSnapshot>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -366,7 +367,7 @@ pub(crate) fn verify_operation(
     config: Option<&PrivateConfig>,
     allowed: &BTreeSet<ExtensionId>,
     selection: &PrivateEvidenceSelection,
-    snapshot_id: u64,
+    snapshot_id: ReadSnapshot,
     output: &mut Disclosure<'_>,
 ) -> Result<(), PrivateEvidenceFailure> {
     let config = config.ok_or(PrivateEvidenceFailure::Unavailable)?;
@@ -430,7 +431,7 @@ impl<'a> Disclosure<'a> {
     fn publish_proof(
         &mut self,
         store: &Store,
-        snapshot_id: Option<u64>,
+        snapshot_id: Option<ReadSnapshot>,
         occurrence: (&ExtensionId, &str, u32),
         payload: impl Serialize,
     ) -> Result<(), PrivateEvidenceFailure> {

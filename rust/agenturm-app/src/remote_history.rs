@@ -11,7 +11,7 @@ use crate::WatchSignalRegistrations;
 use crate::trace_receiver::ProducerToken;
 use agenturm_storage_service::native_read::ReadFailure;
 use agenturm_storage_service::{
-    NativeClientError, NativeStore, ReaderHistoryReply, ReaderHistoryRequest,
+    NativeClientError, NativeStore, ReaderHistoryReply, ReaderHistoryRequest, logical_read_identity,
 };
 use serde::{Deserialize, Serialize};
 use std::io::BufReader;
@@ -95,12 +95,13 @@ pub(super) fn execute_server(
     else {
         return Err("Invalid history identity response from broker".into());
     };
-    if !valid_identity(&identity) {
+    if logical_read_identity(&identity) != Some(identity.as_str()) {
         return Err("Invalid history identity response from broker".into());
     }
     let store = store
         .with_workspace_identity(&identity)
         .map_err(|e| e.to_string())?;
+    let binding = store.read_binding().ok_or("Missing history read binding")?;
     let token = ProducerToken::from_file(&options.token_file)?;
     let listener = TcpListener::bind(options.listen)
         .map_err(|error| format!("Bind history reader: {error}"))?;
@@ -111,7 +112,7 @@ pub(super) fn execute_server(
     let stop = Arc::new(AtomicBool::new(false));
     let _signals = WatchSignalRegistrations::new(Arc::clone(&stop))?;
     println!("Listening for history reads at http://{address}");
-    serve(listener, &stop, &token, &identity, |request| {
+    serve(listener, &stop, &token, binding, |request| {
         store.reader_history(request).map_err(|error| match error {
             NativeClientError::Read(failure) => failure,
             _ => ReadFailure::Unavailable,
@@ -123,14 +124,12 @@ fn serve(
     listener: TcpListener,
     stop: &AtomicBool,
     token: &ProducerToken,
-    identity: &str,
+    binding: &str,
     read: impl Fn(ReaderHistoryRequest) -> Result<ReaderHistoryReply, ReadFailure>,
 ) -> Result<(), String> {
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
-            Ok((stream, peer)) if peer.ip().is_loopback() => {
-                handle(&stream, token, identity, &read)
-            }
+            Ok((stream, peer)) if peer.ip().is_loopback() => handle(&stream, token, binding, &read),
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(std::time::Duration::from_millis(25));
@@ -144,7 +143,7 @@ fn serve(
 fn handle(
     stream: &TcpStream,
     token: &ProducerToken,
-    identity: &str,
+    binding: &str,
     read: &impl Fn(ReaderHistoryRequest) -> Result<ReaderHistoryReply, ReadFailure>,
 ) {
     let request_deadline = Instant::now() + http::IO_BUDGET;
@@ -175,8 +174,14 @@ fn handle(
         if frame.version != VERSION {
             return Err("400 Bad Request");
         }
-        let result = match frame.history_identity {
-            Some(expected) if expected != identity => Err(ReadFailure::HistoryReplaced),
+        let result = match frame.history_identity.as_deref() {
+            Some(expected) if logical_read_identity(expected).is_none() => {
+                Err(ReadFailure::InvalidRequest)
+            }
+            Some(expected) if logical_read_identity(expected) != logical_read_identity(binding) => {
+                Err(ReadFailure::HistoryReplaced)
+            }
+            Some(expected) if expected != binding => Err(ReadFailure::SnapshotReplaced),
             None if !matches!(frame.request, ReaderHistoryRequest::Identity) => {
                 Err(ReadFailure::InvalidRequest)
             }
@@ -184,7 +189,7 @@ fn handle(
         };
         let reply = Reply {
             version: VERSION,
-            history_identity: identity.into(),
+            history_identity: binding.into(),
             result,
         };
         let body = serde_json::to_vec(&reply).map_err(|_| "503 Service Unavailable")?;
@@ -210,11 +215,4 @@ fn handle(
         bytes.len()
     );
     let _ = http::write(stream, Instant::now() + http::IO_BUDGET, &head, &bytes);
-}
-
-fn valid_identity(value: &str) -> bool {
-    value.len() == 32
-        && value
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }

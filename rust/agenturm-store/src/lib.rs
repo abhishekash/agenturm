@@ -47,6 +47,7 @@ pub use workspace_ledger::{
     WorkspaceGitDiff, WorkspaceGitSnapshot, WorkspaceHistory, WorkspaceLedger, WorkspacePage,
 };
 
+use agenturm_kernel::ReadSnapshot;
 use agenturm_kernel::{
     ExtensionId, MAX_DURABLE_SNAPSHOT_OBSERVATIONS, Observation,
     ObservationKind as KernelObservationKind, ObservationPage, ObservationQuery,
@@ -358,7 +359,8 @@ pub enum StoreError {
     StaleCursor,
     StaleContentGrant,
     EvalTraceNotRetained,
-    ExpiredHistorySnapshot { minimum_snapshot_id: u64 },
+    ExpiredHistorySnapshot { minimum_snapshot_id: ReadSnapshot },
+    SnapshotReplaced,
     TraceScopeTooLarge { max_rows: usize },
     EventConflict { event_id: String },
     UnrecognizedDatabase,
@@ -387,6 +389,9 @@ impl Display for StoreError {
             } => write!(
                 f,
                 "history snapshot expired after retention; start a new query at snapshot {minimum_snapshot_id} or later"
+            ),
+            Self::SnapshotReplaced => f.write_str(
+                "history snapshot belongs to a restored or replaced history; start a new query",
             ),
             Self::TraceScopeTooLarge { max_rows } => write!(
                 f,
@@ -864,6 +869,12 @@ impl Store {
     /// Returns the established history identity without initializing a store.
     pub fn history_identity(&self) -> Result<String> {
         read_history_identity(&self.connection)
+    }
+
+    /// Read provenance changes on backup publication while the logical identity
+    /// used for workspace state stays stable.
+    pub fn read_incarnation(&self) -> Result<Option<agenturm_kernel::ReadIncarnation>> {
+        retention::read_incarnation(&self.connection)
     }
 
     /// Opens a v8 through v15 store through a read-only connection. This path
@@ -2596,7 +2607,7 @@ mod tests {
         assert!(!older.has_more);
 
         let second = writer.prune_observations_before(25).unwrap();
-        assert!(second.minimum_snapshot_id > prune.minimum_snapshot_id);
+        assert!(second.minimum_snapshot_id.watermark() > prune.minimum_snapshot_id.watermark());
         assert!(matches!(
             reader.query_observations(&next),
             Err(StoreError::ExpiredHistorySnapshot { .. })
@@ -2822,7 +2833,7 @@ mod tests {
 
         let store = Store::open(&db.0).unwrap();
         let page = store.observation_page(10).unwrap();
-        assert_eq!(page.snapshot_id, 1);
+        assert_eq!(page.snapshot_id, 1.into());
         assert_eq!(page.observations.len(), 1);
         let version: i64 = store
             .connection
@@ -2851,7 +2862,7 @@ mod tests {
         }
         let store = Store::open(&db.0).unwrap();
         let page = store.observation_page(10).unwrap();
-        assert_eq!(page.snapshot_id, 1);
+        assert_eq!(page.snapshot_id, 1.into());
         assert_eq!(page.observations.len(), 1);
         assert_eq!(
             store
@@ -2882,7 +2893,7 @@ mod tests {
         }
         let store = Store::open(&db.0).unwrap();
         let page = store.observation_page(10).unwrap();
-        assert_eq!(page.snapshot_id, 1);
+        assert_eq!(page.snapshot_id, 1.into());
         assert_eq!(page.observations.len(), 1);
         assert_eq!(
             store
@@ -2913,7 +2924,7 @@ mod tests {
         }
         let store = Store::open(&db.0).unwrap();
         let page = store.observation_page(10).unwrap();
-        assert_eq!(page.snapshot_id, 1);
+        assert_eq!(page.snapshot_id, 1.into());
         assert_eq!(page.observations.len(), 1);
         assert_eq!(
             store
@@ -2944,7 +2955,7 @@ mod tests {
         }
         let store = Store::open(&db.0).unwrap();
         let page = store.observation_page(10).unwrap();
-        assert_eq!(page.snapshot_id, 1);
+        assert_eq!(page.snapshot_id, 1.into());
         assert_eq!(page.observations.len(), 1);
         assert_eq!(
             store
@@ -2967,7 +2978,7 @@ mod tests {
         }
         let store = Store::open(&db.0).unwrap();
         let page = store.observation_page(10).unwrap();
-        assert_eq!(page.snapshot_id, 1);
+        assert_eq!(page.snapshot_id, 1.into());
         assert_eq!(page.observations.len(), 1);
         assert_eq!(
             page.observations[0].identity.scope,
@@ -3641,9 +3652,9 @@ mod tests {
                     harness_id: "harness.codex".into(),
                     event_id: "bad event".into(),
                     revision: 0,
-                    snapshot_id: 1,
+                    snapshot_id: 1.into(),
                 }),
-                snapshot_id: Some(1),
+                snapshot_id: Some(1.into()),
                 limit: 1,
             },
         ];

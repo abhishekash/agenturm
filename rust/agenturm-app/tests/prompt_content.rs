@@ -794,7 +794,7 @@ fn codex_edit_and_command_details_require_exact_occurrences_and_independent_appr
         .save_decision_note(
             &key,
             session.review_version,
-            page.snapshot_id,
+            page.snapshot_id.watermark(),
             "Preserve review decision",
         )
         .unwrap();
