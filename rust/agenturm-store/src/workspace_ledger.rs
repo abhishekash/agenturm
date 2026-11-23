@@ -3,8 +3,9 @@
 mod continuity;
 mod desktop_attention;
 pub use continuity::{
-    ApprovedTaskDraft, ApprovedTaskSource, LegacyActivityId, LegacyTaskOccurrence, LegacyTaskScope,
-    LegacyTaskSourceProof, TaskDraftApproval, TaskSourceProof,
+    ApprovedTaskDraft, ApprovedTaskSource, LegacyActivityId, LegacyTaskOccurrence,
+    LegacyTaskOccurrenceAuthority, LegacyTaskScope, LegacyTaskSourceProof, TaskDraftApproval,
+    TaskSourceProof,
 };
 pub use desktop_attention::{DesktopAttentionRequest, LegacyDesktopAttentionRequest};
 

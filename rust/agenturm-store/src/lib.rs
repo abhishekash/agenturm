@@ -74,11 +74,12 @@ pub use telemetry_payload::{
 };
 pub use workspace_ledger::{
     ApprovedTaskDraft, ApprovedTaskSource, DesktopAttentionRequest, LegacyActivityId,
-    LegacyDesktopAttentionRequest, LegacyTaskOccurrence, LegacyTaskScope, LegacyTaskSourceProof,
-    MAX_WORKSPACE_GIT_DIFF_BYTES, MAX_WORKSPACE_PAGE_SIZE, SavedHandoff, SavedTask,
-    SavedTaskDecision, TaskBrief, TaskBriefUpdate, TaskDecisionInput, TaskDecisionKind,
-    TaskDraftApproval, TaskHandoff, TaskSourceProof, WorkspaceAnchor, WorkspaceError,
-    WorkspaceGitDiff, WorkspaceGitSnapshot, WorkspaceHistory, WorkspaceLedger, WorkspacePage,
+    LegacyDesktopAttentionRequest, LegacyTaskOccurrence, LegacyTaskOccurrenceAuthority,
+    LegacyTaskScope, LegacyTaskSourceProof, MAX_WORKSPACE_GIT_DIFF_BYTES, MAX_WORKSPACE_PAGE_SIZE,
+    SavedHandoff, SavedTask, SavedTaskDecision, TaskBrief, TaskBriefUpdate, TaskDecisionInput,
+    TaskDecisionKind, TaskDraftApproval, TaskHandoff, TaskSourceProof, WorkspaceAnchor,
+    WorkspaceError, WorkspaceGitDiff, WorkspaceGitSnapshot, WorkspaceHistory, WorkspaceLedger,
+    WorkspacePage,
 };
 
 use agenturm_kernel::ReadSnapshot;

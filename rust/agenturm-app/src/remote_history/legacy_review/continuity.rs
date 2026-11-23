@@ -6,7 +6,8 @@ use super::{
 };
 use crate::RemoteHistoryOptions;
 use agenturm_store::{
-    LegacyActivityId, LegacyTaskOccurrence, LegacyTaskScope, LegacyTaskSourceProof,
+    LegacyActivityId, LegacyTaskOccurrence, LegacyTaskOccurrenceAuthority, LegacyTaskScope,
+    LegacyTaskSourceProof,
 };
 use serde::{Deserialize, Serialize};
 use serde_json::Value;
@@ -52,7 +53,7 @@ struct ReceiptReference {
     session_id: String,
     id: Option<LegacyActivityId>,
     source_id: String,
-    trace_id: String,
+    trace_id: Option<String>,
     span_id: Option<String>,
     turn_id: Option<String>,
     time_unix_nano: u64,
@@ -112,23 +113,36 @@ impl Selection {
         }) {
             return Err("Selected event differs from the frozen Review's user occurrence".into());
         }
+        let scope = LegacyTaskScope {
+            receiver,
+            producer,
+            agent_id,
+            session_id,
+            run_id,
+            turn_id,
+        };
+        let authority = if reference.trace_id.is_some() {
+            LegacyTaskOccurrenceAuthority::StepMember
+        } else if reference.receiver_id.as_deref() == Some(&scope.receiver) {
+            LegacyTaskOccurrenceAuthority::TurnRequestPrelude
+        } else {
+            return Err(RECEIPT_ERROR.into());
+        };
+        let occurrence = LegacyTaskOccurrence {
+            id: reference.id,
+            source_id: reference.source_id,
+            trace_id: reference.trace_id,
+            span_id: reference.span_id,
+            turn_id: reference.turn_id,
+            time_unix_nano: reference.time_unix_nano,
+            authority,
+        };
+        if !occurrence.binds_scope(&scope) {
+            return Err(RECEIPT_ERROR.into());
+        }
         Ok(Self {
-            scope: LegacyTaskScope {
-                receiver,
-                producer,
-                agent_id,
-                session_id,
-                run_id,
-                turn_id,
-            },
-            occurrence: LegacyTaskOccurrence {
-                id: reference.id,
-                source_id: reference.source_id,
-                trace_id: reference.trace_id,
-                span_id: reference.span_id,
-                turn_id: reference.turn_id,
-                time_unix_nano: reference.time_unix_nano,
-            },
+            scope,
+            occurrence,
             revision: receipt.window.capture_revision,
         })
     }
@@ -152,10 +166,8 @@ impl Scope {
             .into_iter()
             .all(|part| valid_identity(part))
             || !valid_trace(&data.run_id)
-            || !valid_trace(&event.trace_id)
-            || [&data.run_id, &event.trace_id]
-                .into_iter()
-                .any(|id| id.bytes().any(|byte| byte.is_ascii_uppercase()))
+            || data.run_id.bytes().any(|byte| byte.is_ascii_uppercase())
+            || !event.binds_scope(data)
             || event.source_id.is_empty()
             || !valid_identity(&event.source_id)
             || matches!(&event.id, Some(LegacyActivityId::Text(id)) if id.is_empty() || !valid_identity(id))
@@ -170,8 +182,6 @@ impl Scope {
                 .as_deref()
                 .is_some_and(|id| id.is_empty() || !valid_identity(id))
             || !(1..=i64::MAX as u64).contains(&event.time_unix_nano)
-            || (!data.turn_id.is_empty() && event.turn_id.as_deref() != Some(&data.turn_id))
-            || (data.turn_id.is_empty() && event.trace_id != data.run_id)
         {
             return Err(RECEIPT_ERROR.into());
         }
@@ -206,10 +216,22 @@ fn matches_event(event: &Event, occurrence: &LegacyTaskOccurrence) -> bool {
         && event.action == "user"
         && id_matches
         && event.source_id.as_deref() == Some(occurrence.source_id.as_str())
-        && event.trace_id.as_deref() == Some(occurrence.trace_id.as_str())
+        && event.trace_id == occurrence.trace_id
         && event.span_id == occurrence.span_id
         && event.turn_id == occurrence.turn_id
         && event.time_unix_nano == Some(occurrence.time_unix_nano)
+}
+
+fn read_current_prelude(
+    receiver: &LegacyReceiver,
+    scope: &Scope,
+    occurrence: &LegacyTaskOccurrence,
+    deadline: Instant,
+) -> Result<Event, String> {
+    read_evidence(receiver, scope, 1, true, deadline)?
+        .request_prelude
+        .filter(|event| matches_event(event, occurrence))
+        .ok_or_else(|| EVENT_ERROR.into())
 }
 
 fn hash(value: &impl Serialize) -> Result<String, String> {
@@ -383,22 +405,29 @@ fn with_prompt<T, E: From<String>>(
         || scope.turn_id != selected.turn_id
         || scope.run_id != selected.run_id
         || (turn
-            && !resolved
-                .as_ref()
-                .is_some_and(|run| run.step_trace_ids.contains(&occurrence.trace_id)))
+            && occurrence.trace_id.as_ref().is_some_and(|trace| {
+                !resolved
+                    .as_ref()
+                    .is_some_and(|run| run.step_trace_ids.contains(trace))
+            }))
     {
         return Err(RECEIPT_ERROR.to_owned().into());
     }
-    let evidence = read_evidence(&receiver, &scope, 5, false, deadline)?;
-    let mut matches = evidence
-        .members
-        .iter()
-        .filter(|event| matches_event(event, occurrence));
-    let event = matches.next().ok_or_else(|| EVENT_ERROR.to_owned())?;
-    if matches.next().is_some() {
-        return Err(EVENT_ERROR.to_owned().into());
-    }
-    let event_sha256 = hash(event)?;
+    let is_prelude = occurrence.authority == LegacyTaskOccurrenceAuthority::TurnRequestPrelude;
+    let event = if is_prelude {
+        read_current_prelude(&receiver, &scope, occurrence, deadline)?
+    } else {
+        let mut matches = read_evidence(&receiver, &scope, 5, false, deadline)?
+            .members
+            .into_iter()
+            .filter(|event| matches_event(event, occurrence));
+        let event = matches.next().ok_or_else(|| EVENT_ERROR.to_owned())?;
+        if matches.next().is_some() {
+            return Err(EVENT_ERROR.to_owned().into());
+        }
+        event
+    };
+    let event_sha256 = hash(&event)?;
     // A public subject alone can be a display label. Only the retained input
     // in the selected user record supplies the protected excerpt.
     let mut input = event.clone();
@@ -419,6 +448,9 @@ fn with_prompt<T, E: From<String>>(
         excerpt_sha256: format!("{:x}", Sha256::digest(excerpt.as_bytes())),
     };
     if matches!(expected, Expected::Proof(source) if &proof != source) {
+        return Err(EVENT_ERROR.to_owned().into());
+    }
+    if is_prelude && read_current_prelude(&receiver, &scope, occurrence, deadline)? != event {
         return Err(EVENT_ERROR.to_owned().into());
     }
     ReviewAuthority {

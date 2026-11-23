@@ -47,15 +47,66 @@ pub enum LegacyActivityId {
     Number(u64),
 }
 
+#[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum LegacyTaskOccurrenceAuthority {
+    #[default]
+    StepMember,
+    TurnRequestPrelude,
+}
+
+impl LegacyTaskOccurrenceAuthority {
+    fn is_step_member(&self) -> bool {
+        *self == Self::StepMember
+    }
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct LegacyTaskOccurrence {
     pub id: Option<LegacyActivityId>,
     pub source_id: String,
-    pub trace_id: String,
+    pub trace_id: Option<String>,
     pub span_id: Option<String>,
     pub turn_id: Option<String>,
     pub time_unix_nano: u64,
+    #[serde(
+        default,
+        skip_serializing_if = "LegacyTaskOccurrenceAuthority::is_step_member"
+    )]
+    pub authority: LegacyTaskOccurrenceAuthority,
+}
+
+impl LegacyTaskOccurrence {
+    pub fn binds_scope(&self, scope: &LegacyTaskScope) -> bool {
+        if !scope.turn_id.is_empty() && self.turn_id.as_deref() != Some(&scope.turn_id) {
+            return false;
+        }
+        match self.authority {
+            LegacyTaskOccurrenceAuthority::StepMember => {
+                self.trace_id.as_deref().is_some_and(|trace| {
+                    lower_hex(trace, 32) && (!scope.turn_id.is_empty() || trace == scope.run_id)
+                })
+            }
+            LegacyTaskOccurrenceAuthority::TurnRequestPrelude => {
+                scope.producer == "opencode"
+                    && !scope.agent_id.is_empty()
+                    && lower_hex(&scope.turn_id, 32)
+                    && self.trace_id.is_none()
+                    && self.span_id.is_none()
+                    && valid_digest(&self.source_id)
+                    && matches!(&self.id, Some(LegacyActivityId::Text(id))
+                        if id.strip_prefix("log:") == Some(&self.source_id))
+            }
+        }
+    }
+}
+
+fn lower_hex(value: &str, size: usize) -> bool {
+    value.len() == size
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
 }
 
 /// An exact occurrence in the authenticated Python receiver's own domain.
@@ -76,28 +127,20 @@ impl LegacyTaskSourceProof {
         let event = &self.occurrence;
         let safe =
             |value: &str| !value.is_empty() && value.len() <= 512 && display_safe(value, false);
-        let hex = |value: &str, size: usize| {
-            value.len() == size
-                && value
-                    .bytes()
-                    .all(|b| matches!(b, b'0'..=b'9' | b'a'..=b'f'))
-        };
         if !self.endpoint.ip().is_loopback()
             || self.endpoint.port() == 0
-            || !hex(&scope.receiver, 32)
+            || !lower_hex(&scope.receiver, 32)
             || !safe(&scope.producer)
             || !safe(&scope.session_id)
             || (!scope.agent_id.is_empty() && !safe(&scope.agent_id))
-            || !hex(&scope.run_id, 32)
-            || !hex(&event.trace_id, 32)
+            || !lower_hex(&scope.run_id, 32)
+            || !event.binds_scope(scope)
             || (!scope.turn_id.is_empty() && !safe(&scope.turn_id))
-            || (!scope.turn_id.is_empty() && event.turn_id.as_deref() != Some(&scope.turn_id))
-            || (scope.turn_id.is_empty() && event.trace_id != scope.run_id)
             || event.turn_id.as_deref().is_some_and(|value| !safe(value))
             || event
                 .span_id
                 .as_deref()
-                .is_some_and(|value| !hex(value, 16))
+                .is_some_and(|value| !lower_hex(value, 16))
             || !safe(&event.source_id)
             || matches!(&event.id, Some(LegacyActivityId::Text(id)) if !safe(id))
             || !(1..=i64::MAX as u64).contains(&event.time_unix_nano)
@@ -367,6 +410,93 @@ mod tests {
         assert_eq!(
             serde_json::from_str::<ApprovedTaskSource>(&old).unwrap(),
             same
+        );
+    }
+
+    #[test]
+    fn existing_python_step_occurrence_preserves_its_serialized_shape() {
+        let prior = r#"{"id":"event","source_id":"raw-id","trace_id":"0123456789abcdef0123456789abcdef","span_id":null,"turn_id":"turn","time_unix_nano":10}"#;
+        let occurrence: LegacyTaskOccurrence = serde_json::from_str(prior).unwrap();
+        assert_eq!(
+            occurrence.authority,
+            LegacyTaskOccurrenceAuthority::StepMember
+        );
+        assert_eq!(serde_json::to_string(&occurrence).unwrap(), prior);
+    }
+
+    #[test]
+    fn turn_prelude_requires_unspanned_opencode_user_log_identity() {
+        let digest = "d".repeat(64);
+        let turn = "c".repeat(32);
+        let proof = LegacyTaskSourceProof {
+            endpoint: "127.0.0.1:4318".parse().unwrap(),
+            scope: LegacyTaskScope {
+                receiver: "1".repeat(32),
+                producer: "opencode".into(),
+                agent_id: "actor".into(),
+                session_id: "session".into(),
+                run_id: "a".repeat(32),
+                turn_id: turn.clone(),
+            },
+            occurrence: LegacyTaskOccurrence {
+                id: Some(LegacyActivityId::Text(format!("log:{digest}"))),
+                source_id: digest,
+                trace_id: None,
+                span_id: None,
+                turn_id: Some(turn),
+                time_unix_nano: 10,
+                authority: LegacyTaskOccurrenceAuthority::TurnRequestPrelude,
+            },
+            capture_sha256: "c".repeat(64),
+            event_sha256: "e".repeat(64),
+            excerpt_sha256: "f".repeat(64),
+        };
+        proof.validate().unwrap();
+        let encoded = serde_json::to_string(&proof).unwrap();
+        let restored: LegacyTaskSourceProof = serde_json::from_str(&encoded).unwrap();
+        restored.validate().unwrap();
+        assert_eq!(restored, proof);
+        for bad in [
+            LegacyTaskOccurrence {
+                authority: LegacyTaskOccurrenceAuthority::StepMember,
+                ..proof.occurrence.clone()
+            },
+            LegacyTaskOccurrence {
+                trace_id: Some("1".repeat(32)),
+                ..proof.occurrence.clone()
+            },
+            LegacyTaskOccurrence {
+                span_id: Some("2".repeat(16)),
+                ..proof.occurrence.clone()
+            },
+            LegacyTaskOccurrence {
+                id: Some(LegacyActivityId::Number(4)),
+                ..proof.occurrence.clone()
+            },
+            LegacyTaskOccurrence {
+                turn_id: Some("4".repeat(32)),
+                ..proof.occurrence.clone()
+            },
+        ] {
+            assert!(
+                LegacyTaskSourceProof {
+                    occurrence: bad,
+                    ..proof.clone()
+                }
+                .validate()
+                .is_err()
+            );
+        }
+        assert!(
+            LegacyTaskSourceProof {
+                scope: LegacyTaskScope {
+                    producer: "other".into(),
+                    ..proof.scope.clone()
+                },
+                ..proof
+            }
+            .validate()
+            .is_err()
         );
     }
 }
