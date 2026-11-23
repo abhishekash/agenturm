@@ -95,7 +95,12 @@ impl ActiveCollector {
         let worker_stop = Arc::clone(&stop);
         let notice = Arc::new(Mutex::new(collection_notice(&initial_report)));
         let worker_notice = Arc::clone(&notice);
-        let authority = Arc::new(Mutex::new(collector.source_authority()));
+        let mut native_members = super::native_session_context::StartupMembers::default();
+        let authority = Arc::new(Mutex::new(
+            native_members
+                .update(Some(collector.source_authority()))
+                .expect("configured source authority exists"),
+        ));
         let worker_authority = Arc::clone(&authority);
         let (requests, work) = mpsc::sync_channel::<CollectorRequest>(2);
         let receiver_notice = Arc::new(Mutex::new(None));
@@ -140,7 +145,9 @@ impl ActiveCollector {
                     refresh = Instant::now() + interval;
                     let report = collector.refresh();
                     if let Ok(mut authority) = worker_authority.lock() {
-                        *authority = collector.source_authority();
+                        *authority = native_members
+                            .update(Some(collector.source_authority()))
+                            .expect("configured source authority exists");
                     }
                     if let Ok(mut notice) = worker_notice.lock() {
                         *notice = collection_notice(&report);

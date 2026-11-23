@@ -1769,7 +1769,6 @@ pub fn execute_cockpit_with_extensions(
     };
     install_process_extensions(&mut app, &extensions)?;
     let mut store = None;
-    let mut native_members = native_session_context::StartupMembers::default();
     agenturm_ui::run_workspace(move |request| {
         if startup.is_none() {
             startup = Some(cockpit_startup::prepare_cockpit_store(None)?);
@@ -1789,8 +1788,8 @@ pub fn execute_cockpit_with_extensions(
             request => {
                 let native_sources = matches!(request, WorkspaceRequest::Sessions(_))
                     .then(|| {
-                        native_members
-                            .update(startup.source_authority())
+                        startup
+                            .source_authority()
                             .or_else(|| native_session_context::configured_sources(&startup.db))
                     })
                     .flatten();
