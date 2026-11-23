@@ -318,7 +318,7 @@ fn force_stop(child: &mut Child, isolated: bool) {
     let _ = child.kill();
 }
 
-fn exit_code(status: ExitStatus) -> ExitCode {
+pub(super) fn exit_code(status: ExitStatus) -> ExitCode {
     if let Some(code) = status.code() {
         return ExitCode::from(code as u8);
     }

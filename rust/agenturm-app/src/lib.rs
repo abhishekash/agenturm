@@ -18,6 +18,8 @@ mod eval_import;
 mod handoff_export;
 mod inspector_activity;
 mod investigate_cli;
+#[cfg(target_os = "linux")]
+mod new_window;
 mod private_output;
 #[cfg(target_os = "linux")]
 mod remote_history;
@@ -45,6 +47,8 @@ pub use content_preview::{ContentOptions, execute_content, execute_content_stdou
 pub use discovery::{discover, execute_discover};
 pub use eval_import::{EvalOptions, execute_evals};
 pub use investigate_cli::{InvestigationOptions, execute_investigation};
+#[cfg(target_os = "linux")]
+pub use new_window::{WindowOptions, execute as execute_new_window};
 pub use private_output::with_private_stdout;
 #[cfg(target_os = "linux")]
 pub use remote_history::{RemoteHistoryOptions, execute_remote_cockpit};
@@ -213,6 +217,8 @@ pub enum Command {
         db: Option<PathBuf>,
         extensions: ResolvedExtensionCatalog,
     },
+    #[cfg(target_os = "linux")]
+    Window(WindowOptions),
     #[cfg(target_os = "linux")]
     RemoteCockpit(RemoteHistoryOptions),
     Query(HistoryQueryOptions),
@@ -759,6 +765,10 @@ fn lifecycle_evidence_rows(
 }
 
 pub fn parse_os_command(args: &[std::ffi::OsString]) -> Result<Command, String> {
+    #[cfg(target_os = "linux")]
+    if new_window::handles(args) {
+        return new_window::parse(args).map(Command::Window);
+    }
     if args.first().is_some_and(|arg| arg == "run") {
         return trace_run::parse_trace_run(&args[1..]).map(Command::Run);
     }
@@ -778,6 +788,14 @@ pub fn parse_os_command(args: &[std::ffi::OsString]) -> Result<Command, String> 
 }
 
 pub fn parse_command(args: &[String]) -> Result<Command, String> {
+    #[cfg(target_os = "linux")]
+    if new_window::handles(args) {
+        let original = args
+            .iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>();
+        return new_window::parse(&original).map(Command::Window);
+    }
     if args.first().is_some_and(|arg| arg == "--once") {
         let mut explicit = vec!["cockpit".to_owned()];
         explicit.extend_from_slice(args);
@@ -3345,9 +3363,10 @@ pub fn render(command: Command) -> String {
             "       agenturm adapter install --manifest <local-json> --sha256 <digest> --root <private-directory>\n",
             "       agenturm broker <collect|query|review|cockpit|task|grant|content|backup|integrity|prune> --broker-config <json> [command options]\n",
             "       agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path>\n",
-            "       agenturm cockpit [--db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]]\n",
+            "       agenturm cockpit [--new-window] [--db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]]\n",
             "       agenturm cockpit --once [--db <path>] [--json] [--limit <1..256>]\n",
-            "       agenturm cockpit --endpoint http://<loopback-IP:port> --token-file <path>\n",
+            "       agenturm cockpit --endpoint http://<loopback-IP:port> --token-file <path> [--new-window]\n",
+            "       agenturm broker cockpit --broker-config <json> [--new-window]\n",
             "       agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]\n",
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
             "       agenturm review --db <path> --harness-id <id> --session-id <id> (--turn-id <id> | --turn-of-trace <trace-id> --trace-source-id <id>) [--worker-id <id>] [--linked-traces] [--format text|json|markdown|html] [--output <new-directory>] [query paging options]\n",
@@ -3407,7 +3426,7 @@ pub fn render(command: Command) -> String {
         | Command::TracePayload(_) => String::new(),
         Command::Discover { .. } | Command::Cockpit { .. } => String::new(),
         #[cfg(target_os = "linux")]
-        Command::RemoteCockpit(_) => String::new(),
+        Command::RemoteCockpit(_) | Command::Window(_) => String::new(),
         Command::Inspect(_) => String::new(),
         #[cfg(target_os = "linux")]
         Command::Broker(_) | Command::InstallAdapter(_) => String::new(),

@@ -9,6 +9,7 @@ use std::process::ExitCode;
 
 const USAGE: &str = concat!(
     "agenturm broker <collect|query|review|investigate|cockpit|task> --broker-config <json> [command options]\n",
+    "       agenturm broker cockpit --broker-config <json> [--new-window]\n",
     "       agenturm broker import-traces --broker-config <json> --file <otlp-json-path|-> --source-id otlp.<id>\n",
     "       agenturm broker import-jsonl --broker-config <json> --file <span-jsonl-path|-> --source-id otlp.<id> [--session-id <id>]\n",
     "       agenturm broker serve-traces --broker-config <json> --listen <loopback-IP:port> --source-id otlp.<id> --token-file <path>\n",

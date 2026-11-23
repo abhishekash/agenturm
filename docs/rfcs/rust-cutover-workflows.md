@@ -14,7 +14,7 @@ migration of Python-era databases remains outside the Rust-only product scope.
 
 | Python 0.2.8 workflow | Rust path and cutover disposition |
 | --- | --- |
-| Bare `agenturm`, `cockpit`, global `--db` | Keep local startup, discovery, one-shot snapshots and explicit history selection. Bare Rust startup and `cockpit --db` exist. `cockpit --once` prints a bounded session report, with JSON and page coverage on request. The same report works through a broker or trusted remote reader. Use `query` for raw machine-readable history. `cockpit --endpoint` attaches through a trusted loopback listener or SSH tunnel. Compatibility with a Python receiver and `--new-window` remain open. [Remote history setup](rust-broker-commands.md#read-history-through-an-ssh-tunnel) |
+| Bare `agenturm`, `cockpit`, global `--db` | Keep local startup, discovery, one-shot snapshots and explicit history selection. Bare Rust startup and `cockpit --db` exist. `cockpit --once` prints a bounded session report, with JSON and page coverage on request. The same report works through a broker or trusted remote reader. Use `query` for raw machine-readable history. `cockpit --endpoint` attaches through a trusted loopback listener or SSH tunnel. On Linux, `cockpit --new-window` opens the same cockpit with the selected history. Compatibility with a Python receiver remains open. [Remote history setup](rust-broker-commands.md#read-history-through-an-ssh-tunnel) |
 | `serve` | Keep local OTLP collection and source watch through `serve-traces`, `discover --follow` and `collect --watch` or the Linux user service. `broker serve-history` serves the native broker's retained metadata on loopback through a dedicated reader. The Python `/api/*` wire surface, direct remote TLS and arbitrary legacy JSONL tail remain open. |
 | `run` | Keep command launch, exit status, local trace delivery and exact source/session linkage. Rust `run` configures OTLP for an instrumented producer. Python-specific script and module injection requires a product decision. |
 | `import-jsonl` | Use `import-jsonl` for supported native span exports and `import-traces` for OTLP JSON. Both retain structural trace metadata with exact session scope. Legacy payload and cost import parity remains open. |
@@ -29,6 +29,25 @@ migration of Python-era databases remains outside the Rust-only product scope.
 | `task update\|snapshot\|brief\|decide\|decisions\|draft\|approve-draft` | Rust supports revision-checked editing, local Git summaries, opt-in tracked text patches, five structured brief fields, and immutable decisions with supersession. Drafts and decision citations can use one exact retained user prompt. Approval and excerpt reopening require revalidation of the original grant and source receipt. Broader Review evidence projections remain open. |
 
 The CLI maintainer owns implementation and installed scenarios for the retained commands. Any later retirement requires an explicit product decision. [Python command source](https://github.com/abhishekash/agenturm/blob/v0.2.8/observatory/__main__.py) · [Rust workflow coverage](rust-cockpit-workflow-coverage.md)
+
+### Open the cockpit in a new window
+
+Run `agenturm cockpit --new-window` on Linux. From a tmux pane, the cockpit
+opens a window in that session. From a Linux desktop, it can launch GNOME
+Terminal, Konsole, or xterm when a display is available.
+
+```sh
+agenturm cockpit --new-window --db ./history.sqlite
+agenturm broker cockpit --new-window --broker-config ./broker.json
+```
+
+The launcher keeps relative paths based on the original working directory.
+Local history, broker history, and `cockpit --endpoint` use the same
+options as in the current terminal. The command reports terminal launcher
+errors and returns the launcher's status. tmux returns after creating the
+window. The cockpit exits in the new window.
+
+Use `cockpit --once` for a report in the current shell.
 
 ### Import exported spans
 
