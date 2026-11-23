@@ -397,6 +397,19 @@ mod tests {
     use super::*;
 
     #[test]
+    fn metric_decimal_json_preserves_the_binary_double() {
+        let wire = "38313834227937076e-16";
+        let declared = MetricFloat::new(f64::from_bits(0x400e_a6ac_5a1a_af23));
+        let actual: MetricFloat = serde_json::from_str(wire).unwrap();
+        assert_eq!(actual, declared);
+        assert_eq!(
+            serde_json::from_str::<MetricFloat>(&serde_json::to_string(&declared).unwrap())
+                .unwrap(),
+            declared,
+        );
+    }
+
+    #[test]
     fn metric_numbers_preserve_signed_integers_and_nonfinite_doubles() {
         for number in [
             MetricNumber::Int(i64::MIN),
