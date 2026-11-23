@@ -3,7 +3,7 @@
 
 Run with --bin pointing to the packaged storage service. This fixture changes
 ownership only within its temporary directory; it requires an isolated root
-host and unused UIDs 45000 through 45002. No network endpoint is contacted.
+host and unused UIDs 45000 through 45003. No network endpoint is contacted.
 """
 import argparse
 from hashlib import sha256
@@ -20,7 +20,7 @@ import sys
 import tempfile
 import time
 
-BROKER, CLIENT, UNKNOWN = 45000, 45001, 45002
+BROKER, CLIENT, UNKNOWN, MAINTENANCE = 45000, 45001, 45002, 45003
 REQUEST = '0123456789abcdef0123456789abcdef'
 RECEIVER = 'receiver:native'
 SOURCE = 'harness.test'
@@ -75,7 +75,7 @@ def client(path, operation, mode):
 def run(binary):
     if os.geteuid() != 0:
         raise SystemExit('Run only as root in a disposable qualification VM')
-    for uid in (BROKER, CLIENT, UNKNOWN):
+    for uid in (BROKER, CLIENT, UNKNOWN, MAINTENANCE):
         try:
             pwd.getpwuid(uid)
         except KeyError:
@@ -94,7 +94,12 @@ def run(binary):
         transport.chmod(0o2710)
         path = transport/'agenturm-native-storage-v1.sock'
         db = data/'history.sqlite'
-        args = [str(binary),'--data-root',data,'--transport-dir',transport,'--receiver-id',RECEIVER,'--client-uid',str(CLIENT),'--client-gid',str(CLIENT),'--native-sources',SOURCE]
+        backups = root/'backups'
+        backups.mkdir()
+        os.chown(backups, BROKER, BROKER)
+        backups.chmod(0o700)
+        args = [str(binary),'--data-root',data,'--transport-dir',transport,'--receiver-id',RECEIVER,'--client-uid',str(CLIENT),'--client-gid',str(CLIENT),'--native-sources',SOURCE,
+                '--native-maintenance',f'{MAINTENANCE}:{CLIENT}','--native-backup-root',backups]
         def start():
             service = subprocess.Popen(args,preexec_fn=drop(BROKER,BROKER))
             for _ in range(200):
@@ -168,14 +173,33 @@ def run(binary):
         assert cursor()=='cursor-3'
         assert request(third)=={'Ok':{'result':'replay'}}
         assert cursor()=='cursor-3'
+        history_query = dict(op='query_history',query=dict(limit=10),selection=dict(kind='observations'))
+        assert len(request(history_query)['Ok']['observations']) == 3
+        policy = dict(max_age_ns=86_400_000_000_000)
+        configure = dict(op='admin',request=dict(kind='set_retention_policy',policy=policy))
+        assert request(configure)=={'Err':'unauthorized'}
+        assert request(dict(op='admin',request=dict(kind='apply_retention_policy')))=={'Err':'unauthorized'}
+        status = request(configure,uid=MAINTENANCE)['Ok']
+        assert status['kind']=='retention_policy' and status['status']['policy']==policy,status
+        service.terminate()
+        assert service.wait(timeout=3)==0
+        # Startup's first maintenance tick applies the persisted age without
+        # a client cleanup request. The admission checkpoint survives it.
+        service = start()
+        assert not request(history_query)['Ok']['observations']
+        assert cursor()=='cursor-3'
+        assert request(third)=={'Ok':{'result':'replay'}}
+        disabled = request(dict(op='admin',request=dict(kind='set_retention_policy',policy=dict(max_age_ns=None))),uid=MAINTENANCE)['Ok']
+        assert disabled['status']['policy']=={'max_age_ns':None}
+        assert disabled['status']['cutoff_unix_ns']>0
         request({},'direct')
         service.terminate()
         assert service.wait(timeout=3)==0
         assert not path.exists()
         import sqlite3
         with sqlite3.connect(db) as connection:
-            assert connection.execute('SELECT count(*) FROM agenturm_observations').fetchone()==(3,)
-        print('PASS native broker distinct UID/GID, direct DB denial, peer and source rejection, three SIGKILL restarts, lost reply after durable admission, competing writer denial, three durable observations and exact replay',flush=True)
+            assert connection.execute('SELECT count(*) FROM agenturm_observations').fetchone()==(0,)
+        print('PASS native broker distinct UID/GID, direct DB denial, peer and source rejection, three SIGKILL restarts, lost reply after durable admission, competing writer denial, persisted automatic retention, maintenance-only policy and exact replay after pruning',flush=True)
 
 if len(sys.argv)==4:
     client(sys.argv[1],json.loads(sys.argv[3]),sys.argv[2])
