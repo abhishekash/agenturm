@@ -28,6 +28,8 @@ PROVIDERS = ("codex", "claude")
 IDS = re.compile(r"[A-Za-z0-9._:/-]{1,256}")
 MAX_HEADER = 256 * 1024
 MAX_HEADER_ROWS = 16
+MAX_HISTORICAL_PASSES = 64
+HISTORICAL_DEADLINE = 90
 
 
 class ValidationError(Exception):
@@ -328,6 +330,7 @@ def wait_for_admission(app, env, work, db, cockpit, rows, excluded, timeout):
     expected = {(row["source"], row["session"]) for row in rows}
     forbidden = {(row["source"], row["session"]) for row in excluded}
     deadline = time.monotonic() + timeout
+    missing = expected
     while time.monotonic() < deadline:
         cockpit.receive()
         if not db.exists():
@@ -339,10 +342,12 @@ def wait_for_admission(app, env, work, db, cockpit, rows, excluded, timeout):
             continue
         admitted = {(row["harness_id"], row["session_id"]) for row in retained}
         require(not (admitted & forbidden), "A guardian review created a durable session")
-        if expected <= admitted:
+        missing = expected - admitted
+        if not missing:
             return
         time.sleep(.2)
-    raise ValidationError("Timed out waiting for the expected native sessions to be admitted")
+    ids = ", ".join(sorted(session for _, session in missing))
+    raise ValidationError(f"Admitted {len(expected) - len(missing)} of {len(expected)} expected sessions; missing {ids}")
 
 
 def verify_roster(cockpit, rows, excluded, export_directory):
@@ -384,6 +389,17 @@ def inspector_owner(frame):
     return fields.get("Source"), fields.get("Session")
 
 
+def roster_selection(frame, query):
+    lines = frame.splitlines()
+    if ("Agenturm command center" not in frame or "Enter / Esc done" in frame
+            or not any(line.strip() == f"/ {query}" for line in lines)):
+        return None
+    for index, line in enumerate(lines):
+        if line.lstrip().startswith("› ") and index + 1 < len(lines):
+            return line, lines[index + 1]
+    return None
+
+
 def select_human_row(cockpit, row, max_matches):
     source, session = row["source"], row["session"]
     hint = row["title"]
@@ -392,38 +408,48 @@ def select_human_row(cockpit, row, max_matches):
     query = hint[:28]
     require(all(char.isprintable() for char in query), "Expected title is not a single printable line")
     cockpit.key(b"a/" + query.encode() + b"\r")
-    cockpit.until(lambda frame: query in frame and any(
-        line.startswith("› ") for line in frame.splitlines()), f"named roster search for {session}")
+    cockpit.until(lambda frame: roster_selection(frame, query) is not None,
+                  f"named roster search for {session}")
     visited = set()
     for _ in range(max_matches):
-        lines = cockpit.screen.contents().splitlines()
-        position = next((index for index, line in enumerate(lines) if line.startswith("› ")), None)
-        require(position is not None, "A named roster row was not selected")
-        selected = lines[position]
-        context = lines[position + 1] if position + 1 < len(lines) else ""
         cockpit.key(b"\r")
         cockpit.markers(f"inspector for named roster row {session}", "Session overview", "Recorded turns on page")
         owner = inspector_owner(cockpit.screen.contents())
         require(None not in owner, "Inspector omitted an exact source or session field")
         cockpit.key(b"\x1b")
-        cockpit.markers(f"return to named roster row {session}", "Agenturm command center", selected.strip())
+        cockpit.until(lambda frame: roster_selection(frame, query) is not None,
+                      f"return to named roster row {session}")
         if owner == (source, session):
             status = row.get("status")
-            require(status is None or status in selected, f"Unexpected status for {source} / {session}")
-            require(row.get("agent") is None or row["agent"] in context,
-                    f"Native agent context did not render for {session}")
+            agent = row.get("agent")
+
+            def expected_selection(frame):
+                selection = roster_selection(frame, query)
+                if selection is None:
+                    return False
+                selected, context = selection
+                # The fixed-width status and Updated columns occupy the final
+                # 21 cells, plus one outer margin on wide layouts.
+                end = len(selected) - (10 if cockpit.width >= 80 else 9) - 1
+                actual_status = selected[end - 11:end].strip()
+                return (status is None or status == actual_status) and (agent is None or agent in context)
+
+            cockpit.until(expected_selection, f"current native status and context for {session}")
             cockpit.key(b"\r")
             cockpit.markers(f"reopen after Esc for {session}", "Session overview", "Recorded turns on page")
             require(inspector_owner(cockpit.screen.contents()) == owner,
                     f"Esc changed the selected session {source} / {session}")
             cockpit.key(b"\x1b")
-            cockpit.markers(f"leave exact inspector for {session}", "Agenturm command center")
+            cockpit.until(lambda frame: roster_selection(frame, query) is not None,
+                          f"leave exact inspector for {session}")
             return
         if owner in visited:
             break
         visited.add(owner)
+        previous = roster_selection(cockpit.screen.contents(), query)
         cockpit.key(b"\x1b[B")
-        cockpit.receive()
+        cockpit.until(lambda frame: (selected := roster_selection(frame, query)) is not None and selected != previous,
+                      f"advance to the next named roster row {session}")
     raise ValidationError(f"Named roster search did not select {source} / {session}")
 
 
@@ -442,6 +468,42 @@ def verify(args, app, env, work):
     print(f"Verified {'live process witness' if args.require_live else 'recorded native roots'} with catch-up and restart")
 
 
+def finish_historical_collection(app, env, work, config, db, row):
+    source = row["resolved"]
+    before = source.stat()
+    require(before.st_size > 0, "Historical transcript is empty")
+    with source.open("rb") as stream:
+        stream.seek(-1, os.SEEK_END)
+        require(stream.read(1) == b"\n", "The historical display fixture needs a complete final row")
+    deadline = time.monotonic() + HISTORICAL_DEADLINE
+    previous = None
+    for cycle in range(1, MAX_HISTORICAL_PASSES + 1):
+        left = deadline - time.monotonic()
+        if left <= 0:
+            break
+        run(app, env, work, "collect", "--config", config, "--db", db, timeout=min(45, left))
+        with sqlite3.connect(db.as_uri() + "?mode=ro", uri=True, timeout=3) as store:
+            record = store.execute("SELECT cursor FROM agenturm_source_state WHERE source_id=?",
+                                   [row["source"]]).fetchone()
+        require(record is not None, "Historical Claude source has no committed checkpoint")
+        proof = record[0].split(":", 4)
+        require(len(proof) == 5 and proof[0] == "v2" and all(part.isdecimal() for part in proof[1:4]),
+                "Unexpected historical Claude checkpoint format")
+        device, inode, offset = map(int, proof[1:4])
+        after = source.stat()
+        require((device, inode) == (before.st_dev, before.st_ino)
+                and (after.st_dev, after.st_ino, after.st_size, after.st_mtime_ns)
+                == (before.st_dev, before.st_ino, before.st_size, before.st_mtime_ns),
+                "Historical Claude source changed during collection")
+        require(offset <= before.st_size and (previous is None or offset > previous),
+                "Historical Claude checkpoint did not advance")
+        if offset == before.st_size:
+            print(f"Verified historical Claude checkpoint at {offset} bytes after {cycle} collection passes")
+            return
+        previous = offset
+    raise ValidationError("Historical Claude collection did not reach the complete source within its bounds")
+
+
 def historical(args, app, env, work):
     row = json.loads(args.expected.read_text(encoding="utf-8"))
     require(row["harness"] == "claude", "Select one actual historical Claude transcript")
@@ -456,13 +518,17 @@ def historical(args, app, env, work):
     }), encoding="utf-8")
     config_path.chmod(0o600)
     env = {**env, "AGENTURM_CONTENT_CONFIG": str(config_path)}
-    run(app, env, work, "collect", "--config", config_path, "--db", db)
+    display = any(field in row for field in ("title", "project", "status"))
+    if display:
+        validate_expected_display(row)
+        finish_historical_collection(app, env, work, config_path, db, row)
+    else:
+        run(app, env, work, "collect", "--config", config_path, "--db", db)
     observed = summary(app, env, work, db)
     require([(item["harness_id"], item["session_id"]) for item in observed] == [(row["source"], row["session"])],
             "Explicit collection did not admit the exact historical Claude session")
     print(f"Verified historical Claude admission for {row['session']} in an isolated explicit store")
-    if "title" in row or "project" in row or "status" in row:
-        validate_expected_display(row)
+    if display:
         for width, height in [(120, 32), (80, 24), (60, 18)]:
             with Cockpit(app, env, work, width, height, db) as cockpit:
                 verify_roster(cockpit, [row], [], work / f"historical-{width}")
@@ -537,7 +603,7 @@ def mutation(args, app, env, work):
         rows = [{**first, "title": "Name unavailable", "status": "Ready"},
                 {**second, "title": "Name unavailable", "status": "Working"}]
         cockpit.key(b"a")
-        cockpit.markers("both sources in the command center", "Name unavailable", "Alpha", "Beta", "Ready", "Working")
+        cockpit.markers("both source states in the command center", "Name unavailable", "Alpha", "Beta", "Working 1", "Ready 1")
         verify_roster(cockpit, rows, [], work / "mutation-narrow")
     with Cockpit(app, env, work, 80, 24) as cockpit:
         retained(cockpit, independent)
@@ -558,7 +624,7 @@ def main():
     strict = modes.add_parser("verify", help="verify independently identified real sessions in a fresh cockpit")
     strict.add_argument("--expected", type=Path, required=True)
     strict.add_argument("--require-live", action="store_true")
-    strict.add_argument("--deadline", type=int, choices=range(5, 181), default=45)
+    strict.add_argument("--deadline", type=int, choices=range(5, 181), default=120)
     retained = modes.add_parser("historical", help="admit one actual historical Claude transcript explicitly")
     retained.add_argument("--expected", type=Path, required=True)
     modes.add_parser("mutation", help="test an exact human-title rename and independent same-ID sources in disposable state")
