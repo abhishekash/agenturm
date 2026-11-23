@@ -264,9 +264,11 @@ explicit `llm.cost_known` value other than true leave the span without a
 cost record. Query exposes each record's source, exact span, currency and
 decimal-string `nanounits`. Workspace Usage and the originating OTLP
 session's Usage show the amount and currency beside the source evidence.
-Multiple spans can repeat a report, so Usage shows individual records and
-leaves totals open. Kiro credits use their native credit unit. Agenturm
-does not derive an amount from tokens, model prices, or credits.
+Multiple spans can repeat a report, so Usage shows individual records; the
+combined mode excludes and counts reports overlapping at exact
+source/session identity rather than summing them. Kiro credits use their
+native credit unit. Agenturm does not derive an amount from tokens, model
+prices, or credits.
 
 The native Pi and OpenCode adapters also retain terminal assistant-message
 cost reports in USD. Pi reads `message.usage.cost.total` with basis
@@ -284,7 +286,9 @@ assistant event. Amounts round to the nearest nano-unit. Positive amounts
 that would round to zero are omitted, preserving the distinction from
 an explicit zero. Usage shows the individual reports in the selected
 history page. Forks can copy assistant histories and telemetry can repeat
-the same provider report, so a combined cost total remains unknown.
+the same provider report, so native cost records stay outside the combined
+cost total, which merges only the per-trace-deduplicated and log-only
+cohorts per currency.
 
 ### Import evaluation results
 
@@ -435,7 +439,7 @@ client's checkout.
 | OpenAI, Anthropic, LangChain and LangGraph | Python 0.2.8 instruments OpenAI and Anthropic calls and LangChain automatically, with explicit callbacks also available for LangChain and LangGraph. Inventory producer-side exporters and test selected integrations against Rust before claiming equivalent coverage. Python Agenturm bootstrap remains a product decision. SDK integration maintainer and release owner. |
 | OpenAI Agents SDK, Pydantic AI, Google ADK, Node.js | Python 0.2.8 supplies an Agents SDK adapter and exercises vendor OTLP exporters and a Node.js client. Test native OTLP producers independently. Decide which producer-side integrations stay required and which old Agenturm client ingestion routes to retire. SDK integration maintainer and release owner. |
 | Prompt and MCP payloads | Preserve the recorded operation and current scope when opening content. Unavailable, revoked and over-limit evidence needs a visible outcome. B2 and B4 own the prompt and MCP detail gaps. |
-| Usage, cost and host history | Rust shows recorded token counts, Kiro credits and individually reported OTLP costs. `host record` and `broker host record` capture optional Linux load, memory and CPU counters with known same-user processes. `5` opens recorded samples, then Enter opens the process list and exact process history. A v2 collection `host` block enables scheduled capture for local, broker, and managed Linux collectors. The HTTP reader can expose recorded Host history when started with `--include-host`. Aggregate cost views remain open. [Host history](rust-broker-commands.md#record-and-read-host-history) |
+| Usage, cost and host history | Rust shows recorded token counts, Kiro credits and individually reported OTLP costs. `host record` and `broker host record` capture optional Linux load, memory and CPU counters with known same-user processes. `5` opens recorded samples, then Enter opens the process list and exact process history. A v2 collection `host` block enables scheduled capture for local, broker, and managed Linux collectors. The HTTP reader can expose recorded Host history when started with `--include-host`. The combined usage view deduplicates reports overlapping at exact source/session identity and discloses exclusions; unattributed cross-layer overlap and fork-copyable native cost records stay outside combined totals. [Host history](rust-broker-commands.md#record-and-read-host-history) |
 
 The vendor fixture matrix records the actual SDK paths and pending checks. [Rust OTLP vendor producer qualification](../validation/rust-vendor-sdk-producers.md)
 

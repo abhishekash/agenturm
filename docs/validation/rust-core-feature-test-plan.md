@@ -52,6 +52,7 @@ baselines, not results for the new feature slices. Every new row starts
 | CF3 | Trusted installed-adapter list/show/remove with pin-checked removal and atomic catalog publication. Install already exists. | `/tmp/agenturm-adapter-lifecycle` | Separate test agent; not run on new source. |
 | CF4 | Body-free OTLP error/fatal logs in failure investigation, including explicit `--kind log`; existing Findings private log view unchanged. | `/tmp/agenturm-core-development` | Separate test agent; not run on new source. |
 | CF5 | Implemented: exact native Claude worker-spawn facts and declared-child metadata in session evidence. | `/tmp/agenturm-native-presence` + `/tmp/agenturm-review-session-edits` | Separate test agent; execute on the supplied integrated source head. |
+| CF6 | Implemented: combined deduplicated usage/cost totals that exclude and count reports overlapping at exact `(target source, session)` identity; unattributed telemetry contributes with a disclosed boundary. | Development branch `feature/combined-usage-dedup` | Separate test agent; not run on new source. |
 
 Worktree paths identify current ownership, not release artifacts. The developer
 must supply the final integrated commit before the test owner freezes a binary.
@@ -203,6 +204,41 @@ multiple results; bounded checkpoint overflow and old cursor continuation;
 exact declared-child Activity/inspector details and page coverage. Verify no
 prompt/tool-body copy and no roster recency/hierarchy changes. All delegated scenarios
 remain **not run** until the test owner records actual results on the frozen head.
+
+## CF6 — combined deduplicated usage totals
+
+Implemented with the FD3 combined slice. The combined per-UTC-day projection
+excludes reports whose overlap is established through exact
+`(target source, session)` identity and counts the exclusions instead of
+summing them: native reports are excluded when same-day usage-bearing telemetry
+claims their exact source and session, and attributed telemetry rows are
+excluded when same-day native reports exist for the claimed identity.
+Unattributed telemetry carries no identity link and therefore contributes;
+that boundary is disclosed, not inferred away. Combined costs merge the
+per-trace-deduplicated and log-only cohorts per currency; native assistant
+cost records that forks can duplicate keep `native_origin` with no span
+identity and stay outside combined totals.
+
+**Developer handoff:** six focused Store usage tests (exact-identity overlap
+exclusion, unattributed contribution, snapshot-pinned combined equality,
+revision correction, and older-receiver pages without the combined block),
+76 UI lib tests with the new default Combined chart mode, joined workspace
+all-target strict Clippy and fmt passed on the development branch. These are
+developer checks, not installed qualification.
+
+| Scenario | Required observation | Status |
+| --- | --- | --- |
+| Native plus attributed telemetry at one source/session/day | Both sides excluded and counted; combined tokens exclude both; all cohort views unchanged. | Not run |
+| Attributed telemetry without same-day native rows for the claimed identity | Contributes its deduplicated tokens; no exclusion is recorded. | Not run |
+| Unattributed telemetry and native-only days | Combined equals the nonduplicated evidence; no speculative cross-layer deduction or hidden merging. | Not run |
+| Combined costs | Trace and log-only costs merged per currency; fork-copyable native-origin records excluded; distinct currencies never converted. | Not run |
+| Terminal disclosure at 120×32, 80×24 and 60×18 | Combined mode renders first; `n` reaches excluded-overlapping counts and per-currency combined cost; `s` returns to the unchanged native/span/trace/log views. | Not run |
+| Snapshot, revision and retention | A pinned snapshot keeps its combined block; a native revision correction reclassifies only at the newer watermark; retention/scan flags keep marking partial days. | Not run |
+| Older attached-receiver page | A usage page without the combined block deserializes with the block absent; every existing view keeps working. | Not run |
+| Scan/cohort limits | Days beyond trace-cohort or raw-scan bounds keep their existing partial flags; combined never claims coverage the cohort did not read. | Not run |
+
+All CF6 scenarios are **not run** until the test owner records actual results
+on the frozen integrated head.
 
 ## Related Review identity fixes — delegated regression
 

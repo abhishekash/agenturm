@@ -1,6 +1,6 @@
 //! Per-field representative reports in one retained trace's explicit parent graph.
 
-use super::{CostCounters, Counters};
+use super::{CostCounters, Counters, DayCombined, NativeEvidence};
 use agenturm_kernel::{ReportedCost, SpanTokenUsage, TraceSpan, TraceStatus};
 use std::collections::{BTreeMap, VecDeque};
 
@@ -16,6 +16,9 @@ pub(super) struct Classification {
 
 pub(super) struct TraceMember {
     pub span: TraceSpan,
+    /// The member observation's session identity. Combined classification
+    /// requires both a claimed target source and this exact session.
+    pub session: Option<String>,
     pub classification: Option<Classification>,
     pub usage: Option<SpanTokenUsage>,
     pub cost: Option<ReportedCost>,
@@ -37,7 +40,13 @@ struct Node {
     descendants: u8,
 }
 
-pub(super) fn summarize(members: &[TraceMember], complete: bool, day: &mut DayTraceReports) {
+pub(super) fn summarize(
+    members: &[TraceMember],
+    complete: bool,
+    day: &mut DayTraceReports,
+    combined: &mut DayCombined,
+    native: &NativeEvidence,
+) {
     day.traces += 1;
     day.reported_error_traces += usize::from(members.iter().any(|row| {
         row.span.status == TraceStatus::Error
@@ -96,6 +105,18 @@ pub(super) fn summarize(members: &[TraceMember], complete: bool, day: &mut DayTr
     let mut matched_cost = !partial;
     for index in order {
         let member = &members[index];
+        // A usage-bearing row attributed to a native source claims that its
+        // model calls are also covered by that source's native reports.
+        if let Some(target) = member
+            .usage
+            .as_ref()
+            .and_then(|usage| usage.target_source_id.as_deref())
+            && let Some(session) = member.session.as_deref()
+        {
+            combined
+                .claims
+                .insert((target.to_owned(), session.to_owned()));
+        }
         let eligible = member.classification.is_some_and(|value| !value.agent_run);
         let mut values = member.usage.as_ref().map_or([None; FIELDS], fields);
         let mut own = 0;
@@ -114,6 +135,24 @@ pub(super) fn summarize(members: &[TraceMember], complete: bool, day: &mut DayTr
             }
             if values.iter().any(Option::is_some) {
                 day.tokens.add(values);
+                // Same-day native evidence for the exact claimed identity
+                // makes this row's overlap established, so it is excluded and
+                // counted rather than summed into the combined total.
+                let overlaps = member
+                    .usage
+                    .as_ref()
+                    .and_then(|usage| usage.target_source_id.as_deref())
+                    .zip(member.session.as_deref())
+                    .is_some_and(|(target, session)| {
+                        native
+                            .rows
+                            .contains_key(&(target.to_owned(), session.to_owned()))
+                    });
+                if overlaps {
+                    combined.excluded += 1;
+                } else {
+                    combined.tokens.add(values);
+                }
             }
             let chosen_cost = member
                 .cost
@@ -121,6 +160,9 @@ pub(super) fn summarize(members: &[TraceMember], complete: bool, day: &mut DayTr
                 .filter(|_| nodes[index].descendants & COST_BIT == 0);
             if let Some(cost) = chosen_cost {
                 day.costs.add(&cost.currency, cost.nanounits);
+                // Native reports carry no cost, so retained cost evidence has
+                // no native overlap to exclude.
+                combined.costs.add(&cost.currency, cost.nanounits);
             }
             if own & CORE_USAGE & !nodes[index].descendants != 0 {
                 saw_core_usage = true;
@@ -192,6 +234,7 @@ mod tests {
                 started_at_unix_ns: 1,
                 status: TraceStatus::Unset,
             },
+            session: None,
             classification,
             usage: counts.iter().any(Option::is_some).then(|| SpanTokenUsage {
                 span: identity.clone(),
@@ -236,7 +279,9 @@ mod tests {
             member('5', Some('1'), model, [Some(0), None], Some(("USD", 0))),
         ];
         let mut day = DayTraceReports::default();
-        summarize(&spans, true, &mut day);
+        let mut combined = DayCombined::default();
+        let native = NativeEvidence::default();
+        summarize(&spans, true, &mut day, &mut combined, &native);
         let totals = day.totals();
         assert_eq!(totals.traces, 1);
         assert_eq!(totals.reported_error_traces, 1);
@@ -260,6 +305,8 @@ mod tests {
         });
         let root = || member('1', None, model, [Some(100), None], Some(("USD", 10)));
         let mut day = DayTraceReports::default();
+        let mut combined = DayCombined::default();
+        let native = NativeEvidence::default();
         summarize(
             &[
                 member('2', Some('1'), None, [Some(3), None], Some(("USD", 2))),
@@ -267,6 +314,8 @@ mod tests {
             ],
             true,
             &mut day,
+            &mut combined,
+            &native,
         );
         summarize(
             &[
@@ -275,8 +324,10 @@ mod tests {
             ],
             true,
             &mut day,
+            &mut combined,
+            &native,
         );
-        summarize(&[root()], false, &mut day);
+        summarize(&[root()], false, &mut day, &mut combined, &native);
         let totals = day.totals();
         assert_eq!(totals.traces, 3);
         assert_eq!(totals.partial_traces, 3);

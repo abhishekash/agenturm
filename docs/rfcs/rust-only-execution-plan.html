@@ -85,7 +85,7 @@ open. The SDK/CLI audit and test qualification are separate work categories.</p>
 <td>FD3</td>
 <td>Core / usage and cost</td>
 <td>Combined usage/cost totals that safely handle overlapping producer reports.</td>
-<td>Define provenance and deduplication for native, OTLP and multiple instrumentation layers. Keep currencies distinct and ambiguous totals unreported. Implement only totals with attributable nonduplicated evidence. Existing seven-day and per-currency views remain implemented.</td>
+<td><strong>Combined slice implemented:</strong> per-day combined totals exclude reports whose overlap is established through exact <code>(target source, session)</code> identity, count the exclusions, and sum only nonduplicated native reports plus the per-trace-deduplicated trace cohort and disjoint log-only cohort; currencies stay distinct, and native assistant cost records that forks can duplicate stay outside combined totals. Unattributed telemetry carries no identity link and contributes; that boundary is disclosed rather than inferred away. Older attached-receiver pages without the combined block stay readable. Remaining: cross-layer overlap without identity links cannot be detected and is never summed speculatively; installed, paired-state and broad qualification are delegated as CF6 in the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md">core feature test plan</a>. Existing seven-day and per-currency views remain implemented.</td>
 </tr>
 <tr>
 <td>FD4</td>

@@ -253,8 +253,10 @@ explicit <code>llm.cost_known</code> value other than true leave the span withou
 cost record. Query exposes each record's source, exact span, currency and
 decimal-string <code>nanounits</code>. Workspace Usage and the originating OTLP
 session's Usage show the amount and currency beside the source evidence.
-Multiple spans can repeat a report, so Usage shows individual records and
-leaves totals open. Kiro credits use their native credit unit. Agenturm
+Multiple spans can repeat a report, so Usage shows individual records; the
+combined mode excludes and counts reports overlapping at exact
+source/session identity rather than summing them. Kiro credits use their
+native credit unit. Agenturm
 does not derive an amount from tokens, model prices, or credits.</p>
 <p>The native Pi and OpenCode adapters also retain terminal assistant-message
 cost reports in USD. Pi reads <code>message.usage.cost.total</code> with basis
@@ -271,7 +273,9 @@ assistant event. Amounts round to the nearest nano-unit. Positive amounts
 that would round to zero are omitted, preserving the distinction from
 an explicit zero. Usage shows the individual reports in the selected
 history page. Forks can copy assistant histories and telemetry can repeat
-the same provider report, so a combined cost total remains unknown.</p>
+the same provider report, so native cost records stay outside the combined
+cost total, which merges only the per-trace-deduplicated and log-only
+cohorts per currency.</p>
 <h3>Import evaluation results</h3>
 <p>Import the spans first, then select their exact OTLP source for the outcome
 import and lookup. These commands also support <code>--broker-config</code> in place
@@ -415,7 +419,7 @@ client's checkout.</p>
 </tr>
 <tr>
 <td>Usage, cost and host history</td>
-<td>Rust shows recorded token counts, Kiro credits and individually reported OTLP costs. <code>host record</code> and <code>broker host record</code> capture optional Linux load, memory and CPU counters with known same-user processes. <code>5</code> opens recorded samples, then Enter opens the process list and exact process history. A v2 collection <code>host</code> block enables scheduled capture for local, broker, and managed Linux collectors. The HTTP reader can expose recorded Host history when started with <code>--include-host</code>. Aggregate cost views remain open. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md#record-and-read-host-history">Host history</a></td>
+<td>Rust shows recorded token counts, Kiro credits and individually reported OTLP costs. <code>host record</code> and <code>broker host record</code> capture optional Linux load, memory and CPU counters with known same-user processes. <code>5</code> opens recorded samples, then Enter opens the process list and exact process history. A v2 collection <code>host</code> block enables scheduled capture for local, broker, and managed Linux collectors. The HTTP reader can expose recorded Host history when started with <code>--include-host</code>. The combined usage view deduplicates reports overlapping at exact source/session identity and discloses exclusions; unattributed cross-layer overlap and fork-copyable native cost records stay outside combined totals. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md#record-and-read-host-history">Host history</a></td>
 </tr>
 </tbody>
 </table></div>

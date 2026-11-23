@@ -12,14 +12,14 @@ mod trace_graph;
 mod trace_history;
 
 pub use agenturm_kernel::retained_history::{
-    ActivityLogTotals, MAX_USAGE_COST_CURRENCIES, TraceUsageTotals, USAGE_DAYS, UsageCurrencyTotal,
-    UsageDay, UsageHistoryPage, UsageHistoryQuery, UsageTotals,
+    ActivityLogTotals, CombinedUsageTotals, MAX_USAGE_COST_CURRENCIES, TraceUsageTotals,
+    USAGE_DAYS, UsageCurrencyTotal, UsageDay, UsageHistoryPage, UsageHistoryQuery, UsageTotals,
 };
 
 const DAY_NS: u64 = 86_400_000_000_000;
 const MAX_USAGE_ROWS: usize = 16_384;
 
-#[derive(Default)]
+#[derive(Clone, Copy, Default)]
 struct Counters {
     reports: usize,
     sums: [Option<u128>; 6],
@@ -31,6 +31,15 @@ impl Counters {
         for (sum, value) in self.sums.iter_mut().zip(values) {
             if let Some(value) = value {
                 *sum.get_or_insert(0) += u128::from(value);
+            }
+        }
+    }
+
+    fn absorb(&mut self, other: &Self) {
+        self.reports += other.reports;
+        for (sum, value) in self.sums.iter_mut().zip(other.sums) {
+            if let Some(value) = value {
+                *sum.get_or_insert(0) += value;
             }
         }
     }
@@ -103,6 +112,38 @@ impl trace_graph::DayTraceReports {
 struct DayCounters {
     native: Counters,
     span: Counters,
+    native_rows: NativeEvidence,
+}
+
+/// Native usage evidence keyed by exact `(source, session)` identity. Combined
+/// totals exclude a key when same-day telemetry is attributed to it instead of
+/// summing reports that may describe the same model calls.
+#[derive(Default)]
+pub(super) struct NativeEvidence {
+    rows: BTreeMap<(String, String), (Counters, usize)>,
+}
+
+impl NativeEvidence {
+    fn record(&mut self, source: &str, session: Option<&str>, values: [Option<u64>; 6]) {
+        let entry = self
+            .rows
+            .entry((source.to_owned(), session.unwrap_or("").to_owned()))
+            .or_default();
+        entry.0.add(values);
+        entry.1 += 1;
+    }
+}
+
+/// Combined per-day evidence built from the deduplicated trace cohort, the
+/// log-only cohort, and the native rows that no telemetry claims overlap.
+#[derive(Default)]
+struct DayCombined {
+    tokens: Counters,
+    costs: CostCounters,
+    excluded: usize,
+    /// `(target source, session)` identities claimed by usage-bearing
+    /// telemetry rows in this day, whether or not the row kept its counters.
+    claims: BTreeSet<(String, String)>,
 }
 
 const INDEX_SQL: &str = "CREATE INDEX agenturm_usage_history_by_time ON agenturm_observations(
@@ -153,7 +194,7 @@ impl Store {
             retention::resolve_read_snapshot(&transaction, query.snapshot_id)?;
         let cutoff = retention::read_state(&transaction)?.cutoff_unix_ns as u64;
         let mut statement = transaction.prepare(
-            "SELECT o.observed_at_unix_ns, o.kind_json
+            "SELECT o.observed_at_unix_ns, o.source_id, o.session_id, o.kind_json
              FROM agenturm_observations o JOIN agenturm_history_batches b USING (request_id)
              WHERE o.observed_at_unix_ns>=?1 AND o.observed_at_unix_ns<?2 AND b.sequence<=?3
                AND json_extract(o.kind_json, '$.kind') IN ('usage', 'span_token_usage')
@@ -202,22 +243,36 @@ impl Store {
             let bucket = counters.get_mut(day).ok_or(StoreError::Invalid(
                 "usage observation time is outside its bucket",
             ))?;
-            add_report(bucket, serde_json::from_str(&row.get::<_, String>(1)?)?);
+            let source: String = row.get(1)?;
+            let session: Option<String> = row.get(2)?;
+            let kind: ObservationKind = serde_json::from_str(&row.get::<_, String>(3)?)?;
+            add_report(bucket, &source, session.as_deref(), kind);
         }
         drop(rows);
-        let telemetry = trace_history::Window {
+        let mut native: [NativeEvidence; USAGE_DAYS] =
+            std::array::from_fn(|day| std::mem::take(&mut counters[day].native_rows));
+        let mut telemetry = trace_history::Window {
             connection: &transaction,
             query,
             first,
             cutoff,
             watermark,
             allowed: allowed_sources,
+            native: &native,
         }
         .read()?;
         let partial_before_day = match (truncated_day, telemetry.partial_before_day) {
             (Some(left), Some(right)) => Some(left.max(right)),
             (left, right) => left.or(right),
         };
+        let mut combined_days: [CombinedUsageTotals; USAGE_DAYS] =
+            std::array::from_fn(|_| CombinedUsageTotals::default());
+        for day in 0..USAGE_DAYS {
+            combined_days[day] = build_combined(
+                std::mem::take(&mut native[day].rows),
+                std::mem::take(&mut telemetry.combined[day]),
+            );
+        }
         let mut days = counters.into_iter().enumerate();
         let mut trace_days = telemetry.traces.into_iter();
         let mut log_days = telemetry.logs.into_iter();
@@ -235,6 +290,7 @@ impl Store {
                     span: counters.span.totals(),
                     traces: trace_days.next().expect("seven trace buckets").totals(),
                     logs: log_days.next().expect("seven log buckets").totals(),
+                    combined: combined_days[index].clone(),
                     retention_partial: cutoff > start_unix_ns,
                     scan_partial: partial_before_day.is_some_and(|limit| index <= limit),
                 }
@@ -243,7 +299,12 @@ impl Store {
     }
 }
 
-fn add_report(bucket: &mut DayCounters, observation: ObservationKind) {
+fn add_report(
+    bucket: &mut DayCounters,
+    source: &str,
+    session: Option<&str>,
+    observation: ObservationKind,
+) {
     match observation {
         ObservationKind::Usage {
             input_tokens,
@@ -251,14 +312,20 @@ fn add_report(bucket: &mut DayCounters, observation: ObservationKind) {
             cache_read_tokens,
             cache_write_tokens,
             total_tokens,
-        } => bucket.native.add([
-            input_tokens,
-            output_tokens,
-            cache_read_tokens,
-            cache_write_tokens,
-            None,
-            total_tokens,
-        ]),
+        } => {
+            let values = [
+                input_tokens,
+                output_tokens,
+                cache_read_tokens,
+                cache_write_tokens,
+                None,
+                total_tokens,
+            ];
+            bucket.native.add(values);
+            bucket.native_rows.record(source, session, values);
+        }
+        // Raw span counters remain the disclosed overlap view; the combined
+        // block uses the per-trace deduplicated cohort instead.
         ObservationKind::SpanTokenUsage(usage) => bucket.span.add([
             usage.input_tokens,
             usage.output_tokens,
@@ -271,12 +338,44 @@ fn add_report(bucket: &mut DayCounters, observation: ObservationKind) {
     }
 }
 
+/// One day's combined total: telemetry evidence classified against same-day
+/// native `(source, session)` rows, then native rows that no telemetry claims.
+fn build_combined(
+    native: BTreeMap<(String, String), (Counters, usize)>,
+    telemetry: DayCombined,
+) -> CombinedUsageTotals {
+    let DayCombined {
+        tokens,
+        costs,
+        excluded,
+        claims,
+    } = telemetry;
+    let mut tokens = tokens;
+    let mut excluded_native = 0;
+    for (key, (counters, reports)) in native {
+        if claims.contains(&key) {
+            excluded_native += reports;
+        } else {
+            tokens.absorb(&counters);
+        }
+    }
+    let (costs, cost_currencies_truncated) = costs.totals();
+    CombinedUsageTotals {
+        tokens: tokens.totals(),
+        costs,
+        cost_currencies_truncated,
+        excluded_native_reports: excluded_native,
+        excluded_telemetry_reports: excluded,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agenturm_kernel::telemetry_summary::TraceSpanSummary;
     use agenturm_kernel::{
-        Observation, ObservationIdentity, ObservationKind, ObservationStore, SpanTokenUsage,
-        TraceSpan, TraceSpanIdentity, TraceStatus,
+        Observation, ObservationIdentity, ObservationKind, ObservationStore, ReportedCost,
+        SpanTokenUsage, TraceSpan, TraceSpanIdentity, TraceStatus,
     };
 
     fn usage(source: &str, event: &str, at: u64, tokens: Option<u64>) -> Observation {
@@ -469,6 +568,200 @@ mod tests {
             historical.days[6].traces.tokens.input_tokens.as_deref(),
             Some("0")
         );
+    }
+
+    #[test]
+    fn combined_totals_exclude_exact_overlap_and_keep_unattributed_evidence() {
+        let mut store = Store::open(":memory:").unwrap();
+        let source = ExtensionId::parse("harness.fixture").unwrap();
+        let collector = ExtensionId::parse("otlp.fixture").unwrap();
+        let at = 10 * DAY_NS + 3;
+        // Native reports: one whose session is also claimed by attributed
+        // telemetry, and one no telemetry claims.
+        let overlapping = usage(source.as_str(), "fresh", at, Some(10));
+        let unclaimed = usage("harness.other", "other", at, Some(7));
+        ObservationStore::commit(&mut store, source.as_str(), None, "base", &[overlapping])
+            .unwrap();
+        ObservationStore::commit(&mut store, "harness.other", None, "other", &[unclaimed]).unwrap();
+        // Two attributed telemetry traces: one shares the native session
+        // identity, one claims a session without native reports.
+        let attributed = trace(at, "matching-worker", '3', "common-session", ("USD", 500));
+        let distinct = trace(at, "matching-worker", '4', "other-session", ("EUR", 8));
+        let telemetry: Vec<_> = attributed.into_iter().chain(distinct).collect();
+        ObservationStore::commit(
+            &mut store,
+            collector.as_str(),
+            None,
+            "telemetry",
+            &telemetry,
+        )
+        .unwrap();
+        let allowed = [
+            source.clone(),
+            collector.clone(),
+            ExtensionId::parse("harness.other").unwrap(),
+        ]
+        .into_iter()
+        .collect();
+        let query = UsageHistoryQuery {
+            source_id: None,
+            session_id: None,
+            snapshot_id: None,
+            end_unix_ns: 10 * DAY_NS + 10,
+        };
+        let page = store.query_usage_history(&query, Some(&allowed)).unwrap();
+        let combined = &page.days[6].combined;
+        // The unattributed-session trace and the unclaimed native report are
+        // the only attributable, nonduplicated token evidence.
+        assert_eq!(combined.tokens.reports, 2);
+        assert_eq!(combined.tokens.input_tokens.as_deref(), Some("7"));
+        assert_eq!(combined.tokens.cache_read_tokens.as_deref(), Some("5"));
+        assert_eq!(combined.excluded_native_reports, 1);
+        assert_eq!(combined.excluded_telemetry_reports, 1);
+        assert_eq!(combined.costs.len(), 2);
+        assert_eq!(combined.costs[0].currency, "EUR");
+        assert_eq!(combined.costs[0].nanounits, "8");
+        assert_eq!(combined.costs[1].currency, "USD");
+        assert_eq!(combined.costs[1].nanounits, "500");
+        assert!(!combined.cost_currencies_truncated);
+        // The disclosed cohort views are unchanged.
+        assert_eq!(page.days[6].native.reports, 2);
+        assert_eq!(page.days[6].native.input_tokens.as_deref(), Some("17"));
+        assert_eq!(page.days[6].span.reports, 2);
+        assert_eq!(
+            page.days[6].traces.tokens.input_tokens.as_deref(),
+            Some("0")
+        );
+        assert_eq!(page.days[6].traces.tokens.reports, 2);
+        // A snapshot before the correction keeps the same combined block.
+        let before = page.days[6].combined.clone();
+        let mut corrected = usage(source.as_str(), "fresh", at, Some(11));
+        corrected.revision = 1;
+        ObservationStore::commit(
+            &mut store,
+            source.as_str(),
+            Some("base"),
+            "correction",
+            &[corrected],
+        )
+        .unwrap();
+        let mut pinned = query.clone();
+        pinned.snapshot_id = Some(page.snapshot_id);
+        assert_eq!(
+            store
+                .query_usage_history(&pinned, Some(&allowed))
+                .unwrap()
+                .days[6]
+                .combined,
+            before
+        );
+        let latest = store.query_usage_history(&query, Some(&allowed)).unwrap();
+        let combined = &latest.days[6].combined;
+        assert_eq!(combined.excluded_native_reports, 1);
+        assert_eq!(combined.excluded_telemetry_reports, 1);
+        assert_eq!(combined.tokens.input_tokens.as_deref(), Some("7"));
+    }
+
+    /// A trace span, its summary, its attributed usage and a cost report.
+    fn trace(
+        at: u64,
+        worker: &str,
+        suffix: char,
+        session: &str,
+        cost: (&str, u64),
+    ) -> Vec<Observation> {
+        let trace_id = suffix.to_string().repeat(32);
+        let span_id = suffix.to_string().repeat(16);
+        let mut identity = ObservationIdentity::session(session);
+        identity.turn_id = Some("matching-turn".into());
+        identity.worker_id = Some(worker.into());
+        let span = Observation {
+            harness_id: ExtensionId::parse("otlp.fixture").unwrap(),
+            event_id: format!("otlp:{trace_id}:{span_id}"),
+            revision: 0,
+            identity: identity.clone(),
+            observed_at_unix_ns: at,
+            kind: ObservationKind::TraceSpan(TraceSpan {
+                trace_id: trace_id.clone(),
+                span_id: span_id.clone(),
+                parent_span_id: None,
+                target_source_id: Some("harness.fixture".into()),
+                target_operation_id: None,
+                started_at_unix_ns: at - 1,
+                status: TraceStatus::Ok,
+            }),
+        };
+        let mut summary = span.clone();
+        summary.event_id.push_str(":summary");
+        summary.kind = ObservationKind::TraceSpanSummary(TraceSpanSummary {
+            trace_id: trace_id.clone(),
+            span_id: span_id.clone(),
+            agent_run: false,
+            reported_error: false,
+        });
+        let mut tokens = span.clone();
+        tokens.event_id = format!("otlp-usage:{trace_id}:{span_id}");
+        tokens.kind = ObservationKind::SpanTokenUsage(SpanTokenUsage {
+            span: TraceSpanIdentity {
+                trace_id: trace_id.clone(),
+                span_id: span_id.clone(),
+            },
+            target_source_id: Some("harness.fixture".into()),
+            input_tokens: Some(0),
+            output_tokens: None,
+            cache_read_input_tokens: Some(5),
+            cache_write_input_tokens: None,
+            reasoning_output_tokens: None,
+            total_tokens: None,
+        });
+        let mut reported = span.clone();
+        reported.event_id = format!("otlp-cost:{trace_id}:{span_id}");
+        reported.kind = ObservationKind::ReportedCost(ReportedCost {
+            currency: cost.0.into(),
+            nanounits: cost.1,
+            span: Some(TraceSpanIdentity { trace_id, span_id }),
+            native_origin: None,
+        });
+        vec![span, summary, tokens, reported]
+    }
+
+    #[test]
+    fn usage_pages_from_older_receivers_without_combined_stay_readable() {
+        let day = UsageDay {
+            start_unix_ns: 0,
+            native: UsageTotals {
+                reports: 1,
+                ..UsageTotals::default()
+            },
+            span: UsageTotals::default(),
+            traces: TraceUsageTotals::default(),
+            logs: None,
+            combined: CombinedUsageTotals {
+                excluded_native_reports: 2,
+                ..CombinedUsageTotals::default()
+            },
+            retention_partial: false,
+            scan_partial: false,
+        };
+        let page = UsageHistoryPage {
+            snapshot_id: agenturm_kernel::ReadSnapshot::new(3, None),
+            end_unix_ns: 7,
+            days: std::array::from_fn(|_| day.clone()),
+            retention_cutoff_unix_ns: 1,
+            scan_limited: false,
+        };
+        // An attached receiver built before the combined block still sends
+        // every cohort view; the missing block stays absent, not invalid.
+        let mut value = serde_json::to_value(&page).unwrap();
+        for entry in value["days"].as_array_mut().unwrap() {
+            assert!(entry.as_object_mut().unwrap().remove("combined").is_some());
+        }
+        let restored: UsageHistoryPage = serde_json::from_value(value).unwrap();
+        assert_eq!(restored.days[0].combined, CombinedUsageTotals::default());
+        assert_eq!(restored.days[0].native.reports, 1);
+        let round: UsageHistoryPage =
+            serde_json::from_str(&serde_json::to_string(&page).unwrap()).unwrap();
+        assert_eq!(round, page);
     }
 
     #[test]

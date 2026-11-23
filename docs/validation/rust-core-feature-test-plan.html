@@ -81,6 +81,12 @@ baselines, not results for the new feature slices. Every new row starts
 <td><code>/tmp/agenturm-native-presence</code> + <code>/tmp/agenturm-review-session-edits</code></td>
 <td>Separate test agent; execute on the supplied integrated source head.</td>
 </tr>
+<tr>
+<td>CF6</td>
+<td>Implemented: combined deduplicated usage/cost totals that exclude and count reports overlapping at exact <code>(target source, session)</code> identity; unattributed telemetry contributes with a disclosed boundary.</td>
+<td>Development branch <code>feature/combined-usage-dedup</code></td>
+<td>Separate test agent; not run on new source.</td>
+</tr>
 </tbody>
 </table></div>
 <p>Worktree paths identify current ownership, not release artifacts. The developer
@@ -393,6 +399,39 @@ multiple results; bounded checkpoint overflow and old cursor continuation;
 exact declared-child Activity/inspector details and page coverage. Verify no
 prompt/tool-body copy and no roster recency/hierarchy changes. All delegated scenarios
 remain <strong>not run</strong> until the test owner records actual results on the frozen head.</p>
+<h2>CF6 — combined deduplicated usage totals</h2>
+<p>Implemented with the FD3 combined slice. The combined per-UTC-day projection
+excludes reports whose overlap is established through exact
+<code>(target source, session)</code> identity and counts the exclusions instead of
+summing them: native reports are excluded when same-day usage-bearing telemetry
+claims their exact source and session, and attributed telemetry rows are
+excluded when same-day native reports exist for the claimed identity.
+Unattributed telemetry carries no identity link and therefore contributes;
+that boundary is disclosed, not inferred away. Combined costs merge the
+per-trace-deduplicated and log-only cohorts per currency; native assistant
+cost records that forks can duplicate keep <code>native_origin</code> with no span
+identity and stay outside combined totals.</p>
+<p><strong>Developer handoff:</strong> six focused Store usage tests (exact-identity overlap
+exclusion, unattributed contribution, snapshot-pinned combined equality,
+revision correction, and older-receiver pages without the combined block),
+76 UI lib tests with the new default Combined chart mode, joined workspace
+all-target strict Clippy and fmt passed on the development branch. These are
+developer checks, not installed qualification.</p>
+<table>
+<thead><tr><th>Scenario</th><th>Required observation</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>Native plus attributed telemetry at one source/session/day</td><td>Both sides excluded and counted; combined tokens exclude both; all cohort views unchanged.</td><td>Not run</td></tr>
+<tr><td>Attributed telemetry without same-day native rows for the claimed identity</td><td>Contributes its deduplicated tokens; no exclusion is recorded.</td><td>Not run</td></tr>
+<tr><td>Unattributed telemetry and native-only days</td><td>Combined equals the nonduplicated evidence; no speculative cross-layer deduction or hidden merging.</td><td>Not run</td></tr>
+<tr><td>Combined costs</td><td>Trace and log-only costs merged per currency; fork-copyable native-origin records excluded; distinct currencies never converted.</td><td>Not run</td></tr>
+<tr><td>Terminal disclosure at 120×32, 80×24 and 60×18</td><td>Combined mode renders first; <code>n</code> reaches excluded-overlapping counts and per-currency combined cost; <code>s</code> returns to the unchanged native/span/trace/log views.</td><td>Not run</td></tr>
+<tr><td>Snapshot, revision and retention</td><td>A pinned snapshot keeps its combined block; a native revision correction reclassifies only at the newer watermark; retention/scan flags keep marking partial days.</td><td>Not run</td></tr>
+<tr><td>Older attached-receiver page</td><td>A usage page without the combined block deserializes with the block absent; every existing view keeps working.</td><td>Not run</td></tr>
+<tr><td>Scan/cohort limits</td><td>Days beyond trace-cohort or raw-scan bounds keep their existing partial flags; combined never claims coverage the cohort did not read.</td><td>Not run</td></tr>
+</tbody>
+</table>
+<p>All CF6 scenarios are <strong>not run</strong> until the test owner records actual results
+on the frozen integrated head.</p>
 <h2>Related Review identity fixes — delegated regression</h2>
 <p>Typed broker Review receipts now pin the authenticated history identity for
 <code>--format</code> and directory export as well as linked traces. In the existing

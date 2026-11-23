@@ -210,6 +210,28 @@ pub struct ActivityLogTotals {
     pub cost_currencies_truncated: bool,
 }
 
+/// Nonduplicated combined evidence for one UTC day. Reports whose overlap
+/// with the other producer layer can be established through exact
+/// source/session identity are excluded and counted, never summed. Unattributed
+/// telemetry carries no identity link and therefore contributes; that boundary
+/// is disclosed rather than resolved by inference.
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CombinedUsageTotals {
+    /// Attributable, nonduplicated token reports from native and telemetry layers.
+    pub tokens: UsageTotals,
+    /// Trace and log-only cost evidence merged per currency. The two cohorts
+    /// are disjoint by construction; native reports carry no cost.
+    pub costs: Vec<UsageCurrencyTotal>,
+    pub cost_currencies_truncated: bool,
+    /// Native reports excluded because same-day telemetry is attributed to
+    /// their exact source and session.
+    pub excluded_native_reports: usize,
+    /// Telemetry reports excluded because same-day native reports exist for
+    /// their claimed source and session.
+    pub excluded_telemetry_reports: usize,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UsageDay {
@@ -220,6 +242,10 @@ pub struct UsageDay {
     pub span: UsageTotals,
     pub traces: TraceUsageTotals,
     pub logs: Option<ActivityLogTotals>,
+    /// Older attached receivers do not emit this block; it stays absent there
+    /// instead of failing the page.
+    #[serde(default)]
+    pub combined: CombinedUsageTotals,
     pub retention_partial: bool,
     pub scan_partial: bool,
 }

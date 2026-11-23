@@ -50,7 +50,7 @@ impl HistoryAnalytics {
                 "c Copy · x Export · Esc Back · q Quit",
             ),
             Self::Usage(_) => concat!(
-                "s Native / span / trace / activity log reports\n",
+                "s Combined / native / span / trace / log reports\n",
                 "t Token counters · n Totals · C Cost currency\n",
                 "B Usage evidence · R Refresh snapshot\n",
                 "c Copy · x Export · Esc Back · q Quit",
