@@ -110,6 +110,7 @@ fn status(row: &RecordedSession) -> &str {
         Some("interrupted" | "waiting" | "blocked") => "Needs you",
         Some("running" | "started" | "restored") => "Working",
         Some("completed" | "ended") => "Ready",
+        Some("paused") => "Paused",
         Some("idle" | "stopped" | "cancelled" | "closed") => "Inactive",
         Some(_) | None => "Unknown",
     }

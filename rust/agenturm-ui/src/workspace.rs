@@ -174,7 +174,7 @@ impl Filter {
             }
             Self::Inactive => {
                 !Self::Attention.accepts(session)
-                    && matches!(state, Some("idle" | "stopped" | "cancelled" | "closed"))
+                    && matches!(state, Some("paused" | "idle" | "stopped" | "cancelled" | "closed"))
             }
             Self::ToReview => {
                 !session.reviewed

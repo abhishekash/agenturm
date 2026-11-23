@@ -109,10 +109,16 @@ Reader and collector identities can inspect the broker policy. Its
 maintenance identity owns changes and explicit cleanup. Backups preserve the
 policy; a broker owner can disable it before starting a restored history.
 
+### Rust 0.3.8 candidate keyboard
+
+These controls apply to the 0.3.8 UI candidate. The published 0.3.7 controls remain in its [tagged guide](https://github.com/abhishekash/agenturm/blob/rust-v0.3.7/docs/rfcs/rust-linux-bundle.md).
+
 Use `↑` and `↓` to choose a session, `/` to search the loaded roster,
 and Enter to open its Overview. The newest roster page refreshes while open.
-Press `r` in Agents to refresh it immediately. Open Activity with `a` or
-Review with `v`, and open the selected session’s Usage with `u`. Press
+Press `R` in Agents to refresh it immediately. Open selected Activity with `s` or
+Review with `Ctrl+R` or `V`, and open the selected session’s Usage with `u`.
+`Tab` selects the status filter, `G` changes grouping, and `Enter` opens the
+inspector. `Esc` restores the same group, filter and exact session. Press
 `y` in Review to acknowledge the displayed evidence. The acknowledgement
 is stored next to the history database and applies to the reviewed version.
 
@@ -132,8 +138,9 @@ sessions are outside its page. A trusted remote reader supports the same
 report with `--endpoint` and `--token-file` in place of `--db`.
 
 From Agents, `g` opens the cross-source Overview. Use `2` for Activity,
-`3` for MCP, `4` for Operations, `5` for Findings, `6` for Host, and
-`7` for Usage or `8` for Traces. Press `t` in a history view to select a
+`3` for MCP, `4` for Traces, `5` for recorded Host, `6` for Metrics,
+`7` for Findings, `9` for Operations, and `U` for workspace Usage. `H` opens
+live Host; `8` remains a trace alias. Press `T` in a history view to select a
 recorded turn, `F1` for keyboard help, and `q` to quit. The available
 evidence varies by source. For Codex MCP calls the view includes the server,
 tool, method, duration and outcome when recorded.
@@ -149,6 +156,11 @@ Use `n` to create a task linked to the selection, `r` to see its linked
 runs, and `h` to create a handoff using the current selection. Open the
 handoff list with `o` and export the selected handoff with `x`. Tasks can
 also record a Git snapshot from a directory you choose with `G`.
+
+From Agents, `X` marks one exact current pending request seen, with a chooser
+when more than one matches. `Ctrl+F` opens retained investigations. `c` requests
+copy of the loaded metadata and `x` exports that metadata to a new private
+Markdown/HTML/JSON directory. Private modal bodies stay outside these exports.
 
 From Agents, press `w` to see recorded requests. Use `s` to mark an item
 seen and `l` to focus the matching tmux pane when Agenturm verifies the
@@ -293,7 +305,7 @@ Point an OTLP/HTTP producer at the loopback receiver. Each span needs a
 accepts uncompressed JSON or protobuf at
 `http://127.0.0.1:4318/v1/traces`. To attach the span to a native session,
 also set `agenturm.source.id` to the exact collected harness source ID.
-Press `8` from a native session to see its linked spans.
+Press `4` from a native session to see its linked spans.
 
 For turn-level evidence, set the span's `agenturm.turn.id` to the exact
 native turn ID. When the turn belongs to a worker, also set the span's
