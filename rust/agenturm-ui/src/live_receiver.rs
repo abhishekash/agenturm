@@ -11,8 +11,15 @@ use std::sync::{
 };
 use std::time::{Duration, Instant};
 
+mod findings;
 #[cfg(target_os = "linux")]
 mod output;
+
+use findings::{Findings, PageNav};
+pub use findings::{
+    LiveFindingKind, LiveFindingMember, LiveFindingMemberKind, LiveFindingPage, LiveFindingRow,
+    LiveFindingSeverity, LiveFindingTarget,
+};
 
 struct FrameGate {
     active: Arc<AtomicBool>,
@@ -89,6 +96,13 @@ pub struct LiveReviewSelection {
 
 pub enum LiveRequest {
     Refresh,
+    Findings {
+        before: Option<String>,
+    },
+    FindingSource {
+        target: Box<LiveFindingTarget>,
+        delivery: PromptDelivery,
+    },
     Review {
         selection: Box<LiveReviewSelection>,
         delivery: PromptDelivery,
@@ -97,6 +111,7 @@ pub enum LiveRequest {
 
 pub enum LiveResponse {
     Page(LivePage),
+    Findings(LiveFindingPage),
     ReviewClosed,
 }
 
@@ -115,6 +130,7 @@ enum Tab {
     Agents,
     Activity,
     Traces,
+    Findings,
     Pending,
 }
 
@@ -124,6 +140,7 @@ impl Tab {
             Self::Agents => "Agents",
             Self::Activity => "Activity",
             Self::Traces => "Traces",
+            Self::Findings => "Findings",
             Self::Pending => "Pending",
         }
     }
@@ -144,11 +161,13 @@ struct LiveView {
     investigation_notice: bool,
     review_supported: bool,
     review_unavailable: bool,
-    review: LiveReviewDisplay,
+    private: LiveProtectedDisplay,
+    findings_supported: bool,
+    findings: Findings,
 }
 
 #[derive(Default)]
-struct LiveReviewDisplay {
+struct LiveProtectedDisplay {
     receiver: Option<PromptReceiver>,
     screen: Option<PromptScreen>,
     gate: Option<Arc<AtomicBool>>,
@@ -158,7 +177,7 @@ struct LiveReviewDisplay {
     message: Option<String>,
 }
 
-impl LiveReviewDisplay {
+impl LiveProtectedDisplay {
     fn receive_frame(&mut self) -> bool {
         let Some(bytes) = self
             .receiver
@@ -170,13 +189,13 @@ impl LiveReviewDisplay {
         let receiver = self
             .receiver
             .take()
-            .expect("received a queued Review frame");
+            .expect("received a queued protected frame");
         match serde_json::from_slice::<String>(&bytes) {
             Ok(body) => {
                 self.gate = Some(Arc::clone(&receiver.guarded_active));
                 self.screen = Some(PromptScreen::new(body, receiver, Instant::now()));
             }
-            Err(_) => self.message = Some("Invalid protected Review delivery".into()),
+            Err(_) => self.message = Some("Invalid protected source delivery".into()),
         }
         true
     }
@@ -205,6 +224,10 @@ impl LiveReviewDisplay {
 }
 
 impl LiveView {
+    fn read_pending(&self) -> bool {
+        self.pending_read || self.findings.pending()
+    }
+
     fn visible_agents(&self) -> impl Iterator<Item = &LiveRow> {
         self.page
             .iter()
@@ -246,11 +269,14 @@ impl LiveView {
         self.page
             .as_ref()
             .into_iter()
-            .flat_map(|page| match self.tab {
-                Tab::Agents => &page.sessions,
-                Tab::Activity => &page.activity,
-                Tab::Traces => &page.traces,
-                Tab::Pending => &page.pending,
+            .flat_map(|page| -> &[LiveRow] {
+                match self.tab {
+                    Tab::Agents => &page.sessions,
+                    Tab::Activity => &page.activity,
+                    Tab::Traces => &page.traces,
+                    Tab::Findings => &[],
+                    Tab::Pending => &page.pending,
+                }
             })
             .filter(|row| self.include_reviews || !row.internal_review)
             .filter(|row| {
@@ -353,6 +379,9 @@ impl LiveView {
             }
             (Some(Destination::Activity), _) => self.tab = Tab::Activity,
             (Some(Destination::Traces), _) | (_, KeyCode::Char('8')) => self.tab = Tab::Traces,
+            (Some(Destination::Findings), _) if self.findings_supported => {
+                self.tab = Tab::Findings;
+            }
             (_, KeyCode::Char('!' | 'w')) => self.tab = Tab::Pending,
             (_, KeyCode::Char('p')) => self.paused = !self.paused,
             (_, KeyCode::Enter | KeyCode::Char('e' | 's')) if self.tab == Tab::Agents => {
@@ -421,6 +450,8 @@ impl LiveView {
         .areas(area);
         let connection = if self.paused {
             "Paused"
+        } else if self.tab == Tab::Findings {
+            self.findings.connection()
         } else if self.error.is_some() {
             "Reconnecting"
         } else if self.page.is_none() {
@@ -439,9 +470,11 @@ impl LiveView {
             (Tab::Agents, "1 Agents"),
             (Tab::Activity, "2 Activity"),
             (Tab::Traces, "4 Traces"),
+            (Tab::Findings, "7 Findings"),
             (Tab::Pending, "w Pending"),
         ]
         .into_iter()
+        .filter(|(tab, _)| *tab != Tab::Findings || self.findings_supported)
         .map(|(tab, label)| {
             Span::styled(
                 format!(" {label} "),
@@ -453,16 +486,20 @@ impl LiveView {
             )
         })
         .collect::<Vec<_>>();
-        let scope = self.owner.as_ref().map_or_else(
-            || "Session: All".to_owned(),
-            |o| {
-                format!(
-                    "Session: {} / {}",
-                    visible_text(&o.service),
-                    visible_text(&o.session_id)
-                )
-            },
-        );
+        let scope = if self.tab == Tab::Findings {
+            "Receiver-wide findings".to_owned()
+        } else {
+            self.owner.as_ref().map_or_else(
+                || "Session: All".to_owned(),
+                |o| {
+                    format!(
+                        "Session: {} / {}",
+                        visible_text(&o.service),
+                        visible_text(&o.session_id)
+                    )
+                },
+            )
+        };
         frame.render_widget(
             Paragraph::new(vec![title, Line::from(tabs), Line::from(scope)])
                 .style(surface(theme::palette().surface)),
@@ -475,12 +512,29 @@ impl LiveView {
             if self.review_supported {
                 keys.push_str("\nCtrl+R Review trace · Ctrl+T Review recorded turn");
             }
+            if self.findings_supported {
+                keys.push_str("\n7 Findings · Enter inspect · s source");
+            }
             frame.render_widget(
                 Paragraph::new(keys)
                     .wrap(Wrap { trim: false })
                     .block(panel(HELP_CLOSE_HINT)),
                 body,
             );
+            return;
+        }
+        if self.tab == Tab::Findings {
+            let status = if self.private.pending && !self.private.cancelled {
+                Some("Verifying selected finding source · Esc cancel")
+            } else if let Some(message) = &self.private.message {
+                Some(message.as_str())
+            } else if self.review_unavailable {
+                Some("Protected sources need bounded terminal output")
+            } else {
+                None
+            };
+            self.findings
+                .draw(frame, body, footer, self.review_supported, status);
             return;
         }
         let [list, info] = if area.width >= 84 {
@@ -503,9 +557,9 @@ impl LiveView {
             " Selected evidence "
         };
         let rows = self.rows();
-        let status = if self.review.pending && !self.review.cancelled {
+        let status = if self.private.pending && !self.private.cancelled {
             "Verifying selected Review · Esc cancel".into()
-        } else if let Some(message) = &self.review.message {
+        } else if let Some(message) = &self.private.message {
             visible_text(message)
         } else if let Some(notice) = self.notice {
             notice.into()
@@ -630,9 +684,12 @@ impl LiveView {
 pub fn run_live_receiver(
     mut load: impl FnMut() -> Result<LivePage, String> + Send + 'static,
 ) -> io::Result<()> {
-    run_live(false, move |request| match request {
+    run_live(false, false, move |request| match request {
         LiveRequest::Refresh => load().map(LiveResponse::Page),
         LiveRequest::Review { .. } => Err("Protected Review is unavailable".into()),
+        LiveRequest::Findings { .. } | LiveRequest::FindingSource { .. } => {
+            Err("Receiver Findings are unavailable".into())
+        }
     })
 }
 
@@ -641,11 +698,19 @@ pub fn run_live_receiver(
 pub fn run_live_receiver_with_review(
     load: impl FnMut(LiveRequest) -> Result<LiveResponse, String> + Send + 'static,
 ) -> io::Result<()> {
-    run_live(true, load)
+    run_live(true, false, load)
+}
+
+/// A receiver loader that supports guarded Review and exact Finding sources.
+pub fn run_live_receiver_with_evidence(
+    load: impl FnMut(LiveRequest) -> Result<LiveResponse, String> + Send + 'static,
+) -> io::Result<()> {
+    run_live(true, true, load)
 }
 
 fn run_live(
     review_supported: bool,
+    findings_supported: bool,
     mut load: impl FnMut(LiveRequest) -> Result<LiveResponse, String> + Send + 'static,
 ) -> io::Result<()> {
     let (request, requests) = mpsc::sync_channel(1);
@@ -665,7 +730,7 @@ fn run_live(
                 }
             }
         })?;
-    let result = run_terminal(review_supported, &request, &results);
+    let result = run_terminal(review_supported, findings_supported, &request, &results);
     cancelled.store(true, Ordering::Release);
     drop(request);
     drop(results);
@@ -676,21 +741,39 @@ fn run_live(
 
 fn run_terminal(
     review_supported: bool,
+    findings_supported: bool,
     request: &mpsc::SyncSender<LiveRequest>,
     results: &mpsc::Receiver<Result<LiveResponse, String>>,
 ) -> io::Result<()> {
     #[cfg(target_os = "linux")]
     if review_supported && let Ok(fd) = output::open_stdout() {
         let mut terminal = output::BoundedTerminal::new(fd)?;
-        return run_view(&mut terminal, true, false, request, results);
+        return run_view(
+            &mut terminal,
+            true,
+            false,
+            findings_supported,
+            request,
+            results,
+        );
     }
-    ratatui::run(|terminal| run_view(terminal, false, review_supported, request, results))
+    ratatui::run(|terminal| {
+        run_view(
+            terminal,
+            false,
+            review_supported,
+            findings_supported,
+            request,
+            results,
+        )
+    })
 }
 
 fn run_view(
     terminal: &mut impl RenderOutput,
     review_supported: bool,
     review_unavailable: bool,
+    findings_supported: bool,
     request: &mpsc::SyncSender<LiveRequest>,
     results: &mpsc::Receiver<Result<LiveResponse, String>>,
 ) -> io::Result<()> {
@@ -710,48 +793,64 @@ fn run_view(
         investigation_notice: false,
         review_supported,
         review_unavailable,
-        review: LiveReviewDisplay::default(),
+        private: LiveProtectedDisplay::default(),
+        findings_supported,
+        findings: Findings::default(),
     };
     let mut next_read = Instant::now();
     let mut explicit_refresh = false;
     let mut dirty = true;
     let interaction = (|| -> io::Result<()> {
         loop {
-            dirty |= view.review.receive_frame();
+            dirty |= view.private.receive_frame();
             if let Ok(result) = results.try_recv() {
-                if view.review.pending {
-                    view.review.pending = false;
-                    view.review.receiver = None;
-                    view.review.redact();
-                    if !view.review.cancelled {
-                        view.review.message = match result {
+                if view.private.pending {
+                    view.private.pending = false;
+                    view.private.receiver = None;
+                    view.private.redact();
+                    if !view.private.cancelled {
+                        view.private.message = match result {
                             Ok(LiveResponse::ReviewClosed) => None,
-                            Ok(LiveResponse::Page(_)) => Some("Unexpected Review response".into()),
+                            Ok(_) => Some("Unexpected protected source response".into()),
                             Err(error) => Some(error),
                         };
                     }
-                    view.review.cancelled = false;
+                    view.private.cancelled = false;
+                } else if view.findings.pending() {
+                    view.findings.finish(result.and_then(|reply| match reply {
+                        LiveResponse::Findings(page) => Ok(page),
+                        _ => Err("Unexpected receiver Findings response".into()),
+                    }));
                 } else {
                     view.set_page(result.and_then(|reply| match reply {
                         LiveResponse::Page(page) => Ok(page),
-                        LiveResponse::ReviewClosed => Err("Unexpected receiver response".into()),
+                        _ => Err("Unexpected receiver response".into()),
                     }));
                 }
                 next_read = Instant::now() + Duration::from_secs(2);
                 dirty = true;
             }
-            if !view.pending_read
-                && !view.review.pending
-                && (explicit_refresh || !view.paused && Instant::now() >= next_read)
+            let finding_tab = view.tab == Tab::Findings;
+            let auto_refresh = !finding_tab || view.findings.auto_refresh();
+            if !view.read_pending()
+                && !view.private.pending
+                && (explicit_refresh || !view.paused && auto_refresh && Instant::now() >= next_read)
             {
+                let query = if finding_tab {
+                    view.findings
+                        .begin(PageNav::Current)
+                        .expect("no pending Findings read")
+                } else {
+                    view.pending_read = true;
+                    LiveRequest::Refresh
+                };
                 request
-                    .try_send(LiveRequest::Refresh)
+                    .try_send(query)
                     .map_err(|_| io::Error::other("receiver reader stopped"))?;
-                view.pending_read = true;
                 explicit_refresh = false;
             }
-            if view.review.frame_gate().is_some_and(|gate| !gate.open()) {
-                dirty |= view.review.redact();
+            if view.private.frame_gate().is_some_and(|gate| !gate.open()) {
+                dirty |= view.private.redact();
             }
             if dirty {
                 draw_live_frame(terminal, &mut view, &mut appearance)?;
@@ -765,7 +864,7 @@ fn run_view(
                 Event::Key(key)
                     if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
                 {
-                    if !view.review.pending && appearance.key(key) {
+                    if !view.private.pending && appearance.key(key) {
                         dirty = true;
                         continue;
                     }
@@ -779,18 +878,65 @@ fn run_view(
                     if keymap::interrupt(key) || code == KeyCode::Char('q') {
                         break Ok(());
                     }
-                    if view.review.pending {
+                    if view.private.pending {
                         if code == KeyCode::Esc {
-                            if !view.review.redact() {
-                                view.review.receiver = None;
-                                view.review.cancelled = true;
+                            if !view.private.redact() {
+                                view.private.receiver = None;
+                                view.private.cancelled = true;
                             }
                             dirty = true;
-                        } else if let Some(screen) = &mut view.review.screen {
+                        } else if let Some(screen) = &mut view.private.screen {
                             screen.key(code);
                             dirty = true;
                         }
                         continue;
+                    }
+                    if !view.help && view.tab == Tab::Findings {
+                        if code == KeyCode::Char('s') {
+                            view.private.message = if !view.review_supported {
+                                Some("Protected sources need bounded terminal output".into())
+                            } else if view.read_pending() {
+                                Some("Wait for the current receiver read".into())
+                            } else if let Some(target) = view.findings.source() {
+                                let (delivery, receiver) =
+                                    prompt_channel(PromptKind::LegacyFinding);
+                                request
+                                    .try_send(LiveRequest::FindingSource {
+                                        target: Box::new(target.clone()),
+                                        delivery,
+                                    })
+                                    .map_err(|_| io::Error::other("receiver reader stopped"))?;
+                                view.private.receiver = Some(receiver);
+                                view.private.pending = true;
+                                None
+                            } else {
+                                Some("Protected source unavailable for this finding".into())
+                            };
+                            dirty = true;
+                            continue;
+                        }
+                        if let Some(nav) = match code {
+                            keymap::OLDER => Some(PageNav::Older),
+                            keymap::NEWER => Some(PageNav::Newer),
+                            keymap::LATEST => Some(PageNav::Latest),
+                            _ => None,
+                        } {
+                            if !view.read_pending()
+                                && let Some(page) = view.findings.begin(nav)
+                            {
+                                request
+                                    .try_send(page)
+                                    .map_err(|_| io::Error::other("receiver reader stopped"))?;
+                                view.private.message = None;
+                            }
+                            dirty = true;
+                            continue;
+                        }
+                        if view.findings.key(code) {
+                            view.private.message = None;
+                            dirty = true;
+                            continue;
+                        }
                     }
                     let review_mode = if keymap::review(key) {
                         Some(LiveReviewMode::Run)
@@ -805,7 +951,7 @@ fn run_view(
                         && view.review_supported
                         && let Some(mode) = review_mode
                     {
-                        view.review.message = if view.pending_read {
+                        view.private.message = if view.read_pending() {
                             Some("Wait for the current receiver read".into())
                         } else if let Some(selection) = view.review_selection(mode) {
                             let (delivery, receiver) = prompt_channel(PromptKind::LegacyReview);
@@ -815,8 +961,8 @@ fn run_view(
                                     delivery,
                                 })
                                 .map_err(|_| io::Error::other("receiver reader stopped"))?;
-                            view.review.receiver = Some(receiver);
-                            view.review.pending = true;
+                            view.private.receiver = Some(receiver);
+                            view.private.pending = true;
                             None
                         } else {
                             Some(
@@ -839,7 +985,7 @@ fn run_view(
                         dirty = true;
                         continue;
                     }
-                    view.review.message = None;
+                    view.private.message = None;
                     view.investigation_notice = !view.help
                         && key.code == KeyCode::Char('f')
                         && key.modifiers == KeyModifiers::CONTROL;
@@ -850,7 +996,9 @@ fn run_view(
                     if !view.help && matches!(code, KeyCode::Char('R') | keymap::LATEST) {
                         explicit_refresh = true;
                     }
+                    let previous_tab = view.tab;
                     view.key(code);
+                    explicit_refresh |= previous_tab != Tab::Findings && view.tab == Tab::Findings;
                     dirty = true;
                 }
                 _ => {}
@@ -859,12 +1007,12 @@ fn run_view(
     })();
     // For q, Control-C and recoverable input errors, clear the private
     // frame while the PTY is still active, then release the delivery.
-    view.review.receiver = None;
-    view.review.redact();
-    if view.review.redact_then_ack.is_some() {
+    view.private.receiver = None;
+    view.private.redact();
+    if view.private.redact_then_ack.is_some() {
         let redrawn = terminal.redraw_metadata(|frame| view.draw(frame));
         if redrawn.is_ok() {
-            view.review.acknowledge_redaction();
+            view.private.acknowledge_redaction();
         }
         interaction.and(redrawn)
     } else {
@@ -877,28 +1025,28 @@ fn draw_live_frame(
     view: &mut LiveView,
     appearance: &mut theme::Picker,
 ) -> io::Result<()> {
-    if let Some(gate) = view.review.frame_gate() {
+    if let Some(gate) = view.private.frame_gate() {
         let result = terminal.draw_frame(Some(gate), |frame| {
-            view.review
+            view.private
                 .screen
                 .as_mut()
-                .expect("active Review screen")
+                .expect("active protected source screen")
                 .draw(frame);
         });
         if result.is_ok() {
             return Ok(());
         }
-        view.review.redact();
-        view.notice = Some("Protected Review output was interrupted");
+        view.private.redact();
+        view.private.message = Some("Protected source output was interrupted".into());
     }
-    let redacting = view.review.redact_then_ack.is_some();
+    let redacting = view.private.redact_then_ack.is_some();
     let metadata = |frame: &mut Frame| {
         view.draw(frame);
         appearance.draw(frame);
     };
     if redacting {
         terminal.redraw_metadata(metadata)?;
-        view.review.acknowledge_redaction();
+        view.private.acknowledge_redaction();
         Ok(())
     } else {
         terminal.draw_frame(None, metadata)
@@ -957,7 +1105,9 @@ mod tests {
             investigation_notice: false,
             review_supported: true,
             review_unavailable: false,
-            review: LiveReviewDisplay::default(),
+            private: LiveProtectedDisplay::default(),
+            findings_supported: false,
+            findings: Findings::default(),
         };
         assert_eq!(
             view.review_selection(LiveReviewMode::Run),
@@ -1032,13 +1182,13 @@ mod tests {
             .recv_timeout(Duration::from_secs(2))
             .unwrap();
         let gate = Arc::clone(&receiver.guarded_active);
-        let mut display = LiveReviewDisplay {
+        let mut display = LiveProtectedDisplay {
             screen: Some(PromptScreen::new(
                 serde_json::from_slice(&bytes).unwrap(),
                 receiver,
                 Instant::now(),
             )),
-            ..LiveReviewDisplay::default()
+            ..LiveProtectedDisplay::default()
         };
         for (width, height) in [(120, 32), (80, 24), (60, 18)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
@@ -1098,7 +1248,9 @@ mod tests {
             investigation_notice: false,
             review_supported: false,
             review_unavailable: false,
-            review: LiveReviewDisplay::default(),
+            private: LiveProtectedDisplay::default(),
+            findings_supported: false,
+            findings: Findings::default(),
         };
         view.set_page(Ok(LivePage {
             sessions: vec![row(review.clone(), true), row(regular.clone(), false)],
@@ -1151,7 +1303,9 @@ mod tests {
             investigation_notice: false,
             review_supported: false,
             review_unavailable: false,
-            review: LiveReviewDisplay::default(),
+            private: LiveProtectedDisplay::default(),
+            findings_supported: false,
+            findings: Findings::default(),
         };
         for (width, height) in [(120, 32), (60, 18)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();

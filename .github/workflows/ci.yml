@@ -107,6 +107,16 @@ jobs:
         run: python -m unittest tests.test_python_otlp_client tests.test_rust_python_client_e2e -v
         env:
           AGENTURM_RUST_APP_BIN: ${{ github.workspace }}/target/debug/agenturm
+      - name: Load the pinned Python 0.2.8 compatibility reference
+        uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+        with:
+          ref: 2802d79930728bb331db1d4d718d6dea1c9c374d
+          path: .validation/python-028
+          persist-credentials: false
+      - name: Verify guarded Python receiver Findings and exact Review membership
+        run: |
+          python scripts/validate_rust_python_findings.py --python-root .validation/python-028 --bin-dir target/debug
+          PYTHONPATH=.validation/python-028 python scripts/validate_rust_python_receiver_review.py target/debug/agenturm
       - name: Verify ordinary OTLP error logs and opt-in text
         run: python scripts/validate_rust_error_logs.py --agenturm target/debug/agenturm
       - name: Verify protected log and current evaluation Finding journeys
