@@ -517,7 +517,7 @@ fn header_discovery(
     context: &mut Context,
     origin: &str,
     offset: u64,
-    time_ns: &str,
+    time_ns: Option<&str>,
 ) -> Option<Value> {
     #[derive(Deserialize)]
     struct Evidence<'a> {
@@ -527,13 +527,23 @@ fn header_discovery(
         session: &'a str,
         #[serde(rename = "agentId")]
         worker: Option<&'a str>,
-        timestamp: &'a str,
+        timestamp: Option<&'a str>,
+        #[serde(rename = "customTitle")]
+        _title: Option<IgnoredAny>,
+        #[serde(rename = "agentName")]
+        _agent_name: Option<IgnoredAny>,
+        #[serde(rename = "messageId")]
+        _message: Option<IgnoredAny>,
+        #[serde(rename = "isSnapshotUpdate")]
+        _update: Option<IgnoredAny>,
+        #[serde(rename = "snapshot")]
+        _snapshot: Option<IgnoredAny>,
     }
 
     if context.header_discovered
         || context.legacy_admission
         || !context.turn_id.is_empty()
-        || time_ns == "0"
+        || time_ns == Some("0")
         || (offset != 0 && context.prelude_end != Some(offset))
     {
         return None;
@@ -543,7 +553,7 @@ fn header_discovery(
     let evidence: Evidence<'_> = serde_json::from_slice(raw).ok()?;
     if evidence.session != context.session_id
         || evidence.worker.unwrap_or_default() != context.worker_id
-        || evidence.timestamp.is_empty()
+        || evidence.timestamp.is_some() != time_ns.is_some()
     {
         return None;
     }
@@ -552,7 +562,7 @@ fn header_discovery(
         format!("claude:{origin}:{offset}:discovered"),
         0,
         "session_discovered",
-        time_ns,
+        time_ns.unwrap_or("0"),
         context,
         None,
         json!({}),
@@ -646,8 +656,11 @@ pub(crate) fn translate_line(
             "file-history-snapshot" => initial_file_history_snapshot(&row),
             _ => false,
         };
+        // Only these verified metadata headers may report unknown time.
+        // A supplied timestamp was validated above, including null rejection.
+        let reported_time = row.get("timestamp").map(|_| time_ns.as_str());
         if presence_metadata
-            && let Some(discovery) = header_discovery(raw, &mut next, origin, offset, &time_ns)
+            && let Some(discovery) = header_discovery(raw, &mut next, origin, offset, reported_time)
         {
             return Ok((vec![discovery], next));
         }
@@ -697,7 +710,8 @@ pub(crate) fn translate_line(
             if message
                 .get("role")
                 .is_none_or(|role| role.as_str() == Some("user"))
-                && let Some(discovery) = header_discovery(raw, &mut next, origin, offset, &time_ns)
+                && let Some(discovery) =
+                    header_discovery(raw, &mut next, origin, offset, Some(&time_ns))
             {
                 facts.push(discovery);
             } else {

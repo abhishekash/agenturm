@@ -7,11 +7,11 @@ is the handoff contract. It supplements Q1–Q10 in the
 
 ## Ownership and execution
 
-- **Feature developers:** implement the four slices below; run only focused
+- **Feature developers:** implement the feature slices below; run only focused
   compile/parser/state checks that protect the changed behavior; provide source
   head, exact patch scope, focused result and known limitations.
 - **Test execution agent:** own joined workspace/Clippy, actual native collection,
-  broad terminal/privacy journeys, schema/upgrade, SDK matrix and artifact/KVM
+  broad terminal/privacy journeys, schema 21-to-22 receipt-clock upgrade, SDK matrix and artifact/KVM
   qualification. Record executable hashes and results in this plan or linked
   validation records. Return defects with exact scope and reproduction.
 - **Integration owner:** combine reviewed changes, publish the exact source head
@@ -31,6 +31,7 @@ baselines, not results for the new feature slices. Every new row starts
 | CF2 | Whole-session paged Review edit browser pinned to selected history, source/session, ReviewVersion and snapshot; reuse existing private edit proof. | `/tmp/agenturm-review-session-edits` | Separate test agent; not run on new source. |
 | CF3 | Trusted installed-adapter list/show/remove with pin-checked removal and atomic catalog publication. Install already exists. | `/tmp/agenturm-adapter-lifecycle` | Separate test agent; not run on new source. |
 | CF4 | Body-free OTLP error/fatal logs in failure investigation, including explicit `--kind log`; existing Findings private log view unchanged. | `/tmp/agenturm-core-development` | Separate test agent; not run on new source. |
+| CF5 | Next slice, in development: exact native Claude worker-spawn facts and declared-child metadata in session evidence. | `/tmp/agenturm-native-presence` + `/tmp/agenturm-review-session-edits` | Separate test agent; wait for its own frozen integrated source head. |
 
 Worktree paths identify current ownership, not release artifacts. The developer
 must supply the final integrated commit before the test owner freezes a binary.
@@ -39,12 +40,15 @@ Do not build different sources concurrently into one Cargo target directory.
 ## CF1 — native session presence
 
 **Developer handoff:** Claude/Pi implementation integrated in the development
-branch. Forty-one focused adapter tests and scoped strict Clippy passed. The
-combined app lib/bin compile check also passed with adapter management and log
-investigation changes. These checks do not close the delegated rows below.
+branch. Forty-one focused adapter tests and scoped strict Clippy passed. The composed app lib/bin compile check passed with all four slices and schema
+22. A focused prefix-race regression and unknown-time Claude checks passed;
+25 focused Store upgrade/retention/backup checks passed. These are developer
+checks, not a final artifact qualification. These checks do not close the delegated rows below.
 
-**Expected product behavior.** A supported, exact, timestamped native record
-can register a session even when ordinary activity has not arrived. Discovery
+**Expected product behavior.** Supported exact native identity can register a
+session before ordinary activity. Pi uses its native timestamp; recognized
+Claude title/name metadata without a timestamp uses explicit unknown time 0,
+never file mtime or a fabricated producer timestamp. Discovery
 is neutral recorded evidence; it must not create Working, completed, approval
 or current process-liveness claims. Existing native name/project provenance and
 newest-updated selection rules continue to apply.
@@ -54,9 +58,14 @@ newest-updated selection rules continue to apply.
 | Pi exact session header without messages | One neutral presence fact; correct source/session/native timestamp; roster after commit/reopen. | Not run |
 | Claude supported timestamped metadata without activity | One neutral presence fact for exact native session; native names remain separately verified. | Not run |
 | Claude snapshot prelude without bound identity | No invented session, identity or execution state. | Not run |
-| Missing/invalid timestamp, duplicate/conflicting identity | Unsupported input remains absent or diagnosed; no file-mtime/zero fallback. | Not run |
+| Missing timestamp on exact Claude title/name metadata | Neutral retained presence with time 0 and Updated Unknown; no execution/liveness or recency claim. | Not run |
+| Invalid/null/conflicting timestamp, duplicate/conflicting identity, untimed user stub | Unsupported input remains absent or diagnosed; no wall/mtime fallback. | Not run |
+| Managed retention with unknown-time presence | Native time remains 0; schema 22 ages only the exact neutral record by its original batch admission clock; it survives a current default cutoff and expires when that admission age passes the cutoff. | Not run |
+| Replay/re-admission/restore with admission aging | Neither exact retry nor same event in a new batch refreshes age; restore preserves admission clock, event digest and unknown native time. Old batches remain default-unknown admission time. | Not run |
+| Other zero-time records | Existing diagnostic/activity retirement remains unchanged; no general retention exemption. | Not run |
 | Header plus normal facts or relationship | No duplicate session registration/count; ordinary lifecycle remains authoritative. | Not run |
 | Poll replay/restart/old cursor | Stable event identity and idempotent admission; only verified original header can backfill. | Not run |
+| In-place source rewrite during header backfill | Reject mixed prefix/header proof and preserve prior cursor; repeat existing Codex as well as new Claude/Pi paths. | Not run |
 | Guardian/internal-review exclusion and legacy decoder mode | Existing exclusions and legacy wire compatibility retained. | Not run |
 | Actual simultaneous Codex and Claude/Pi sessions | Account for selected, queued and absent sources; distinguish actual native witnesses from disposable fixture cases. | Not run |
 
@@ -67,10 +76,17 @@ correct inspector return. Codex header discovery is a regression, not new work.
 
 ## CF2 — complete session edit browsing
 
+**Developer handoff:** implementation integrated. Seventeen focused App/UI
+checks and scoped Clippy passed. Independent source review confirmed history,
+snapshot, source/turn/worker and current private-grant fences. The composed app
+lib/bin compiles with the other core features. No broad terminal campaign ran
+in this implementation session.
+
 **Expected product behavior.** Review can find an older supported Codex edit
 behind unrelated activity rather than being limited to its loaded overview.
 The existing per-turn edit picker and exact `codex.edit_detail` preview continue
-to work. A metadata selector is not private-content authority.
+to work. Seventeen focused App/UI checks and scoped Clippy passed on the lane
+source; final composed source compile and delegated acceptance are separate. A metadata selector is not private-content authority.
 
 | Scenario | Required observation | Status |
 | --- | --- | --- |
@@ -143,6 +159,28 @@ Public rows carry closed labels and exact recorded metadata, never log bodies.
 Do not merge evaluation outcome inventory into this test's claim. Evaluation
 revisions are a separate current-outcome contract and need their own design if
 later added to unified failure investigation.
+
+## CF5 — exact Claude worker-spawn evidence (next source slice)
+
+This feature is in development and is not part of the four-feature handoff
+until a separate integrated commit is supplied. The contract is a closed
+`worker_spawn { child_worker_id }` fact; record identity names the exact
+spawning parent source/session/optional worker/turn/operation. A child-worker
+declaration does not claim a separate session or live process.
+
+Native proof must correlate assistant Agent/Task declaration UUID and tool-use
+ID to one non-error user result with exact `sourceToolAssistantUUID`, same
+session/worker/turn and structured completed status/agentId. Only five actual
+historical completed records were verified initially. Async statuses, text,
+message ancestry and directory placement are not positive proof.
+
+Delegate: correct parent/child through commit/reopen; duplicate/replay;
+sibling worker and same-session different turn; conflicting/reused tool-use ID;
+wrong declaring assistant UUID; malformed/self child; non-completed/error/
+multiple results; bounded checkpoint overflow and old cursor continuation;
+exact declared-child Activity/inspector details and page coverage. Verify no
+prompt/tool-body copy and no roster recency/hierarchy changes. All scenarios
+start **not run** until CF5's source head is frozen.
 
 ## Joined and release checks delegated unchanged
 

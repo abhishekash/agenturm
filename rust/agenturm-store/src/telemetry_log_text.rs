@@ -596,8 +596,11 @@ mod tests {
             [crate::STORE_MARKER_V19],
         )
         .unwrap();
-        tx.execute_batch("DROP INDEX agenturm_metric_descriptions_by_series;")
-            .unwrap();
+        tx.execute_batch(
+            "DROP INDEX agenturm_metric_descriptions_by_series;
+             ALTER TABLE agenturm_history_batches DROP COLUMN admitted_at_unix_ns;",
+        )
+        .unwrap();
         tx.pragma_update(None, "user_version", 19).unwrap();
         tx.commit().unwrap();
         drop(store);

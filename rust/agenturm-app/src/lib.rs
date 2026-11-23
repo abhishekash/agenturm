@@ -2549,6 +2549,11 @@ fn load_workspace_history(
             Some(&session.session_id),
             Some(session.snapshot_id),
         ),
+        HistorySelection::ReviewEdits(session) => (
+            Some(session.harness_id.as_str()),
+            Some(&session.session_id),
+            Some(session.snapshot_id),
+        ),
         HistorySelection::Turn(turn) => (
             Some(turn.harness_id.as_str()),
             Some(&turn.session_id),
@@ -2563,6 +2568,9 @@ fn load_workspace_history(
         limit: INSPECT_PAGE_SIZE,
     };
     match selection {
+        HistorySelection::ReviewEdits(session) => {
+            inspector_activity::review_edits(store, &session, query)
+        }
         HistorySelection::McpSearch {
             scope,
             query: search,

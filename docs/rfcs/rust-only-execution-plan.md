@@ -27,10 +27,11 @@ a separate agent owns broad test execution. Follow the
 
 | Feature lane | Development status | Testing responsibility |
 | --- | --- | --- |
-| CF1 Claude/Pi neutral native presence | Implemented; 41 focused adapter checks/Clippy passed. Codex discovery unchanged. | Separate test agent: actual collection/replay/roster journeys. |
-| CF2 Whole-session paged Review edits | In progress; exact existing Codex preview reused with history/snapshot/ReviewVersion binding. | Separate test agent: terminal/private/broker and selection-return acceptance. |
+| CF1 Claude/Pi neutral native presence | Implemented; timestamped and exact untimed Claude metadata supported, unknown-time admission retention in schema 22. Codex unchanged. | Separate test agent: actual collection/replay/roster journeys. |
+| CF2 Whole-session paged Review edits | Implemented; 17 focused checks/Clippy passed. Paged exact-session browser with original ReviewVersion and private proof. | Separate test agent: terminal/private/broker and selection-return acceptance. |
 | CF3 Trusted adapter list/show/remove | Implemented; four focused checks/Clippy passed. Exact-pin CAS removal preserves artifacts/history. | Separate test agent: CLI/atomicity/security/collection regression. |
 | CF4 OTLP log failure investigation | Implemented; one focused process regression passed. Metadata only, explicit log kind, scope/cursor binding retained. | Separate test agent: broad failure inventory/remote/terminal privacy regression. |
+| CF5 Exact Claude worker spawning | In development; typed parent/child attribution from structured native declaration/result evidence. | Separate test agent: wait for its own frozen source head. |
 
 Feature developers run focused checks needed for implementation. Q1–Q10 and
 release qualification remain delegated; no broad campaign is duplicated here.

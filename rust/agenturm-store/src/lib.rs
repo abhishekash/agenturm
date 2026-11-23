@@ -102,7 +102,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 21;
+const SCHEMA_VERSION: i64 = 22;
 pub const MAX_HOST_HISTORY_PAGE: usize = 64;
 const MAX_BATCH_EVENTS: usize = 2_048;
 pub const MAX_OTLP_BATCH_SPANS: usize = 1_024;
@@ -123,7 +123,8 @@ const STORE_MARKER_V17: &str = "agenturm.observation-store.v17";
 const STORE_MARKER_V18: &str = "agenturm.observation-store.v18";
 const STORE_MARKER_V19: &str = "agenturm.observation-store.v19";
 const STORE_MARKER_V20: &str = "agenturm.observation-store.v20";
-const STORE_MARKER: &str = "agenturm.observation-store.v21";
+const STORE_MARKER_V21: &str = "agenturm.observation-store.v21";
+const STORE_MARKER: &str = "agenturm.observation-store.v22";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -659,7 +660,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         18 => STORE_MARKER_V18,
         19 => STORE_MARKER_V19,
         20 => STORE_MARKER_V20,
-        21 => STORE_MARKER,
+        21 => STORE_MARKER_V21,
+        22 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -701,10 +703,11 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         ),
     ];
     if version >= 3 {
-        expected_tables.push((
-            "agenturm_history_batches",
-            vec![("sequence", "INTEGER", 0, 1), ("request_id", "TEXT", 1, 0)],
-        ));
+        let mut columns = vec![("sequence", "INTEGER", 0, 1), ("request_id", "TEXT", 1, 0)];
+        if version >= 22 {
+            columns.push(("admitted_at_unix_ns", "INTEGER", 1, 0));
+        }
+        expected_tables.push(("agenturm_history_batches", columns));
     }
     if version >= 9 {
         expected_tables.push((
@@ -1100,6 +1103,7 @@ impl Store {
                 CREATE TABLE agenturm_history_batches (
                     sequence INTEGER PRIMARY KEY AUTOINCREMENT,
                     request_id TEXT NOT NULL UNIQUE,
+                    admitted_at_unix_ns INTEGER NOT NULL DEFAULT 0 CHECK (admitted_at_unix_ns >= 0),
                     FOREIGN KEY (request_id) REFERENCES agenturm_ingest_receipts(request_id)
                 );
                 CREATE TABLE agenturm_observations (
@@ -1461,11 +1465,27 @@ impl Store {
             metric_history::create_descriptor_index(&transaction)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V21],
+            )?;
+            transaction.pragma_update(None, "user_version", 21)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 21)?;
+        }
+        if (2..22).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            transaction.execute_batch(
+                "ALTER TABLE agenturm_history_batches
+                 ADD COLUMN admitted_at_unix_ns INTEGER NOT NULL DEFAULT 0
+                 CHECK (admitted_at_unix_ns >= 0);",
+            )?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],
             )?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            validate_marked_shape(&transaction, SCHEMA_VERSION)?;
             transaction.commit()?;
-            validate_marked_shape(&connection, SCHEMA_VERSION)?;
         }
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "FULL")?;
@@ -1574,6 +1594,7 @@ impl Store {
 
         let validating_telemetry_replay =
             !payloads.is_empty() && current_cursor.as_deref() == Some(batch.next_cursor.as_str());
+        let admitted_at = retention::batch_admission_time();
         let retention_cutoff = retention::read_state(&transaction)?.cutoff_unix_ns;
         let mut prior_event_digest = transaction.prepare(
             "SELECT COALESCE(
@@ -1620,15 +1641,12 @@ impl Store {
             }
             let timestamp = i64::try_from(observation.observed_at_unix_ns)
                 .map_err(|_| StoreError::Invalid("timestamp exceeds SQLite INTEGER"))?;
+            let retained = retention::observation_age_time(observation, timestamp, admitted_at)
+                >= retention_cutoff;
             if let Some(payload) = payload {
-                payload.insert(
-                    &transaction,
-                    batch,
-                    &observation.event_id,
-                    timestamp >= retention_cutoff,
-                )?;
+                payload.insert(&transaction, batch, &observation.event_id, retained)?;
             }
-            if timestamp < retention_cutoff {
+            if !retained {
                 insert_retired.execute(params![
                     batch.source_id,
                     observation.event_id,
@@ -1686,10 +1704,12 @@ impl Store {
             )?;
         }
         transaction.execute(
-            "INSERT INTO agenturm_history_batches(sequence, request_id) VALUES (?1, ?2)",
+            "INSERT INTO agenturm_history_batches(sequence, request_id, admitted_at_unix_ns)
+             VALUES (?1, ?2, ?3)",
             params![
                 retention::next_receipt_sequence(&transaction)?,
-                batch.request_id
+                batch.request_id,
+                admitted_at
             ],
         )?;
         transaction.execute(
@@ -2908,6 +2928,7 @@ mod tests {
         connection.execute_batch(
             "DROP TABLE agenturm_native_attention_events; DROP TABLE agenturm_native_attention_senders;
              DROP INDEX agenturm_metric_descriptions_by_series;
+             ALTER TABLE agenturm_history_batches DROP COLUMN admitted_at_unix_ns;
              DROP INDEX agenturm_metric_series_points;
              DROP INDEX agenturm_usage_history_by_time;
              DROP TABLE agenturm_eval_details;
@@ -2957,6 +2978,7 @@ mod tests {
         let original = receipt(&store);
         store.connection.execute_batch(
             "DROP INDEX agenturm_metric_descriptions_by_series;
+             ALTER TABLE agenturm_history_batches DROP COLUMN admitted_at_unix_ns;
              UPDATE agenturm_store_meta SET value='agenturm.observation-store.v20' WHERE key='format';
              PRAGMA user_version=20;",
         ).unwrap();
@@ -2970,7 +2992,7 @@ mod tests {
         );
         drop(read_only);
         let mut upgraded = Store::open(&db.0).unwrap();
-        validate_marked_shape(&upgraded.connection, 21).unwrap();
+        validate_marked_shape(&upgraded.connection, SCHEMA_VERSION).unwrap();
         assert_eq!(receipt(&upgraded), original);
         assert_eq!(upgraded.current_content_grant(&scope).unwrap(), Some(grant));
         assert_eq!(
@@ -3053,6 +3075,7 @@ mod tests {
         tx.execute_batch(
             "DROP TABLE agenturm_native_attention_events; DROP TABLE agenturm_native_attention_senders;
              DROP INDEX agenturm_metric_descriptions_by_series;
+             ALTER TABLE agenturm_history_batches DROP COLUMN admitted_at_unix_ns;
              DROP INDEX agenturm_metric_series_points;
              DROP INDEX agenturm_usage_history_by_time;
              DROP TABLE agenturm_eval_details; DROP TABLE agenturm_eval_detail_admissions;",
@@ -3111,6 +3134,7 @@ mod tests {
         let identity = store.history_identity().unwrap();
         store.connection.execute_batch("DROP TABLE agenturm_native_attention_events; DROP TABLE agenturm_native_attention_senders;
              DROP INDEX agenturm_metric_descriptions_by_series;
+             ALTER TABLE agenturm_history_batches DROP COLUMN admitted_at_unix_ns;
              DROP INDEX agenturm_metric_series_points; DROP INDEX agenturm_usage_history_by_time;").unwrap();
         store
             .connection
@@ -3783,6 +3807,158 @@ mod tests {
             next_cursor: next_cursor.into(),
             observations,
         }
+    }
+
+    fn discovery(event_id: &str, timestamp: u64) -> StoredObservation {
+        let mut observation = event(event_id, "session-1", timestamp);
+        observation.identity.turn_id = None;
+        observation.identity.operation_id = None;
+        observation.kind = ObservationKind::Activity {
+            category: "session_discovered".into(),
+        };
+        observation
+    }
+
+    #[test]
+    fn session_discovery_retention_uses_original_admission_across_replay_and_backup() {
+        let db = TempDb::new();
+        let archive = TempDb::new();
+        let mut store = Store::open_collector(&db.0).unwrap();
+        let mut noncanonical = discovery("turn-bound", 0);
+        noncanonical.identity.turn_id = Some("turn-1".into());
+        let ordinary = batch(
+            "ordinary",
+            vec![
+                event("unrelated-unknown", "session-1", 0),
+                noncanonical,
+                discovery("native-timestamp", 1),
+            ],
+        );
+        store.commit_batch(&ordinary).unwrap();
+        assert_eq!(
+            store
+                .prune_observations_before(2)
+                .unwrap()
+                .removed_observations,
+            3
+        );
+
+        let unknown = discovery("unknown-timestamp", 0);
+        let next = batch_after(
+            "discovery",
+            "cursor-1",
+            "cursor-2",
+            vec![
+                unknown.clone(),
+                event("new-unrelated-unknown", "session-1", 0),
+            ],
+        );
+        assert_eq!(
+            store.commit_batch(&next).unwrap(),
+            CommitOutcome::Committed { inserted: 1 }
+        );
+        assert_eq!(
+            store.observations().unwrap(),
+            [("harness.codex".into(), unknown.clone())]
+        );
+        let age =
+            |store: &Store, request: &str| -> i64 {
+                store.connection.query_row(
+                "SELECT admitted_at_unix_ns FROM agenturm_history_batches WHERE request_id=?1",
+                [request], |row| row.get(0),
+            ).unwrap()
+            };
+        let first_age = age(&store, "discovery");
+        assert!(first_age >= 2);
+        assert_eq!(store.commit_batch(&next).unwrap(), CommitOutcome::Replay);
+        assert_eq!(age(&store, "discovery"), first_age);
+        let duplicate = batch_after("duplicate", "cursor-2", "cursor-3", vec![unknown]);
+        assert_eq!(
+            store.commit_batch(&duplicate).unwrap(),
+            CommitOutcome::Committed { inserted: 0 }
+        );
+        store.connection.execute(
+            "UPDATE agenturm_history_batches SET admitted_at_unix_ns=?1 WHERE request_id='duplicate'",
+            [first_age + 2],
+        ).unwrap();
+        assert_eq!(
+            store
+                .prune_observations_before(first_age as u64)
+                .unwrap()
+                .removed_observations,
+            0
+        );
+        store.backup_to(&archive.0).unwrap();
+        let mut restored = Store::open_collector(&archive.0).unwrap();
+        assert_eq!(age(&restored, "discovery"), first_age);
+        assert_eq!(restored.observations().unwrap()[0].1.observed_at_unix_ns, 0);
+        assert_eq!(
+            restored
+                .prune_observations_before(first_age as u64 + 1)
+                .unwrap()
+                .removed_observations,
+            1
+        );
+        assert_eq!(restored.commit_batch(&next).unwrap(), CommitOutcome::Replay);
+        assert_eq!(
+            restored.commit_batch(&duplicate).unwrap(),
+            CommitOutcome::Replay
+        );
+        let third = batch_after(
+            "retired-duplicate",
+            "cursor-3",
+            "cursor-4",
+            duplicate.observations,
+        );
+        assert_eq!(
+            restored.commit_batch(&third).unwrap(),
+            CommitOutcome::Committed { inserted: 0 }
+        );
+        assert!(restored.observations().unwrap().is_empty());
+    }
+
+    #[test]
+    fn v21_history_admission_upgrade_preserves_unknown_age_and_receipts() {
+        let db = TempDb::new();
+        let mut store = Store::open_collector(&db.0).unwrap();
+        let original = batch("original", vec![discovery("unknown", 0)]);
+        store.commit_batch(&original).unwrap();
+        let page = store.observation_page(10).unwrap();
+        store.connection.execute_batch(
+            "ALTER TABLE agenturm_history_batches DROP COLUMN admitted_at_unix_ns;
+             UPDATE agenturm_store_meta SET value='agenturm.observation-store.v21' WHERE key='format';
+             PRAGMA user_version=21;",
+        ).unwrap();
+        drop(store);
+
+        let reader = Store::open_read_only(&db.0).unwrap();
+        assert_eq!(reader.observation_page(10).unwrap(), page);
+        let version = |store: &Store| -> i64 {
+            store
+                .connection
+                .pragma_query_value(None, "user_version", |row| row.get(0))
+                .unwrap()
+        };
+        assert_eq!(version(&reader), 21);
+        drop(reader);
+        let mut writer = Store::open_collector(&db.0).unwrap();
+        assert_eq!(version(&writer), SCHEMA_VERSION);
+        assert_eq!(writer.observation_page(10).unwrap(), page);
+        assert_eq!(
+            writer.commit_batch(&original).unwrap(),
+            CommitOutcome::Replay
+        );
+        assert_eq!(writer.connection.query_row(
+            "SELECT admitted_at_unix_ns FROM agenturm_history_batches WHERE request_id='original'",
+            [], |row| row.get::<_, i64>(0),
+        ).unwrap(), 0);
+        assert_eq!(
+            writer
+                .prune_observations_before(1)
+                .unwrap()
+                .removed_observations,
+            1
+        );
     }
 
     #[test]

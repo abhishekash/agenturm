@@ -44,8 +44,8 @@ pub use workbench::workflow_resume::{ResumeRuntime, WorkflowResume};
 pub use agenturm_kernel::workflow_notifications::WorkflowDelivery;
 pub use workbench::{
     CurrentHostSample, HandoffEntry, OperationDetailEntry, OperationDetailKind, PromptDelivery,
-    PromptEntry, RequestEntry, RequestProof, ReviewNoteEntry, TaskEntry, TelemetryLogEntry,
-    TelemetrySpanEntry, WorkAnchor, WorkCommand, WorkResult, WorkflowAlertInbox,
+    PromptEntry, RequestEntry, RequestProof, ReviewEditSelection, ReviewNoteEntry, TaskEntry,
+    TelemetryLogEntry, TelemetrySpanEntry, WorkAnchor, WorkCommand, WorkResult, WorkflowAlertInbox,
 };
 
 pub use workspace::{
@@ -357,6 +357,7 @@ pub struct HistoryFeatures {
     pub usage_history: Option<Box<usage_chart::UsageChartData>>,
     pub findings: Option<(ExtensionId, FindingsPage)>,
     pub mcp_inventory: Option<McpInventory>,
+    pub review_edit_preview: bool,
 }
 
 pub struct HistoryPage {
@@ -383,6 +384,7 @@ struct PageView {
     operation_table: operation_table::Browser,
     findings: Option<(ExtensionId, findings::Browser)>,
     operation_picker: Option<(OperationDetailKind, ListState)>,
+    review_edit_preview: bool,
     telemetry_spans: Vec<TelemetrySpanEntry>,
     evaluation_traces: Vec<TraceEvaluationEntry>,
     evaluation_picker: Option<ListState>,
@@ -442,6 +444,7 @@ impl PageView {
                 .findings
                 .map(|(id, data)| (id, findings::Browser::new(data))),
             operation_picker: None,
+            review_edit_preview: page.features.review_edit_preview,
             telemetry_spans,
             evaluation_traces,
             evaluation_picker: None,

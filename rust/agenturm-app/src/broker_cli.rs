@@ -907,6 +907,34 @@ fn execute_private_cockpit(
                 .map_err(|error| error.to_string())?;
             Ok(WorkResult::Status(String::new()))
         }
+        WorkCommand::RevealReviewEdit(selected, mut output) => {
+            let operation = selected.operation;
+            if store
+                .read_binding()
+                .and_then(agenturm_storage_service::logical_read_identity)
+                != Some(&selected.history_identity)
+                || operation.kind != OperationDetailKind::Edit
+            {
+                return Err("The edit belongs to a different Review selection".into());
+            }
+            let selection = PrivateEvidenceSelection {
+                source_id: ExtensionId::parse(&operation.source_id)
+                    .map_err(|error| error.to_string())?,
+                session_id: operation.session_id,
+                event_id: operation.event_id,
+                revision: operation.revision,
+                kind: PrivateEvidenceKind::CodexEditDetail {
+                    turn_id: operation.turn_id,
+                    operation_id: operation.operation_id,
+                },
+            };
+            store
+                .with_verified_edit(&selection, selected.snapshot_id, |edit| {
+                    edit.write_terminal(&mut output)
+                })
+                .map_err(|error| error.to_string())?;
+            Ok(WorkResult::Status(String::new()))
+        }
         _ => Err("Unsupported broker private-content request".into()),
     }
 }

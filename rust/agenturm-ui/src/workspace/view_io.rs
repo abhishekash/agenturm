@@ -36,6 +36,7 @@ impl Workspace {
             }
             let pane = page.ui.panes.get(page.ui.selected)?;
             let scope = match &view.selection {
+                HistorySelection::ReviewEdits(_) => return None,
                 HistorySelection::All(_) => "Workspace · loaded metadata page".into(),
                 HistorySelection::Session(session, _) => {
                     format!("{} / {}", session.harness_id, session.session_id)

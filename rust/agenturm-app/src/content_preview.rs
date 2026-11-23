@@ -2,7 +2,7 @@
 
 use agenturm_kernel::{ExtensionId, ReadSnapshot};
 use agenturm_store::Store;
-use agenturm_ui::OperationDetailKind;
+use agenturm_ui::{OperationDetailKind, ReviewEditSelection};
 #[cfg(not(target_os = "linux"))]
 use serde::Serialize;
 use std::io::Write;
@@ -301,6 +301,68 @@ pub(super) fn reveal_operation_detail(
     {
         let _ = (db, config, source_id, kind, selection, output, writer);
         Err("Operation detail preview is available on Linux".into())
+    }
+}
+
+pub(super) fn reveal_review_edit(
+    db: &Path,
+    config: &Path,
+    selected: &ReviewEditSelection,
+    output: &mut dyn Write,
+    writer: Option<&Store>,
+) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        let operation = &selected.operation;
+        if operation.kind != OperationDetailKind::Edit {
+            return Err("The selected Review occurrence is not a file edit".into());
+        }
+        let source = ExtensionId::parse(&operation.source_id).map_err(|error| error.to_string())?;
+        let opened;
+        let store = if let Some(writer) = writer {
+            writer
+        } else {
+            opened = linux::open_store(db)?;
+            &opened
+        };
+        agenturm_content::with_verified_edit(
+            store,
+            &linux::resolver(config),
+            &source,
+            &agenturm_store::CodexOperationSelection {
+                session_id: &operation.session_id,
+                turn_id: Some(&operation.turn_id),
+                operation_id: &operation.operation_id,
+                event_id: &operation.event_id,
+                revision: operation.revision,
+            },
+            |edit| {
+                if store
+                    .history_identity()
+                    .map_err(|error| error.to_string())?
+                    != selected.history_identity
+                    || !store
+                        .contains_observation_at_snapshot(
+                            &source,
+                            &operation.event_id,
+                            operation.revision,
+                            selected.snapshot_id,
+                        )
+                        .map_err(|error| error.to_string())?
+                {
+                    return Err("The edit is unavailable at the selected Review snapshot".into());
+                }
+                store
+                    .verify_content_writer()
+                    .map_err(|error| error.to_string())?;
+                edit.write_terminal(output)
+            },
+        )?
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (db, config, selected, output, writer);
+        Err("Review edit preview is available on Linux".into())
     }
 }
 

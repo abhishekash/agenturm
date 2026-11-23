@@ -13,6 +13,10 @@ owns broad testing and release qualification. The
 [delegated core-feature test plan](../validation/rust-core-feature-test-plan.md)
 tracks CF1 Claude/Pi presence, CF2 paged session edit browsing, CF3 adapter
 list/show/pin-CAS removal and CF4 body-free OTLP log failure investigation.
+CF1/CF3/CF4 are implemented; CF2 source is integrated with focused checks,
+and the CF1 unknown-time admission/retention refinement is implemented in
+schema 22. The composed app lib/bin compile check passed. CF5 exact Claude
+worker-spawn evidence is the next active core feature slice.
 Developers run focused compile/regression checks only. The test agent executes
 Q1–Q10 and the new acceptance matrix on the supplied integrated source head.
 
@@ -73,9 +77,11 @@ invent check results, parent relationships, current liveness or cost totals.
   rather than treating every missing field as a decoder bug.
 - Header-only native recordings: Codex already admits neutral SessionDiscovered
   from verified headers. Claude/Pi metadata-only presence needs the remaining
-  provider-specific support, now implemented in the current development branch
-  for exact timestamped supported openings (CF1); installed acceptance is
-  delegated to the test owner. Preserve exact
+  provider-specific support is implemented in the development branch (CF1),
+  including recognized timestamp-less Claude title/name metadata with explicit
+  unknown time 0. Implemented schema 22 admission-clock retention lets this
+  neutral identity survive managed retention without inventing source time.
+  Installed acceptance is delegated to the test owner. Preserve exact
   source identity and neutral status; an open file must not invent a Working
   lifecycle. This is an open behavior gap, not only an archive rerun.
 - Kiro: native-format process fixtures cover failure, delegation and fractional
@@ -219,7 +225,8 @@ qualification separately from this source check.
 
 - Repeat authenticated OTLP JSON/protobuf ingestion, descriptor-only admission,
   exact replay, revision handling and omission of unsafe description text.
-- Upgrade a supported prior schema to **21**. Preserve old point IDs, payloads,
+- Upgrade supported prior schemas through **21** metric metadata and **22**
+  original admission-clock retention, preserving both sets of invariants. Preserve old point IDs, payloads,
   digests, grants and receipts; description companions must not rewrite points.
 - Prove filtering occurs before pagination and source authorization before
   grouping/limits. Find an older series beyond the first 32 catalog rows.

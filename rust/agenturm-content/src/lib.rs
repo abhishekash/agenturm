@@ -117,6 +117,14 @@ impl VerifiedEdit {
             .iter()
             .any(|change| change.path == path || change.edit.move_path.as_deref() == Some(path))
     }
+
+    /// Deliver the verified edit using the private terminal preview format.
+    pub fn write_terminal(&self, output: &mut dyn Write) -> Result<(), String> {
+        let mut text = serde_json::to_string(&display_edit_changes(&self.changes))
+            .map_err(|_| "Cannot encode the verified file edit")?;
+        text.push('\n');
+        write_output(output, text.as_bytes())
+    }
 }
 #[derive(Clone, Copy, Eq, PartialEq)]
 enum Harness {
@@ -1445,11 +1453,7 @@ impl CodexOperationPayload {
         }
         let display = match self {
             Self::Mcp(fields) => serde_json::to_string_pretty(fields).map_err(|_| ())?,
-            Self::Edit { changes } => changes
-                .iter()
-                .map(EditChange::display)
-                .collect::<Vec<_>>()
-                .join("\n\n"),
+            Self::Edit { changes } => display_edit_changes(changes),
             Self::Command {
                 recorded_invocation,
                 ..
@@ -1457,6 +1461,14 @@ impl CodexOperationPayload {
         };
         serde_json::to_string(&display).map_err(|_| ())
     }
+}
+
+fn display_edit_changes(changes: &[EditChange]) -> String {
+    changes
+        .iter()
+        .map(EditChange::display)
+        .collect::<Vec<_>>()
+        .join("\n\n")
 }
 
 impl EditChange {

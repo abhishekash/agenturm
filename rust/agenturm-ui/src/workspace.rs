@@ -94,6 +94,7 @@ pub struct SessionCatalog {
 pub enum HistorySelection {
     All(WorkspaceView),
     Session(RecordedSession, SessionView),
+    ReviewEdits(Box<RecordedSession>),
     Turn(RecordedTurn),
     McpSearch {
         scope: McpSearchScope,
@@ -601,8 +602,7 @@ struct HistoryView {
 impl HistoryView {
     fn new(selection: HistorySelection, mut page: HistoryPage) -> Self {
         let analytics = analytics::HistoryAnalytics::take(&selection, &mut page);
-        let in_turn = matches!(selection, HistorySelection::Turn(_));
-        let mut page = PageView::new(page, in_turn);
+        let mut page = Self::make_page(&selection, page);
         if matches!(selection, HistorySelection::All(WorkspaceView::Metrics)) {
             page.ui.select_metrics();
         }
@@ -616,6 +616,18 @@ impl HistoryView {
             analytics,
             show_evidence: false,
         }
+    }
+
+    fn make_page(selection: &HistorySelection, page: HistoryPage) -> PageView {
+        let mut page = PageView::new(page, matches!(selection, HistorySelection::Turn(_)));
+        if matches!(selection, HistorySelection::ReviewEdits(_)) {
+            let selected = (!page.operation_details.is_empty()).then_some(0);
+            page.operation_picker = Some((
+                OperationDetailKind::Edit,
+                ListState::default().with_selected(selected),
+            ));
+        }
+        page
     }
 
     fn active_analytics(&self) -> Option<&analytics::HistoryAnalytics> {
@@ -816,8 +828,7 @@ impl Workspace {
                             analytics::HistoryAnalytics::take(&view.selection, &mut page);
                         view.show_evidence &= view.analytics.is_some();
                     }
-                    let mut next =
-                        PageView::new(page, matches!(view.selection, HistorySelection::Turn(_)));
+                    let mut next = HistoryView::make_page(&view.selection, page);
                     if let Some(title) = view.page.ui.selected_title() {
                         if title == "Metrics"
                             && matches!(
@@ -1130,7 +1141,7 @@ impl Workspace {
                 }
                 HistorySelection::Turn(row) => Some(McpSearchScope::Turn(Box::new(row.clone()))),
                 HistorySelection::McpSearch { scope, .. } => Some(scope.clone()),
-                HistorySelection::McpTraces { .. } => None,
+                HistorySelection::McpTraces { .. } | HistorySelection::ReviewEdits(_) => None,
             };
             let Some(scope) = scope else {
                 return table.key(key);
@@ -1397,6 +1408,10 @@ impl Workspace {
             return false;
         }
         if let Some((kind, picker)) = &mut view.page.operation_picker {
+            let review = match &view.selection {
+                HistorySelection::ReviewEdits(session) => Some(session),
+                _ => None,
+            };
             let kind = *kind;
             let entries = view
                 .page
@@ -1405,6 +1420,39 @@ impl Workspace {
                 .filter(|entry| entry.kind == kind);
             match code {
                 KeyCode::Char('q') => return true,
+                KeyCode::Esc if review.is_some() => {
+                    if self.pending.is_none() {
+                        self.history.pop();
+                    } else if self.pending.as_ref().is_some_and(Change::is_work) {
+                        self.discard_work_result = true;
+                        self.prompt_receiver = None;
+                    }
+                    self.message = None;
+                }
+                keymap::OLDER if review.is_some() && self.pending.is_none() => {
+                    if let Some(before) = view.page.ui.older_cursor().cloned() {
+                        let selection = view.selection.clone();
+                        self.request(
+                            sender,
+                            self.history_request(selection, Some(before)),
+                            Change::OlderHistory,
+                        );
+                    }
+                }
+                keymap::NEWER if review.is_some() && self.pending.is_none() => {
+                    if let Some(newer) = view.newer.pop_back() {
+                        view.page = newer;
+                        self.message = None;
+                    }
+                }
+                keymap::LATEST if review.is_some() && self.pending.is_none() => {
+                    let selection = view.selection.clone();
+                    self.request(
+                        sender,
+                        self.history_request(selection, None),
+                        Change::LatestHistory,
+                    );
+                }
                 KeyCode::Esc => {
                     view.page.operation_picker = None;
                     self.discard_work_result = matches!(self.pending, Some(Change::Work(_)));
@@ -1430,13 +1478,41 @@ impl Workspace {
                             OperationDetailKind::Edit => PromptKind::Edit,
                         };
                         let (delivery, receiver) = prompt_channel(prompt_kind);
-                        self.request(
-                            sender,
-                            WorkspaceRequest::Work(WorkCommand::RevealOperation(
-                                operation, delivery,
-                            )),
-                            Change::Work(None),
-                        );
+                        let command = if let Some(session) = review {
+                            if !view.page.review_edit_preview {
+                                self.message =
+                                    Some("Edit preview is unavailable from this reader".into());
+                                return false;
+                            }
+                            let Some(identity) =
+                                view.page.history_identity.as_ref().filter(|identity| {
+                                    session.history_identity.as_ref() == Some(*identity)
+                                })
+                            else {
+                                self.message =
+                                    Some("Review history changed. Reopen Review.".into());
+                                return false;
+                            };
+                            if view.page.snapshot_id != session.snapshot_id
+                                || operation.source_id != session.harness_id
+                                || operation.session_id != session.session_id
+                            {
+                                self.message =
+                                    Some("Edit does not match this Review selection".into());
+                                return false;
+                            }
+                            WorkCommand::RevealReviewEdit(
+                                Box::new(ReviewEditSelection {
+                                    operation,
+                                    snapshot_id: view.page.snapshot_id,
+                                    history_identity: identity.clone(),
+                                }),
+                                delivery,
+                            )
+                        } else {
+                            WorkCommand::RevealOperation(operation, delivery)
+                        };
+                        self.request(sender, WorkspaceRequest::Work(command), Change::Work(None));
                         self.prompt_receiver = Some(receiver);
                     }
                 }
@@ -1634,12 +1710,19 @@ impl Workspace {
             }
             return false;
         }
+        if code == KeyCode::Char('e')
+            && !view.page.ui.help
+            && view.page.reviewing()
+            && let HistorySelection::Session(session, _) = &view.selection
+        {
+            let selection = HistorySelection::ReviewEdits(Box::new(session.clone()));
+            self.open(sender, selection);
+            return false;
+        }
         let detail = match code {
             KeyCode::Char('M') => Some(OperationDetailKind::Mcp),
             KeyCode::Char('m') if mcp_pane => Some(OperationDetailKind::Mcp),
-            KeyCode::Char('e') if view.page.reviewing() || view.page.ui.in_turn => {
-                Some(OperationDetailKind::Edit)
-            }
+            KeyCode::Char('e') if view.page.ui.in_turn => Some(OperationDetailKind::Edit),
             _ => None,
         };
         if !view.page.ui.help
@@ -1694,7 +1777,9 @@ impl Workspace {
                         turn: Some(turn.turn_id.clone()),
                     }),
                     HistorySelection::McpSearch { scope, .. } => scope.anchor(),
-                    HistorySelection::All(_) | HistorySelection::McpTraces { .. } => None,
+                    HistorySelection::All(_)
+                    | HistorySelection::McpTraces { .. }
+                    | HistorySelection::ReviewEdits(_) => None,
                 };
                 let command = if code == KeyCode::Char('b') {
                     Some(WorkCommand::Tasks(None))
@@ -1790,7 +1875,9 @@ impl Workspace {
                 }
                 let owner = match &view.selection {
                     HistorySelection::McpSearch { scope, .. } => scope.anchor(),
-                    HistorySelection::All(_) | HistorySelection::McpTraces { .. } => None,
+                    HistorySelection::All(_)
+                    | HistorySelection::McpTraces { .. }
+                    | HistorySelection::ReviewEdits(_) => None,
                     HistorySelection::Session(row, _) => Some(WorkAnchor::from(row)),
                     HistorySelection::Turn(row) => Some(WorkAnchor {
                         source: row.harness_id.clone(),
@@ -2206,6 +2293,7 @@ pub fn run_workspace_with_stop(
 
 fn pending_evidence_titles(selection: &HistorySelection) -> Option<(&'static str, &'static str)> {
     match selection {
+        HistorySelection::ReviewEdits(_) => Some(("Review file edits", "Retained edit evidence")),
         HistorySelection::All(WorkspaceView::Activity)
         | HistorySelection::Session(_, SessionView::Activity) => Some(("Activity", "Event detail")),
         HistorySelection::All(WorkspaceView::Findings) => Some(("Findings", "Evidence inspector")),
@@ -2217,6 +2305,120 @@ fn pending_evidence_titles(selection: &HistorySelection) -> Option<(&'static str
         | HistorySelection::McpTraces { .. } => Some(("Traces", "Execution tree")),
         _ => None,
     }
+}
+
+struct ReviewEditView<'a> {
+    session: &'a RecordedSession,
+    entries: &'a [OperationDetailEntry],
+    older: bool,
+    newer: bool,
+    preview: bool,
+    pending: bool,
+    message: Option<&'a str>,
+}
+
+fn draw_review_edits(frame: &mut Frame, view: ReviewEditView<'_>, selection: &mut ListState) {
+    let [context, list, receipt, footer] = Layout::vertical([
+        Constraint::Length(4),
+        Constraint::Min(3),
+        Constraint::Length(3),
+        Constraint::Length(3),
+    ])
+    .areas(frame.area());
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(" Review file edits").style(heading_style()),
+            Line::from(format!(
+                " Source  {}",
+                visible_text(&view.session.harness_id)
+            )),
+            Line::from(format!(
+                " Session  {}",
+                visible_text(&view.session.session_id)
+            )),
+            Line::from(format!(
+                " Evidence {} · Snapshot {}",
+                view.session.review_version.receipt_sequence, view.session.snapshot_id,
+            )),
+        ]),
+        context,
+    );
+    if view.entries.is_empty() {
+        frame.render_widget(
+            Paragraph::new(if view.older {
+                "No eligible edits in this range. ] to look further back."
+            } else {
+                "No eligible edits in this retained range."
+            })
+            .wrap(Wrap { trim: true })
+            .block(panel(" Codex file edits ")),
+            list,
+        );
+    } else {
+        frame.render_stateful_widget(
+            List::new(view.entries.iter().map(|entry| {
+                ListItem::new(format!(
+                    "{} · rev {}",
+                    visible_text(&entry.label),
+                    entry.revision
+                ))
+            }))
+            .block(panel(" Codex file edits "))
+            .highlight_symbol("› ")
+            .highlight_style(selection_style()),
+            list,
+            selection,
+        );
+    }
+    if let Some(entry) = selection
+        .selected()
+        .and_then(|index| view.entries.get(index))
+    {
+        frame.render_widget(
+            Paragraph::new(vec![
+                Line::from(format!(
+                    " Main worker · Turn {}",
+                    visible_text(&entry.turn_id)
+                )),
+                Line::from(format!(" Operation {}", visible_text(&entry.operation_id))),
+                Line::from(format!(
+                    " Event {} · rev {}",
+                    visible_text(&entry.event_id),
+                    entry.revision
+                )),
+            ]),
+            receipt,
+        );
+    }
+    let mut navigation = String::from("↑↓ select · Esc Review");
+    if view.preview && !view.entries.is_empty() {
+        navigation.push_str(" · Enter reveal");
+    }
+    let mut paging = String::new();
+    if view.older {
+        paging.push_str("] older · ");
+    }
+    if view.newer {
+        paging.push_str("[ newer · ");
+    }
+    paging.push_str("l latest at this snapshot");
+    let status = if view.pending {
+        "Reading selected evidence…"
+    } else if !view.preview {
+        "Recorded metadata · private preview unavailable"
+    } else if view.older {
+        "More retained history available"
+    } else {
+        "Reached the beginning of retained history"
+    };
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::from(visible_text(view.message.unwrap_or(status))),
+            Line::from(navigation).style(label_style()),
+            Line::from(paging).style(label_style()),
+        ]),
+        footer,
+    );
 }
 
 fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
@@ -2301,6 +2503,22 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
             && area.height >= MIN_HEIGHT
             && let Some((kind, selection)) = &mut view.page.operation_picker
         {
+            if let HistorySelection::ReviewEdits(session) = &view.selection {
+                draw_review_edits(
+                    frame,
+                    ReviewEditView {
+                        session,
+                        entries: &view.page.operation_details,
+                        older: view.page.ui.older_cursor().is_some(),
+                        newer: !view.newer.is_empty(),
+                        preview: view.page.review_edit_preview,
+                        pending: workspace.pending.is_some(),
+                        message: workspace.message.as_deref(),
+                    },
+                    selection,
+                );
+                return;
+            }
             let [body, foot] =
                 Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
             let items = view
@@ -2361,7 +2579,7 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
                 help.push_str("\nM MCP payloads · m on MCP");
             }
             if view.page.reviewing() {
-                help.push_str("\ny Mark reviewed · n Review notes");
+                help.push_str("\ne Session file edits · y Mark reviewed · n Review notes");
             }
             if telemetry_details(view) || evaluation_details(view) {
                 help.push('\n');
@@ -2483,16 +2701,10 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
             } else if let HistorySelection::Session(session, _) = &view.selection
                 && view.page.reviewing()
             {
-                if has_details(OperationDetailKind::Edit) {
-                    if session.reviewed {
-                        "Reviewed · e edits · n decisions · t traces · Esc back"
-                    } else {
-                        "y review · e edits · n decisions · t traces · Esc back"
-                    }
-                } else if session.reviewed {
-                    "Reviewed · n decisions · t traces · Esc back"
+                if session.reviewed {
+                    "Reviewed · e edits · n decisions · t traces · Esc back"
                 } else {
-                    "y mark reviewed · n decisions · t traces · Esc back"
+                    "y review · e edits · n decisions · t traces · Esc back"
                 }
             } else if view.page.ui.in_turn && has_details(OperationDetailKind::Edit) {
                 if has_details(OperationDetailKind::Mcp) {
@@ -2564,6 +2776,9 @@ fn roster_cell(text: &str, width: u16) -> String {
 }
 
 pub(super) fn age(nanos: u64) -> String {
+    if nanos == 0 {
+        return "Unknown".into();
+    }
     let now = SystemTime::now()
         .duration_since(UNIX_EPOCH)
         .unwrap_or_default();
@@ -2656,6 +2871,114 @@ mod tests {
         code: KeyCode,
     ) -> bool {
         workspace.key(sender, event::KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn review_session_edits_keep_the_pinned_occurrence_and_return_to_decisions() {
+        let (sender, requests) = mpsc::channel();
+        let mut session = session("harness.codex.fixture", "selected", "completed", None);
+        session.history_identity = Some("review-history".into());
+        let pane = ExtensionId::parse("app.session-review").unwrap();
+        let mut review = empty_history_page();
+        review.snapshot.history_snapshot_id = session.snapshot_id;
+        review.history_identity = session.history_identity.clone();
+        review.initial_pane = Some(pane.clone());
+        review.review_pane = Some(pane.clone());
+        review.snapshot.panes.insert(
+            pane,
+            agenturm_kernel::PaneModel {
+                title: "Review".into(),
+                rows: Vec::new(),
+            },
+        );
+        let mut workspace = Workspace::new();
+        workspace.history.push(HistoryView::new(
+            HistorySelection::Session(session.clone(), SessionView::Review),
+            review,
+        ));
+        press(&mut workspace, &sender, KeyCode::Char('e'));
+        assert!(matches!(requests.try_recv(), Ok(WorkspaceRequest::History {
+            selection: HistorySelection::ReviewEdits(row), before: None, ..
+        }) if *row == session));
+
+        let mut page = empty_history_page();
+        page.history_identity = session.history_identity.clone();
+        page.snapshot.history_snapshot_id = session.snapshot_id;
+        page.snapshot.observations_truncated = true;
+        let cursor = ObservationPosition {
+            observed_at_unix_ns: 5,
+            harness_id: session.harness_id.clone(),
+            event_id: "first-unrelated".into(),
+            revision: 0,
+            snapshot_id: session.snapshot_id,
+        };
+        page.features.continuation = Some(Box::new(cursor.clone()));
+        workspace.finish(Ok(WorkspaceResponse::History(page)));
+        let mut terminal = Terminal::new(TestBackend::new(60, 18)).unwrap();
+        terminal
+            .draw(|frame| draw_workspace(frame, &mut workspace))
+            .unwrap();
+        let rendered = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(rendered.contains("No eligible edits in this range"));
+        assert!(rendered.contains("Evidence 7 · Snapshot 9") && rendered.contains("] older"));
+        press(&mut workspace, &sender, KeyCode::Char(']'));
+        assert!(matches!(requests.try_recv(), Ok(WorkspaceRequest::History {
+            selection: HistorySelection::ReviewEdits(row), before: Some(before), ..
+        }) if *row == session && before == cursor));
+
+        let mut page = empty_history_page();
+        page.history_identity = session.history_identity.clone();
+        page.snapshot.history_snapshot_id = session.snapshot_id;
+        page.features.review_edit_preview = true;
+        page.operation_details = [("turn-b", "edit-b", 4), ("turn-a", "edit-a", 2)]
+            .into_iter()
+            .map(|(turn, event, revision)| OperationDetailEntry {
+                kind: OperationDetailKind::Edit,
+                source_id: session.harness_id.clone(),
+                session_id: session.session_id.clone(),
+                turn_id: turn.into(),
+                event_id: event.into(),
+                revision,
+                operation_id: "same-operation".into(),
+                label: "One file changed".into(),
+            })
+            .collect();
+        workspace.finish(Ok(WorkspaceResponse::History(page)));
+        press(&mut workspace, &sender, KeyCode::Down);
+        press(&mut workspace, &sender, KeyCode::Enter);
+        assert!(matches!(requests.try_recv(), Ok(WorkspaceRequest::Work(
+            WorkCommand::RevealReviewEdit(entry, _)
+        )) if entry.operation.event_id == "edit-a" && entry.operation.turn_id == "turn-a"
+            && entry.operation.revision == 2 && entry.operation.source_id == session.harness_id
+            && entry.operation.session_id == session.session_id && entry.snapshot_id == session.snapshot_id
+            && Some(&entry.history_identity) == session.history_identity.as_ref()));
+        workspace.finish(Err("No current edit approval".into()));
+        assert_eq!(
+            workspace
+                .history
+                .last()
+                .unwrap()
+                .page
+                .operation_picker
+                .as_ref()
+                .unwrap()
+                .1
+                .selected(),
+            Some(1)
+        );
+        assert!(workspace.loaded_view().is_none());
+        press(&mut workspace, &sender, KeyCode::Esc);
+        assert!(workspace.history.last().unwrap().page.reviewing());
+        press(&mut workspace, &sender, KeyCode::Char('n'));
+        assert!(matches!(requests.try_recv(), Ok(WorkspaceRequest::Work(
+            WorkCommand::ReviewNotes(row)
+        )) if row == session));
     }
 
     #[test]

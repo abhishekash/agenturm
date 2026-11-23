@@ -318,6 +318,7 @@ pub(super) fn is_prompt_command(command: &WorkCommand) -> bool {
         WorkCommand::Prompts(_)
             | WorkCommand::RevealPrompt(_, _)
             | WorkCommand::RevealOperation(_, _)
+            | WorkCommand::RevealReviewEdit(_, _)
             | WorkCommand::RevealTelemetry(_, _)
             | WorkCommand::RevealTelemetryLog(_, _)
             | WorkCommand::RevealEvalDetail(_, _)
@@ -404,6 +405,16 @@ pub(super) fn execute_prompt(
                     event_id: &operation.event_id,
                     revision: operation.revision,
                 },
+                &mut delivery,
+                writer,
+            )?;
+            Ok(WorkResult::Status(String::new()))
+        }
+        WorkCommand::RevealReviewEdit(edit, mut delivery) => {
+            super::content_preview::reveal_review_edit(
+                db,
+                &prompt_config(db)?,
+                &edit,
                 &mut delivery,
                 writer,
             )?;

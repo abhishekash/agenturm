@@ -94,53 +94,73 @@ mod tests {
     }
 
     #[test]
-    fn timestamped_claude_metadata_backfills_only_verified_header_and_preserves_legacy() {
-        const HEADER: &str = concat!(
-            r#"{"type":"custom-title","sessionId":"claude-native","timestamp":"1970-01-01T00:00:01.000000009Z","customTitle":"private caption","cwd":"/private/root"}"#,
-            "\n"
-        );
-        let path = std::env::temp_dir().join(format!(
-            "agenturm-claude-presence-{}.jsonl",
-            std::process::id(),
-        ));
-        fs::write(&path, HEADER).unwrap();
-        let read = |cursor| {
-            poll::<ClaudeFormat<false>>(
+    fn claude_metadata_backfills_reported_or_unknown_time_and_preserves_legacy() {
+        for (metadata, expected_time, expected_identity) in [
+            (
+                r#"{"type":"custom-title","sessionId":"claude-native","timestamp":"1970-01-01T00:00:01.000000009Z","customTitle":"private caption","cwd":"/private/root"}"#,
+                "1000000009",
+                json!({"session_id":"claude-native"}),
+            ),
+            (
+                r#"{"type":"agent-name","sessionId":"claude-native","agentId":"worker","agentName":"private caption","cwd":"/private/root"}"#,
+                "0",
+                json!({"session_id":"claude-native","worker_id":"worker"}),
+            ),
+            (
+                r#"{"type":"custom-title","sessionId":"claude-native","customTitle":"private caption","cwd":"/private/root"}"#,
+                "0",
+                json!({"session_id":"claude-native"}),
+            ),
+        ] {
+            let header = format!("{metadata}\n");
+            let path = std::env::temp_dir().join(format!(
+                "agenturm-claude-presence-{}.jsonl",
+                std::process::id(),
+            ));
+            fs::write(&path, &header).unwrap();
+            let read = |cursor| {
+                poll::<ClaudeFormat<false>>(
+                    &path,
+                    "harness.claude.fixture",
+                    cursor,
+                    4,
+                    max_frame_bytes(),
+                )
+            };
+            let prior = poll::<ClaudeFormat<true>>(
                 &path,
                 "harness.claude.fixture",
-                cursor,
+                "",
                 4,
                 max_frame_bytes(),
             )
-        };
-        let prior =
-            poll::<ClaudeFormat<true>>(&path, "harness.claude.fixture", "", 4, max_frame_bytes())
-                .unwrap();
-        assert_eq!(prior["records"].as_array().unwrap().len(), 1);
-        assert_eq!(prior["records"][0]["kind"], "diagnostic");
-        let committed_before = prior["cursor"].as_str().unwrap();
-        let output = read(committed_before).unwrap();
-        assert_eq!(read("").unwrap(), output);
-        assert_eq!(read(committed_before).unwrap(), output);
-        assert_eq!(output["records"].as_array().unwrap().len(), 1);
-        let row = &output["records"][0];
-        assert_eq!(row["kind"], "session_discovered");
-        assert_eq!(row["revision"], 0);
-        assert_eq!(row["time_ns"], "1000000009");
-        assert_eq!(row["identity"], json!({"session_id":"claude-native"}));
-        assert_eq!(row["payload"], json!({}));
-        assert!(!output.to_string().contains("private caption"));
-        assert!(!output.to_string().contains("/private/root"));
-        let committed = output["cursor"].as_str().unwrap();
-        let proof = cursor_proof(committed).unwrap().unwrap();
-        assert_eq!(proof.offset, HEADER.len() as u64);
-        assert_eq!(
-            proof.digest,
-            format!("{:x}", Sha256::digest(HEADER.as_bytes()))
-        );
-        assert_ne!(committed_before, committed);
-        assert_eq!(read(committed).unwrap()["records"], json!([]));
-        fs::remove_file(path).unwrap();
+            .unwrap();
+            assert_eq!(prior["records"].as_array().unwrap().len(), 1);
+            assert_eq!(prior["records"][0]["kind"], "diagnostic");
+            let committed_before = prior["cursor"].as_str().unwrap();
+            let output = read(committed_before).unwrap();
+            assert_eq!(read("").unwrap(), output);
+            assert_eq!(read(committed_before).unwrap(), output);
+            assert_eq!(output["records"].as_array().unwrap().len(), 1);
+            let row = &output["records"][0];
+            assert_eq!(row["kind"], "session_discovered");
+            assert_eq!(row["revision"], 0);
+            assert_eq!(row["time_ns"], expected_time);
+            assert_eq!(row["identity"], expected_identity);
+            assert_eq!(row["payload"], json!({}));
+            assert!(!output.to_string().contains("private caption"));
+            assert!(!output.to_string().contains("/private/root"));
+            let committed = output["cursor"].as_str().unwrap();
+            let proof = cursor_proof(committed).unwrap().unwrap();
+            assert_eq!(proof.offset, header.len() as u64);
+            assert_eq!(
+                proof.digest,
+                format!("{:x}", Sha256::digest(header.as_bytes()))
+            );
+            assert_ne!(committed_before, committed);
+            assert_eq!(read(committed).unwrap()["records"], json!([]));
+            fs::remove_file(path).unwrap();
+        }
     }
 
     #[test]
@@ -155,7 +175,15 @@ mod tests {
                 &["message", "lifecycle"][..],
             ),
             (
-                br#"{"type":"agent-name","sessionId":"claude-native","agentName":"private"}"#.as_slice(),
+                br#"{"type":"unknown","sessionId":"claude-native","title":"private"}"#.as_slice(),
+                &["diagnostic"][..],
+            ),
+            (
+                br#"{"type":"agent-name","sessionId":"claude-native","timestamp":"1970-01-01T00:00:00Z","agentName":"private"}"#.as_slice(),
+                &["diagnostic"][..],
+            ),
+            (
+                br#"{"type":"agent-name","sessionId":"claude-native","agentName":"older","agentName":"other"}"#.as_slice(),
                 &["diagnostic"][..],
             ),
             (
@@ -166,6 +194,15 @@ mod tests {
             let context = claude::header_identity(raw).unwrap();
             let (facts, _) = claude::translate_line(raw, &context, "fixture", 0).unwrap();
             assert_eq!(facts.iter().map(|row| row["kind"].as_str().unwrap()).collect::<Vec<_>>(), kinds);
+        }
+
+        for invalid in [
+            br#"{"type":"custom-title","sessionId":"claude-native","timestamp":null,"customTitle":"private"}"#.as_slice(),
+            br#"{"type":"custom-title","sessionId":"claude-native","timestamp":"malformed","customTitle":"private"}"#.as_slice(),
+            br#"{"type":"user","sessionId":"claude-native","message":{"content":[]}}"#.as_slice(),
+        ] {
+            let context = claude::header_identity(invalid).unwrap();
+            assert!(claude::translate_line(invalid, &context, "fixture", 0).is_err());
         }
 
         let prelude = claude::header_identity(PRELUDE.as_bytes()).unwrap();
