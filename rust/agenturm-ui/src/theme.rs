@@ -244,17 +244,31 @@ impl Picker {
         }
     }
 
+    /// Opens the preview from a palette action without changing the selection.
+    pub(super) fn open(&mut self) {
+        if self.open {
+            return;
+        }
+        self.original = self.selected;
+        self.open = true;
+        self.error = None;
+    }
+
+    #[allow(dead_code)]
+    pub(super) fn active(&self) -> bool {
+        self.open
+    }
+
     pub(super) fn key(&mut self, key: event::KeyEvent) -> bool {
         if keymap::interrupt(key) {
             return false;
         }
-        let toggle = key.code == KeyCode::F(2)
-            || (key.code == KeyCode::Char('p') && key.modifiers == KeyModifiers::CONTROL);
+        // `Ctrl+P` belongs to the cockpit command palette. Appearance stays on
+        // F2 and remains a palette entry.
+        let toggle = key.code == KeyCode::F(2);
         if !self.open {
             if toggle {
-                self.original = self.selected;
-                self.open = true;
-                self.error = None;
+                self.open();
             }
             return toggle;
         }
@@ -270,7 +284,7 @@ impl Picker {
             KeyCode::Up | KeyCode::Char('k') | KeyCode::BackTab => {
                 self.select((self.selected + NAMES.len() - 1) % NAMES.len())
             }
-            KeyCode::Enter => {
+            key if crate::keymap::activate(key) => {
                 if let Some(path) = &self.path
                     && let Err(error) = save(path, self.selected)
                 {
@@ -367,6 +381,16 @@ mod tests {
         picker.key(key(KeyCode::Esc));
         assert_eq!(picker.selected, 0);
         assert!(!path.exists());
+        // Ctrl+P is the cockpit palette, not appearance.
+        assert!(!picker.key(event::KeyEvent::new(
+            KeyCode::Char('p'),
+            KeyModifiers::CONTROL
+        )));
+        assert!(!picker.active());
+        picker.open();
+        assert!(picker.active());
+        picker.key(key(KeyCode::Esc));
+        assert!(!picker.active());
         picker.key(key(KeyCode::F(2)));
         picker.key(key(KeyCode::Down));
         picker.key(key(KeyCode::Down));

@@ -8,11 +8,13 @@
 
 mod evidence_view;
 mod findings;
+mod help;
 mod keymap;
 mod live_receiver;
 mod loaded_view;
 pub mod metric_history;
 mod operation_table;
+mod palette;
 mod pane_filter;
 mod theme;
 pub mod usage_chart;
@@ -177,12 +179,26 @@ impl UiModel {
             .map(|pane| pane.title.as_str())
     }
 
-    fn select_title(&mut self, title: &str) {
-        if let Some(index) = self.panes.iter().position(|pane| pane.title == title) {
-            self.selected = index;
-            self.evidence_inspection = None;
+    /// Restores a pane by its stable identity and keeps the reading position
+    /// when the same pane still exists. A missing identity falls back to the
+    /// nearest deterministic row and reports that the prior pane is gone.
+    pub(crate) fn restore_view(&mut self, title: Option<&str>, scroll: usize) -> bool {
+        self.evidence_inspection = None;
+        let Some(title) = title else {
             self.scroll = 0;
             self.update_scroll_limit();
+            return false;
+        };
+        if let Some(index) = self.panes.iter().position(|pane| pane.title == title) {
+            self.selected = index;
+            self.scroll = scroll;
+            self.update_scroll_limit();
+            true
+        } else {
+            self.selected = self.selected.min(self.panes.len().saturating_sub(1));
+            self.scroll = 0;
+            self.update_scroll_limit();
+            false
         }
     }
 
@@ -618,7 +634,7 @@ pub fn run_with_turn_activity(
                         if let Some(latest) = load_page(active_turn.as_ref(), None)? {
                             let mut next = PageView::new(latest, active_turn.is_some());
                             if let Some(title) = page.ui.selected_title() {
-                                next.ui.select_title(title);
+                                next.ui.restore_view(Some(title), page.ui.scroll);
                             }
                             page = next;
                             newer_pages.clear();
@@ -737,7 +753,7 @@ fn draw(
     }
 
     let footer = if picking_turn {
-        "↑/↓ select · Enter open · Esc back"
+        "↑/↓ select · Enter open · Esc back".to_owned()
     } else {
         history_keys(model, has_newer_page)
     };
@@ -747,18 +763,18 @@ fn draw(
     );
 }
 
-fn history_keys(model: &UiModel, has_newer_page: bool) -> &'static str {
+fn history_keys(model: &UiModel, has_newer_page: bool) -> String {
     if model.help {
-        HELP_CLOSE_HINT
-    } else if model.older_cursor.is_some() && has_newer_page {
-        " ←/→ panes · ↑/↓ scroll · ] older · [ newer · F2 themes · ? help · q quit "
-    } else if model.older_cursor.is_some() {
-        " ←/→ panes · ↑/↓ scroll · ] older · F2 themes · ? help · q quit "
-    } else if has_newer_page {
-        " ←/→ panes · ↑/↓ scroll · [ newer · F2 themes · ? help · q quit "
-    } else {
-        " ←/→ or Tab switch panes · ↑/↓ scroll · F2 themes · ? help · q quit "
+        return HELP_CLOSE_HINT.to_owned();
     }
+    let mut ids = vec![keymap::id::THEMES, keymap::id::HELP, keymap::id::QUIT];
+    if model.older_cursor.is_some() {
+        ids.insert(0, keymap::id::OLDER_PAGE);
+    }
+    if has_newer_page {
+        ids.insert(0, keymap::id::NEWER_PAGE);
+    }
+    format!(" ←/→ or Tab panes · ↑↓ scroll · {} ", keymap::hint(&ids))
 }
 
 fn render_turn_picker(
@@ -1016,6 +1032,32 @@ mod tests {
         assert!(!model.handle_key(KeyCode::Down));
         assert_eq!(model.scroll, 0, "one-row pane cannot scroll");
         assert!(model.handle_key(KeyCode::Char('q')));
+    }
+
+    #[test]
+    fn pane_identity_restore_keeps_scroll_and_falls_back_deterministically() {
+        let mut snapshot = snapshot_with_panes();
+        for id in ["pane.activity", "pane.usage"] {
+            snapshot
+                .panes
+                .get_mut(&ExtensionId::parse(id).unwrap())
+                .unwrap()
+                .rows = (0..40)
+                .map(|index| MetricRow {
+                    label: format!("Row {index}"),
+                    value: index.to_string(),
+                })
+                .collect();
+        }
+        let mut model = UiModel::from_snapshot(snapshot);
+        model.set_viewport(60, 18);
+        assert!(model.restore_view(Some("Usage"), 7));
+        assert_eq!(model.selected_title(), Some("Usage"));
+        assert_eq!(model.scroll, 7);
+        assert!(!model.restore_view(Some("Removed"), 3));
+        assert_eq!(model.selected_title(), Some("Usage"));
+        assert_eq!(model.scroll, 0);
+        assert!(!model.restore_view(None, 0));
     }
 
     #[test]
