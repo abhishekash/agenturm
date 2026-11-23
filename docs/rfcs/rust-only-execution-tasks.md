@@ -47,7 +47,7 @@ for new assignments. The older A–E IDs retain their original acceptance criter
 
 | Track | Current assignment | Category |
 | --- | --- | --- |
-| FD1 / A1–A3 | Remaining attributable Pi worker, Claude async and native check/turn shapes; require positive native evidence. | Core feature development |
+| FD1 / A1–A3 | Evidence scan done (`../validation/rust-fd1-native-evidence.md`): Pi worker shapes have no local witness (gate); Claude async launches have a positive witness — implement launch-only attribution; Codex exec/JS checks recorded for coverage work. | Core feature development |
 | FD2 / B3–B4 | Private edit/MCP detail beyond the implemented Codex paths. | Core feature development |
 | FD3 / B6 | Provenance-aware, duplicate-safe combined usage/cost totals. | Core feature development |
 | FD4 / B6 | Implemented slice: native remote cockpit route-file option, exact current-request verification and receiver-side unique-pane resolution with presented attach command; routed via CF7 for installed/paired and security-review acceptance. Per-host persistence and non-ssh transports remain open. | Core feature development |
