@@ -85,29 +85,48 @@ class RustVendorSdkTests(unittest.TestCase):
             rows = json.loads(result.stdout)["observations"]
             token_rows = {}
             observed = {}
+            structural_rows = {}
+            summary_rows = {}
             for row in rows:
                 span = row["observation"]
-                self.assertEqual(span["target_source_id"], "harness.codex")
+                self.assertEqual(row["harness_id"], receiver)
                 self.assertEqual(row["identity"]["session_id"], f"session.{vendor}")
                 self.assertEqual(row["identity"]["turn_id"], "turn.fixture")
                 self.assertEqual(row["identity"]["worker_id"], "worker/fixture")
+                if span["kind"] == "trace_span_summary":
+                    self.assertNotIn(span["span_id"], summary_rows)
+                    summary_rows[span["span_id"]] = row
+                    continue
+                self.assertEqual(span["target_source_id"], "harness.codex")
                 if span["kind"] == "span_token_usage":
                     key = span["span"]["span_id"]
                     self.assertNotIn(key, token_rows)
                     token_rows[key] = span
                     continue
                 self.assertEqual(span["kind"], "trace_span")
+                self.assertNotIn(span["span_id"], structural_rows)
+                structural_rows[span["span_id"]] = row
                 observed[span["span_id"]] = {
                     "trace": span["trace_id"], "span": span["span_id"],
                     "parent": span["parent_span_id"], "start": int(span["started_at_unix_ns"]),
                     "end": int(row["observed_at_unix_ns"]), "status": span["status"],
                 }
             self.assertEqual(len(observed), len(expected))
+            self.assertEqual(summary_rows.keys(), structural_rows.keys())
             for key, usage in token_rows.items():
                 self.assertEqual(usage["span"]["trace_id"], observed[key]["trace"])
             for span in expected:
                 saved = observed[span["span"]]
                 self.assertEqual(saved, {key: span[key] for key in saved})
+                structural = structural_rows[span["span"]]
+                summary = summary_rows[span["span"]]
+                self.assertEqual(summary["event_id"], structural["event_id"] + ":summary")
+                for field in ("identity", "observed_at_unix_ns", "revision"):
+                    self.assertEqual(summary[field], structural[field], field)
+                self.assertEqual(summary["observation"], {
+                    "kind": "trace_span_summary", "trace_id": span["trace"], "span_id": span["span"],
+                    "agent_run": False, "reported_error": span["status"] == "error",
+                })
                 self.assertGreater(saved["start"], 0)
                 self.assertGreaterEqual(saved["end"], saved["start"])
                 if saved["parent"] is not None:

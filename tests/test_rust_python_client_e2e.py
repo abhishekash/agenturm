@@ -47,6 +47,21 @@ class RustPythonProducerTests(unittest.TestCase):
         self.assertNotIn("synthetic private", query.stdout)
         return json.loads(query.stdout)["observations"]
 
+    def paired_spans(self, rows, expected):
+        spans = [row for row in rows if row["observation"]["kind"] == "trace_span"]
+        summaries = [row for row in rows if row["observation"]["kind"] == "trace_span_summary"]
+        self.assertEqual((len(spans), len(summaries)), (expected, expected))
+        by_event_id = {row["event_id"]: row for row in summaries}
+        self.assertEqual(set(by_event_id), {row["event_id"] + ":summary" for row in spans})
+        self.assertEqual(len(by_event_id), expected)
+        for row in spans:
+            summary = by_event_id[row["event_id"] + ":summary"]
+            for field in ("harness_id", "identity", "observed_at_unix_ns", "revision"):
+                self.assertEqual(summary[field], row[field])
+            for field in ("trace_id", "span_id"):
+                self.assertEqual(summary["observation"][field], row["observation"][field])
+        return spans
+
     def launch(self, source, status):
         result = subprocess.run(
             [RUST_APP, "run", "--db", self.database, "--source-id", source,
@@ -164,9 +179,9 @@ assert client.last_error is None, client.last_error
                 receiver.communicate()
         self.assertEqual(receiver.returncode, 0)
         rows = self.observations("otlp.python-standalone")
-        self.assertEqual(len(rows), 1025)
+        self.assertEqual(len(rows), 2050)
         self.assertEqual({row["identity"]["session_id"] for row in rows}, {"python-large"})
-        spans = [row["observation"] for row in rows]
+        spans = [row["observation"] for row in self.paired_spans(rows, 1025)]
         root = next(span for span in spans if span.get("parent_span_id") is None)
         self.assertEqual({span.get("parent_span_id") for span in spans}, {None, root["span_id"]})
 
@@ -217,7 +232,8 @@ with client.trace(session_id="progress-session", harness_id="harness.pi",
         reopened = self.observations("otlp.python-progress")
         self.assertEqual([row for row in reopened if row["observation"]["kind"] == "trace_progress"],
                          rows)
-        self.assertEqual(len(reopened), 3)
+        self.assertEqual(len(reopened), 4)
+        self.paired_spans(reopened, 1)
         self.assertEqual({row["observation"]["trace_id"] for row in reopened}, {trace_id})
 
     def test_slow_reply_cannot_extend_the_request_deadline(self):

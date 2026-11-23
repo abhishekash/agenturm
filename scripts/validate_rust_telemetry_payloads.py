@@ -280,9 +280,21 @@ def main():
             assert error[0] == 503 and INPUT not in str(error)
             metadata = run(reader, *command("query", "--harness-id", SOURCE)).stdout
             observations = json.loads(metadata)["observations"]
-            assert len(observations) == 3, observations
-            cost, = (row["observation"] for row in observations
-                     if row["observation"]["kind"] == "reported_cost")
+            by_kind = {row["observation"]["kind"]: row for row in observations}
+            assert len(observations) == 3 and set(by_kind) == {
+                "trace_span", "trace_span_summary", "reported_cost",
+            }
+            structural, classification = by_kind["trace_span"], by_kind["trace_span_summary"]
+            assert structural["event_id"] == f"otlp:{TRACE}:{SPAN}"
+            assert classification["event_id"] == structural["event_id"] + ":summary"
+            assert structural["harness_id"] == classification["harness_id"] == SOURCE
+            for field in ("identity", "observed_at_unix_ns", "revision"):
+                assert classification[field] == structural[field], field
+            assert classification["observation"] == {
+                "kind": "trace_span_summary", "trace_id": TRACE, "span_id": SPAN,
+                "agent_run": False, "reported_error": False,
+            }
+            cost = by_kind["reported_cost"]["observation"]
             assert cost["currency"] == "USD"
             assert cost["nanounits"] == "2000000"
             assert cost["span"] == {"trace_id": TRACE, "span_id": SPAN}
