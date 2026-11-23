@@ -18,6 +18,7 @@ pub struct LiveOwner {
 
 pub struct LiveRow {
     pub owner: Option<LiveOwner>,
+    pub internal_review: bool,
     pub title: String,
     pub detail: Option<String>,
 }
@@ -60,10 +61,49 @@ struct LiveView {
     pending_read: bool,
     paused: bool,
     help: bool,
+    include_reviews: bool,
+    notice: Option<&'static str>,
     error: Option<String>,
 }
 
 impl LiveView {
+    fn visible_agents(&self) -> impl Iterator<Item = &LiveRow> {
+        self.page
+            .iter()
+            .flat_map(|page| page.sessions.iter())
+            .filter(|row| self.include_reviews || !row.internal_review)
+    }
+
+    fn selected_agent(&self) -> Option<&LiveRow> {
+        self.visible_agents().nth(self.agents.selected()?)
+    }
+
+    fn toggle_internal_reviews(&mut self) {
+        let selected = self.selected_agent().and_then(|row| row.owner.clone());
+        self.include_reviews = !self.include_reviews;
+        if !self.include_reviews
+            && self.owner.as_ref().is_some_and(|owner| {
+                owner.service == "codex-review"
+                    || self.page.as_ref().is_some_and(|page| {
+                        page.sessions
+                            .iter()
+                            .any(|row| row.internal_review && row.owner.as_ref() == Some(owner))
+                    })
+            })
+        {
+            self.owner = None;
+        }
+        let next = selected
+            .as_ref()
+            .and_then(|owner| {
+                self.visible_agents()
+                    .position(|row| row.owner.as_ref() == Some(owner))
+            })
+            .or_else(|| self.visible_agents().next().map(|_| 0));
+        self.agents.select(next);
+        self.detail.select(None);
+    }
+
     fn rows(&self) -> Vec<&LiveRow> {
         self.page
             .as_ref()
@@ -74,6 +114,7 @@ impl LiveView {
                 Tab::Traces => &page.traces,
                 Tab::Pending => &page.pending,
             })
+            .filter(|row| self.include_reviews || !row.internal_review)
             .filter(|row| {
                 self.tab == Tab::Agents
                     || self
@@ -88,17 +129,18 @@ impl LiveView {
         self.pending_read = false;
         match page {
             Ok(page) => {
-                let selected = self.owner.as_ref().or_else(|| {
-                    self.agents
-                        .selected()
-                        .and_then(|index| self.page.as_ref()?.sessions.get(index)?.owner.as_ref())
-                });
-                let selection = selected.and_then(|owner| {
+                let selected = self
+                    .owner
+                    .as_ref()
+                    .or_else(|| self.selected_agent()?.owner.as_ref());
+                let visible = || {
                     page.sessions
                         .iter()
-                        .position(|row| row.owner.as_ref() == Some(owner))
-                });
-                let selection = selection.or_else(|| (!page.sessions.is_empty()).then_some(0));
+                        .filter(|row| self.include_reviews || !row.internal_review)
+                };
+                let selection = selected
+                    .and_then(|owner| visible().position(|row| row.owner.as_ref() == Some(owner)))
+                    .or_else(|| visible().next().map(|_| 0));
                 self.agents.select(selection);
                 self.page = Some(page);
                 self.error = None;
@@ -117,6 +159,15 @@ impl LiveView {
             return;
         }
         if self.help {
+            return;
+        }
+        self.notice = None;
+        if key == KeyCode::Char('v') {
+            self.toggle_internal_reviews();
+            return;
+        }
+        if key == KeyCode::Char('X') {
+            self.notice = Some("Attention acknowledgments are unavailable in Python receiver mode");
             return;
         }
         match (keymap::destination(key), key) {
@@ -240,7 +291,7 @@ impl LiveView {
         );
         if self.help {
             frame.render_widget(
-                Paragraph::new("1 Agents · 2 Activity · 4 Traces · w Pending\nEnter Session activity · t Session traces\np Pause/resume · R Refresh · Esc Agents · q Quit")
+                Paragraph::new("1 Agents · 2 Activity · 4 Traces · w Pending\nEnter Session activity · t Session traces\nv Include/hide internal approval reviews\np Pause/resume · R Refresh · Esc Agents · q Quit")
                     .wrap(Wrap { trim: false }).block(panel(HELP_CLOSE_HINT)), body);
             return;
         }
@@ -264,7 +315,9 @@ impl LiveView {
             " Selected evidence "
         };
         let rows = self.rows();
-        let status = if let Some(error) = &self.error {
+        let status = if let Some(notice) = self.notice {
+            notice.into()
+        } else if let Some(error) = &self.error {
             visible_text(error)
         } else if self.page.is_none() {
             "Connecting to Python receiver…".into()
@@ -350,7 +403,11 @@ impl LiveView {
         };
         frame.render_widget(
             Paragraph::new(vec![
-                Line::from(status),
+                Line::from(if self.include_reviews && self.notice.is_none() {
+                    format!("{status} · Reviews included")
+                } else {
+                    status
+                }),
                 Line::from(keys),
                 Line::from(if self.paused {
                     "p resume · R refresh · F1 help · q quit"
@@ -392,6 +449,8 @@ pub fn run_live_receiver(
             pending_read: false,
             paused: false,
             help: false,
+            include_reviews: false,
+            notice: None,
             error: None,
         };
         let mut next_read = Instant::now();
@@ -459,6 +518,68 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
+    fn explicit_review_visibility_preserves_the_regular_selected_actor() {
+        let owner = |service: &str| LiveOwner {
+            service: service.into(),
+            session_id: "shared-session".into(),
+            agent_id: None,
+        };
+        let regular = owner("codex");
+        let review = owner("codex-review");
+        let row = |owner: LiveOwner, internal_review| LiveRow {
+            title: owner.service.clone(),
+            owner: Some(owner),
+            internal_review,
+            detail: None,
+        };
+        let mut view = LiveView {
+            page: None,
+            tab: Tab::Agents,
+            owner: None,
+            agents: ListState::default(),
+            detail: ListState::default(),
+            pending_read: false,
+            paused: false,
+            help: false,
+            include_reviews: false,
+            notice: None,
+            error: None,
+        };
+        view.set_page(Ok(LivePage {
+            sessions: vec![row(review.clone(), true), row(regular.clone(), false)],
+            activity: vec![row(review, true), row(regular.clone(), false)],
+            traces: vec![],
+            pending: vec![],
+            ready: true,
+            partial: false,
+            attention_ready: true,
+        }));
+        assert_eq!(view.rows().len(), 1);
+        assert_eq!(
+            view.selected_agent().and_then(|row| row.owner.as_ref()),
+            Some(&regular)
+        );
+        view.key(KeyCode::Char('v'));
+        assert_eq!(view.rows().len(), 2);
+        assert_eq!(
+            view.selected_agent().and_then(|row| row.owner.as_ref()),
+            Some(&regular)
+        );
+        view.key(KeyCode::Char('v'));
+        assert_eq!(view.rows().len(), 1);
+        assert_eq!(
+            view.selected_agent().and_then(|row| row.owner.as_ref()),
+            Some(&regular)
+        );
+        view.key(KeyCode::Char('X'));
+        assert!(
+            view.notice
+                .is_some_and(|notice| notice.contains("unavailable"))
+        );
+        assert_eq!(view.rows().len(), 1);
+    }
+
+    #[test]
     fn disconnected_receiver_keeps_navigation_and_retry_visible() {
         let mut view = LiveView {
             page: None,
@@ -469,6 +590,8 @@ mod tests {
             pending_read: false,
             paused: false,
             help: false,
+            include_reviews: false,
+            notice: None,
             error: Some("HTTP 404".into()),
         };
         for (width, height) in [(120, 32), (60, 18)] {

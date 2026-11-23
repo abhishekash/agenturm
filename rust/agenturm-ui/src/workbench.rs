@@ -43,7 +43,7 @@ pub struct HandoffEntry {
     pub note: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RequestEntry {
     pub owner: WorkAnchor,
     pub event_id: String,
@@ -51,6 +51,13 @@ pub struct RequestEntry {
     pub timestamp: u64,
     pub reason: String,
     pub seen: bool,
+    pub proof: RequestProof,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequestProof {
+    pub snapshot_id: agenturm_kernel::ReadSnapshot,
+    pub history_identity: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -237,6 +244,7 @@ pub enum WorkCommand {
         note: String,
     },
     Workflow,
+    SessionAttention(RecordedSession),
     Seen(RequestEntry),
     Locate(RequestEntry),
     Prompts(WorkAnchor),
@@ -280,6 +288,7 @@ pub enum WorkResult {
         items: Vec<RequestEntry>,
         partial: bool,
     },
+    AttentionRequests(Vec<RequestEntry>),
     Prompts(Vec<PromptEntry>),
     TelemetrySpans(Vec<TelemetrySpanEntry>),
     Seen(RequestEntry),
@@ -414,7 +423,8 @@ impl Workbench {
     }
 
     pub(super) fn note_seen(&mut self, recorded: &RequestEntry) {
-        if let WorkResult::Workflow { items, .. } = &mut self.data
+        if let WorkResult::Workflow { items, .. } | WorkResult::AttentionRequests(items) =
+            &mut self.data
             && let Some(entry) = items.iter_mut().find(|entry| {
                 entry.owner == recorded.owner
                     && entry.event_id == recorded.event_id
@@ -439,7 +449,9 @@ impl Workbench {
             WorkResult::Handoffs { items, .. } => items.len(),
             WorkResult::TaskLinks { items, .. } => items.len(),
             WorkResult::TaskWorkspace { .. } => 0,
-            WorkResult::Workflow { items, .. } => items.len(),
+            WorkResult::Workflow { items, .. } | WorkResult::AttentionRequests(items) => {
+                items.len()
+            }
             WorkResult::Prompts(items) => items.len(),
             WorkResult::TelemetrySpans(spans) => spans.len(),
             WorkResult::Seen(_) | WorkResult::Status(_) => 0,
@@ -663,10 +675,15 @@ impl Workbench {
             (WorkResult::Handoffs { .. }, crate::keymap::NEWER | crate::keymap::LATEST) => {
                 return WorkInput::Command(WorkCommand::Handoffs(None));
             }
+            (WorkResult::AttentionRequests(items), KeyCode::Enter | KeyCode::Char('X'))
+                if let Some(item) = items.get(selected).filter(|item| !item.seen) =>
+            {
+                return WorkInput::Command(WorkCommand::Seen(item.clone()));
+            }
             (WorkResult::Workflow { .. }, KeyCode::Char('R')) => {
                 return WorkInput::Command(WorkCommand::Workflow);
             }
-            (WorkResult::Workflow { items, .. }, KeyCode::Char('r' | 's'))
+            (WorkResult::Workflow { items, .. }, KeyCode::Char('r' | 's' | 'X'))
                 if let Some(item) = items.get(selected) =>
             {
                 return WorkInput::Command(WorkCommand::Seen(item.clone()));
@@ -964,6 +981,37 @@ impl Workbench {
                 "No additional links",
             ),
             WorkResult::TaskWorkspace { .. } => return,
+            WorkResult::AttentionRequests(items) => (
+                "Mark one pending request seen",
+                "Enter mark seen · ↑↓ select · Esc back",
+                items
+                    .iter()
+                    .map(|item| {
+                        format!(
+                            "{} · worker {} · turn {}",
+                            if item.seen {
+                                "Pending · seen"
+                            } else {
+                                "Pending"
+                            },
+                            item.owner
+                                .worker
+                                .as_deref()
+                                .map(visible_text)
+                                .as_deref()
+                                .unwrap_or("session"),
+                            item.owner
+                                .turn
+                                .as_deref()
+                                .map(visible_text)
+                                .as_deref()
+                                .unwrap_or("unscoped"),
+                        )
+                    })
+                    .collect(),
+                items.get(selected).map(request_details).unwrap_or_default(),
+                "No eligible pending requests",
+            ),
             WorkResult::Workflow { items, partial } => (
                 if *partial {
                     "Workflow · recent history"

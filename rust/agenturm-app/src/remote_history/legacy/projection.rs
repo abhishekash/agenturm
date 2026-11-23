@@ -14,6 +14,7 @@ pub(super) struct Session {
     service: Option<String>,
     #[serde(default, deserialize_with = "capped")]
     services: Vec<String>,
+    review: Option<bool>,
     agent_id: Option<String>,
     session_id: Option<String>,
     parent_agent_id: Option<String>,
@@ -66,6 +67,7 @@ pub(super) struct Trace {
     service: Option<String>,
     #[serde(default, deserialize_with = "capped")]
     services: Vec<String>,
+    review: Option<bool>,
     agent_id: Option<String>,
     session_id: Option<String>,
     turn_id: Option<String>,
@@ -112,6 +114,8 @@ impl Owner {
 
 #[derive(Serialize)]
 struct Agent {
+    #[serde(skip)]
+    internal_review: bool,
     #[serde(flatten)]
     owner: Owner,
     parent_agent_id: Option<String>,
@@ -129,6 +133,8 @@ struct ConnectionMetadata {
 
 #[derive(Serialize)]
 struct ActivityMetadata {
+    #[serde(skip)]
+    internal_review: bool,
     service: String,
     session_id: Option<String>,
     agent_id: Option<String>,
@@ -142,6 +148,8 @@ struct ActivityMetadata {
 
 #[derive(Serialize)]
 struct TraceMetadata {
+    #[serde(skip)]
+    internal_review: bool,
     service: Option<String>,
     agent_id: Option<String>,
     session_id: Option<String>,
@@ -278,6 +286,18 @@ impl Report {
         output
     }
 
+    pub(super) fn hide_internal_reviews(&mut self) {
+        self.sessions.retain(|row| !row.internal_review);
+        self.activity.retain(|row| !row.internal_review);
+        self.traces.retain(|row| !row.internal_review);
+        self.connections.retain(|row| row.service != "codex-review");
+        if let Some(attention) = &mut self.attention {
+            attention
+                .pending
+                .retain(|row| row.service != "codex-review");
+        }
+    }
+
     pub(super) fn into_live_page(self) -> LivePage {
         // The Python sessions API can derive its free-form task fields from
         // captured prompts. Use only authenticated structural evidence here.
@@ -318,6 +338,7 @@ impl Report {
                     .map(|actor| format!("Actor {actor}"));
                 LiveRow {
                     owner: Some(agent.owner.live()),
+                    internal_review: agent.internal_review,
                     title,
                     detail,
                 }
@@ -335,6 +356,7 @@ impl Report {
                 let detail = row.trace_id.map(|trace| format!("Trace {trace}"));
                 LiveRow {
                     owner,
+                    internal_review: row.internal_review,
                     title: format!(
                         "{} · {} / {} · {}",
                         row.service, row.domain, row.action, row.result
@@ -355,6 +377,7 @@ impl Report {
                     .map(|owner| owner.live());
                 LiveRow {
                     owner,
+                    internal_review: row.internal_review,
                     title: format!("{} · {}", row.trace_id, row.status),
                     detail: row
                         .span_count
@@ -372,6 +395,7 @@ impl Report {
                     .map(|owner| owner.live());
                 LiveRow {
                     owner,
+                    internal_review: row.service == "codex-review",
                     title: format!(
                         "{} / {} · {}",
                         row.service,
@@ -400,6 +424,7 @@ impl Report {
 
 impl Session {
     fn project(self) -> Option<Agent> {
+        let internal_review = internal_review(self.service.as_deref(), &self.services, self.review);
         let producer = one_service(self.service.as_deref(), &self.services)?;
         let owner = Owner::new(
             producer,
@@ -407,6 +432,7 @@ impl Session {
             normalize(self.agent_id),
         )?;
         Some(Agent {
+            internal_review,
             owner,
             parent_agent_id: self.parent_agent_id.filter(|actor| agent_id(actor)),
             state: state(self.run_state.as_deref().or(self.latest_status.as_deref())),
@@ -446,6 +472,7 @@ impl Activity {
             return None;
         }
         Some(ActivityMetadata {
+            internal_review: self.service == "codex-review",
             service: self.service,
             session_id: normalize(self.session_id),
             agent_id: normalize(self.agent_id),
@@ -475,6 +502,7 @@ impl Trace {
         }
         let service = one_service(self.service.as_deref(), &self.services).map(str::to_owned);
         Some(TraceMetadata {
+            internal_review: internal_review(self.service.as_deref(), &self.services, self.review),
             service,
             agent_id: normalize(self.agent_id),
             session_id: normalize(self.session_id),
@@ -499,6 +527,12 @@ fn project_rows<T, R>(
             projected
         })
         .collect()
+}
+
+fn internal_review(service: Option<&str>, services: &[String], flag: Option<bool>) -> bool {
+    flag == Some(true)
+        || service == Some("codex-review")
+        || services.iter().any(|service| service == "codex-review")
 }
 
 fn one_service<'a>(service: Option<&'a str>, services: &'a [String]) -> Option<&'a str> {
@@ -605,6 +639,7 @@ mod tests {
             make_session("pi", &actor),
         ];
         report.activity.push(ActivityMetadata {
+            internal_review: false,
             service: "codex".into(),
             session_id: Some("shared".into()),
             agent_id: Some(actor),

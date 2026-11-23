@@ -1918,7 +1918,7 @@ fn load_session_catalog(
             session_id: session.session_id.clone(),
         })
         .collect::<Vec<_>>();
-    let (reviewed, notice) = match ReviewLedger::open(db)
+    let (reviewed, mut notice) = match ReviewLedger::open(db)
         .and_then(|ledger| ledger.reviewed_in(&keys, page.snapshot_id.incarnation()))
     {
         Ok(reviewed) => (reviewed, None),
@@ -1927,6 +1927,27 @@ fn load_session_catalog(
             Some(format!("Review status unavailable: {error}")),
         ),
     };
+    let history_identity = store.workspace_history_identity();
+    let mut pending = std::collections::HashMap::<_, Vec<_>>::new();
+    if !page.sessions.is_empty() {
+        match cockpit_workflows::roster_pending(store, db, page.snapshot_id) {
+            Ok((requests, partial)) => {
+                for item in requests {
+                    pending
+                        .entry((item.owner.source.clone(), item.owner.session.clone()))
+                        .or_default()
+                        .push(item);
+                }
+                if partial && notice.is_none() {
+                    notice = Some("Pending request coverage is partial".into());
+                }
+            }
+            Err(_) if notice.is_none() => {
+                notice = Some("Pending request status unavailable".into())
+            }
+            Err(_) => {}
+        }
+    }
     let sessions = page
         .sessions
         .into_iter()
@@ -1942,6 +1963,13 @@ fn load_session_catalog(
                 task_title: titles
                     .remove(&(session.harness_id.clone(), session.session_id.clone()))
                     .map(String::into_boxed_str),
+                pending_requests: pending
+                    .remove(&(
+                        session.harness_id.as_str().to_owned(),
+                        session.session_id.clone(),
+                    ))
+                    .unwrap_or_default(),
+                history_identity: history_identity.clone(),
                 session_id: session.session_id,
                 updated_at_unix_ns: session.observed_at_unix_ns,
                 snapshot_id: page.snapshot_id,
@@ -1983,6 +2011,9 @@ trait HistoryReader: ObservationStore {
     fn private_telemetry_history(&self) -> Option<String> {
         None
     }
+    fn workspace_history_identity(&self) -> Option<String> {
+        self.private_telemetry_history()
+    }
 
     fn local_host_data(&self) -> bool {
         true
@@ -2018,6 +2049,9 @@ trait HistoryReader: ObservationStore {
 }
 
 impl HistoryReader for Store {
+    fn workspace_history_identity(&self) -> Option<String> {
+        Store::history_identity(self).ok()
+    }
     fn session_title_store(&self) -> Option<&Store> {
         Some(self)
     }

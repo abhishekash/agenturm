@@ -52,7 +52,9 @@ captured prompts, so the live roster leaves those fields outside its labels.
 
 `p` pauses or resumes automatic refresh. `R` refreshes on demand. `[` moves to a loaded newer page, `]` reads an older page, and `l` returns to the latest page within the current scope. `a` resets the roster filters. `f` switches between tree and flat views, `o` changes the sort, and `!` shows sessions needing attention. `Esc` closes the current overlay or returns to the previous view. `F1` or `?` opens keyboard help.
 
-The Python receiver attachment uses `1`, `2`, and `4` for its live metadata pages. `w` or `!` opens Pending.
+On the Rust roster, `X` marks one exact pending request seen. When several current worker or turn requests match the session, the chooser lets you select one. The request stays pending until its source records a state change. A newly recorded request revision can need attention again. `Ctrl+R` or `V` opens Review for the selected session.
+
+The authenticated Python receiver view uses `v` to include or hide captured internal approval reviews. Local Rust capture currently excludes these internal review sessions. Python receiver attachment uses `1`, `2`, and `4` for its live metadata pages. `w` or `!` opens Pending, where the receiver's recorded requests can be inspected.
 
 ### Attach to an existing Python 0.2.8 receiver
 

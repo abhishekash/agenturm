@@ -41,14 +41,14 @@ def run_cockpit(command, environment, columns, rows):
     process = subprocess.Popen(command, env=environment, stdin=slave, stdout=slave, stderr=slave)
     terminal = TerminalCells(columns, rows)
 
-    def frame(*markers):
+    def frame(*markers, absent=()):
         deadline = time.monotonic() + 10
         while time.monotonic() < deadline:
             if select.select([master], [], [], .05)[0]:
                 terminal.feed(os.read(master, 8192))
             content = terminal.contents()
             assert PRIVATE not in content
-            if all(marker in content for marker in markers):
+            if all(marker in content for marker in markers) and not any(marker in content for marker in absent):
                 return content
             assert process.poll() is None, (markers, content)
         raise AssertionError((markers, terminal.contents()))
@@ -58,6 +58,12 @@ def run_cockpit(command, environment, columns, rows):
         if f"› codex / {SESSION}" not in initial:
             os.write(master, b"j")
         frame(f"› codex / {SESSION}")
+        os.write(master, b"v")
+        frame("Reviews included", "codex-review / approval-review", f"› codex / {SESSION}")
+        os.write(master, b"v")
+        frame(f"› codex / {SESSION}", absent=("codex-review / approval-review", "Reviews included"))
+        os.write(master, b"X")
+        frame("Attention acknowledgments are unavailable")
         os.write(master, b"\r")
         selected = frame("Agenturm / Activity", f"codex / {SESSION}", "approval requested")
         assert "sdk-other" not in selected
@@ -194,6 +200,10 @@ def main():
                     "agent.id": OTHER_ACTOR, "agent.activity.domain": "shell",
                     "agent.activity.action": "execute", "agent.activity.subject": PRIVATE},
                 resource_attributes={})])
+            store.ingest([normalize_native(dict(trace_id="e" * 32, span_id="5" * 16,
+                name=PRIVATE, start_unix_nano=stamp, end_unix_nano=stamp+3, status="OK",
+                attributes={"session.id": "approval-review", "agent.id": "ag1_" + "5" * 32},
+                events=[], links=[]), "codex-review")])
             publish(1, "approval_requested")
             assert store.native_lifecycle_inventory()["observations"], "Tagged receiver failed to seed exact request"
 
@@ -202,7 +212,7 @@ def main():
             assert summary["format"] == "agenturm-python-receiver-live/1" and summary["ready"]
             assert "snapshot_id" not in summary and summary["receiver_id"] == store.receiver_id
             owners = {(row["service"], row["session_id"]) for row in summary["sessions"]}
-            assert {("codex", SESSION), ("sdk-other", SESSION)} <= owners, summary
+            assert owners == {("codex", SESSION), ("sdk-other", SESSION)}, summary
             assert {row["trace_id"] for row in summary["traces"]} >= {TRACE, OTHER_TRACE}, summary
             assert len(summary["attention"]["pending"]) == 1
             assert "bounded live metadata" in run(["cockpit", "--once", *flags()]).stdout

@@ -160,7 +160,8 @@ pub(crate) fn summary(
     json: bool,
 ) -> Result<String, String> {
     let receiver = LegacyReceiver::connect(options)?;
-    let report = receiver.report(limit, &mut AttentionState::default())?;
+    let mut report = receiver.report(limit, &mut AttentionState::default())?;
+    report.hide_internal_reviews();
     if json {
         serde_json::to_string_pretty(&report)
             .map(|json| json + "\n")

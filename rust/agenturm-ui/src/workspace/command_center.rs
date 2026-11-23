@@ -102,6 +102,7 @@ fn filter_lines(agents: &AgentList, width: u16) -> Vec<Line<'static>> {
 }
 
 fn status(row: &RecordedSession) -> &str {
+    if row.pending_requests.iter().any(|request| !request.seen) { return "Needs you"; }
     match row.state.as_deref() {
         Some("failed") => "Error",
         Some("interrupted" | "waiting" | "blocked") => "Needs you",
@@ -166,7 +167,7 @@ pub(super) fn draw(
     );
     if agents.help {
         let help = format!(
-            "{}\n{} · H live Host · U Usage\nTab / Shift+Tab Status filter · / Search · a Reset\nEnter Inspect · Esc Back · Ctrl+R Review · P Prompts\nG Group project/source/none · f Tree/flat · o Sort\n←/→ Collapse/expand · p Pause · Y To review\nAlt+↑/↓ Parent/child · Alt+→ Needs attention\n[ Newer · ] Show more · l Latest · R Refresh\nb Tasks · w Workflow · c Copy · x Export · q Quit",
+            "{}\n{} · H live Host · U Usage\nTab / Shift+Tab Status filter · / Search · a Reset\nEnter Inspect · Esc Back · Ctrl+R / V Review · P Prompts\nX Mark exact pending request seen · v Internal reviews\nG Group project/source/none · f Tree/flat · o Sort\n←/→ Collapse/expand · p Pause · Y To review\nAlt+↑/↓ Parent/child · Alt+→ Needs attention\n[ Newer · ] Show more · l Latest · R Refresh\nb Tasks · w Workflow · c Copy · x Export · q Quit",
             keymap::navigation_hints(&keymap::NAVIGATION[..5]),
             keymap::navigation_hints(&keymap::NAVIGATION[5..])
         );

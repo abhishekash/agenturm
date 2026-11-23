@@ -26,8 +26,8 @@ pub use workbench::evaluation::{
 
 pub use workbench::{
     HandoffEntry, OperationDetailEntry, OperationDetailKind, PromptDelivery, PromptEntry,
-    RequestEntry, ReviewNoteEntry, TaskEntry, TelemetrySpanEntry, WorkAnchor, WorkCommand,
-    WorkResult,
+    RequestEntry, RequestProof, ReviewNoteEntry, TaskEntry, TelemetrySpanEntry, WorkAnchor,
+    WorkCommand, WorkResult,
 };
 
 pub use workspace::{

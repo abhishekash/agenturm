@@ -33,6 +33,8 @@ pub struct RecordedSession {
     pub relationship_kind: Option<RelationshipKind>,
     pub review_version: ReviewVersion,
     pub reviewed: bool,
+    pub history_identity: Option<String>,
+    pub pending_requests: Vec<RequestEntry>,
 }
 
 /// Authority for a public project heading; never inferred from captured text.
@@ -155,13 +157,16 @@ impl Filter {
         let state = session.state.as_deref();
         match self {
             Self::All => true,
-            Self::Active => matches!(state, Some("running" | "started" | "restored")),
-            Self::Attention => matches!(
-                state,
-                Some("failed" | "interrupted" | "waiting" | "blocked")
-            ),
-            Self::Finished => matches!(state, Some("completed" | "ended")),
-            Self::Inactive => matches!(state, Some("idle" | "stopped" | "cancelled" | "closed")),
+            Self::Active => !Self::Attention.accepts(session) && matches!(state, Some("running" | "started" | "restored")),
+            Self::Attention => {
+                session.pending_requests.iter().any(|request| !request.seen)
+                    || matches!(
+                        state,
+                        Some("failed" | "interrupted" | "waiting" | "blocked")
+                    )
+            }
+            Self::Finished => !Self::Attention.accepts(session) && matches!(state, Some("completed" | "ended")),
+            Self::Inactive => !Self::Attention.accepts(session) && matches!(state, Some("idle" | "stopped" | "cancelled" | "closed")),
             Self::ToReview => {
                 !session.reviewed
                     && matches!(
@@ -680,6 +685,23 @@ impl Workspace {
             (Change::Work(_), Ok(WorkspaceResponse::Work(WorkResult::Seen(entry)))) => {
                 if let Some(work) = &mut self.work {
                     work.note_seen(&entry);
+                }
+                let identity = (entry.owner.source.clone(), entry.owner.session.clone());
+                if let Some(row) = self.agents.catalog.as_mut().and_then(|catalog| {
+                    catalog
+                        .sessions
+                        .iter_mut()
+                        .find(|row| session_key(row) == identity)
+                }) && let Some(request) = row.pending_requests.iter_mut().find(|request| {
+                    request.owner == entry.owner
+                        && request.event_id == entry.event_id
+                        && request.revision == entry.revision
+                        && request.proof.history_identity == entry.proof.history_identity
+                        && request.proof.snapshot_id.incarnation()
+                            == entry.proof.snapshot_id.incarnation()
+                }) {
+                    request.seen = true;
+                    self.agents.apply_filters(Some(&identity));
                 }
                 self.message = Some(
                     "Marked seen. The request stays open until its source records resolution."
@@ -1345,6 +1367,12 @@ impl Workspace {
                     Change::Work(self.agents.current().map(WorkAnchor::from)),
                 );
             }
+            KeyCode::Char('v') => self.message = Some("Internal approval reviews are outside Rust capture. Available in Python receiver mode.".into()),
+            KeyCode::Char('X') => {
+                if let Some(session) = self.agents.current().cloned() {
+                    self.request(sender, WorkspaceRequest::Work(WorkCommand::SessionAttention(session)), Change::Work(None));
+                }
+            }
             KeyCode::Char('p') => self.toggle_pause(),
             KeyCode::Char('P') => {
                 if let Some(session) = self.agents.current() {
@@ -1374,11 +1402,11 @@ impl Workspace {
                     );
                 }
             }
-            KeyCode::Enter | KeyCode::Char('e' | 'm' | 'A' | 's' | 'v' | 'u' | 't') => {
+            KeyCode::Enter | KeyCode::Char('e' | 'm' | 'A' | 's' | 'V' | 'u' | 't') => {
                 if let Some(session) = self.agents.current().cloned() {
                     let view = match key {
                         KeyCode::Char('A' | 's') => SessionView::Activity,
-                        KeyCode::Char('v') => SessionView::Review,
+                        KeyCode::Char('V') => SessionView::Review,
                         KeyCode::Char('u') => SessionView::Usage,
                         KeyCode::Char('t') => SessionView::Traces,
                         _ => SessionView::Overview,
@@ -1907,6 +1935,8 @@ mod tests {
                 retained_observations: 2,
             },
             reviewed: false,
+            history_identity: None,
+            pending_requests: Vec::new(),
         }
     }
 
@@ -1937,6 +1967,49 @@ mod tests {
         code: KeyCode,
     ) -> bool {
         workspace.key(sender, event::KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn attention_shortcut_pins_the_selected_source_and_seen_does_not_resolve() {
+        let mut workspace = Workspace::new();
+        let mut selected = session("harness.pi", "same", "paused", None);
+        selected.history_identity = Some("history".into());
+        let request = RequestEntry {
+            owner: WorkAnchor::from(&selected),
+            event_id: "approval".into(),
+            revision: 2,
+            timestamp: 1,
+            reason: "codex_approval_request".into(),
+            seen: false,
+            proof: RequestProof {
+                snapshot_id: selected.snapshot_id,
+                history_identity: selected.history_identity.clone(),
+            },
+        };
+        selected.pending_requests.push(request.clone());
+        workspace.agents.update(catalog(vec![
+            session("harness.codex", "same", "paused", None),
+            selected,
+        ]));
+        let (sender, requests) = mpsc::channel();
+        assert!(!press(&mut workspace, &sender, KeyCode::Down));
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('v')));
+        assert!(requests.try_recv().is_err());
+        assert!(
+            workspace
+                .message
+                .as_deref()
+                .is_some_and(|line| line.contains("outside Rust capture"))
+        );
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('X')));
+        assert!(
+            matches!(requests.try_recv(), Ok(WorkspaceRequest::Work(WorkCommand::SessionAttention(row))) if row.harness_id == "harness.pi" && row.session_id == "same")
+        );
+        workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::Seen(request))));
+        let row = workspace.agents.current().unwrap();
+        assert_eq!(row.state.as_deref(), Some("paused"));
+        assert_eq!(row.pending_requests.len(), 1);
+        assert!(row.pending_requests[0].seen);
     }
 
     #[test]
