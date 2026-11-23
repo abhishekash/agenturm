@@ -2,8 +2,7 @@
 
 use super::*;
 use crate::workbench::{PromptReceiver, WorkInput, Workbench, prompt_channel};
-use agenturm_kernel::ReadSnapshot;
-use agenturm_kernel::RelationshipKind;
+use agenturm_kernel::{ReadSnapshot, RelationshipKind};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};

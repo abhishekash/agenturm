@@ -1799,6 +1799,7 @@ fn workspace_response(
             cockpit_workflows::execute(store, db, command).map(WorkspaceResponse::Work)
         }
         WorkspaceRequest::MarkReviewed(session) => {
+            cockpit_workflows::verify_review_snapshot(store, &session)?;
             let key = ReviewKey {
                 harness_id: ExtensionId::parse(session.harness_id)
                     .map_err(|error| error.to_string())?,
@@ -1807,15 +1808,16 @@ fn workspace_response(
             let version = StoredReviewVersion {
                 receipt_sequence: session.review_version.receipt_sequence,
                 retained_observations: session.review_version.retained_observations,
+                read_incarnation: session.snapshot_id.incarnation(),
             };
             let ledger =
                 ReviewLedger::open(db).map_err(|error| format!("Open reviews failed: {error}"))?;
             let saved = ledger
-                .mark_reviewed(&key, version, session.snapshot_id.watermark())
+                .mark_reviewed(&key, version, session.snapshot_id)
                 .map_err(|error| format!("Save review failed: {error}"))?;
             if !saved
                 && ledger
-                    .reviewed(std::slice::from_ref(&key))
+                    .reviewed_in(std::slice::from_ref(&key), version.read_incarnation)
                     .map_err(|error| format!("Read reviews failed: {error}"))?
                     .get(&key)
                     != Some(&version)
@@ -1856,7 +1858,8 @@ fn load_session_catalog(
             session_id: session.session_id.clone(),
         })
         .collect::<Vec<_>>();
-    let (reviewed, notice) = match ReviewLedger::open(db).and_then(|ledger| ledger.reviewed(&keys))
+    let (reviewed, notice) = match ReviewLedger::open(db)
+        .and_then(|ledger| ledger.reviewed_in(&keys, page.snapshot_id.incarnation()))
     {
         Ok(reviewed) => (reviewed, None),
         Err(error) => (

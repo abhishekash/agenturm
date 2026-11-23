@@ -374,11 +374,12 @@ mod tests {
         let version = ReviewVersion {
             receipt_sequence: 1,
             retained_observations: 1,
+            read_incarnation: None,
         };
         let review = ReviewLedger::open(&db).unwrap();
-        assert!(review.mark_reviewed(&reviewed, version, 2).unwrap());
+        assert!(review.mark_reviewed(&reviewed, version, 2.into()).unwrap());
         review
-            .save_decision_note(&reviewed, version, 2, "Retain this decision")
+            .save_decision_note(&reviewed, version, 2.into(), "Retain this decision")
             .unwrap();
         let scope =
             ContentGrantScope::new(first.harness_id.clone(), ContentKind::PiUserText, [9; 32]);
@@ -516,6 +517,19 @@ mod tests {
                 .unwrap()[&reviewed],
             version
         );
+        let restored_session_page = Store::open_read_only(&restored_db)
+            .unwrap()
+            .query_sessions(&crate::SessionQuery::latest(2))
+            .unwrap();
+        assert!(
+            restored_review
+                .reviewed_in(
+                    std::slice::from_ref(&reviewed),
+                    restored_session_page.snapshot_id.incarnation(),
+                )
+                .unwrap()
+                .is_empty()
+        );
         let decisions = restored_review.decision_notes(&reviewed).unwrap();
         assert_eq!(decisions.len(), 1);
         assert_eq!(decisions[0].note, "Retain this decision");
@@ -557,10 +571,11 @@ mod tests {
         let version = ReviewVersion {
             receipt_sequence: 1,
             retained_observations: 1,
+            read_incarnation: None,
         };
         ReviewLedger::open(&db)
             .unwrap()
-            .mark_reviewed(&key, version, 1)
+            .mark_reviewed(&key, version, 1.into())
             .unwrap();
         let archive = scratch.0.join("archive");
         let restored = scratch.0.join("restored");
@@ -610,10 +625,20 @@ mod tests {
         Store::restore_workspace_bundle(&archive, &restored).unwrap();
         let restored = restored.join(HISTORY);
         let reader = Store::open_read_only(&restored).unwrap();
-        assert_eq!(reader.observation_page(4).unwrap(), original);
+        let branched = reader.observation_page(4).unwrap();
+        assert_eq!(branched.observations, original.observations);
+        assert_eq!(branched.has_more, original.has_more);
+        assert_eq!(
+            branched.snapshot_id.watermark(),
+            original.snapshot_id.watermark()
+        );
+        assert_ne!(
+            branched.snapshot_id.incarnation(),
+            original.snapshot_id.incarnation()
+        );
         drop(reader);
         let writer = Store::open_collector(&restored).unwrap();
-        assert_eq!(writer.observation_page(4).unwrap(), original);
+        assert_eq!(writer.observation_page(4).unwrap(), branched);
     }
 
     fn seed(store: &mut Store, source: &str, session: &str) -> WorkspaceAnchor {

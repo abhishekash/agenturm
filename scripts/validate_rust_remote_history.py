@@ -166,6 +166,8 @@ def main():
         data, transport, source, viewer = [root / name for name in
                                            ["history", "transport", "source", "viewer"]]
         private_directory(data, broker, broker)
+        backups = root / "backups"
+        private_directory(backups, broker, broker)
         private_directory(transport, broker, client_gid, 0o2710)
         private_directory(source, collector, client_gid)
         private_directory(viewer, ui, ui_gid)
@@ -218,15 +220,20 @@ def main():
             assert output.returncode == code, (args[1:3], output.stdout, output.stderr)
             return output
 
-        def start_service():
-            process = subprocess.Popen([
+        def service_command():
+            return [
                 binaries / "agenturm-storage-service", "--data-root", data,
                 "--transport-dir", transport, "--receiver-id", "receiver:remote-fixture",
                 "--client-uid", str(collector), "--client-gid", str(client_gid),
                 "--native-reader", f"{reader}:{client_gid}",
                 "--native-maintenance", f"{maintenance}:{client_gid}",
                 "--native-sources", f"{CODEX},{PI},{OTLP}",
-            ], cwd=root, preexec_fn=credentials(broker, broker))
+                "--native-backup-root", backups,
+            ]
+
+        def start_service():
+            process = subprocess.Popen(service_command(), cwd=root,
+                                       preexec_fn=credentials(broker, broker))
             try:
                 wait_for(lambda: socket.exists() and database.exists() and
                          stat.S_IMODE(socket.stat().st_mode) == 0o660,
@@ -305,6 +312,7 @@ def main():
                            page["snapshot_id"])["Ok"]["value"]["observations"] == []
             assert history(PI, "pi-session", exact, 0)["Ok"]["value"]["observations"] == []
 
+            backup = json.loads(run(maintenance, *command("backup")).stdout)
             trace_export = source / "traces.json"
             trace_scope = {"agenturm.source.id": PI, "session.id": "pi-session",
                            "agenturm.turn.id": "worker-turn", "agenturm.worker.id": "worker-1"}
@@ -353,11 +361,57 @@ def main():
             _, second_endpoint = start_gateway()
             assert not attention(second_endpoint, "status")["pending"][0]["seen"]
 
+            # Restore this same logical history at the same service and HTTP paths,
+            # then admit an alternate span at the exact old receipt watermark.
+            previous_snapshot = linked["page"]["snapshot_id"]
+            stop(service)
+            data.rename(root / "before-restore")
+            private_directory(data, broker, broker)
+            run(broker, *service_command(), "--native-restore", backup["name"], gid=broker)
+            service = start_service()
+            trace_export.write_text(trace_export.read_text().replace("22" * 8, "33" * 8))
+            run(collector, *command("import-traces", "--file", trace_export, "--source-id", OTLP))
+            assert request(endpoint, token, {
+                "op": "trace_review", "query": trace_review,
+            }, identity)[1]["result"] == {"Err": {"code": "snapshot_replaced"}}
+            stop(gateway)
+            gateway, restored_endpoint = start_gateway(urlsplit(endpoint).netloc)
+            assert restored_endpoint == endpoint
+            _, fresh_identity = request(endpoint, token, identity_request)
+            binding = fresh_identity["history_identity"]
+            assert fresh_identity["result"]["Ok"]["value"] == identity
+            assert binding.startswith(identity + ":")
+            assert request(endpoint, token, identity_request, identity)[1]["result"] == {
+                "Err": {"code": "snapshot_replaced"},
+            }
+            old_query = {**trace_review, "page": {
+                **trace_review["page"], "snapshot_id": previous_snapshot,
+            }}
+            assert request(endpoint, token, {
+                "op": "trace_review", "query": old_query,
+            }, binding)[1]["result"] == {"Err": {"code": "snapshot_replaced"}}
+            _, restored_reply = request(endpoint, token, {
+                "op": "trace_review", "query": trace_review,
+            }, binding)
+            restored_page = restored_reply["result"]["Ok"]["value"]["page"]
+            assert restored_page["snapshot_id"] == f'r1:{binding.split(":")[1]}:{previous_snapshot}'
+            assert restored_page["observations"][0]["kind"]["span_id"] == "33" * 8
+            denied = run(reader, *command(
+                "review", "--harness-id", PI, "--session-id", "pi-session",
+                "--turn-of-trace", TRACE, "--trace-source-id", OTLP, "--linked-traces",
+                "--snapshot-id", str(previous_snapshot),
+            ), code=1)
+            assert not denied.stdout, denied.stdout
+            assert "broker history was restored or replaced" in denied.stderr, denied.stderr
+            assert attention(endpoint, "status")["pending"][0]["seen"]
+            print("PASS offline restore and receipt regrowth fence the same socket and gateway port",
+                  flush=True)
+
             stop(service)
             data.rename(root / "prior-history")
             private_directory(data, broker, broker)
             service = start_service()
-            assert request(endpoint, token, identity_request, identity)[1]["result"] == {
+            assert request(endpoint, token, identity_request, binding)[1]["result"] == {
                 "Err": {"code": "history_replaced"},
             }
             stop(gateway)

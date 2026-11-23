@@ -41,6 +41,40 @@ fn cli_rejects_a_pre_restore_cursor_after_the_same_watermark_regrows() {
         String::from_utf8_lossy(&denied.stderr)
             .contains("history snapshot belongs to a restored or replaced history")
     );
+    let receipt = scratch.0.join("receipt");
+    let write_receipt = |snapshot_id| {
+        run(&[
+            "review",
+            "--db",
+            arg(&restored),
+            "--harness-id",
+            SOURCE,
+            "--session-id",
+            "fixture-session",
+            "--turn-id",
+            "fixture-turn",
+            "--limit",
+            "1",
+            "--format",
+            "json",
+            "--output",
+            arg(&receipt),
+            "--snapshot-id",
+            snapshot_id,
+        ])
+    };
+    let denied_receipt = write_receipt(old["snapshot_id"].as_str().unwrap());
+    assert!(!denied_receipt.status.success());
+    assert!(denied_receipt.stdout.is_empty());
+    assert!(!receipt.exists());
+    let fresh_receipt: Value = serde_json::from_str(&check(write_receipt(snapshot_id))).unwrap();
+    assert_eq!(fresh_receipt["snapshot_id"], snapshot_id);
+    assert_eq!(
+        fresh_receipt["observations"][0]["observation"]["span_id"],
+        "3333333333333333"
+    );
+    assert!(receipt.join("review.json").is_file());
+
     let older_page: Value = serde_json::from_str(&check(older(&restored, fresh))).unwrap();
     assert_eq!(
         older_page["observations"][0]["observation"]["span_id"],
@@ -55,7 +89,8 @@ fn import(root: &Path, db: &Path, span: &str, time: u32) {
         json!({
             "trace_id": "33333333333333333333333333333333", "span_id": span,
             "start_unix_nano": time, "end_unix_nano": time + 1,
-            "attributes": {"session.id": "fixture-session"},
+            "attributes": {"session.id": "fixture-session", "agenturm.source.id": "harness.fixture",
+                           "agenturm.turn.id": "fixture-turn"},
         })
         .to_string(),
     )

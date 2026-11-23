@@ -199,6 +199,7 @@ pub enum WorkCommand {
 
 pub struct ReviewNoteEntry {
     pub version: ReviewVersion,
+    pub read_incarnation: Option<agenturm_kernel::ReadIncarnation>,
     pub note: String,
 }
 
@@ -754,7 +755,9 @@ impl Workbench {
                 items
                     .iter()
                     .map(|item| {
-                        let scope = if item.version == session.review_version {
+                        let scope = if item.read_incarnation != session.snapshot_id.incarnation() {
+                            "Prior history evidence"
+                        } else if item.version == session.review_version {
                             "Current evidence"
                         } else {
                             "Other evidence version"

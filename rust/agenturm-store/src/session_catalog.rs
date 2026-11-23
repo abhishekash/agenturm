@@ -160,6 +160,7 @@ impl Store {
                     ReviewVersion {
                         receipt_sequence: row.get(3)?,
                         retained_observations: row.get(4)?,
+                        read_incarnation: snapshot_id.incarnation(),
                     },
                 ))
             },

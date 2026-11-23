@@ -794,7 +794,7 @@ fn codex_edit_and_command_details_require_exact_occurrences_and_independent_appr
         .save_decision_note(
             &key,
             session.review_version,
-            page.snapshot_id.watermark(),
+            page.snapshot_id,
             "Preserve review decision",
         )
         .unwrap();
@@ -962,6 +962,38 @@ fn codex_edit_and_command_details_require_exact_occurrences_and_independent_appr
             "turn-first",
         ),
         "requires approval",
+    );
+    let restored_db_arg = restored_db.to_str().unwrap();
+    checked(run(&[
+        "content",
+        "grant",
+        "--db",
+        restored_db_arg,
+        "--config",
+        config_arg,
+        "--source-id",
+        "harness.codex",
+        "--kind",
+        "codex.command_detail",
+    ]));
+    let current_matches = find_command("pytest suite", restored_db_arg);
+    let current_reference = current_matches[0]["source_reference"].as_str().unwrap();
+    assert_eq!(
+        records(command_source(event, current_reference, restored_db_arg))[0]["evidence"],
+        json!({"recorded_invocation": ["/bin/bash", "-lc", "pytest suite --quiet"]})
+    );
+    let mut stale_snapshot: Value = serde_json::from_str(current_reference).unwrap();
+    assert!(
+        stale_snapshot["position"]["snapshot_id"]
+            .as_str()
+            .unwrap()
+            .starts_with("r1:")
+    );
+    let before_restore: Value = serde_json::from_str(reference).unwrap();
+    stale_snapshot["position"]["snapshot_id"] = before_restore["position"]["snapshot_id"].clone();
+    denied(
+        command_source(event, &stale_snapshot.to_string(), restored_db_arg),
+        "history snapshot belongs to a restored or replaced history",
     );
     let notes = ReviewLedger::open(restored_db)
         .unwrap()
