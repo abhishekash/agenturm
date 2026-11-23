@@ -344,7 +344,7 @@ def wait_for_admission(app, env, work, db, cockpit, rows, excluded, timeout):
         require(not (admitted & forbidden), "A guardian review created a durable session")
         missing = expected - admitted
         if not missing:
-            return
+            return len(retained)
         time.sleep(.2)
     ids = ", ".join(sorted(session for _, session in missing))
     raise ValidationError(f"Admitted {len(expected) - len(missing)} of {len(expected)} expected sessions; missing {ids}")
@@ -381,10 +381,12 @@ def export_roster(cockpit, export_directory):
     raise ValidationError(f"Cockpit did not save the metadata export at width {cockpit.width}")
 
 
-def verify_roster(cockpit, rows, excluded, export_directory):
+def verify_roster(cockpit, rows, excluded, export_directory, minimum_count=None):
+    minimum_count = minimum_count if minimum_count is not None else len(rows)
+
     def ready(frame):
         count = re.search(r"\bAll\s+(\d+)\b", frame)
-        return "Agenturm command center" in frame and count is not None and int(count[1]) >= len(rows)
+        return "Agenturm command center" in frame and count is not None and int(count[1]) >= minimum_count
 
     cockpit.until(ready, "command center readiness after admission")
     # This disposable copy preserves exact metadata at narrow terminal widths.
@@ -397,9 +399,11 @@ def verify_roster(cockpit, rows, excluded, export_directory):
     for row in rows:
         source, session = row["source"], row["session"]
         label = f"{source} / {session}"
-        value = indexed.get(label, "")
-        require(value.startswith(f"task={row['title']} · project={row['project']} · project_origin="),
-                f"Exact roster title or project differs for {source} / {session}")
+        require(label in indexed, f"Exact admitted pair is missing from the loaded roster: {source} / {session}")
+        title, _, metadata = indexed[label].partition(" · project=")
+        project, delimiter, _ = metadata.partition(" · project_origin=")
+        require(title == f"task={row['title']}", f"Exact roster title differs for {source} / {session}")
+        require(delimiter and project == row["project"], f"Exact roster project differs for {source} / {session}")
         select_human_row(cockpit, row, len(indexed))
     cockpit.quit()
 
@@ -489,8 +493,9 @@ def verify(args, app, env, work):
         # Reopen through default startup at all widths. Never substitute a DB
         # prefilled by another collector for the first-run case.
         with Cockpit(app, env, work, width, height) as cockpit:
-            wait_for_admission(app, env, work, db, cockpit, rows, excluded, args.deadline)
-            verify_roster(cockpit, rows, excluded, work / f"export-{width}")
+            retained_count = wait_for_admission(app, env, work, db, cockpit, rows, excluded, args.deadline)
+            cockpit.key(b"R")
+            verify_roster(cockpit, rows, excluded, work / f"export-{width}", retained_count)
         print(f"Verified {len(rows)} exact sessions, titles, projects, and selection at {width}×{height}")
     print(f"Verified {'live process witness' if args.require_live else 'recorded native roots'} with catch-up and restart")
 
