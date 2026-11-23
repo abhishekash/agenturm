@@ -186,6 +186,27 @@ def main():
             assert first["samples"][0]["event_id"] != older["samples"][0]["event_id"]
             assert json.loads(run(reader, "query"))["observations"] == []
 
+            managed = root / "host-only.json"
+            managed.write_text(json.dumps({"version": 2, "host": {
+                "source_id": SOURCE, "interval_ms": 1000}}))
+            assert "host capture failed" in run(reader, "collect", "--config", managed, code=1)
+
+            def sample_ids():
+                samples = json.loads(run(reader, "host", "history", "--source-id", SOURCE))["samples"]
+                return {row["event_id"] for row in samples}
+
+            initial_ids = {row["event_id"] for row in result["samples"]}
+            assert sample_ids() == initial_ids
+            for _ in range(2):
+                before = sample_ids()
+                watcher = subprocess.Popen(command("collect", "--config", managed, "--watch",
+                    "--interval-ms", "100"), cwd=root, stdout=subprocess.DEVNULL,
+                    user=collector, group=client_gid, extra_groups=[])
+                wait_for(lambda: len(sample_ids() - before) >= 2, watcher,
+                         "Managed collection did not record on schedule")
+                stop(watcher)
+                assert before < sample_ids()
+
             gateway = subprocess.Popen(command("serve-history", "--listen", "127.0.0.1:0",
                 "--token-file", token_path), cwd=root, stdout=subprocess.PIPE, text=True,
                 user=reader, group=client_gid, extra_groups=[])
@@ -203,7 +224,7 @@ def main():
                                    user=reader, group=client_gid, extra_groups=[], capture_output=True, timeout=5)
             assert probe.returncode != 0 and b"PermissionError" in probe.stderr
             narrow_cockpit(command("cockpit"), root, reader, client_gid, viewer)
-            print("PASS Host watch, separate reader, same-user process identity, HTTP exclusion and PTY drill-down", flush=True)
+            print("PASS Host watch and managed restart, separate reader, process identity, HTTP exclusion and PTY drill-down", flush=True)
         finally:
             for process in [shared_process, other_process]:
                 if process is not None and process.poll() is None:

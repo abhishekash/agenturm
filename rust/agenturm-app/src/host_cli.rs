@@ -1,14 +1,73 @@
 //! Explicit host measurement capture and bounded retained-history reads.
 
 use agenturm_kernel::{
-    ExtensionId, ObservationPage, ObservationPosition, ObservationQuery, is_host_source,
+    ExtensionId, ObservationPage, ObservationPosition, ObservationQuery, ObservationStore,
+    is_host_source,
 };
 use agenturm_store::{MAX_HOST_HISTORY_PAGE, Store};
+use serde::Deserialize;
 use std::io::Write;
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 const USAGE: &str = "agenturm host record --db <path> --source-id host.<label> [--watch [--interval-ms <1000..60000>]]\nagenturm host history --db <path> [--source-id host.<label>] [--limit <1..64>] [--before <position-json>]";
+const DEFAULT_INTERVAL_MS: u64 = 5_000;
+const INTERVAL_MS: std::ops::RangeInclusive<u64> = 1_000..=60_000;
+
+#[derive(Debug, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub(super) struct HostCaptureConfig {
+    source_id: String,
+    interval_ms: Option<u64>,
+}
+
+#[derive(Debug)]
+pub(super) struct HostCaptureSchedule {
+    pub source: ExtensionId,
+    interval: Duration,
+    next_capture: Instant,
+}
+
+pub(super) struct HostCaptureResult {
+    pub source: ExtensionId,
+    pub inserted: Result<usize, String>,
+}
+
+impl HostCaptureConfig {
+    pub fn validate(self) -> Result<HostCaptureSchedule, String> {
+        if !cfg!(target_os = "linux") {
+            return Err("Managed Host capture requires Linux procfs".into());
+        }
+        if !is_host_source(&self.source_id) {
+            return Err("Managed Host capture requires a host.<label> source ID".into());
+        }
+        let source = ExtensionId::parse(self.source_id)
+            .map_err(|_| "Invalid managed Host capture source ID")?;
+        let interval_ms = self.interval_ms.unwrap_or(DEFAULT_INTERVAL_MS);
+        if !INTERVAL_MS.contains(&interval_ms) {
+            return Err("Managed Host capture interval must be 1000 to 60000 milliseconds".into());
+        }
+        Ok(HostCaptureSchedule {
+            source,
+            interval: Duration::from_millis(interval_ms),
+            next_capture: Instant::now(),
+        })
+    }
+}
+
+impl HostCaptureSchedule {
+    pub fn capture_due(&mut self, store: &mut impl ObservationStore) -> Option<HostCaptureResult> {
+        if Instant::now() < self.next_capture {
+            return None;
+        }
+        let result = commit_sample(store, &self.source);
+        self.next_capture = Instant::now() + self.interval;
+        Some(HostCaptureResult {
+            source: self.source.clone(),
+            inserted: result.map(|receipt| receipt.inserted),
+        })
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct HostOptions {
@@ -50,7 +109,7 @@ pub(super) fn parse(args: &[String], broker: bool) -> Result<HostOptions, String
                     value
                         .parse()
                         .ok()
-                        .filter(|ms| (1000..=60_000).contains(ms))
+                        .filter(|ms| INTERVAL_MS.contains(ms))
                         .ok_or(USAGE)?,
                 ));
             }
@@ -76,7 +135,7 @@ pub(super) fn parse(args: &[String], broker: bool) -> Result<HostOptions, String
     let settings = match verb.as_str() {
         "record" if watch || interval.is_none() => HostSettings::Record {
             source: source.ok_or(USAGE)?,
-            watch: watch.then(|| interval.unwrap_or(Duration::from_secs(5))),
+            watch: watch.then(|| interval.unwrap_or(Duration::from_millis(DEFAULT_INTERVAL_MS))),
         },
         "history" => HostSettings::History(ObservationQuery {
             harness_id: source.map(|source| source.as_str().to_owned()),
@@ -152,59 +211,24 @@ fn print_page(page: ObservationPage, mut output: impl Write) -> Result<(), Strin
 
 #[cfg(target_os = "linux")]
 fn record(
-    store: &mut impl agenturm_kernel::ObservationStore,
+    store: &mut impl ObservationStore,
     source: &ExtensionId,
     watch: Option<Duration>,
     mut output: impl Write,
 ) -> Result<(), String> {
-    use agenturm_kernel::{Observation, ObservationIdentity, ObservationKind};
-    use std::io::Read;
     use std::sync::{
         Arc,
         atomic::{AtomicBool, Ordering},
     };
-    use std::time::{Instant, SystemTime, UNIX_EPOCH};
-
-    // This admission preflight checks the collector's source grant before any
-    // host data is sampled. The store rechecks the grant during each write.
-    let mut cursor = store.source_cursor(source.as_str())?;
-    if cursor
-        .as_deref()
-        .is_some_and(|cursor| !cursor.starts_with("host-sample-v1:"))
-    {
-        return Err("Host source already belongs to another collector format".into());
-    }
     let stop = Arc::new(AtomicBool::new(false));
     let _signals = crate::WatchSignalRegistrations::new(Arc::clone(&stop))?;
-    let mut entropy =
-        std::fs::File::open("/dev/urandom").map_err(|_| "Cannot open host event entropy")?;
     while !stop.load(Ordering::Relaxed) {
-        let now = SystemTime::now()
-            .duration_since(UNIX_EPOCH)
-            .ok()
-            .and_then(|time| u64::try_from(time.as_nanos()).ok())
-            .ok_or("Cannot time-stamp the host sample")?;
-        let mut identity = [0_u8; 16];
-        entropy
-            .read_exact(&mut identity)
-            .map_err(|_| "Cannot generate a host event ID")?;
-        let event_id = format!("host-sample-v1:{:032x}", u128::from_be_bytes(identity));
-        let sample = crate::cockpit_host::capture()?;
-        let row = Observation {
-            harness_id: source.clone(),
-            identity: ObservationIdentity::source(),
-            event_id: event_id.clone(),
-            revision: 0,
-            observed_at_unix_ns: now,
-            kind: ObservationKind::HostSample(sample),
-        };
-        let receipt = store.commit(source.as_str(), cursor.as_deref(), &event_id, &[row])?;
-        cursor = Some(event_id.clone());
+        let receipt = commit_sample(store, source)?;
         if let Err(error) = writeln!(
             output,
             "{}",
             serde_json::json!({
-                "source_id":source.as_str(), "event_id":event_id, "inserted":receipt.inserted
+                "source_id":source.as_str(), "event_id":receipt.event_id, "inserted":receipt.inserted
             })
         )
         .and_then(|()| output.flush())
@@ -226,4 +250,59 @@ fn record(
         }
     }
     Ok(())
+}
+
+struct HostReceipt {
+    #[cfg(target_os = "linux")]
+    event_id: String,
+    inserted: usize,
+}
+
+#[cfg(not(target_os = "linux"))]
+fn commit_sample(_: &mut impl ObservationStore, _: &ExtensionId) -> Result<HostReceipt, String> {
+    Err("Host capture requires Linux procfs".into())
+}
+
+#[cfg(target_os = "linux")]
+fn commit_sample(
+    store: &mut impl ObservationStore,
+    source: &ExtensionId,
+) -> Result<HostReceipt, String> {
+    use agenturm_kernel::{Observation, ObservationIdentity, ObservationKind};
+    use std::io::Read;
+    use std::time::{SystemTime, UNIX_EPOCH};
+
+    const HOST_CURSOR_PREFIX: &str = "host-sample-v1:";
+    // Reject unauthorized principals and foreign checkpoint formats before
+    // reading procfs. The commit independently checks source grant and CAS.
+    let cursor = store.source_cursor(source.as_str())?;
+    if cursor
+        .as_deref()
+        .is_some_and(|cursor| !cursor.starts_with(HOST_CURSOR_PREFIX))
+    {
+        return Err("Host source already belongs to another collector format".into());
+    }
+    let now = SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|time| u64::try_from(time.as_nanos()).ok())
+        .ok_or("Cannot time-stamp the host sample")?;
+    let mut identity = [0_u8; 16];
+    std::fs::File::open("/dev/urandom")
+        .and_then(|mut file| file.read_exact(&mut identity))
+        .map_err(|_| "Cannot generate a host event ID")?;
+    let event_id = format!("{HOST_CURSOR_PREFIX}{:032x}", u128::from_be_bytes(identity));
+    let row = Observation {
+        harness_id: source.clone(),
+        identity: ObservationIdentity::source(),
+        event_id: event_id.clone(),
+        revision: 0,
+        observed_at_unix_ns: now,
+        kind: ObservationKind::HostSample(crate::cockpit_host::capture()?),
+    };
+    let receipt = store.commit(source.as_str(), cursor.as_deref(), &event_id, &[row])?;
+    Ok(HostReceipt {
+        event_id,
+        inserted: receipt.inserted,
+    })
 }

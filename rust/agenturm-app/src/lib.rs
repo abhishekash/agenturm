@@ -335,6 +335,7 @@ pub struct WatchReport {
 #[serde(deny_unknown_fields)]
 struct CollectionConfigFile {
     version: u32,
+    #[serde(default)]
     plugin_host: PathBuf,
     #[serde(default)]
     plugin_catalog: Option<PathBuf>,
@@ -342,6 +343,8 @@ struct CollectionConfigFile {
     sources: Vec<CollectionSourceInput>,
     #[serde(default)]
     follow: Option<discovery::FollowDiscovery>,
+    #[serde(default)]
+    host: Option<host_cli::HostCaptureConfig>,
 }
 
 #[derive(Debug, Deserialize, serde::Serialize)]
@@ -2519,6 +2522,7 @@ pub struct ConfiguredCollector<S = Store> {
     next_scan: Instant,
     local_maintenance: Option<CollectorMaintenance<S>>,
     next_maintenance: Instant,
+    host_capture: Option<host_cli::HostCaptureSchedule>,
 }
 
 impl ConfiguredCollector {
@@ -2586,6 +2590,7 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
             next_scan: Instant::now() + FOLLOW_INTERVAL,
             local_maintenance: None,
             next_maintenance: Instant::now(),
+            host_capture: config.host_capture,
         };
         for source in config.sources {
             collector.add_source(source)?;
@@ -2695,6 +2700,13 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
             .stop_flag
             .as_ref()
             .is_some_and(|stop| stop.load(Ordering::Relaxed));
+        let host_capture = if shutdown_requested {
+            None
+        } else {
+            self.host_capture
+                .as_mut()
+                .and_then(|capture| capture.capture_due(&mut self.store))
+        };
         let mut report = if self.follow.is_some()
             && self.stop_flag.is_some()
             && Instant::now() >= self.next_scan
@@ -2712,6 +2724,7 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
                 &snapshot,
                 shutdown_requested,
                 discovery_failure,
+                host_capture,
             )
         } else {
             build_collection_report_with_discovery(
@@ -2720,6 +2733,7 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
                 &snapshot,
                 shutdown_requested,
                 None,
+                host_capture,
             )
         };
         if let Some(message) = maintenance_error {
@@ -2785,6 +2799,7 @@ fn build_collection_report(
         snapshot,
         shutdown_requested,
         None,
+        None,
     )
 }
 
@@ -2794,6 +2809,7 @@ fn build_collection_report_with_discovery(
     snapshot: &Snapshot,
     shutdown_requested: bool,
     discovery_failure: Option<String>,
+    host_capture: Option<host_cli::HostCaptureResult>,
 ) -> CollectionReport {
     let mut lines = Vec::with_capacity(source_ids.len());
     let mut failed_sources = 0;
@@ -2806,7 +2822,7 @@ fn build_collection_report_with_discovery(
     {
         global_failures.push(format!("{:?}: {}", failure.stage, failure.message));
     }
-    let source_count = source_ids.len();
+    let source_count = source_ids.len() + usize::from(host_capture.is_some());
     for source_id in source_ids {
         if let Some(message) = startup_failures.get(source_id) {
             if shutdown_requested
@@ -2868,6 +2884,16 @@ fn build_collection_report_with_discovery(
                 }
                 failed_sources += 1;
                 lines.push(format!("{}: no admission result", source_id.as_str()));
+            }
+        }
+    }
+    if let Some(capture) = host_capture {
+        let source = capture.source.as_str();
+        match capture.inserted {
+            Ok(inserted) => lines.push(format!("{source}: committed {inserted} host sample(s)")),
+            Err(error) => {
+                failed_sources += 1;
+                lines.push(format!("{source}: host capture failed: {error}"));
             }
         }
     }
@@ -2938,13 +2964,23 @@ fn validate_collection_config(
     if !matches!(config.version, 1 | 2) {
         return Err("unsupported collection config version".into());
     }
+    if config.host.is_some() && config.version != 2 {
+        return Err("Managed Host capture requires collection config v2".into());
+    }
+    let host_capture = config
+        .host
+        .take()
+        .map(host_cli::HostCaptureConfig::validate)
+        .transpose()?;
+    let needs_native_adapters = config.follow.is_some() || !config.sources.is_empty();
     if config.follow.is_some() && (config.version != 2 || !config.sources.is_empty()) {
         return Err(
             "follow discovery requires collection config v2 without explicit sources".into(),
         );
     }
     if config.follow.is_none()
-        && (config.sources.is_empty() || config.sources.len() > MAX_CONFIGURED_SOURCES)
+        && ((!needs_native_adapters && host_capture.is_none())
+            || config.sources.len() + usize::from(host_capture.is_some()) > MAX_CONFIGURED_SOURCES)
     {
         return Err(format!(
             "collection config must define 1 to {MAX_CONFIGURED_SOURCES} sources"
@@ -2959,13 +2995,16 @@ fn validate_collection_config(
         }
     };
     if config.plugin_host.as_os_str().is_empty() {
-        return Err("plugin host path must not be empty".into());
-    }
-    config.plugin_host = resolve(config.plugin_host);
-    if !valid_config_path(&config.plugin_host) || !config.plugin_host.is_absolute() {
-        return Err(
-            "plugin host path must be nonempty, bounded, and absolute after resolution".into(),
-        );
+        if needs_native_adapters {
+            return Err("plugin host path must not be empty".into());
+        }
+    } else {
+        config.plugin_host = resolve(config.plugin_host);
+        if !valid_config_path(&config.plugin_host) || !config.plugin_host.is_absolute() {
+            return Err(
+                "plugin host path must be nonempty, bounded, and absolute after resolution".into(),
+            );
+        }
     }
 
     let catalog = match (config.version, config.plugin_catalog.take()) {
@@ -2978,7 +3017,10 @@ fn validate_collection_config(
             load_adapter_catalog(&catalog_path)?
         }
         (2, None) => {
-            return Err("collection config v2 requires plugin_catalog".into());
+            if needs_native_adapters {
+                return Err("collection config v2 requires plugin_catalog".into());
+            }
+            BTreeMap::new()
         }
         _ => unreachable!("collection config version was validated"),
     };
@@ -3016,10 +3058,18 @@ fn validate_collection_config(
             None,
         ),
     };
+    if let Some(host) = &host_capture
+        && sources
+            .iter()
+            .any(|source| source.source_id == host.source.as_str())
+    {
+        return Err("Managed Host capture source ID duplicates a native adapter source".into());
+    }
     Ok(ValidatedCollectionConfig {
         plugin_host: config.plugin_host,
         sources,
         follow,
+        host_capture,
     })
 }
 
@@ -3332,6 +3382,7 @@ struct ValidatedCollectionConfig {
     plugin_host: PathBuf,
     sources: Vec<ConfiguredSource>,
     follow: Option<FollowSources>,
+    host_capture: Option<host_cli::HostCaptureSchedule>,
 }
 
 #[derive(Debug)]
@@ -4683,6 +4734,32 @@ mod tests {
         assert!(report.summary.contains("poll cancelled by shutdown"));
         assert_eq!(report.failed_sources, 0);
         assert!(!report.has_failures());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn host_only_collection_validates_explicit_v2_capture_and_interval() {
+        let parse = |config: &str| {
+            let config = serde_json::from_str(config).unwrap();
+            validate_collection_config(config, std::env::current_dir().unwrap())
+        };
+        let config =
+            parse(r#"{"version":2,"host":{"source_id":"host.workstation","interval_ms":1000}}"#)
+                .unwrap();
+        assert!(config.sources.is_empty());
+        assert_eq!(
+            config.host_capture.unwrap().source.as_str(),
+            "host.workstation"
+        );
+        for invalid in [
+            r#"{"version":1,"host":{"source_id":"host.workstation"}}"#,
+            r#"{"version":2,"host":{"source_id":"host.workstation","interval_ms":999}}"#,
+            r#"{"version":2,"host":{"source_id":"host.workstation","interval_ms":60001}}"#,
+            r#"{"version":2,"host":{"source_id":"harness.outside"}}"#,
+            r#"{"version":2}"#,
+        ] {
+            assert!(parse(invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]

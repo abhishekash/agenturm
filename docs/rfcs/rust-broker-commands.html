@@ -192,6 +192,19 @@ agenturm host history --db history.sqlite --limit 10
 agenturm broker host record --broker-config broker.json --source-id host.workstation --watch
 agenturm broker host history --broker-config broker.json --source-id host.workstation
 </code></pre>
+<p>For ongoing collection, add a <code>host</code> block to a version 2 collection config.
+A Host-only config can use the following JSON. A config with native adapters
+keeps its plugin catalog and source settings alongside the Host block.</p>
+<pre><code class="language-json">{&quot;version&quot;: 2, &quot;host&quot;: {&quot;source_id&quot;: &quot;host.workstation&quot;, &quot;interval_ms&quot;: 5000}}
+</code></pre>
+<pre><code class="language-sh">agenturm collect --config sources.json --db history.sqlite --watch
+agenturm broker collect --broker-config broker.json --config sources.json --watch
+agenturm service install --config sources.json --db history.sqlite
+</code></pre>
+<p>The collector samples at the first collection tick after the configured
+interval. It resumes the source checkpoint at restart and applies the history's
+usual retention policy. Existing configs start collecting Host samples when
+the owner adds the block.</p>
 <p>The JSON history rows preserve optional load averages in thousandths, memory
 in bytes and cumulative CPU counters in Linux clock ticks. The sample carries
 the clock tick frequency when available. A missing value is <code>null</code> and an

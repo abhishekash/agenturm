@@ -241,6 +241,25 @@ agenturm broker host record --broker-config broker.json --source-id host.worksta
 agenturm broker host history --broker-config broker.json --source-id host.workstation
 ```
 
+For ongoing collection, add a `host` block to a version 2 collection config.
+A Host-only config can use the following JSON. A config with native adapters
+keeps its plugin catalog and source settings alongside the Host block.
+
+```json
+{"version": 2, "host": {"source_id": "host.workstation", "interval_ms": 5000}}
+```
+
+```sh
+agenturm collect --config sources.json --db history.sqlite --watch
+agenturm broker collect --broker-config broker.json --config sources.json --watch
+agenturm service install --config sources.json --db history.sqlite
+```
+
+The collector samples at the first collection tick after the configured
+interval. It resumes the source checkpoint at restart and applies the history's
+usual retention policy. Existing configs start collecting Host samples when
+the owner adds the block.
+
 The JSON history rows preserve optional load averages in thousandths, memory
 in bytes and cumulative CPU counters in Linux clock ticks. The sample carries
 the clock tick frequency when available. A missing value is `null` and an
