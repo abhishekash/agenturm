@@ -563,6 +563,7 @@ fn kind_name(kind: &ObservationKind) -> &'static str {
         ObservationKind::FileEdit(_) => "file-edit",
         ObservationKind::McpCall { .. } => "mcp-call",
         ObservationKind::TraceSpan(_) => "trace-span",
+        ObservationKind::TraceProgress(_) => "trace-progress",
         ObservationKind::Lifecycle { .. } => "lifecycle",
         ObservationKind::Check { .. } => "check",
         ObservationKind::PullRequestRaised { .. } => "pull-request-raised",

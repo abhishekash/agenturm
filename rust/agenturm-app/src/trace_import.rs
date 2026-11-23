@@ -263,6 +263,13 @@ fn import_cursor(observations: &[Observation]) -> Result<String, String> {
                 row.observed_at_unix_ns,
                 usage,
             )),
+            ObservationKind::TraceProgress(progress) => serde_json::to_vec(&(
+                "trace_progress",
+                &row.event_id,
+                &row.identity,
+                row.observed_at_unix_ns,
+                progress,
+            )),
             _ => return Err("invalid trace import observation".into()),
         }
         .map_err(|_| "cannot encode trace import metadata".to_owned())?;
@@ -442,6 +449,7 @@ fn project_payloads(
                             trace_id: native.trace_id.clone(),
                             span_id: native.span_id.clone(),
                         }),
+                        native_origin: None,
                     }),
                 },
                 None,
@@ -582,7 +590,7 @@ fn valid_payload_size(value: &str) -> bool {
     !value.is_empty() && value.len() <= agenturm_store::MAX_TELEMETRY_PAYLOAD_TEXT_BYTES
 }
 
-fn valid_execution_id(value: &str) -> bool {
+pub(super) fn valid_execution_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 512
         && value.as_bytes()[0].is_ascii_alphanumeric()

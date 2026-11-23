@@ -51,6 +51,7 @@ the Python CLI.</p>
 
 telemetry = Client(transport=&quot;otlp&quot;, strict=True)
 with telemetry.trace(session_id=&quot;thread-42&quot;, harness_id=&quot;harness.pi&quot;) as run:
+    run.progress(&quot;planning&quot;, percent=0)
     with run.span(&quot;lookup&quot;) as span:
         span.set_status(&quot;OK&quot;)
 </code></pre>
@@ -83,8 +84,13 @@ failures, including partial rejections, are available in <code>Client.last_error
 The timeout covers connecting, writing, and reading each request. Best-effort
 export skips invalid spans and attempts later batches after a failed request.
 With <code>strict=True</code>, a delivery error is raised when the application completes
-successfully. An application exception still propagates. Progress messages
-belong to the legacy transport.</p>
+successfully. An application exception still propagates.</p>
+<p><code>run.progress(stage, percent=...)</code> and <code>await run.aprogress(...)</code> publish
+metadata while the trace is open. Supply a public stage identifier. The
+optional percent is between 0 and 100 with up to two decimal places.
+An omitted percent stays unknown. The Rust receiver gets the stage, exact
+scope, and optional percent. The default legacy transport still sends
+the <code>message</code> argument to the Python receiver.</p>
 <p>The OpenAI Agents and LangChain wrappers can use the same client. Set the
 explicit scope on <code>Client</code> for the OpenAI Agents exporter or on the active
 <code>trace</code> for LangChain. The OpenAI wrapper retains its deterministic mapping

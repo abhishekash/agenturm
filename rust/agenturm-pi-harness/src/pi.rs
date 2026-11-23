@@ -1,7 +1,9 @@
 //! A bounded, content-free translation of one actual Pi session JSONL line.
 //! Source text is parsed in the child and never placed in a process fact.
 
-use serde_json::{Value, json};
+use agenturm_protocol::observation::{NativeCostBasis, ReportedCost};
+use serde::Deserialize;
+use serde_json::{Value, json, value::RawValue};
 use sha2::{Digest, Sha256};
 use std::borrow::Cow;
 use std::error::Error;
@@ -235,6 +237,40 @@ fn usage(message: &Value) -> Result<Option<Value>> {
     Ok((!result.is_empty()).then_some(Value::Object(result)))
 }
 
+fn assistant_cost(raw: &[u8]) -> Option<ReportedCost> {
+    #[derive(Deserialize)]
+    struct Cost<'a> {
+        #[serde(borrow)]
+        total: &'a RawValue,
+        #[serde(default, rename = "totalFromProvider")]
+        provider_reported: bool,
+    }
+    #[derive(Deserialize)]
+    struct Usage<'a> {
+        #[serde(borrow)]
+        cost: Cost<'a>,
+    }
+    #[derive(Deserialize)]
+    struct Message<'a> {
+        #[serde(borrow)]
+        usage: Usage<'a>,
+    }
+    #[derive(Deserialize)]
+    struct Row<'a> {
+        #[serde(borrow)]
+        message: Message<'a>,
+    }
+
+    let row: Row<'_> = serde_json::from_slice(raw).ok()?;
+    let cost = row.message.usage.cost;
+    let basis = if cost.provider_reported {
+        NativeCostBasis::ProviderReported
+    } else {
+        NativeCostBasis::Estimate
+    };
+    ReportedCost::native_amount("USD", basis, cost.total)
+}
+
 fn category(name: &str) -> &'static str {
     if name.starts_with("mcp__") {
         "mcp"
@@ -392,14 +428,31 @@ pub(crate) fn translate_line(
         }
         "assistant" => {
             row_id.ok_or("Pi assistant message lacks ID")?;
+            let message_event = format!("{base}:message");
             facts.push(fact(
-                format!("{base}:message"),
+                message_event.clone(),
                 "message",
                 &time_ns,
                 &next,
                 json!({"role":"assistant"}),
                 None,
             ));
+            let stop = message.get("stopReason").and_then(Value::as_str);
+            if matches!(
+                stop,
+                Some("stop" | "length" | "toolUse" | "error" | "aborted")
+            ) && row["message"]["usage"]["cost"]["total"].is_number()
+                && let Some(cost) = assistant_cost(raw)
+            {
+                facts.push(fact(
+                    format!("{message_event}:cost"),
+                    "reported_cost",
+                    &time_ns,
+                    &next,
+                    json!(cost),
+                    Some(&message_event),
+                ));
+            }
             if let Some(counters) = usage(&row["message"])? {
                 facts.push(fact(
                     format!("{base}:usage"),
@@ -679,6 +732,50 @@ mod tests {
             br#"{"type":"message","id":"a","timestamp":"2026-10-24T12:00:00Z","message":{"role":"assistant","content":[{"type":"toolCall","id":"../bad","name":"read"}]}}"#.as_slice(),
         ] {
             assert!(translate_line(raw, &context, "file", 0).is_err());
+        }
+    }
+
+    #[test]
+    fn money_uses_only_a_terminal_assistants_recorded_total_and_basis() {
+        let context = Context {
+            session_id: "s".into(),
+            turn_id: "turn".into(),
+            ..Context::default()
+        };
+        for (stop, cost, expected) in [
+            ("stop", r#"{"total":0}"#, Some("estimate")),
+            (
+                "toolUse",
+                r#"{"total":0.01,"totalFromProvider":true}"#,
+                Some("provider_reported"),
+            ),
+            (
+                "error",
+                r#"{"total":0,"totalFromProvider":false}"#,
+                Some("estimate"),
+            ),
+            ("stop", r#"{"total":0,"totalFromProvider":"true"}"#, None),
+            ("stop", r#"{"input":0.1,"output":0.2}"#, None),
+            ("stop", r#"{"total":1e-400}"#, None),
+            ("deferred", r#"{"total":0}"#, None),
+            ("pending", r#"{"total":0}"#, None),
+        ] {
+            let line = format!(
+                r#"{{"type":"message","id":"msg","timestamp":"2026-10-24T12:00:00Z","message":{{"role":"assistant","stopReason":"{stop}","usage":{{"cost":{cost}}}}}}}"#
+            );
+            let (facts, _) = translate_line(line.as_bytes(), &context, "file", 0).unwrap();
+            let amount = facts
+                .iter()
+                .find(|record| record["kind"] == "reported_cost");
+            assert_eq!(
+                amount.and_then(|row| row["payload"]["native_origin"]["basis"].as_str()),
+                expected,
+                "{stop} {cost}",
+            );
+            if let Some(row) = amount {
+                assert_eq!(row["identity"]["operation_id"], "pi:file:msg:message");
+                assert_eq!(row["identity"]["turn_id"], "turn");
+            }
         }
     }
 

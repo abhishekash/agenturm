@@ -10,6 +10,18 @@ use agenturm_store::{
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
+pub fn query_selected_evals(
+    store: &Store,
+    allowed_sources: &BTreeSet<ExtensionId>,
+    source: &ExtensionId,
+    query: &agenturm_store::SelectedEvalQuery,
+) -> Result<Option<agenturm_store::SelectedEvalPage>, ReadFailure> {
+    authorize(allowed_sources, Some(source.as_str()))?;
+    store
+        .query_selected_eval_outcomes(source, query)
+        .map_err(failure)
+}
+
 /// Fits the version 1 frame even when lawful observation metadata is large.
 const MAX_NATIVE_HISTORY_ROWS: usize = 2_048;
 
@@ -40,6 +52,7 @@ pub enum ReadFailure {
     ExpiredSnapshot { minimum_snapshot_id: ReadSnapshot },
     TraceScopeTooLarge { max_rows: usize },
     EvalTraceNotRetained,
+    HostHistoryDisabled,
     Unavailable,
 }
 

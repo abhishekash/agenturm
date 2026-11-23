@@ -254,22 +254,67 @@ def main():
             assert query(LIVE_SOURCE) == []
             assert checkpoint(LIVE_SOURCE) is None
 
+            progress_url = url.removesuffix("/v1/traces") + "/native/v1/progress"
+            progress = {
+                "event_id": "88" * 16, "trace_id": LIVE_TRACE, "observed_at_unix_ns": "15",
+                "stage": "planning", "percent_basis_points": 0, "session_id": SESSION,
+                "target_source_id": NATIVE_SOURCE, "turn_id": TURN, "worker_id": WORKER,
+            }
+            progress_body = json.dumps(progress).encode()
+            unauthorized_progress = subprocess.run(
+                [sys.executable, Path(__file__).resolve(), "--unauthorized-post",
+                 progress_url, progress_body],
+                capture_output=True, timeout=6, preexec_fn=credentials(reader, client_gid),
+            )
+            assert unauthorized_progress.returncode == 0, unauthorized_progress.stderr
+            private_body = json.dumps(progress | {"message": "private fixture message"}).encode()
+            assert post(progress_url, private_body, "application/json", token)[0] == 400
+            assert query(LIVE_SOURCE) == []
+            assert post(progress_url, progress_body, "application/json", token) == (200, b"{}")
+            [progress_row] = query(LIVE_SOURCE)
+            assert progress_row["observation"]["kind"] == "trace_progress"
+            assert progress_row["observation"]["percent_basis_points"] == 0
+            assert progress_row["identity"]["worker_id"] == WORKER
+            assert progress_row["identity"]["turn_id"] == TURN
+            assert progress_row["observation"]["trace_id"] == LIVE_TRACE
+
             assert post(url, full_export, "application/json", token) == (200, b"{}")
             observed = query(LIVE_SOURCE)
-            assert len(observed) == 1
-            assert observed[0]["identity"]["turn_id"] == TURN
-            assert observed[0]["identity"]["worker_id"] == WORKER
+            assert len(observed) == 2 and progress_row in observed
+            [span_row] = [row for row in observed if row["observation"]["kind"] == "trace_span"]
+            assert span_row["identity"]["turn_id"] == TURN
+            assert span_row["identity"]["worker_id"] == WORKER
             assert "private span name" not in json.dumps(observed)
             committed_checkpoint = checkpoint(LIVE_SOURCE)
             assert committed_checkpoint is not None
             assert post(url, full_export, "application/json", token) == (200, b"{}")
-            assert query(LIVE_SOURCE) == observed
             assert checkpoint(LIVE_SOURCE) == committed_checkpoint
+
+            # An older event can create a receipt for the new cursor transition
+            # while retaining the exact same observation.
+            assert post(progress_url, progress_body, "application/json", token) == (200, b"{}")
+            assert query(LIVE_SOURCE) == observed
+            progress_checkpoint = checkpoint(LIVE_SOURCE)
+            assert progress_checkpoint is not None
+            assert post(progress_url, progress_body, "application/json", token) == (200, b"{}")
+            assert query(LIVE_SOURCE) == observed
+            assert checkpoint(LIVE_SOURCE) == progress_checkpoint
+            amended = json.dumps(progress | {"stage": "amended"}).encode()
+            assert post(progress_url, amended, "application/json", token)[0] == 503
+            assert query(LIVE_SOURCE) == observed
+            linked = json.loads(run(
+                reader, "review", "--harness-id", NATIVE_SOURCE, "--session-id", SESSION,
+                "--turn-id", TURN, "--worker-id", WORKER, "--linked-traces", "--format", "json",
+            ).stdout)
+            assert {row["observation"]["kind"] for row in linked["observations"]} == {
+                "trace_progress", "trace_span",
+            }
 
             stop(service)
             assert post(url, full_export, "application/json", token)[0] == 503
             service = start_service()
             assert post(url, full_export, "application/json", token) == (200, b"{}")
+            assert post(progress_url, progress_body, "application/json", token) == (200, b"{}")
             assert query(LIVE_SOURCE) == observed
 
             child = run(collector, "run", "--source-id", RUN_SOURCE, "--",
@@ -291,7 +336,7 @@ def main():
                 stop(receiver)
             stop(service)
 
-    print("PASS broker OTLP authorization, no direct DB access, JSON and protobuf commits, replay, restart, exact Review and child argv/exit status.")
+    print("PASS broker authorization, no direct DB access, native progress before spans, JSON and protobuf commits, immutable replay, restart, exact Review and child argv/exit status.")
 
 
 if __name__ == "__main__":

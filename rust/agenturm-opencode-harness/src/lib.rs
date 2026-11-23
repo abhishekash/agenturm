@@ -4,4 +4,4 @@
 
 mod sqlite;
 
-pub use sqlite::{UserPromptEvidence, poll, prove_user_prompts, verify_prompt_checkpoint};
+pub use sqlite::{PromptSourceStamp, UserPromptEvidence, poll, poll_legacy, prove_user_prompts};

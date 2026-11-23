@@ -15,6 +15,7 @@ pub(super) struct Head {
     pub length: usize,
     pub host: Option<String>,
     pub bearer: Option<String>,
+    pub history_binding: Option<String>,
 }
 
 pub(super) fn read_head(
@@ -41,6 +42,7 @@ pub(super) fn read_head(
         .filter(|start| !start.is_empty())
         .ok_or_else(invalid)?;
     let (mut host, mut bearer, mut length, mut json) = (None, None, None, false);
+    let mut history_binding = None;
     for raw in lines.take_while(|line| !line.is_empty()) {
         let (name, value) = raw.split_once(':').ok_or_else(invalid)?;
         if name.is_empty()
@@ -65,15 +67,27 @@ pub(super) fn read_head(
             }
             "host" if host.is_none() => host = Some(value.to_owned()),
             "authorization" if bearer.is_none() => bearer = Some(value.to_owned()),
-            "content-length" | "content-type" | "host" | "authorization" | "transfer-encoding"
-            | "content-encoding" | "origin" | "expect" => return Err(invalid()),
+            "x-agenturm-history-binding" if history_binding.is_none() => {
+                history_binding = Some(value.to_owned())
+            }
+            "x-agenturm-history-binding"
+            | "content-length"
+            | "content-type"
+            | "host"
+            | "authorization"
+            | "transfer-encoding"
+            | "content-encoding"
+            | "origin"
+            | "expect" => return Err(invalid()),
             _ => {}
         }
     }
+    let get = start.starts_with("GET ");
     let length = length
-        .filter(|length| *length <= max_body)
+        .or(get.then_some(0))
+        .filter(|length| *length <= max_body && (!get || *length == 0))
         .ok_or_else(invalid)?;
-    if !json {
+    if !get && !json {
         return Err(invalid());
     }
     Ok(Head {
@@ -81,6 +95,7 @@ pub(super) fn read_head(
         length,
         host,
         bearer,
+        history_binding,
     })
 }
 

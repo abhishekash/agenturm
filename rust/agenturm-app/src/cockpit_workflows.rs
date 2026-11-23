@@ -78,6 +78,7 @@ pub(super) fn execute(
     command: WorkCommand,
 ) -> Result<WorkResult, String> {
     match command {
+        WorkCommand::Evaluations(request) => crate::eval_import::workspace_evals(store, *request),
         WorkCommand::HostHistory(before) => store
             .query_host_history(&ObservationQuery {
                 snapshot_id: before.as_ref().map(|position| position.snapshot_id),
@@ -236,6 +237,7 @@ pub(super) fn is_prompt_command(command: &WorkCommand) -> bool {
             | WorkCommand::RevealPrompt(_, _)
             | WorkCommand::RevealOperation(_, _)
             | WorkCommand::RevealTelemetry(_, _)
+            | WorkCommand::RevealEvalDetail(_, _)
     )
 }
 
@@ -266,6 +268,8 @@ pub(super) fn execute_prompt(
                             event_id: prompt.event_id,
                             revision: prompt.revision,
                             timestamp: prompt.observed_at_unix_ns,
+                            snapshot_id: prompt.snapshot_id,
+                            history_identity: prompt.history_identity,
                         }
                     })
                     .collect(),
@@ -282,6 +286,8 @@ pub(super) fn execute_prompt(
                     session_id: &prompt.anchor.session,
                     event_id: &prompt.event_id,
                     revision: prompt.revision,
+                    snapshot_id: prompt.snapshot_id,
+                    history_identity: prompt.history_identity.as_deref(),
                 },
                 &mut delivery,
                 writer,
@@ -325,6 +331,23 @@ pub(super) fn execute_prompt(
                 })
                 .map_err(string)?
                 .ok_or("Exact retained telemetry payload is unavailable")??;
+            Ok(WorkResult::Status(String::new()))
+        }
+        WorkCommand::RevealEvalDetail(detail, mut delivery) => {
+            let selection = super::eval_detail_cli::modal_selection(*detail);
+            let opened;
+            let store = if let Some(writer) = writer {
+                writer
+            } else {
+                opened = Store::open_collector(db).map_err(string)?;
+                &opened
+            };
+            store
+                .with_eval_result_detail(&selection, |body| {
+                    super::eval_detail_cli::deliver_modal(body, &mut delivery)
+                })
+                .map_err(string)?
+                .ok_or("Exact retained evaluation detail is unavailable")??;
             Ok(WorkResult::Status(String::new()))
         }
         _ => Err("Unsupported prompt request".into()),

@@ -47,10 +47,13 @@ await telemetry.trace(
     sessionId: 'thread-42', harnessId: 'harness.codex',
     turnId: 'turn-7', workerId: 'worker-1',
   },
-  async run => run.span('work', async span => {
-    await doWork();
-    span.setStatus('OK');
-  }),
+  async run => {
+    await run.progress('planning', '', 0);
+    await run.span('work', async span => {
+      await doWork();
+      span.setStatus('OK');
+    });
+  },
 );
 ```
 
@@ -85,10 +88,16 @@ receiver's 64-digit lowercase hexadecimal token.
 
 OTLP/HTTP JSON exports trace IDs, parent relationships, timestamps, status
 and optional session, harness, turn, and worker identity. Payloads use fixed span names
-and omit custom attributes, events and task text. The `agenturm` transport
-remains the default and supports progress messages. The OTLP receiver can
+and omit custom attributes, events and task text. The OTLP receiver can
 group unscoped traces under an `agenturm run` invocation. Supply a
 `sessionId` to export from a standalone receiver.
+
+`run.progress(stage, message, percent)` publishes the stage before the
+trace's spans are flushed. For the Rust receiver, supply a public stage
+identifier and omit `message` or pass an empty string to reach the
+optional `percent` argument. Percent uses 0 to 100 and up to two decimal
+places. An omitted percent stays unknown. The default `agenturm` transport
+continues to send the legacy message to the Python receiver.
 
 Node.js 22.23.4 and the published Rust 0.3.2 Linux x86-64 bundle verified
 the launcher, durable parent and source/session identity, nonzero producer

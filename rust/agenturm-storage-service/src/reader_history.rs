@@ -6,8 +6,8 @@ use crate::native_store::{NativeSelection, verify_read_binding};
 use agenturm_kernel::{ExtensionId, ObservationPage, ObservationQuery};
 use agenturm_kernel::{ObservationKind, is_host_source};
 use agenturm_store::{
-    ResolvedTraceReview, SessionPage, SessionQuery, Store, TraceReviewQuery, WorkspaceAnchor,
-    WorkspaceHistory,
+    ResolvedTraceReview, SelectedEvalPage, SelectedEvalQuery, SessionPage, SessionQuery, Store,
+    TraceReviewQuery, WorkspaceAnchor, WorkspaceHistory,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -23,8 +23,15 @@ pub enum ReaderHistoryRequest {
         query: ObservationQuery,
         selection: NativeSelection,
     },
+    HostHistory {
+        query: ObservationQuery,
+    },
     TraceReview {
         query: TraceReviewQuery,
+    },
+    SelectedEvals {
+        source_id: ExtensionId,
+        query: SelectedEvalQuery,
     },
     CheckAnchor {
         anchor: WorkspaceAnchor,
@@ -47,7 +54,9 @@ pub enum ReaderHistoryReply {
     Identity(String),
     Sessions(SessionPage),
     History(ObservationPage),
+    HostHistory(ObservationPage),
     TraceReview(Option<ResolvedTraceReview>),
+    SelectedEvals(Option<SelectedEvalPage>),
     Contains(bool),
 }
 
@@ -68,9 +77,10 @@ pub(crate) fn dispatch(
         }
         None => {}
     }
+    let host_history = matches!(&request, ReaderHistoryRequest::HostHistory { .. });
     let allowed = &allowed
         .iter()
-        .filter(|source| !is_host_source(source.as_str()))
+        .filter(|source| is_host_source(source.as_str()) == host_history)
         .cloned()
         .collect();
     match request {
@@ -95,9 +105,17 @@ pub(crate) fn dispatch(
                 })
                 .map(ReaderHistoryReply::History)
         }
+        ReaderHistoryRequest::HostHistory { query } => {
+            native_read::query_host_history(store, allowed, &query)
+                .map(ReaderHistoryReply::HostHistory)
+        }
         ReaderHistoryRequest::TraceReview { query } => {
             native_read::review_trace_turn(store, allowed, query)
                 .map(ReaderHistoryReply::TraceReview)
+        }
+        ReaderHistoryRequest::SelectedEvals { source_id, query } => {
+            native_read::query_selected_evals(store, allowed, &source_id, &query)
+                .map(ReaderHistoryReply::SelectedEvals)
         }
         ReaderHistoryRequest::CheckAnchor { anchor } => {
             allow_anchor(allowed, &anchor)?;

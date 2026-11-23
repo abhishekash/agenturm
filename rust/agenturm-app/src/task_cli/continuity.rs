@@ -427,6 +427,8 @@ fn with_source<T>(
                 session_id: &selected.session_id,
                 event_id: &source.event_id,
                 revision: source.revision,
+                snapshot_id: None,
+                history_identity: None,
             },
             consume,
         )?

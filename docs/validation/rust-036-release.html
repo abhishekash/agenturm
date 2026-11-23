@@ -1,0 +1,185 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust 036 Release</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / Rust 0.3.6</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-036-release.md">Markdown source ↗</a></nav><h1>Agenturm Rust 0.3.6 release validation</h1>
+<p>This record covers the Linux x86-64 candidate built on November 23, 2026.
+Packaged checks use the executable files from the checksum-verified archive.
+The source checks cover the frozen build commit and subsequent connector
+fixture update identified below.</p>
+<h2>Candidate identity</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Item</th>
+<th>Commit or SHA-256</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Runtime and fixture source</td>
+<td><code>1be53d651dae6bf94e5b0fe006df588651078e32</code></td>
+</tr>
+<tr>
+<td><code>agenturm-0.3.6-linux-x86_64.tar.gz</code></td>
+<td><code>5a325704855774dbdaa333daba48dcbe9935a178aacb94c57f72086c3f27a693</code></td>
+</tr>
+<tr>
+<td><code>bin/agenturm</code></td>
+<td><code>8819045e3f09fe1669cdcdaa0331d16283f1b8d0579c6ee5fda86762882fba17</code></td>
+</tr>
+<tr>
+<td><code>bin/agenturm-storage-service</code></td>
+<td><code>1d0e188bb14f6825bc53d58b86842dc3805140708048e0e1e18848d1e3e888f5</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>The subsequent CI fixture commit <code>46fb52dd63fbc0080c8393bad800e7d6fe28b8ba</code>
+adds a bounded wait for an inherited connector fixture lease during reopen.
+The archive retains the runtime source listed above.
+The final broker fixture also distinguishes adjacent replay from an older
+event replayed after another checkpoint: both preserve the retained events,
+while only adjacent replay must preserve the checkpoint.</p>
+<h2>Completed checks</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Check</th>
+<th>Result</th>
+<th>Qualification host log</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Full Rust workspace</td>
+<td>591 tests passed across 93 suites, with zero failures or ignored tests.</td>
+<td><code>agenturm-036-final-full-workspace.log</code></td>
+</tr>
+<tr>
+<td>Rust workspace libraries</td>
+<td>406 tests passed across 22 suites. All ran with zero failures and zero ignored tests.</td>
+<td><code>agenturm-036-final-libraries.log</code></td>
+</tr>
+<tr>
+<td>Rust CLI process tests</td>
+<td>38 tests passed across 12 integration targets. The suite covered attention, retention, evaluation import, window launch, prompt verification, read incarnation, review receipts, span import, one-shot summaries, tasks, trace launch, and exact trace review.</td>
+<td><code>agenturm-036-final-process.log</code></td>
+</tr>
+<tr>
+<td>Strict Rust Clippy</td>
+<td>Workspace check passed with all targets enabled and warnings denied.</td>
+<td><code>agenturm-036-final-clippy.log</code></td>
+</tr>
+<tr>
+<td>Connector fixture rerun</td>
+<td>All 12 connector cases passed after the bounded fixture reopen wait.</td>
+<td><code>agenturm-036-connectors-rerun.log</code></td>
+</tr>
+<tr>
+<td>Packaged schema 16 → 17</td>
+<td>The 0.3.6 binary reopened history created by the published 0.3.5 package. Read-only lookup kept schema 16 and returned the original numeric cursor page. The first writable evaluation correction upgraded to schema 17, issued a detail selection, and preserved that page. The 0.3.5 binary then refused the upgraded history.</td>
+<td><code>agenturm-036-exact-archive-schema-upgrade.log</code></td>
+</tr>
+<tr>
+<td>Native prompt references</td>
+<td>The separate-principal guest created two fresh histories with the same OpenCode occurrence metadata and numeric watermark. Each opened its own prompt with the current grant, and the second rejected the first history's reference. Older retained prompts reopened after unrelated writes and a later sweep. Live WAL mutations, direct source access by reader and administrator, revoked approval, stale restore selections, and pruned evidence were denied.</td>
+<td><code>agenturm-036-exact-native-telemetry-kvm.log</code></td>
+</tr>
+<tr>
+<td>Private telemetry fence</td>
+<td>Authenticated OTLP admitted exact reported cost alongside private span text. Replay held the watermark stable and metadata stayed body-free. Reader-only disclosure cleared on Escape, <code>q</code>, and Ctrl-C. Revocation waited for delivery. Restore required a fresh approval and selection, and pruning made the selected text unavailable.</td>
+<td><code>agenturm-036-exact-native-telemetry-kvm.log</code></td>
+</tr>
+<tr>
+<td>Private evaluation detail</td>
+<td>Across five Linux identities, the exact evaluation receipt and snapshot controlled disclosure. The fixture checked content-free HTTP metadata, immutable replay, separate fresh histories at the same numeric watermark, restore and prune. Both protected strings cleared before revocation completed on Escape at 60×18 and 120×32, <code>q</code> at 120×32, and Ctrl-C at 60×18. Each run restored its original terminal settings.</td>
+<td><code>agenturm-036-packaged-cockpit-guest.O9kcONGR/guest.log</code></td>
+</tr>
+<tr>
+<td>Packaged evaluation metadata and remote Host</td>
+<td>Evaluation revisions, source summary, broker and remote keyboard return, and live allowlist removal passed. Opt-in Host GET and POST queries respected their scope. Recorded process drill-down returned to the exact sample at both viewport sizes, and restore fenced stale read watermarks.</td>
+<td><code>agenturm-036-packaged-cockpit-guest.O9kcONGR/guest.log</code></td>
+</tr>
+<tr>
+<td>Packaged HTTP progress</td>
+<td>The guest retrieved progress before spans arrived. It checked separate bearer credentials, history binding, exact source, trace, and session scope, sparse pagination at a pinned snapshot, and the native worker link. Replay preserved the original progress, including explicit zero and unknown values.</td>
+<td><code>agenturm-036-exact-remote-progress-guest.6j8wIiwQ/guest.log</code></td>
+</tr>
+<tr>
+<td>Native assistant cost</td>
+<td>Packaged Pi and OpenCode retained reported amounts with explicit rounding markers, provenance, zero, and exact assistant anchors across reopen. Incomplete values were withheld. The 120×32 Usage view displayed the normalized amounts and restored terminal settings.</td>
+<td><code>agenturm-036-exact-native-cost.log</code></td>
+</tr>
+<tr>
+<td>Managed Linux install</td>
+<td>The archive passed foreground collection, restart, backup, prior history and cursor reopen, and systemd user install, restart, inspector read, and uninstall with retained history.</td>
+<td><code>agenturm-036-final-managed-bundle.log</code></td>
+</tr>
+<tr>
+<td>Packaged keyboard journeys</td>
+<td>The retained, strict, and MCP follow-up fixtures passed at 120×32 and 60×18. Retained journeys checked handoff export, verified synthetic routing, and related-evidence return. The strict fixture covered interrupted activity, prompt and MCP views, linked traces, Review, tasks, Usage, and Host. The MCP follow-up exercised revoke, reapproval, and evidence return. All six terminals exited successfully and restored termios.</td>
+<td><code>agenturm-036-packaged-d3-retained.log</code>, <code>agenturm-036-packaged-d3-journeys-strict.log</code>, <code>agenturm-036-packaged-d3-mcp-rerun.log</code></td>
+</tr>
+<tr>
+<td>Packaged producer and client contracts</td>
+<td>All 24 Python and Node checks passed without skips. The suite exercised a real OpenTelemetry SDK with offline instrumentation, exact ancestry and source scope, progress visible before span flush, bearer endpoint binding, partial failure, bounded batches, and opted-in text projection.</td>
+<td><code>agenturm-036-packaged-producers.log</code></td>
+</tr>
+<tr>
+<td>Packaged vendor and private capture fixtures</td>
+<td>All eight selected checks passed without skips. Real OpenAI, LangChain, and LangGraph exercised structural metadata. The five private capture cases covered the standalone producer, OpenAI, LangChain, LangGraph, and Node.</td>
+<td><code>agenturm-036-packaged-cached-sdk.log</code></td>
+</tr>
+<tr>
+<td>Broker OTLP and progress</td>
+<td>Separate identities checked bearer authorization, native progress before span flush, JSON and protobuf admission, stable event rows across interleaved replay, adjacent replay checkpoints, restart, exact Review, and child exit status.</td>
+<td><code>agenturm-036-exact-broker-otlp.log</code></td>
+</tr>
+<tr>
+<td>Native Linux ARM64 candidate</td>
+<td>The native ARM64 runner built the candidate and prior Rust baseline, then qualified archive installation, upgrade, restart, backup, and systemd user uninstall. Both architecture jobs passed at fixture source <code>46fb52d</code>; release attachment follows the tag build.</td>
+<td><a href="https://github.com/abhishekash/agenturm/actions/runs/45105188688">Bundle run 45105188688</a></td>
+</tr>
+<tr>
+<td>Mandatory Rust and vendor CI</td>
+<td>The Rust protocol job passed full workspace tests, strict Clippy, producer integration, independent plugins and separate-principal storage checks. All five vendor jobs passed 16 selected SDK metadata and private-capture cases with skips disabled: OpenAI, Anthropic, LangChain, LangGraph, OpenAI Agents, Pydantic AI and Google ADK.</td>
+<td><a href="https://github.com/abhishekash/agenturm/actions/runs/45105188826">CI run 45105188826</a>, jobs <code>137464734159</code>, <code>137466139535</code>, <code>137466139566</code>, <code>137466139574</code>, <code>137466139575</code>, <code>137466139642</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>The logs are retained under <code>/tmp</code> on the qualification host. The prior
+0.3.5 Linux x86-64 archive and its validation are recorded separately.
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-035-release.md">Rust 0.3.5 archive validation</a></p>
+<h2>CI and architecture checks in progress</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Gate</th>
+<th>Evidence to record</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Broader compatibility CI</td>
+<td>Python-version jobs remain active in the broader run. Rust protocol, vendor jobs, Node and OTLP jobs have passed. <a href="https://github.com/abhishekash/agenturm/actions/runs/45105188826">CI run 45105188826</a></td>
+</tr>
+<tr>
+<td>Linux ARM64 release asset</td>
+<td>Verify the tag build's archive and checksum attachment. Native candidate qualification has passed.</td>
+</tr>
+</tbody>
+</table></div>
+<h2>Rust cutover scope</h2>
+<p>The standalone Rust installation remains opt-in. The broader execution plan
+still requires real Kiro transcript collection, verified isolation for a
+supported production connector, remaining legacy remote workflows, and
+additional native evidence and aggregation coverage.</p>
+<ul>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-linux-bundle.md">Linux bundle and schema upgrade guide</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md">Broker operation and private approvals</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">Retained workflow inventory</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md">Rust-only implementation gates</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-vendor-sdk-producers.md">Vendor SDK producer qualification</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-034-paired-keyboard.md">Paired terminal qualification</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-035-retained-keyboard.md">retained workflow keyboard qualification</a></li>
+</ul>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

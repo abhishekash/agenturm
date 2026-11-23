@@ -8,6 +8,150 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn failure_candidates_page_retained_metadata_at_one_snapshot() {
+    use agenturm_kernel::{
+        ExtensionId, Observation, ObservationIdentity, ObservationKind, ObservationStore,
+        TraceSpan, TraceStatus,
+    };
+    use agenturm_store::Store;
+
+    let scratch = Scratch::new();
+    let db = scratch.0.join("history.sqlite");
+    let db_arg = db.to_str().unwrap();
+    let mut store = Store::open(&db).unwrap();
+    let session_id = "s".repeat(512);
+    let lifecycle = |state: &str| ObservationKind::Lifecycle {
+        state: state.into(),
+        reason_code: None,
+    };
+    let row = |source: &str, event: &str, timestamp, kind| Observation {
+        harness_id: ExtensionId::parse(source).unwrap(),
+        event_id: event.into(),
+        revision: 0,
+        identity: ObservationIdentity::session(session_id.as_str()),
+        observed_at_unix_ns: timestamp,
+        kind,
+    };
+    let trace = |status, span_byte: &str| {
+        let span_id = span_byte.repeat(8);
+        let trace_id = "aa".repeat(16);
+        row(
+            "otlp.fixture",
+            &format!("otlp:{trace_id}:{span_id}"),
+            4,
+            ObservationKind::TraceSpan(TraceSpan {
+                trace_id,
+                span_id,
+                parent_span_id: None,
+                target_source_id: None,
+                started_at_unix_ns: 3,
+                status,
+            }),
+        )
+    };
+    ObservationStore::commit(
+        &mut store,
+        "harness.fixture",
+        None,
+        "cursor-one",
+        &[
+            row("harness.fixture", "failed", 2, lifecycle("failed")),
+            row(
+                "harness.fixture",
+                "interrupted",
+                8,
+                lifecycle("interrupted"),
+            ),
+            row(
+                "harness.fixture",
+                "passed-check",
+                7,
+                ObservationKind::Check {
+                    category: "test".into(),
+                    result: "passed".into(),
+                },
+            ),
+        ],
+    )
+    .unwrap();
+    ObservationStore::commit(
+        &mut store,
+        "otlp.fixture",
+        None,
+        "cursor-two",
+        &[
+            trace(TraceStatus::Error, "bb"),
+            trace(TraceStatus::Unset, "cc"),
+        ],
+    )
+    .unwrap();
+    let search = |flags: &[&str]| {
+        let mut args = vec!["investigate", "failures", "--db", db_arg];
+        args.extend_from_slice(flags);
+        run(&args)
+    };
+    let first = records(search(&["--limit", "2"]));
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0]["observations_examined"], 2);
+    assert_eq!(first[0]["matched"], 0);
+    assert_eq!(first[0]["scope_exhausted"], false);
+    let first_cursor = first[0]["next_cursor"].as_str().unwrap();
+    denied(
+        search(&["--limit", "2", "--kind", "trace", "--cursor", first_cursor]),
+        "another query",
+    );
+    ObservationStore::commit(
+        &mut store,
+        "harness.fixture",
+        Some("cursor-one"),
+        "cursor-three",
+        &[row(
+            "harness.fixture",
+            "late-insertion",
+            3,
+            lifecycle("failed"),
+        )],
+    )
+    .unwrap();
+    let next = records(search(&["--limit", "2", "--cursor", first_cursor]));
+    assert_eq!(next.len(), 2);
+    assert_eq!(next[0]["kind"], "trace");
+    assert_eq!(next[0]["reported_result"], "error");
+    assert_eq!(next[0]["span_id"], "bb".repeat(8));
+    assert!(next[0].get("source_reference").is_none());
+    assert_eq!(next[1]["snapshot_id"], first[0]["snapshot_id"]);
+    let last = records(search(&[
+        "--cursor",
+        next[1]["next_cursor"].as_str().unwrap(),
+    ]));
+    assert_eq!(last.len(), 2);
+    assert_eq!(last[0]["position"]["event_id"], "failed");
+    assert_eq!(last[1]["scope_exhausted"], true);
+    assert_eq!(last[1]["snapshot_id"], first[0]["snapshot_id"]);
+    let filtered = records(search(&[
+        "--source-id",
+        "harness.fixture",
+        "--session-id",
+        &session_id,
+        "--kind",
+        "lifecycle",
+    ]));
+    assert_eq!(filtered.len(), 3);
+    assert_eq!(filtered[0]["position"]["event_id"], "late-insertion");
+    assert_eq!(filtered[1]["position"]["event_id"], "failed");
+    assert!(
+        filtered[..2]
+            .iter()
+            .all(|candidate| candidate["source_id"] == "harness.fixture")
+    );
+    denied(
+        search(&["--kind", "eval"]),
+        "Invalid failure candidate kind",
+    );
+    assert!(!scratch.0.join("history.sqlite.workspace.sqlite").exists());
+}
+
+#[test]
 fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
     let (Some(plugin_host), Some(adapter)) = (
         std::env::var_os("AGENTURM_RUNTIME_PLUGIN_HOST"),
@@ -239,6 +383,10 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
         "selected occurrence",
     );
     let references = checked(list("pi-fixture"));
+    let identity = agenturm_store::Store::open_read_only(&database)
+        .unwrap()
+        .history_identity()
+        .unwrap();
     assert_eq!(
         serde_json::from_str::<Value>(&references).unwrap(),
         json!([
@@ -247,12 +395,16 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
                 "revision": 0,
                 "turn_id": "turn-1",
                 "observed_at_unix_ns": 1795176000000000000u64,
+                "snapshot_id": snapshot,
+                "history_identity": identity,
             },
             {
                 "event_id": event("turn-safe"),
                 "revision": 0,
                 "turn_id": "turn-safe",
                 "observed_at_unix_ns": 1795176001500000000u64,
+                "snapshot_id": snapshot,
+                "history_identity": identity,
             },
         ])
     );
@@ -598,6 +750,13 @@ fn codex_edit_and_command_details_require_exact_occurrences_and_independent_appr
                     "cwd":"/private/fixture", "environment":{"EXAMPLE":"private environment"}}}
         })
     };
+    let command_failure = |turn: &str, invocation: Value, status: &str, exit: i64| {
+        let mut completion = command(turn, 7, invocation);
+        let item = &mut completion["payload"]["item"];
+        item["status"] = json!(status);
+        item["exit_code"] = json!(exit);
+        completion
+    };
     let rows = [
         json!({"type":"session_meta", "payload":{"id":"edit-fixture"}}),
         edit("operation-first", "turn-first", 1, first),
@@ -634,6 +793,19 @@ fn codex_edit_and_command_details_require_exact_occurrences_and_independent_appr
             "turn-command-argv-credential",
             9,
             json!(["pytest", "suite", "--password", "fixture-private-value"]),
+        ),
+        command_failure("turn-reported-fail", json!("cargo check"), "failed", 2),
+        command_failure(
+            "turn-informational",
+            json!(["/bin/bash", "-lc", "rg failure-sentinel fixture"]),
+            "failed",
+            1,
+        ),
+        command_failure(
+            "turn-conflicting",
+            json!("cargo check conflict"),
+            "completed",
+            2,
         ),
         json!({"type":"response_item","timestamp":"2026-11-20T12:00:10Z",
             "payload":{"type":"function_call","turn_id":"turn-fallback","call_id":"fallback",
@@ -780,6 +952,22 @@ fn codex_edit_and_command_details_require_exact_occurrences_and_independent_appr
             config_arg,
         ])
     };
+    let failed_command = |query: &str| {
+        records(run(&[
+            "investigate",
+            "command",
+            query,
+            "--failed",
+            "--db",
+            db_arg,
+            "--config",
+            config_arg,
+            "--source-id",
+            "harness.codex",
+            "--session-id",
+            "edit-fixture",
+        ]))
+    };
     let page = Store::open_read_only(&db)
         .unwrap()
         .query_sessions(&SessionQuery::latest(4))
@@ -853,7 +1041,57 @@ fn codex_edit_and_command_details_require_exact_occurrences_and_independent_appr
     let blocked_commands = find_command("pytest suite", db_arg);
     assert_eq!(blocked_commands.len(), 1);
     assert_eq!(blocked_commands[0]["matched"], 0);
+    let candidates = records(run(&[
+        "investigate",
+        "failures",
+        "--db",
+        db_arg,
+        "--kind",
+        "tool",
+    ]));
+    assert_eq!(candidates.len(), 4);
+    assert!(!json!(candidates).to_string().contains("failure-sentinel"));
+    assert!(!json!(candidates).to_string().contains("cargo check"));
+    assert!(
+        candidates[..3]
+            .iter()
+            .all(|record| record["reported_result"] == "failed")
+    );
+    let metadata_reference = |turn: &str| {
+        let candidate = candidates
+            .iter()
+            .find(|row| row["identity"]["turn_id"] == turn)
+            .unwrap();
+        (
+            candidate["position"]["event_id"].as_str().unwrap(),
+            candidate["source_reference"].as_str().unwrap(),
+        )
+    };
+    let (failed_event, failed_reference) = metadata_reference("turn-reported-fail");
+    denied(
+        command_source(failed_event, failed_reference, db_arg),
+        "source evidence is unavailable",
+    );
+    assert_eq!(failed_command("cargo check")[0]["matched"], 0);
     grant("codex.command_detail");
+    let confirmed = records(command_source(failed_event, failed_reference, db_arg));
+    assert_eq!(confirmed[0]["confirmed_failure"], true);
+    assert_eq!(
+        confirmed[0]["evidence"],
+        json!({"recorded_invocation": "cargo check"})
+    );
+    for turn in ["turn-informational", "turn-conflicting"] {
+        let (candidate, reference) = metadata_reference(turn);
+        denied(
+            command_source(candidate, reference, db_arg),
+            "source evidence is unavailable",
+        );
+    }
+    let confirmed_matches = failed_command("cargo check");
+    assert_eq!(confirmed_matches.len(), 2);
+    assert_eq!(confirmed_matches[0]["confirmed_failure"], true);
+    assert_eq!(confirmed_matches[0]["event_id"], failed_event);
+    assert_eq!(failed_command("rg failure-sentinel")[0]["matched"], 0);
     let matches = find_command("PYTEST suite", db_arg);
     assert_eq!(matches.len(), 2);
     assert_eq!(
@@ -916,6 +1154,10 @@ fn codex_edit_and_command_details_require_exact_occurrences_and_independent_appr
         "--kind",
         "codex.command_detail",
     ]));
+    denied(
+        command_source(failed_event, failed_reference, db_arg),
+        "source evidence is unavailable",
+    );
     denied(
         command_source(event, reference, db_arg),
         "source evidence is unavailable",

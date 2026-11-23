@@ -36,6 +36,7 @@ export interface SpanHandle {
 
 export interface RunHandle {
   readonly trace_id: string;
+  /** For OTLP, publish a safe stage identifier and optional two-decimal percent to the Rust receiver. */
   progress(stage: string, message?: string, percent?: number): Promise<boolean>;
   span<T>(name: string, callback: (span: SpanHandle) => T | Promise<T>): Promise<T>;
   span<T>(name: string, options: SpanOptions, callback: (span: SpanHandle) => T | Promise<T>): Promise<T>;

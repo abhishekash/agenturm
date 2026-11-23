@@ -145,6 +145,16 @@ class Client:
         except (OSError, ValueError, KeyError, TypeError) as exc:
             return self._failure(exc)
 
+    def _post_otlp_progress(self, trace_id, scope, stage, percent):
+        try:
+            if self._configuration_error is not None:
+                raise self._configuration_error
+            self._otlp.progress(trace_id, _random_hex(16), scope, stage, percent)
+            self.last_error = None
+            return True
+        except (OSError, ValueError, TypeError) as exc:
+            return self._failure(exc)
+
     def _failure(self, exc):
         self.last_error = exc
         if self.strict:
@@ -235,7 +245,7 @@ class Run:
         if self._closed:
             raise RuntimeError("run is already closed")
         if self._otlp_scope is not None:
-            return self.client._failure(ValueError("OTLP transport does not export progress messages"))
+            return self.client._post_otlp_progress(self.trace_id, self._otlp_scope, stage, percent)
         payload = {"trace_id": self.trace_id, "stage": str(stage), "message": str(message), "service": self.client.service}
         if percent is not None:
             payload["percent"] = percent

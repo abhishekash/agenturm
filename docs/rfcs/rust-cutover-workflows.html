@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 0.3.5</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">Markdown source ↗</a></nav><h1>Rust cutover workflow inventory</h1>
+</style></head><body><main><nav><strong>Agenturm / Rust 0.3.6 candidate</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">Markdown source ↗</a></nav><h1>Rust cutover workflow inventory</h1>
 <p>Baseline is the Python <code>v0.2.8</code> tag and the published Rust 0.3.1 Linux bundle. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.</p>
 <p>The current implementation scope retains the remaining workflows. Remote
 receiver access, remaining eval views, automatic retention, recorded cost and
@@ -38,7 +38,7 @@ migration of Python-era databases remains outside the Rust-only product scope.</
 </tr>
 <tr>
 <td><code>import-evals</code></td>
-<td>Import bounded <code>agent-evals</code> result metadata into an exact retained OTLP trace source. Use <code>evals</code> to read the current outcome in text or JSON. <code>evals --history</code> pages retained revisions and <code>evals --summary</code> reports current source outcomes with page counts. Private result detail and richer aggregation remain open.</td>
+<td>Import bounded <code>agent-evals</code> result metadata into an exact retained OTLP trace source. Use <code>evals</code> to read the current outcome in text or JSON. <code>evals --history</code> pages retained revisions and <code>evals --summary</code> reports current source outcomes with page counts. In the cockpit, <code>E</code> opens evaluations and <code>d</code> opens approved private result text. Cross-source aggregation remains open.</td>
 </tr>
 <tr>
 <td><code>migrate-db</code></td>
@@ -57,8 +57,8 @@ migration of Python-era databases remains outside the Rust-only product scope.</
 <td>Rust cockpit and noninteractive Review use exact source, session, turn, and worker scope. The CLI reads a bounded page and exports metadata receipts in Markdown, HTML, and JSON. It can list the explicitly linked spans of a turn, or resolve a trace to its unique retained turn using producer-provided source, session, turn, and worker identity.</td>
 </tr>
 <tr>
-<td><code>investigate path|command|instruction|source</code></td>
-<td>Rust local and broker investigations use exact source/session scope, bounded paging, current-grant proofs, and pinned source references. Paths and recorded command invocations currently come from verified Codex occurrences. Receiver-wide search and legacy failure filtering remain open.</td>
+<td><code>investigate failures|path|command|instruction|source</code></td>
+<td>Rust local and broker investigations page retained failure metadata across authorized sources. Exact-scope searches for instructions, paths and commands use current grants and pinned source references. Codex command search accepts <code>--failed</code> for source-confirmed failures. See <a href="#investigate-retained-failures">failure investigation</a> for the supported kinds and native evidence limits.</td>
 </tr>
 <tr>
 <td><code>task list|create|show|archive</code></td>
@@ -75,6 +75,31 @@ migration of Python-era databases remains outside the Rust-only product scope.</
 </tbody>
 </table></div>
 <p>The CLI maintainer owns implementation and installed scenarios for the retained commands. Any later retirement requires an explicit product decision. <a href="https://github.com/abhishekash/agenturm/blob/v0.2.8/observatory/__main__.py">Python command source</a> · <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cockpit-workflow-coverage.md">Rust workflow coverage</a></p>
+<h3>Investigate retained failures</h3>
+<pre><code class="language-sh">agenturm investigate failures --db history.sqlite --limit 50
+agenturm broker investigate failures --broker-config broker.json --kind tool
+agenturm investigate command 'cargo check' --failed --source-id harness.codex \
+  --session-id session-id --db history.sqlite --config sources.json
+</code></pre>
+<p><code>failures</code> scans authorized observation metadata, with optional exact
+<code>--source-id</code>, <code>--session-id</code> and <code>--kind</code> filters. Supported kinds are
+<code>lifecycle</code>, <code>tool</code>, <code>mcp</code>, <code>check</code> and <code>trace</code>. It reports explicit failed
+lifecycle and check states, failed or denied tool and MCP calls, and error
+span statuses. Eval outcomes are available separately through <code>evals</code>.</p>
+<p>Each newline-delimited JSON page ends in a coverage record. <code>--limit</code> sets
+the number of observations examined, from 1 to 100. Pass <code>next_cursor</code> as
+<code>--cursor</code> with the same filters to continue at the pinned read snapshot.
+A page can contain zero matches and a continuation cursor.</p>
+<p>Each candidate carries a reported result and exact occurrence metadata.
+Eligible Codex shell candidates include a <code>source_reference</code>. Open the
+reference with <code>investigate source EVENT_ID --reference TOKEN</code> and the
+appropriate local or broker configuration. Successful source inspection
+requires a current Codex command-detail grant and verifies the same retained
+occurrence and its terminal evidence. <code>command --failed</code> applies that same
+proof before emitting a matching invocation. Known informational exit-one
+commands, such as a plain <code>rg</code> with no matches, and contradictory terminal
+records are excluded from confirmed results. Receiver-wide discovery reads
+metadata. Phrase search of private evidence requires an exact source and session.</p>
 <h3>Open the cockpit in a new window</h3>
 <p>Run <code>agenturm cockpit --new-window</code> on Linux. From a tmux pane, the cockpit
 opens a window in that session. From a Linux desktop, it can launch GNOME
@@ -95,10 +120,44 @@ window. The cockpit exits in the new window.</p>
 <p>Rows carry <code>trace_id</code>, <code>span_id</code>, optional <code>parent_span_id</code>, <code>start_unix_nano</code> and <code>end_unix_nano</code>, and optional <code>status</code> (<code>UNSET</code>, <code>OK</code> or <code>ERROR</code>). Timestamps accept integers or decimal strings. IDs use 32 hexadecimal characters for the trace and 16 for each span. A parent outside the file is valid for a partial export.</p>
 <p>A span needs an exact session ID from its <code>attributes</code> or the explicit <code>--session-id</code> argument. Span-level session aliases must agree, including <code>session.id</code>, <code>gen_ai.conversation.id</code>, and the legacy session, conversation and thread aliases. The argument fills missing session IDs and must match any IDs carried by the file. A native turn link requires <code>agenturm.source.id</code> and <code>agenturm.turn.id</code>. A worker link adds <code>agenturm.worker.id</code>.</p>
 <p>Imports retain trace structure, timing, status, exact scope, and explicitly reported cost and token usage. Import discards span names, payloads, events, links, and eval results. Those legacy fields and workflows have separate cutover coverage. Exact structural replays deduplicate across JSONL and OTLP JSON under the same source ID. Conflicting retained identities reject the entire import.</p>
+<h3>Publish live progress</h3>
+<p>The Python and Node manual SDKs publish <code>Run.progress</code> immediately to the
+Rust trace receiver. The progress route uses the same loopback authority
+and producer bearer as spans. The direct JSON route is
+<code>POST /native/v1/progress</code> with one event per request and a 4 KiB limit.</p>
+<p>Each event carries a nonzero 32-digit hexadecimal <code>event_id</code> and <code>trace_id</code>,
+a decimal-string <code>observed_at_unix_ns</code>, and a public <code>stage</code> of 1 to 64 ASCII
+letters, digits, periods, underscores, or hyphens beginning with a letter.
+Send optional integer <code>percent_basis_points</code> from 0 to 10000. Each basis
+point is 0.01 percent. Zero is an explicit value and omission means unknown.
+The SDK sends no progress message or arbitrary attributes.</p>
+<p>The receiver selects the storage source. A standalone receiver requires
+<code>session_id</code>. The launcher may supply its existing local run identity
+when the event targets no native harness. Native linkage uses an explicit
+<code>session_id</code> and <code>target_source_id</code>, plus <code>turn_id</code> and <code>worker_id</code> when
+applicable. Linked reads require a retained native anchor. The event ID is
+immutable within its storage source, including after retention expires
+the event.</p>
+<p>Activity shows the retained events. Traces shows the latest report per
+exact scope on the loaded page, even while the parent span is still open.
+Progress records express reported stages and percentages. Span completion
+and native lifecycle state have their own evidence.</p>
 <h3>Reported token usage</h3>
-<p>OTLP JSON, OTLP protobuf and native JSONL retain explicit input, output, total, cache-read input, cache-write input, and reasoning-output token counts. The projector accepts supported <code>gen_ai.usage.*</code>, <code>llm.usage.*</code> and OpenInference <code>llm.token_count.*</code> fields, including the legacy explicit cache and reasoning aliases. The Python and Node producers forward the supported scalar counters.</p>
-<p>Each counter accepts a nonnegative integer through the signed 64-bit limit. Zero is a reported value. Missing or invalid values and conflicting aliases leave that counter absent. Each breakdown keeps its originally reported units. The projector preserves the producer's input and output counts and records total only when supplied. A batch can contain up to 1,024 spans with cost and token usage evidence recorded beside each span in the same commit.</p>
-<p>Workspace Usage and the originating OTLP session's Usage show the individual reports. <code>query</code> includes the source, exact session, trace and span, and any reported turn, worker and target harness. Aggregate usage views remain open for traces where multiple instrumentation layers report the same usage.</p>
+<p>OTLP JSON, OTLP protobuf and native JSONL retain explicit input, output, total,
+cache-read input, cache-write input, and reasoning-output token counts. The
+projector accepts supported <code>gen_ai.usage.*</code>, <code>llm.usage.*</code> and OpenInference
+<code>llm.token_count.*</code> fields, including the legacy explicit cache and reasoning
+aliases. The Python and Node producers forward the supported scalar counters.</p>
+<p>Each counter accepts a nonnegative integer through the signed 64-bit limit.
+Zero is a reported value. Missing or invalid values and conflicting aliases
+leave that counter absent. Each breakdown keeps its originally reported units.
+The projector preserves the producer's input and output counts and records total
+only when supplied. A batch can contain up to 1,024 spans with cost and token
+usage evidence recorded beside each span in the same commit.</p>
+<p>Workspace Usage and the originating OTLP session's Usage show the individual
+reports. <code>query</code> includes the source, exact session, trace and span, and
+any reported turn, worker and target harness. Aggregate usage views remain
+open for traces where multiple instrumentation layers report the same usage.</p>
 <h3>Reported cost</h3>
 <p>OTLP and native JSONL spans can carry <code>agenturm.reported_cost.amount</code> and
 <code>agenturm.reported_cost.currency</code>. The Rust-compatible Python and Node
@@ -116,6 +175,22 @@ session's Usage show the amount and currency beside the source evidence.
 Multiple spans can repeat a report, so Usage shows individual records and
 leaves totals open. Kiro credits use their native credit unit. Agenturm
 does not derive an amount from tokens, model prices, or credits.</p>
+<p>The native Pi and OpenCode adapters also retain terminal assistant-message
+cost reports in USD. Pi reads <code>message.usage.cost.total</code> with basis
+<code>estimate</code> unless Pi explicitly marks <code>totalFromProvider: true</code>. Those
+records carry basis <code>provider_reported</code>. OpenCode reads the completed
+assistant message's <code>cost</code> with basis <code>unknown</code>, since the stored amount can
+come from either endpoint accounting or OpenCode's rate estimate.
+<a href="https://github.com/earendil-works/pi/blob/main/packages/ai/README.md#quick-start">Pi cost contract</a> ·
+<a href="https://github.com/anomalyco/opencode/blob/v2.2.5/packages/schema/src/session-message.ts">OpenCode assistant schema</a> ·
+<a href="https://github.com/anomalyco/opencode/blob/v2.2.5/packages/core/src/session/usage.ts">OpenCode cost selection</a></p>
+<p>Native records expose <code>native_origin.basis</code>, <code>native_origin.rounded</code>,
+the retained revision and an operation ID that identifies the associated
+assistant event. Amounts round to the nearest nano-unit. Positive amounts
+that would round to zero are omitted, preserving the distinction from
+an explicit zero. Usage shows the individual reports in the selected
+history page. Forks can copy assistant histories and telemetry can repeat
+the same provider report, so a combined cost total remains unknown.</p>
 <h3>Import evaluation results</h3>
 <p>Import the spans first, then select their exact OTLP source for the outcome
 import and lookup. These commands also support <code>--broker-config</code> in place
@@ -132,8 +207,8 @@ Each outcome requires a 32-character hexadecimal <code>trace_id</code> and a boo
 scores. Each score supplies a <code>scorer</code> plus a boolean <code>passed</code>, a numeric
 <code>score</code>, or both. Metadata labels allow up to 128 ASCII characters. They
 start with a letter or digit and can also contain <code>._:/@+-</code>. The importer
-rejects recognized credential prefixes and discards producer errors, score
-detail text, inputs, outputs, and other result fields.</p>
+rejects recognized credential prefixes in metadata labels. Metadata is the
+default import. Optional private capture is described below.</p>
 <p>Every result must match a retained trace under the selected source ID.
 Duplicate trace IDs within a batch or a missing match reject the whole batch.
 Evaluation pass/fail is independent of the execution status of the spans.
@@ -153,7 +228,50 @@ fields. These views read current state on each invocation; concurrent changes
 can change a later page. Counts describe the displayed page, not a whole-history
 total. Pruned bodies stay absent from both views even if a trace ID reappears.
 The same options work through the broker and keep its source allowlist.
-Private result detail and cross-source/provider/scorer aggregation remain open.</p>
+Cross-source, provider and scorer aggregation remain open.</p>
+<h3>Private evaluation text</h3>
+<p>Use <code>--include-detail</code> to capture the <code>error</code> string on a result and the
+<code>detail</code> string on each score. The capture records the original score position.
+The allowed fields accept up to 2 KiB each, 4 KiB per result and 64 KiB per
+import. Scalar text is the supported format. A credential-like or unsafe
+string rejects the batch before any result or detail commits.</p>
+<pre><code class="language-sh">agenturm import-evals --include-detail --file results.json --db history.sqlite --source-id otlp.exported
+agenturm eval-detail grant --db history.sqlite --source-id otlp.exported
+agenturm eval-detail preview --db history.sqlite --selection selection.json
+agenturm eval-detail revoke --db history.sqlite --source-id otlp.exported
+</code></pre>
+<p>Copy the <code>detail_selection</code> object from <code>evals --json</code> for the exact revision
+into <code>selection.json</code>. It contains the source, trace, revision, receipt ID
+and snapshot. The receipt is issued with the new result revision and preserves
+the original capture across retries. Reusing the same metadata with supplied
+details requires the exact original capture. Capturing detail for an existing
+metadata-only result requires a distinct corrected metadata revision. Replay
+preserves the current version and leaves expired text unavailable.</p>
+<p>Disclosure requires an <code>eval.result_detail</code> approval for the exact OTLP
+source. The viewer verifies the capture receipt and its supporting retained
+trace occurrence at the supplied snapshot. Pruning that supporting occurrence
+removes the text and preserves the outcome's revision and detail digest.
+Restored backups require fresh approval and a fresh snapshot. Metadata views
+only return result metadata and the selection reference. See
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md#private-evaluation-text">broker evaluation detail commands</a>.</p>
+<p>In the cockpit, press <code>E</code> from global or session Traces to choose a trace on
+the loaded page. The picker preserves its selection by exact OTLP source and
+trace ID, including when two sources report the same trace ID. Enter opens
+the retained revisions and marks the current one. The detail shows the
+execution status counts for the loaded spans alongside the separate evaluation
+verdict. Page Up and Page Down scroll task, model and scorer metadata. Missing
+score values appear as unknown.</p>
+<p>Press <code>s</code> for the source's current outcomes, or <code>]</code> to continue when another
+page is available. Escape returns to the revision, trace selection and Traces
+views in order. The loaded trace snapshot establishes its identity. Each
+evaluation request reads current retained metadata from that history and
+fails when the selected snapshot has expired or the receiver has restored a
+different branch. This metadata view also works through the broker and the
+authenticated HTTP reader for allowed OTLP sources.</p>
+<p>In the local or broker cockpit, select a revision marked <code>d private</code> to open
+its imported evaluation text. Escape clears the private view and returns to
+the same selection. The private view uses the current approval and expires
+after 25 seconds.</p>
 <h3>Task Git patches</h3>
 <p>Save a patch from the Linux checkout attached to a task. The optional revision
 checks which version of the task receives the capture. The command reports
@@ -204,7 +322,7 @@ client's checkout.</p>
 </tr>
 <tr>
 <td>Usage, cost and host history</td>
-<td>Rust shows recorded token counts, Kiro credits and individually reported OTLP costs. <code>host record</code> and <code>broker host record</code> capture optional Linux load, memory and CPU counters with known same-user processes. <code>6</code> opens recorded samples, then Enter opens the process list and exact process history. A v2 collection <code>host</code> block enables scheduled capture for local, broker, and managed Linux collectors. Aggregate cost views and HTTP receiver Host access remain open. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md#record-and-read-host-history">Host history</a></td>
+<td>Rust shows recorded token counts, Kiro credits and individually reported OTLP costs. <code>host record</code> and <code>broker host record</code> capture optional Linux load, memory and CPU counters with known same-user processes. <code>6</code> opens recorded samples, then Enter opens the process list and exact process history. A v2 collection <code>host</code> block enables scheduled capture for local, broker, and managed Linux collectors. The HTTP reader can expose recorded Host history when started with <code>--include-host</code>. Aggregate cost views remain open. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md#record-and-read-host-history">Host history</a></td>
 </tr>
 </tbody>
 </table></div>

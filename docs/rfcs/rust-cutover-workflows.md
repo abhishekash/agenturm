@@ -18,17 +18,48 @@ migration of Python-era databases remains outside the Rust-only product scope.
 | `serve` | Keep local OTLP collection and source watch through `serve-traces`, `discover --follow` and `collect --watch` or the Linux user service. `broker serve-history` serves the native broker's retained metadata on loopback through a dedicated reader. The Python `/api/*` wire surface, direct remote TLS and arbitrary legacy JSONL tail remain open. |
 | `run` | Keep command launch, exit status, local trace delivery and exact source/session linkage. Rust `run` configures OTLP for an instrumented producer. Python-specific script and module injection requires a product decision. |
 | `import-jsonl` | Use `import-jsonl` for supported native span exports and `import-traces` for OTLP JSON. Both retain structural trace metadata with exact session scope. Legacy payload and cost import parity remains open. |
-| `import-evals` | Import bounded `agent-evals` result metadata into an exact retained OTLP trace source. Use `evals` to read the current outcome in text or JSON. `evals --history` pages retained revisions and `evals --summary` reports current source outcomes with page counts. Private result detail and richer aggregation remain open. |
+| `import-evals` | Import bounded `agent-evals` result metadata into an exact retained OTLP trace source. Use `evals` to read the current outcome in text or JSON. `evals --history` pages retained revisions and `evals --summary` reports current source outcomes with page counts. In the cockpit, `E` opens evaluations and `d` opens approved private result text. Cross-source aggregation remains open. |
 | `migrate-db` | Retired by the Rust-only product decision. Rust `backup` and `restore` operate on Rust-owned state. |
 | `prune` | Keep explicit age-based retention. Rust `prune --before-unix-ns` and persisted `retention set\|disable\|run\|status` are available. New default cockpit histories use 14 days; existing histories retain their policy. Collector, cockpit, local receiver and broker writer ticks apply it, while receipts and checkpoints survive cleanup. Broker policy changes require maintenance authority. |
 | `attention status`, `attention watch` | Rust reads local history or an attached Rust receiver and keeps seen state in the user's workspace. Remote watch emits a snapshot and changes from retained native lifecycle evidence. Python receiver observation and cross-host terminal routing remain open. |
 | `review` | Rust cockpit and noninteractive Review use exact source, session, turn, and worker scope. The CLI reads a bounded page and exports metadata receipts in Markdown, HTML, and JSON. It can list the explicitly linked spans of a turn, or resolve a trace to its unique retained turn using producer-provided source, session, turn, and worker identity. |
-| `investigate path\|command\|instruction\|source` | Rust local and broker investigations use exact source/session scope, bounded paging, current-grant proofs, and pinned source references. Paths and recorded command invocations currently come from verified Codex occurrences. Receiver-wide search and legacy failure filtering remain open. |
+| `investigate failures\|path\|command\|instruction\|source` | Rust local and broker investigations page retained failure metadata across authorized sources. Exact-scope searches for instructions, paths and commands use current grants and pinned source references. Codex command search accepts `--failed` for source-confirmed failures. See [failure investigation](#investigate-retained-failures) for the supported kinds and native evidence limits. |
 | `task list\|create\|show\|archive` | Rust supports create, exact show, completion, archiving and restoration. The default task list hides archived entries. `list --all` and `show` can still read them. |
 | `task link\|unlink\|handoff\|backup` | Rust links use exact native source/session/turn/worker identities. `task handoff` reads one saved task revision and renders Markdown, HTML, or JSON. Its private export writes a Markdown and HTML pair. Workspace backup retains the ledger and supports restore into a new history directory. |
 | `task update\|snapshot\|brief\|decide\|decisions\|draft\|approve-draft` | Rust supports revision-checked editing, local Git summaries, opt-in tracked text patches, five structured brief fields, and immutable decisions with supersession. Drafts and decision citations can use one exact retained user prompt. Approval and excerpt reopening require revalidation of the original grant and source receipt. Broader Review evidence projections remain open. |
 
 The CLI maintainer owns implementation and installed scenarios for the retained commands. Any later retirement requires an explicit product decision. [Python command source](https://github.com/abhishekash/agenturm/blob/v0.2.8/observatory/__main__.py) · [Rust workflow coverage](rust-cockpit-workflow-coverage.md)
+
+### Investigate retained failures
+
+```sh
+agenturm investigate failures --db history.sqlite --limit 50
+agenturm broker investigate failures --broker-config broker.json --kind tool
+agenturm investigate command 'cargo check' --failed --source-id harness.codex \
+  --session-id session-id --db history.sqlite --config sources.json
+```
+
+`failures` scans authorized observation metadata, with optional exact
+`--source-id`, `--session-id` and `--kind` filters. Supported kinds are
+`lifecycle`, `tool`, `mcp`, `check` and `trace`. It reports explicit failed
+lifecycle and check states, failed or denied tool and MCP calls, and error
+span statuses. Eval outcomes are available separately through `evals`.
+
+Each newline-delimited JSON page ends in a coverage record. `--limit` sets
+the number of observations examined, from 1 to 100. Pass `next_cursor` as
+`--cursor` with the same filters to continue at the pinned read snapshot.
+A page can contain zero matches and a continuation cursor.
+
+Each candidate carries a reported result and exact occurrence metadata.
+Eligible Codex shell candidates include a `source_reference`. Open the
+reference with `investigate source EVENT_ID --reference TOKEN` and the
+appropriate local or broker configuration. Successful source inspection
+requires a current Codex command-detail grant and verifies the same retained
+occurrence and its terminal evidence. `command --failed` applies that same
+proof before emitting a matching invocation. Known informational exit-one
+commands, such as a plain `rg` with no matches, and contradictory terminal
+records are excluded from confirmed results. Receiver-wide discovery reads
+metadata. Phrase search of private evidence requires an exact source and session.
 
 ### Open the cockpit in a new window
 
@@ -62,6 +93,33 @@ Rows carry `trace_id`, `span_id`, optional `parent_span_id`, `start_unix_nano` a
 A span needs an exact session ID from its `attributes` or the explicit `--session-id` argument. Span-level session aliases must agree, including `session.id`, `gen_ai.conversation.id`, and the legacy session, conversation and thread aliases. The argument fills missing session IDs and must match any IDs carried by the file. A native turn link requires `agenturm.source.id` and `agenturm.turn.id`. A worker link adds `agenturm.worker.id`.
 
 Imports retain trace structure, timing, status, exact scope, and explicitly reported cost and token usage. Import discards span names, payloads, events, links, and eval results. Those legacy fields and workflows have separate cutover coverage. Exact structural replays deduplicate across JSONL and OTLP JSON under the same source ID. Conflicting retained identities reject the entire import.
+
+### Publish live progress
+
+The Python and Node manual SDKs publish `Run.progress` immediately to the
+Rust trace receiver. The progress route uses the same loopback authority
+and producer bearer as spans. The direct JSON route is
+`POST /native/v1/progress` with one event per request and a 4 KiB limit.
+
+Each event carries a nonzero 32-digit hexadecimal `event_id` and `trace_id`,
+a decimal-string `observed_at_unix_ns`, and a public `stage` of 1 to 64 ASCII
+letters, digits, periods, underscores, or hyphens beginning with a letter.
+Send optional integer `percent_basis_points` from 0 to 10000. Each basis
+point is 0.01 percent. Zero is an explicit value and omission means unknown.
+The SDK sends no progress message or arbitrary attributes.
+
+The receiver selects the storage source. A standalone receiver requires
+`session_id`. The launcher may supply its existing local run identity
+when the event targets no native harness. Native linkage uses an explicit
+`session_id` and `target_source_id`, plus `turn_id` and `worker_id` when
+applicable. Linked reads require a retained native anchor. The event ID is
+immutable within its storage source, including after retention expires
+the event.
+
+Activity shows the retained events. Traces shows the latest report per
+exact scope on the loaded page, even while the parent span is still open.
+Progress records express reported stages and percentages. Span completion
+and native lifecycle state have their own evidence.
 
 ### Reported token usage
 
@@ -103,6 +161,24 @@ Multiple spans can repeat a report, so Usage shows individual records and
 leaves totals open. Kiro credits use their native credit unit. Agenturm
 does not derive an amount from tokens, model prices, or credits.
 
+The native Pi and OpenCode adapters also retain terminal assistant-message
+cost reports in USD. Pi reads `message.usage.cost.total` with basis
+`estimate` unless Pi explicitly marks `totalFromProvider: true`. Those
+records carry basis `provider_reported`. OpenCode reads the completed
+assistant message's `cost` with basis `unknown`, since the stored amount can
+come from either endpoint accounting or OpenCode's rate estimate.
+[Pi cost contract](https://github.com/earendil-works/pi/blob/main/packages/ai/README.md#quick-start) ·
+[OpenCode assistant schema](https://github.com/anomalyco/opencode/blob/v2.2.5/packages/schema/src/session-message.ts) ·
+[OpenCode cost selection](https://github.com/anomalyco/opencode/blob/v2.2.5/packages/core/src/session/usage.ts)
+
+Native records expose `native_origin.basis`, `native_origin.rounded`,
+the retained revision and an operation ID that identifies the associated
+assistant event. Amounts round to the nearest nano-unit. Positive amounts
+that would round to zero are omitted, preserving the distinction from
+an explicit zero. Usage shows the individual reports in the selected
+history page. Forks can copy assistant histories and telemetry can repeat
+the same provider report, so a combined cost total remains unknown.
+
 ### Import evaluation results
 
 Import the spans first, then select their exact OTLP source for the outcome
@@ -123,8 +199,8 @@ Each outcome requires a 32-character hexadecimal `trace_id` and a boolean
 scores. Each score supplies a `scorer` plus a boolean `passed`, a numeric
 `score`, or both. Metadata labels allow up to 128 ASCII characters. They
 start with a letter or digit and can also contain `._:/@+-`. The importer
-rejects recognized credential prefixes and discards producer errors, score
-detail text, inputs, outputs, and other result fields.
+rejects recognized credential prefixes in metadata labels. Metadata is the
+default import. Optional private capture is described below.
 
 Every result must match a retained trace under the selected source ID.
 Duplicate trace IDs within a batch or a missing match reject the whole batch.
@@ -145,7 +221,59 @@ fields. These views read current state on each invocation; concurrent changes
 can change a later page. Counts describe the displayed page, not a whole-history
 total. Pruned bodies stay absent from both views even if a trace ID reappears.
 The same options work through the broker and keep its source allowlist.
-Private result detail and cross-source/provider/scorer aggregation remain open.
+Cross-source, provider and scorer aggregation remain open.
+
+### Private evaluation text
+
+Use `--include-detail` to capture the `error` string on a result and the
+`detail` string on each score. The capture records the original score position.
+The allowed fields accept up to 2 KiB each, 4 KiB per result and 64 KiB per
+import. Scalar text is the supported format. A credential-like or unsafe
+string rejects the batch before any result or detail commits.
+
+```sh
+agenturm import-evals --include-detail --file results.json --db history.sqlite --source-id otlp.exported
+agenturm eval-detail grant --db history.sqlite --source-id otlp.exported
+agenturm eval-detail preview --db history.sqlite --selection selection.json
+agenturm eval-detail revoke --db history.sqlite --source-id otlp.exported
+```
+
+Copy the `detail_selection` object from `evals --json` for the exact revision
+into `selection.json`. It contains the source, trace, revision, receipt ID
+and snapshot. The receipt is issued with the new result revision and preserves
+the original capture across retries. Reusing the same metadata with supplied
+details requires the exact original capture. Capturing detail for an existing
+metadata-only result requires a distinct corrected metadata revision. Replay
+preserves the current version and leaves expired text unavailable.
+
+Disclosure requires an `eval.result_detail` approval for the exact OTLP
+source. The viewer verifies the capture receipt and its supporting retained
+trace occurrence at the supplied snapshot. Pruning that supporting occurrence
+removes the text and preserves the outcome's revision and detail digest.
+Restored backups require fresh approval and a fresh snapshot. Metadata views
+only return result metadata and the selection reference. See
+[broker evaluation detail commands](rust-broker-commands.md#private-evaluation-text).
+
+In the cockpit, press `E` from global or session Traces to choose a trace on
+the loaded page. The picker preserves its selection by exact OTLP source and
+trace ID, including when two sources report the same trace ID. Enter opens
+the retained revisions and marks the current one. The detail shows the
+execution status counts for the loaded spans alongside the separate evaluation
+verdict. Page Up and Page Down scroll task, model and scorer metadata. Missing
+score values appear as unknown.
+
+Press `s` for the source's current outcomes, or `]` to continue when another
+page is available. Escape returns to the revision, trace selection and Traces
+views in order. The loaded trace snapshot establishes its identity. Each
+evaluation request reads current retained metadata from that history and
+fails when the selected snapshot has expired or the receiver has restored a
+different branch. This metadata view also works through the broker and the
+authenticated HTTP reader for allowed OTLP sources.
+
+In the local or broker cockpit, select a revision marked `d private` to open
+its imported evaluation text. Escape clears the private view and returns to
+the same selection. The private view uses the current approval and expires
+after 25 seconds.
 
 ### Task Git patches
 
@@ -184,7 +312,7 @@ client's checkout.
 | OpenAI, Anthropic, LangChain and LangGraph | Python 0.2.8 instruments OpenAI and Anthropic calls and LangChain automatically, with explicit callbacks also available for LangChain and LangGraph. Inventory producer-side exporters and test selected integrations against Rust before claiming equivalent coverage. Python Agenturm bootstrap remains a product decision. SDK integration maintainer and release owner. |
 | OpenAI Agents SDK, Pydantic AI, Google ADK, Node.js | Python 0.2.8 supplies an Agents SDK adapter and exercises vendor OTLP exporters and a Node.js client. Test native OTLP producers independently. Decide which producer-side integrations stay required and which old Agenturm client ingestion routes to retire. SDK integration maintainer and release owner. |
 | Prompt and MCP payloads | Preserve the recorded operation and current scope when opening content. Unavailable, revoked and over-limit evidence needs a visible outcome. B2 and B4 own the prompt and MCP detail gaps. |
-| Usage, cost and host history | Rust shows recorded token counts, Kiro credits and individually reported OTLP costs. `host record` and `broker host record` capture optional Linux load, memory and CPU counters with known same-user processes. `6` opens recorded samples, then Enter opens the process list and exact process history. A v2 collection `host` block enables scheduled capture for local, broker, and managed Linux collectors. Aggregate cost views and HTTP receiver Host access remain open. [Host history](rust-broker-commands.md#record-and-read-host-history) |
+| Usage, cost and host history | Rust shows recorded token counts, Kiro credits and individually reported OTLP costs. `host record` and `broker host record` capture optional Linux load, memory and CPU counters with known same-user processes. `6` opens recorded samples, then Enter opens the process list and exact process history. A v2 collection `host` block enables scheduled capture for local, broker, and managed Linux collectors. The HTTP reader can expose recorded Host history when started with `--include-host`. Aggregate cost views remain open. [Host history](rust-broker-commands.md#record-and-read-host-history) |
 
 The vendor fixture matrix records the actual SDK paths and pending checks. [Rust OTLP vendor producer qualification](../validation/rust-vendor-sdk-producers.md)
 

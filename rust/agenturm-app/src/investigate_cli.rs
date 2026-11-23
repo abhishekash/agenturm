@@ -7,9 +7,14 @@ use std::collections::BTreeMap;
 use std::io::Write;
 use std::path::PathBuf;
 
+mod failures;
+
 pub(super) const USAGE: &str = concat!(
     "agenturm investigate <instruction|path|command> <query> --source-id <id> --session-id <id> ",
     "[--turn-id <id> [--worker-id <id>]] [--limit 1..100] [--cursor <token>] --db <path> --config <json>\n",
+    "Use --failed with command to require a source-confirmed failure.\n",
+    "agenturm investigate failures [--source-id <id>] [--session-id <id>] ",
+    "[--kind lifecycle|tool|mcp|check|trace] [--limit 1..100] [--cursor <token>] --db <path>\n",
     "agenturm investigate source <event-id> --reference <token> --db <path> --config <json>\n",
     "For broker history use agenturm broker investigate with --broker-config <json> in place of --db and --config."
 );
@@ -28,6 +33,7 @@ pub struct InvestigationOptions {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Action {
+    Failures(failures::FailureSearch),
     Search(Search),
     Source(SourceReference),
 }
@@ -38,6 +44,7 @@ struct Search {
     query: String,
     scope: Scope,
     limit: usize,
+    failed: bool,
     cursor: Option<SearchCursor>,
 }
 
@@ -107,15 +114,26 @@ fn required<'a>(flags: &mut BTreeMap<&str, &'a str>, name: &str) -> Result<&'a s
 }
 
 pub(super) fn parse(args: &[String], broker: bool) -> Result<InvestigationOptions, String> {
+    if let [verb, rest @ ..] = args
+        && verb == "failures"
+    {
+        return failures::parse(rest, broker);
+    }
     let [verb, query, flags @ ..] = args else {
         return Err(USAGE.into());
     };
-    let (pairs, remainder) = flags.as_chunks::<2>();
-    if !remainder.is_empty() {
-        return Err(USAGE.into());
-    }
     let mut options = BTreeMap::new();
-    for [flag, value] in pairs {
+    let mut flags = flags.iter();
+    let mut failed = false;
+    while let Some(flag) = flags.next() {
+        if flag == "--failed" {
+            if verb != "command" || failed {
+                return Err(USAGE.into());
+            }
+            failed = true;
+            continue;
+        }
+        let value = flags.next().ok_or(USAGE)?;
         if !flag.starts_with("--")
             || value.is_empty()
             || options.insert(flag.as_str(), value.as_str()).is_some()
@@ -134,27 +152,7 @@ pub(super) fn parse(args: &[String], broker: bool) -> Result<InvestigationOption
 
     let action = if verb == "source" {
         let reference: SourceReference = token(required(&mut options, "--reference")?)?;
-        if reference.version != 1
-            || !id(query)
-            || reference.position.event_id != *query
-            || reference.position.harness_id != reference.scope.source_id.as_str()
-            || !id(&reference.scope.session_id)
-            || !reference.scope.turn_id.as_deref().is_some_and(id)
-            || reference
-                .scope
-                .worker_id
-                .as_deref()
-                .is_some_and(|worker| !id(worker))
-            || !digest(&reference.history_sha256)
-            || !digest(&reference.grant_sha256)
-            || match reference.kind {
-                EvidenceKind::Instruction => reference.operation_id.is_some(),
-                EvidenceKind::Path | EvidenceKind::Command => {
-                    reference.scope.worker_id.is_some()
-                        || !reference.operation_id.as_deref().is_some_and(id)
-                }
-            }
-        {
+        if reference.position.event_id != *query || !reference.valid() {
             return Err("Source reference differs from the selected occurrence".into());
         }
         Action::Source(reference)
@@ -212,6 +210,7 @@ pub(super) fn parse(args: &[String], broker: bool) -> Result<InvestigationOption
                 worker_id: worker_id.map(str::to_owned),
             },
             limit,
+            failed,
             cursor,
         })
     };
@@ -219,6 +218,34 @@ pub(super) fn parse(args: &[String], broker: bool) -> Result<InvestigationOption
         return Err(USAGE.into());
     }
     Ok(InvestigationOptions { db, config, action })
+}
+
+impl SourceReference {
+    fn valid(&self) -> bool {
+        let version_valid = match self.version {
+            1 => digest(&self.grant_sha256),
+            2 => {
+                self.kind == EvidenceKind::Command
+                    && self.grant_sha256.is_empty()
+                    && self.position.event_id.starts_with("codex:")
+                    && self.position.event_id.ends_with(":tool")
+            }
+            _ => false,
+        };
+        version_valid
+            && id(&self.position.event_id)
+            && self.position.harness_id == self.scope.source_id.as_str()
+            && id(&self.scope.session_id)
+            && self.scope.turn_id.as_deref().is_some_and(id)
+            && self.scope.worker_id.as_deref().is_none_or(id)
+            && digest(&self.history_sha256)
+            && match self.kind {
+                EvidenceKind::Instruction => self.operation_id.is_none(),
+                EvidenceKind::Path | EvidenceKind::Command => {
+                    self.scope.worker_id.is_none() && self.operation_id.as_deref().is_some_and(id)
+                }
+            }
+    }
 }
 
 /// Writes matching evidence while its grant is fenced. A custom output sink
@@ -349,6 +376,7 @@ mod linux {
         fn prove<R>(
             &self,
             selected: &SourceReference,
+            failed: bool,
             consume: impl FnOnce(Proven<'_>) -> Result<R, String>,
         ) -> Result<R, ProofError> {
             let scope = &selected.scope;
@@ -421,12 +449,17 @@ mod linux {
                             .map_err(|_| ProofError::Unavailable)?
                         }
                         (Self::Local(store, resolver), EvidenceKind::Command) => {
-                            agenturm_content::with_verified_command(
+                            let verify = if failed {
+                                agenturm_content::with_verified_failed_command
+                            } else {
+                                agenturm_content::with_verified_command
+                            };
+                            verify(
                                 store,
                                 *resolver,
                                 source,
                                 &local,
-                                |command| {
+                                |command: &VerifiedCommand| {
                                     with_retained_occurrence(store, selected, || {
                                         consume(Proven::Command(command))
                                     })
@@ -446,9 +479,16 @@ mod linux {
                                 .map_err(Into::into)
                         }
                         (Self::Broker(store), EvidenceKind::Command) => {
-                            let selection = private(PrivateEvidenceKind::CodexCommandDetail {
-                                turn_id: turn.into(),
-                                operation_id: operation_id.into(),
+                            let selection = private(if failed {
+                                PrivateEvidenceKind::CodexFailedCommandDetail {
+                                    turn_id: turn.into(),
+                                    operation_id: operation_id.into(),
+                                }
+                            } else {
+                                PrivateEvidenceKind::CodexCommandDetail {
+                                    turn_id: turn.into(),
+                                    operation_id: operation_id.into(),
+                                }
                             });
                             store
                                 .with_verified_command(&selection, snapshot, |command| {
@@ -485,21 +525,28 @@ mod linux {
 
     pub(super) fn execute_local(
         options: &InvestigationOptions,
-        output: impl Write,
+        mut output: impl Write,
     ) -> Result<(), String> {
         let db = options.db.as_deref().ok_or(USAGE)?;
+        if let Action::Failures(search) = &options.action {
+            let store = Store::open_read_only(db).map_err(|error| error.to_string())?;
+            return failures::emit_page(search, &store, &local_history(db)?, &mut output);
+        }
         let config = options.config.as_deref().ok_or(USAGE)?;
         let (store, resolver) = crate::content_preview::open_source_authority(db, config)?;
-        let binding = WorkspaceLedger::open(db)
-            .and_then(|ledger| ledger.task_draft_binding())
-            .map_err(|error| error.to_string())?;
-        let history = hash(("agenturm-investigation-local/1", binding))?;
         execute(
             &options.action,
             Authority::Local(&store, resolver.as_ref()),
-            &history,
+            &local_history(db)?,
             output,
         )
+    }
+
+    fn local_history(db: &Path) -> Result<String, String> {
+        let binding = WorkspaceLedger::open(db)
+            .and_then(|ledger| ledger.task_draft_binding())
+            .map_err(|error| error.to_string())?;
+        hash(("agenturm-investigation-local/1", binding))
     }
 
     pub(crate) fn execute_broker(
@@ -525,6 +572,9 @@ mod linux {
         mut output: impl Write,
     ) -> Result<(), String> {
         match action {
+            Action::Failures(search) => {
+                failures::emit_page(search, authority.history(), history, &mut output)
+            }
             Action::Search(search) => search_page(search, &authority, history, &mut output),
             Action::Source(reference) => source(reference, &authority, history, &mut output),
         }
@@ -563,7 +613,11 @@ mod linux {
         history: &str,
         output: &mut dyn Write,
     ) -> Result<(), String> {
-        let identity = hash((1, history, search.kind, &search.scope, &search.query))?;
+        let identity = if search.failed {
+            hash((2, history, search.kind, &search.scope, &search.query))?
+        } else {
+            hash((1, history, search.kind, &search.scope, &search.query))?
+        };
         if let Some(cursor) = &search.cursor
             && cursor.search_sha256 != hash((&identity, &cursor.before))?
         {
@@ -583,7 +637,11 @@ mod linux {
         let mut matched = 0;
         let mut last = None;
         for row in page.observations.iter().rev() {
-            let target = candidate(row, search.kind, history, page.snapshot_id);
+            let target = if !search.failed || failures::reported_tool_failure(row) {
+                candidate(row, search.kind, history, page.snapshot_id)
+            } else {
+                None
+            };
             if target.is_some() && attempted == MAX_PROOFS {
                 break;
             }
@@ -591,7 +649,7 @@ mod linux {
             last = Some(position(row, page.snapshot_id));
             let Some(target) = target else { continue };
             attempted += 1;
-            match authority.prove(&target, |proof| {
+            match authority.prove(&target, search.failed, |proof| {
                 if !proof.confirms(&target) {
                     return Ok(None);
                 }
@@ -608,6 +666,9 @@ mod linux {
                     "revision": row.revision, "observed_at_unix_ns": row.observed_at_unix_ns,
                     "source_reference": reference
                 });
+                if search.failed {
+                    record["confirmed_failure"] = json!(true);
+                }
                 match proof {
                     Proven::Prompt(prompt) => record["excerpt"] = json!(prompt.text),
                     Proven::Edit(_) => record["excerpt"] = json!(search.query),
@@ -657,21 +718,28 @@ mod linux {
         }
         // The shared proof binds the exact native occurrence, and its fenced
         // snapshot check requires that row at the original receipt watermark.
-        let disclosed = authority.prove(reference, |proof| {
-            if !proof.confirms(reference) || proof.grant() != reference.grant_sha256 {
+        let failed = reference.version == 2;
+        let disclosed = authority.prove(reference, failed, |proof| {
+            if !proof.confirms(reference) || (!failed && proof.grant() != reference.grant_sha256) {
                 return Ok(false);
             }
             let evidence = match proof {
                 Proven::Prompt(prompt) => json!({"text": prompt.text}),
                 Proven::Edit(edit) => json!({"changes": edit.changes}),
-                Proven::Command(command) => json!({"recorded_invocation": command.recorded_invocation}),
+                Proven::Command(command) => {
+                    json!({"recorded_invocation": command.recorded_invocation})
+                }
             };
-            emit(output, json!({
+            let mut record = json!({
                 "type": "source", "kind": reference.kind, "scope": reference.scope,
                 "event_id": reference.position.event_id, "revision": reference.position.revision,
                 "observed_at_unix_ns": reference.position.observed_at_unix_ns,
                 "evidence": evidence
-            }))?;
+            });
+            if failed {
+                record["confirmed_failure"] = json!(true);
+            }
+            emit(output, record)?;
             Ok(true)
         });
         match disclosed {
@@ -681,7 +749,7 @@ mod linux {
         }
     }
 
-    fn candidate(
+    pub(super) fn candidate(
         row: &Observation,
         kind: EvidenceKind,
         history: &str,
@@ -724,7 +792,7 @@ mod linux {
         })
     }
 
-    fn position(row: &Observation, snapshot_id: ReadSnapshot) -> ObservationPosition {
+    pub(super) fn position(row: &Observation, snapshot_id: ReadSnapshot) -> ObservationPosition {
         ObservationPosition {
             observed_at_unix_ns: row.observed_at_unix_ns,
             harness_id: row.harness_id.as_str().into(),
@@ -734,13 +802,13 @@ mod linux {
         }
     }
 
-    fn hash(value: impl Serialize) -> Result<String, String> {
+    pub(super) fn hash(value: impl Serialize) -> Result<String, String> {
         serde_json::to_vec(&value)
             .map(|bytes| format!("{:x}", Sha256::digest(bytes)))
             .map_err(|_| "Could not bind investigation identity".into())
     }
 
-    fn encoded(value: &impl Serialize) -> Result<String, String> {
+    pub(super) fn encoded(value: &impl Serialize) -> Result<String, String> {
         let text =
             serde_json::to_string(value).map_err(|_| "Could not encode investigation token")?;
         if text.len() > MAX_TOKEN_BYTES {
@@ -749,7 +817,7 @@ mod linux {
         Ok(text)
     }
 
-    fn emit(output: &mut dyn Write, value: Value) -> Result<(), String> {
+    pub(super) fn emit(output: &mut dyn Write, value: Value) -> Result<(), String> {
         serde_json::to_writer(&mut *output, &value)
             .map_err(|_| "Could not write investigation output")?;
         output

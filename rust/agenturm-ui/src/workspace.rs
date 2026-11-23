@@ -580,7 +580,7 @@ impl Workspace {
         let (delivery, receiver) = prompt_channel();
         self.request(
             sender,
-            WorkspaceRequest::Work(WorkCommand::RevealPrompt(entry, delivery)),
+            WorkspaceRequest::Work(WorkCommand::RevealPrompt(Box::new(entry), delivery)),
             Change::Work(None),
         );
         self.prompt_receiver = Some(receiver);
@@ -634,7 +634,25 @@ impl Workspace {
                     self.prompt_receiver = Some(receiver);
                 }
                 WorkInput::RevealTelemetry(_) => {}
+                WorkInput::RevealEvaluation(detail) if self.pending.is_none() => {
+                    let (delivery, mut receiver) = prompt_channel();
+                    receiver.title = "Imported evaluation text";
+                    self.request(
+                        sender,
+                        WorkspaceRequest::Work(WorkCommand::RevealEvalDetail(
+                            Box::new(detail),
+                            delivery,
+                        )),
+                        Change::Work(None),
+                    );
+                    self.prompt_receiver = Some(receiver);
+                }
+                WorkInput::RevealEvaluation(_) => {}
                 WorkInput::None => {}
+                WorkInput::Back => {
+                    self.discard_work_result = matches!(self.pending, Some(Change::Work(_)));
+                    self.message = None;
+                }
                 WorkInput::Close => {
                     self.discard_work_result = matches!(self.pending, Some(Change::Work(_)));
                     self.prompt_receiver = None;
@@ -654,6 +672,44 @@ impl Workspace {
         let view = self.history.last_mut().expect("history exists");
         if view.page.ui.help {
             return view.page.ui.handle_key(key.code);
+        }
+        if let Some(picker) = &mut view.page.evaluation_picker {
+            let entries = &view.page.evaluation_traces;
+            match key.code {
+                KeyCode::Char('q') => return true,
+                KeyCode::Esc => {
+                    view.page.evaluation_picker = None;
+                    self.discard_work_result = matches!(self.pending, Some(Change::Work(_)));
+                    self.message = None;
+                }
+                KeyCode::Down | KeyCode::Char('j') if self.pending.is_none() => {
+                    move_selection(picker, entries.len(), true);
+                    self.message = None;
+                }
+                KeyCode::Up | KeyCode::Char('k') if self.pending.is_none() => {
+                    move_selection(picker, entries.len(), false);
+                    self.message = None;
+                }
+                KeyCode::Enter if self.pending.is_none() => {
+                    if let Some(trace) = picker
+                        .selected()
+                        .and_then(|index| entries.get(index))
+                        .cloned()
+                    {
+                        let request = EvaluationRead {
+                            trace,
+                            view: EvaluationView::Revisions { before: None },
+                        };
+                        self.request(
+                            sender,
+                            WorkspaceRequest::Work(WorkCommand::Evaluations(Box::new(request))),
+                            Change::Work(None),
+                        );
+                    }
+                }
+                _ => {}
+            }
+            return false;
         }
         if let Some((kind, picker)) = &mut view.page.operation_picker {
             let kind = *kind;
@@ -727,6 +783,11 @@ impl Workspace {
             return false;
         }
 
+        if key.code == KeyCode::Char('E') && self.pending.is_none() && evaluation_details(view) {
+            view.page.evaluation_picker = Some(ListState::default().with_selected(Some(0)));
+            self.message = None;
+            return false;
+        }
         if key.code == KeyCode::Char('d') && self.pending.is_none() && telemetry_details(view) {
             self.work = Some(Workbench::new(
                 WorkResult::TelemetrySpans(view.page.telemetry_spans.clone()),
@@ -1136,6 +1197,44 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
     if let Some(view) = workspace.history.last_mut() {
         if area.width >= MIN_WIDTH
             && area.height >= MIN_HEIGHT
+            && let Some(selection) = &mut view.page.evaluation_picker
+        {
+            let [body, footer] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(4)]).areas(area);
+            let entries = &view.page.evaluation_traces;
+            let items = entries.iter().map(|entry| {
+                ListItem::new(format!(
+                    "{}  {}",
+                    entry.trace_id,
+                    visible_text(entry.source_id.as_str())
+                ))
+            });
+            let mut hints = Vec::new();
+            if let Some(entry) = selection.selected().and_then(|index| entries.get(index)) {
+                hints.push(Line::from(format!(
+                    "Source {}",
+                    visible_text(entry.source_id.as_str())
+                )));
+            }
+            if let Some(message) = workspace.message.as_deref() {
+                hints.push(Line::from(visible_text(message)));
+            } else if workspace.pending.is_some() {
+                hints.push(Line::from("Loading evaluation metadata…"));
+            }
+            hints.push(Line::from("↑↓ select · Enter evaluations · Esc back"));
+            frame.render_stateful_widget(
+                List::new(items)
+                    .block(Block::bordered().title("Trace evaluations · loaded traces"))
+                    .highlight_symbol("› ")
+                    .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
+                body,
+                selection,
+            );
+            frame.render_widget(Paragraph::new(hints).wrap(Wrap { trim: true }), footer);
+            return;
+        }
+        if area.width >= MIN_WIDTH
+            && area.height >= MIN_HEIGHT
             && let Some((kind, selection)) = &mut view.page.operation_picker
         {
             let [body, foot] =
@@ -1190,6 +1289,10 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
                 error
             } else if workspace.pending.is_some() {
                 "Loading history…"
+            } else if evaluation_details(view) && telemetry_details(view) {
+                "E evaluations · d captured text · Esc back · [ ] pages"
+            } else if evaluation_details(view) {
+                "E evaluations · Esc back · [ ] pages"
             } else if telemetry_details(view) {
                 "d captured text · Esc back · [ ] pages"
             } else if let HistorySelection::Session(session, _) = &view.selection
@@ -1270,12 +1373,19 @@ pub(super) fn age(nanos: u64) -> String {
 }
 
 fn telemetry_details(view: &HistoryView) -> bool {
-    !view.page.telemetry_spans.is_empty()
-        && matches!(
-            view.selection,
-            HistorySelection::All(WorkspaceView::Traces)
-                | HistorySelection::Session(_, SessionView::Traces)
-        )
+    !view.page.telemetry_spans.is_empty() && is_trace_view(view)
+}
+
+fn evaluation_details(view: &HistoryView) -> bool {
+    !view.page.evaluation_traces.is_empty() && is_trace_view(view)
+}
+
+fn is_trace_view(view: &HistoryView) -> bool {
+    matches!(
+        view.selection,
+        HistorySelection::All(WorkspaceView::Traces)
+            | HistorySelection::Session(_, SessionView::Traces)
+    )
 }
 
 fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message: Option<&str>) {

@@ -18,8 +18,11 @@ impl<const LEGACY: bool> Poller for OpenCode<LEGACY> {
         max_records: usize,
         max_bytes: usize,
     ) -> Result<Value> {
-        let mut batch =
-            agenturm_opencode_harness::poll(path, source_id, cursor, max_records, max_bytes)?;
+        let mut batch = if LEGACY {
+            agenturm_opencode_harness::poll_legacy(path, source_id, cursor, max_records, max_bytes)?
+        } else {
+            agenturm_opencode_harness::poll(path, source_id, cursor, max_records, max_bytes)?
+        };
         if LEGACY {
             // The old Python admission contract uses different relationship
             // keys, one session-level lifecycle, and only the generic tool

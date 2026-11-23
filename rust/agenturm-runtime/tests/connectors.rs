@@ -8,7 +8,7 @@ use agenturm_connector_api::{
 use agenturm_runtime::connector::{
     ConnectorLaunch, ConnectorRuntime, ConnectorSpec, DeliveryState,
 };
-use agenturm_store::Store;
+use agenturm_store::{Store, StoreError};
 use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::fs;
@@ -79,6 +79,26 @@ impl Fixture {
 
     fn history(&self) -> Store {
         Store::open(self.path.join("history.sqlite")).unwrap()
+    }
+
+    fn reopen_history(&self) -> Store {
+        // Other tests launch pre_exec children concurrently. Between fork and
+        // exec, an inherited CLOEXEC descriptor can briefly retain our old
+        // flock after the parent Store is dropped. Wait only for that transient
+        // fixture condition; production admission still fails immediately.
+        let deadline = Instant::now() + Duration::from_secs(2);
+        loop {
+            match Store::open(self.path.join("history.sqlite")) {
+                Ok(store) => return store,
+                Err(StoreError::WriterLease(error))
+                    if error.kind() == std::io::ErrorKind::WouldBlock
+                        && Instant::now() < deadline =>
+                {
+                    std::thread::sleep(Duration::from_millis(5));
+                }
+                Err(error) => panic!("cannot reopen fixture history: {error}"),
+            }
+        }
     }
 
     fn delivery(&self) -> OutboundDelivery {
@@ -194,7 +214,7 @@ fn inbound_denies_without_grant_and_recovers_after_commit_before_ack() {
     drop(history);
 
     let mut runtime = fixture.runtime();
-    let mut history = fixture.history();
+    let mut history = fixture.reopen_history();
     assert_eq!(runtime.collect(&fixture.spec, &mut history), Ok(0));
     assert_eq!(
         fs::read_to_string(fixture.path.join("acked")).unwrap(),

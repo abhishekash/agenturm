@@ -4,6 +4,7 @@ use crate::trace_import::{
     MAX_EXPORT_BYTES, commit, commit_payloads, decode_json, decode_protobuf, parse_source_id,
     protobuf_response,
 };
+use crate::trace_progress;
 use agenturm_kernel::{ExtensionId, Observation};
 use agenturm_store::{TelemetryBinding, TelemetryPayloadRecord};
 use std::io::{BufRead, BufReader, Read, Write};
@@ -414,6 +415,9 @@ fn handle(
         let decoded = match encoding {
             Encoding::Json => decode_json(&body, source, launch_session, binding),
             Encoding::Protobuf => decode_protobuf(&body, source, launch_session, binding),
+            Encoding::ProgressJson => trace_progress::decode(&body, source, launch_session)
+                .map(|row| (vec![row], 0, Vec::new()))
+                .map_err(str::to_owned),
         };
         let (rows, skipped, payloads) = decoded.map_err(|_| "400 Bad Request")?;
         if !rows.is_empty() {
@@ -428,6 +432,7 @@ fn handle(
             .to_string()
             .into_bytes(),
             Encoding::Protobuf => protobuf_response(skipped),
+            Encoding::ProgressJson => b"{}".to_vec(),
         };
         Ok((encoding, bytes))
     });
@@ -458,12 +463,13 @@ fn handle(
 enum Encoding {
     Json,
     Protobuf,
+    ProgressJson,
 }
 
 impl Encoding {
     fn media_type(self) -> &'static str {
         match self {
-            Self::Json => "application/json",
+            Self::Json | Self::ProgressJson => "application/json",
             Self::Protobuf => "application/x-protobuf",
         }
     }
@@ -522,12 +528,19 @@ fn parse_headers(
     token: Option<&ProducerToken>,
 ) -> Result<(Encoding, usize), &'static str> {
     let mut lines = headers.split("\r\n");
-    if !matches!(
-        lines.next(),
-        Some("POST /v1/traces HTTP/1.0" | "POST /v1/traces HTTP/1.1")
-    ) {
+    let request = lines.next().ok_or("404 Not Found")?;
+    let (path, version) = request
+        .strip_prefix("POST ")
+        .and_then(|request| request.split_once(' '))
+        .ok_or("404 Not Found")?;
+    if !matches!(version, "HTTP/1.0" | "HTTP/1.1") {
         return Err("404 Not Found");
     }
+    let progress = match path {
+        "/v1/traces" => false,
+        trace_progress::PATH => true,
+        _ => return Err("404 Not Found"),
+    };
     let mut host = false;
     let mut authorization = None;
     let mut encoding = None;
@@ -587,9 +600,18 @@ fn parse_headers(
     {
         return Err("401 Unauthorized");
     }
-    let encoding = encoding.ok_or("400 Bad Request")?;
+    let encoding = match (progress, encoding.ok_or("400 Bad Request")?) {
+        (true, Encoding::Json) => Encoding::ProgressJson,
+        (true, _) => return Err("415 Unsupported Media Type"),
+        (false, encoding) => encoding,
+    };
     let length = length.ok_or("411 Length Required")?;
-    if length as u64 > MAX_EXPORT_BYTES {
+    let max_body = if progress {
+        trace_progress::MAX_BYTES as u64
+    } else {
+        MAX_EXPORT_BYTES
+    };
+    if length as u64 > max_body {
         return Err("413 Content Too Large");
     }
     Ok((encoding, length))
@@ -598,6 +620,38 @@ fn parse_headers(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn progress_uses_the_same_bearer_and_a_small_json_only_body() {
+        let address = "127.0.0.1:4318".parse().unwrap();
+        let token = ProducerToken("ab".repeat(32));
+        let prefix = format!(
+            "POST {} HTTP/1.1\r\nHost: 127.0.0.1:4318\r\nContent-Type: application/json\r\nContent-Length: 4096\r\n",
+            trace_progress::PATH,
+        );
+        let authorized = format!("{prefix}Authorization: Bearer {}\r\n\r\n", token.0);
+        assert_eq!(
+            parse_headers(&authorized, address, Some(&token)),
+            Ok((Encoding::ProgressJson, 4096))
+        );
+        assert_eq!(
+            parse_headers(&format!("{prefix}\r\n"), address, Some(&token)),
+            Err("401 Unauthorized")
+        );
+        assert_eq!(
+            parse_headers(&authorized.replace("4096", "4097"), address, Some(&token)),
+            Err("413 Content Too Large")
+        );
+        assert_eq!(
+            parse_headers(
+                &authorized.replace("application/json", "application/x-protobuf"),
+                address,
+                Some(&token),
+            ),
+            Err("415 Unsupported Media Type")
+        );
+    }
+
     #[test]
     fn rejects_cross_origin_and_ambiguous_lengths() {
         let address = "127.0.0.1:4318".parse().unwrap();

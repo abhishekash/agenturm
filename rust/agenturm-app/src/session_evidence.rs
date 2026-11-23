@@ -1,6 +1,6 @@
 use agenturm_kernel::{
     ExtensionId, MetricRow, Observation, ObservationKind, ObservationScope, PaneModel, Snapshot,
-    TraceSpan, format_credits, format_reported_cost,
+    TraceProgress, TraceSpan, format_credits, format_reported_cost,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -36,26 +36,26 @@ pub(super) fn add_session_trace_pane(
         .observations
         .iter()
         .filter(|row| {
+            let target = match &row.kind {
+                ObservationKind::TraceSpan(span) => span.target_source_id.as_deref(),
+                ObservationKind::TraceProgress(progress) => progress.target_source_id.as_deref(),
+                _ => return false,
+            };
             row.identity.session_id.as_deref() == Some(session_id)
-                && matches!(
-                    &row.kind,
-                    ObservationKind::TraceSpan(span)
-                        if if own_trace_source {
-                            row.harness_id.as_str() == source_id
-                        } else {
-                            row.harness_id.as_str().starts_with("otlp.")
-                                && span.target_source_id.as_deref() == Some(source_id)
-                        }
-                )
+                && if own_trace_source {
+                    row.harness_id.as_str() == source_id
+                } else {
+                    row.harness_id.as_str().starts_with("otlp.") && target == Some(source_id)
+                }
         })
         .collect();
     let mut rows = vec![metric("Source", source_id), metric("Session", session_id)];
     rows.extend(rows_or_empty(
         trace_rows(&evidence, ViewScope::Workspace),
         if own_trace_source {
-            "No trace spans recorded for this session"
+            "No trace evidence recorded for this session"
         } else {
-            "No trace spans explicitly linked to this session"
+            "No trace evidence explicitly linked to this session"
         },
     ));
     insert_pane(snapshot, "app.session-traces", "Traces", rows)
@@ -91,7 +91,7 @@ pub(super) fn add_workspace_panes(snapshot: &mut Snapshot) -> WorkspacePaneIds {
     let usage = usage_rows(&evidence, scope);
     let traces = rows_or_empty(
         trace_rows(&evidence, scope),
-        "No native trace spans on this page",
+        "No trace evidence on this page",
     );
     WorkspacePaneIds {
         activity: insert_pane(snapshot, "app.workspace-activity", "Activity", activity),
@@ -375,51 +375,115 @@ fn usage_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
     )
 }
 
+type ProgressScope<'a> = (Option<&'a str>, Option<&'a str>, Option<&'a str>);
+
+#[derive(Default)]
+struct TraceEvidence<'a> {
+    spans: Vec<(&'a Observation, &'a TraceSpan)>,
+    progress: BTreeMap<ProgressScope<'a>, (&'a Observation, &'a TraceProgress)>,
+}
+
 fn trace_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
-    let mut traces = BTreeMap::<_, Vec<_>>::new();
-    for row in evidence {
-        let (Some(session), ObservationKind::TraceSpan(span)) =
-            (row.identity.session_id.as_deref(), &row.kind)
-        else {
+    let mut traces = BTreeMap::<_, TraceEvidence<'_>>::new();
+    for &row in evidence {
+        let Some(session) = row.identity.session_id.as_deref() else {
             continue;
         };
-        traces
-            .entry((row.harness_id.as_str(), session, span.trace_id.as_str()))
-            .or_default()
-            .push((*row, span));
+        let source = row.harness_id.as_str();
+        match &row.kind {
+            ObservationKind::TraceSpan(span) => traces
+                .entry((source, session, span.trace_id.as_str()))
+                .or_default()
+                .spans
+                .push((row, span)),
+            ObservationKind::TraceProgress(progress) => {
+                let owner = (
+                    progress.target_source_id.as_deref(),
+                    row.identity.turn_id.as_deref(),
+                    row.identity.worker_id.as_deref(),
+                );
+                let recent = traces
+                    .entry((source, session, progress.trace_id.as_str()))
+                    .or_default()
+                    .progress
+                    .entry(owner)
+                    .or_insert((row, progress));
+                if observation_order(row) > observation_order(recent.0) {
+                    *recent = (row, progress);
+                }
+            }
+            _ => {}
+        }
     }
     let mut groups: Vec<_> = traces.into_iter().collect();
-    for (_, spans) in &mut groups {
-        spans
+    for (_, evidence) in &mut groups {
+        evidence
+            .spans
             .sort_unstable_by_key(|&(row, span)| (span.started_at_unix_ns, observation_order(row)));
     }
-    groups.sort_unstable_by_key(|(identity, spans)| (spans[0].1.started_at_unix_ns, *identity));
-    groups
-        .into_iter()
-        .flat_map(|((source, session, trace), spans)| {
-            let label = match scope {
-                ViewScope::Workspace => format!("{trace} · {source} · session {session}"),
-                ViewScope::Session => trace.to_owned(),
-            };
-            std::iter::once(metric("Trace", label)).chain(spans.into_iter().map(|(row, span)| {
-                let duration = row
-                    .observed_at_unix_ns
-                    .saturating_sub(span.started_at_unix_ns);
-                metric(
-                    "Span",
-                    format!(
-                        "{} · {} · {}{}",
-                        span_description(span),
-                        timestamp_at(span.started_at_unix_ns),
-                        duration_millis(duration),
-                        span.target_source_id
-                            .as_ref()
-                            .map_or_else(String::new, |target| format!(" · target {target}")),
-                    ),
-                )
-            }))
-        })
-        .collect()
+    groups.sort_unstable_by_key(|(identity, evidence)| {
+        let earliest = evidence
+            .spans
+            .first()
+            .map(|(_, span)| span.started_at_unix_ns)
+            .into_iter()
+            .chain(
+                evidence
+                    .progress
+                    .values()
+                    .map(|(row, _)| row.observed_at_unix_ns),
+            )
+            .min()
+            .unwrap_or_default();
+        (earliest, *identity)
+    });
+
+    let mut rows = Vec::new();
+    for ((source, session, trace), evidence) in groups {
+        let label = match scope {
+            ViewScope::Workspace => format!("{trace} · {source} · session {session}"),
+            ViewScope::Session => trace.to_owned(),
+        };
+        rows.push(metric("Trace", label));
+        for (row, progress) in evidence.progress.into_values() {
+            let mut value = with_time(row, with_turn(row, progress_description(progress)));
+            if let Some(worker) = &row.identity.worker_id {
+                value.push_str(&format!(" · worker {worker}"));
+            }
+            rows.push(metric("Latest progress", value));
+        }
+        for (row, span) in evidence.spans {
+            let duration = row
+                .observed_at_unix_ns
+                .saturating_sub(span.started_at_unix_ns);
+            rows.push(metric(
+                "Span",
+                format!(
+                    "{} · {} · {}{}",
+                    span_description(span),
+                    timestamp_at(span.started_at_unix_ns),
+                    duration_millis(duration),
+                    span.target_source_id
+                        .as_ref()
+                        .map_or_else(String::new, |target| format!(" · target {target}")),
+                ),
+            ));
+        }
+    }
+    rows
+}
+
+fn progress_description(progress: &TraceProgress) -> String {
+    let mut value = progress.stage.clone();
+    match progress.percent_basis_points {
+        Some(points) if points % 100 == 0 => value.push_str(&format!(" · {}%", points / 100)),
+        Some(points) => value.push_str(&format!(" · {}.{:02}%", points / 100, points % 100)),
+        None => value.push_str(" · percent unavailable"),
+    }
+    if let Some(target) = &progress.target_source_id {
+        value.push_str(&format!(" · target {target}"));
+    }
+    value
 }
 
 fn operation_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
@@ -485,7 +549,10 @@ fn operation_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow>
 }
 
 fn activity_row(row: &Observation, scope: ViewScope) -> MetricRow {
-    let (label, value) = describe_observation(&row.kind);
+    let (label, mut value) = describe_observation(&row.kind);
+    if matches!(&row.kind, ObservationKind::ReportedCost(cost) if cost.native_origin.is_some()) {
+        value.push_str(&format!(" · revision {}", row.revision));
+    }
     let mut value = with_time(row, with_operation(row, with_turn(row, value)));
     if let Some(worker) = row.identity.worker_id.as_deref() {
         value.push_str(&format!(" · worker {worker}"));
@@ -617,6 +684,20 @@ pub(super) fn describe_observation(kind: &ObservationKind) -> (&'static str, Str
         ),
         ObservationKind::ReportedCost(cost) => {
             let mut value = format_reported_cost(cost);
+            if let Some(origin) = cost.native_origin {
+                if origin.rounded {
+                    value.insert_str(0, "Approx. ");
+                }
+                let label = match origin.basis {
+                    agenturm_kernel::NativeCostBasis::Estimate => "Cost estimate",
+                    agenturm_kernel::NativeCostBasis::ProviderReported => "Provider-reported cost",
+                    agenturm_kernel::NativeCostBasis::Unknown => {
+                        value.push_str(" · billing basis unknown");
+                        "Reported cost"
+                    }
+                };
+                return (label, value);
+            }
             if let Some(span) = &cost.span {
                 value.push_str(&format!(" · span {}", span.span_id));
             }
@@ -672,6 +753,14 @@ pub(super) fn describe_observation(kind: &ObservationKind) -> (&'static str, Str
             }
             ("MCP call", fields.join(" · "))
         }
+        ObservationKind::TraceProgress(progress) => (
+            "Progress",
+            format!(
+                "{} · trace {}",
+                progress_description(progress),
+                progress.trace_id
+            ),
+        ),
         ObservationKind::TraceSpan(span) => (
             "Trace span",
             format!("{} · trace {}", span_description(span), span.trace_id),
@@ -752,6 +841,41 @@ mod tests {
             observed_at_unix_ns: sequence * 1_000_000_000,
             kind,
         }
+    }
+
+    #[test]
+    fn trace_pane_shows_latest_reported_progress_per_worker_without_a_span() {
+        let progress = |sequence, worker: &str, stage: &str, percent_basis_points| {
+            let mut row = observation(
+                sequence,
+                ObservationKind::TraceProgress(TraceProgress {
+                    trace_id: "11".repeat(16),
+                    target_source_id: Some("harness.codex".into()),
+                    stage: stage.into(),
+                    percent_basis_points,
+                }),
+                Some("turn-1"),
+            );
+            row.harness_id = ExtensionId::parse("otlp.fixture").unwrap();
+            row.identity.worker_id = Some(worker.into());
+            row
+        };
+        let old = progress(1, "worker-one", "first-stage", Some(0));
+        let latest = progress(3, "worker-one", "new-stage", None);
+        let sibling = progress(2, "worker-two", "sibling-stage", Some(0));
+        let rows = trace_rows(&[&latest, &old, &sibling], ViewScope::Workspace);
+        assert_eq!(rows.len(), 3);
+        assert_eq!(rows[0].label, "Trace");
+        assert_eq!(rows[1].label, "Latest progress");
+        assert!(rows[1].value.contains("new-stage · percent unavailable"));
+        assert!(rows[1].value.contains("worker worker-one"));
+        assert!(rows[2].value.contains("sibling-stage · 0%"));
+        assert!(rows[2].value.contains("worker worker-two"));
+        assert!(
+            activity_row(&old, ViewScope::Session)
+                .value
+                .contains("first-stage · 0%")
+        );
     }
 
     fn tool(sequence: u64, category: &str, result: &str, turn: Option<&str>) -> Observation {
@@ -999,6 +1123,7 @@ mod tests {
                 currency: "USD".into(),
                 nanounits: 0,
                 span: None,
+                native_origin: None,
             }),
             None,
         );
@@ -1008,6 +1133,7 @@ mod tests {
                 currency: "EUR".into(),
                 nanounits: 1_234_567_890,
                 span: None,
+                native_origin: None,
             }),
             None,
         );

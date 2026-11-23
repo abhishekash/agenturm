@@ -9,6 +9,11 @@
 mod workbench;
 mod workspace;
 
+pub use workbench::evaluation::{
+    EvaluationDetailEntry, EvaluationPage, EvaluationRead, EvaluationRow, EvaluationView,
+    TraceEvaluationEntry,
+};
+
 pub use workbench::{
     HandoffEntry, OperationDetailEntry, OperationDetailKind, PromptDelivery, PromptEntry,
     RequestEntry, ReviewNoteEntry, TaskEntry, TelemetrySpanEntry, WorkAnchor, WorkCommand,
@@ -262,6 +267,8 @@ struct PageView {
     operation_details: Vec<OperationDetailEntry>,
     operation_picker: Option<(OperationDetailKind, ListState)>,
     telemetry_spans: Vec<TelemetrySpanEntry>,
+    evaluation_traces: Vec<TraceEvaluationEntry>,
+    evaluation_picker: Option<ListState>,
 }
 
 impl PageView {
@@ -294,6 +301,7 @@ impl PageView {
         } else {
             Vec::new()
         };
+        let evaluation_traces = workbench::evaluation::trace_entries(&page.snapshot);
         let mut ui = UiModel::from_snapshot(page.snapshot);
         if let Some(selected) = selected {
             ui.selected = selected;
@@ -308,6 +316,8 @@ impl PageView {
             operation_details: page.operation_details,
             operation_picker: None,
             telemetry_spans,
+            evaluation_traces,
+            evaluation_picker: None,
         }
     }
     fn reviewing(&self) -> bool {

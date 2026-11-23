@@ -67,6 +67,9 @@ class RustOpenCodeHarnessTests(unittest.TestCase):
         return batches
 
     def test_fixture_matches_native_lifecycle_without_content(self):
+        with sqlite3.connect(self.source) as db:
+            db.execute("UPDATE session_message SET data=json_set(data,'$.cost',0.01) "
+                       "WHERE id='msg_step_two'")
         native = Store(self.root / "native.db")
         self.addCleanup(native.close)
         native_reader = OpenCodeReader(native, capture_details=False, path=self.source)

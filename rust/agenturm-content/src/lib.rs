@@ -1,8 +1,11 @@
 //! Shared source proof and fenced private-content delivery.
 #![cfg(target_os = "linux")]
 
+mod command_failure;
+
 use agenturm_jsonl_source::{CursorProof, cursor_proof};
-use agenturm_kernel::ExtensionId;
+use agenturm_kernel::{ExtensionId, ReadSnapshot};
+use agenturm_opencode_harness::PromptSourceStamp;
 use agenturm_store::{
     CodexOperationEvidence, CodexOperationSelection, ContentGrantScope, ContentKind, Store,
     UserTextEvidence, bounded_text_preview,
@@ -47,6 +50,18 @@ pub struct PromptReference {
     pub revision: u32,
     pub turn_id: String,
     pub observed_at_unix_ns: u64,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub snapshot_id: Option<ReadSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_identity: Option<String>,
+}
+
+pub struct PromptSelection<'a> {
+    pub session_id: Option<&'a str>,
+    pub event_id: &'a str,
+    pub revision: u32,
+    pub snapshot_id: Option<ReadSnapshot>,
+    pub history_identity: Option<&'a str>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -210,6 +225,9 @@ pub fn list(
                 return Ok(Vec::new());
             };
             let texts = source.prove(&evidence, false)?;
+            let identity = store
+                .history_identity()
+                .map_err(|error| error.to_string())?;
 
             let mut references = Vec::new();
             for (event_id, evidence) in &evidence {
@@ -224,6 +242,8 @@ pub fn list(
                         revision: evidence.revision,
                         turn_id: evidence.turn_id.clone(),
                         observed_at_unix_ns: evidence.observed_at_unix_ns,
+                        snapshot_id: Some(evidence.snapshot_id),
+                        history_identity: Some(identity.clone()),
                     });
                 }
             }
@@ -231,7 +251,7 @@ pub fn list(
             store
                 .verify_content_grant(&fresh.scope, &grant)
                 .map_err(|error| error.to_string())?;
-            fresh.verify_additional_checkpoint(&first.cursor)?;
+            source.verify_additional_checkpoint()?;
             Ok(references)
         })
         .map_err(|error| error.to_string())?
@@ -246,22 +266,36 @@ pub fn reveal_fenced(
     revision: u32,
     output: &mut dyn Write,
 ) -> Result<(), String> {
-    with_verified_prompt(
+    reveal_selected_prompt(
         writer,
         resolver,
         source_id,
-        session_id,
-        event_id,
-        revision,
-        |prompt| {
-            // JSON escaping keeps controls out of terminal output. The source
-            // validator has already removed C1 and Unicode direction controls.
-            let mut line =
-                serde_json::to_vec(&prompt.text).map_err(|_| "cannot encode user-text preview")?;
-            line.push(b'\n');
-            write_output(output, &line)
+        PromptSelection {
+            session_id,
+            event_id,
+            revision,
+            snapshot_id: None,
+            history_identity: None,
         },
-    )?
+        output,
+    )
+}
+
+pub fn reveal_selected_prompt(
+    writer: &Store,
+    resolver: &SourceResolver<'_>,
+    source_id: &ExtensionId,
+    selection: PromptSelection<'_>,
+    output: &mut dyn Write,
+) -> Result<(), String> {
+    with_selected_prompt(writer, resolver, source_id, selection, |prompt| {
+        // JSON escaping keeps controls out of terminal output. The source
+        // validator has already removed C1 and Unicode direction controls.
+        let mut line =
+            serde_json::to_vec(&prompt.text).map_err(|_| "cannot encode user-text preview")?;
+        line.push(b'\n');
+        write_output(output, &line)
+    })?
 }
 
 /// Read exact native evidence and consume it while the current approval and
@@ -275,10 +309,31 @@ pub fn with_verified_prompt<T>(
     revision: u32,
     consume: impl FnOnce(&VerifiedPrompt) -> T,
 ) -> Result<T, String> {
+    with_selected_prompt(
+        writer,
+        resolver,
+        source_id,
+        PromptSelection {
+            session_id,
+            event_id,
+            revision,
+            snapshot_id: None,
+            history_identity: None,
+        },
+        consume,
+    )
+}
+
+pub fn with_selected_prompt<T>(
+    writer: &Store,
+    resolver: &SourceResolver<'_>,
+    source_id: &ExtensionId,
+    selection: PromptSelection<'_>,
+    consume: impl FnOnce(&VerifiedPrompt) -> T,
+) -> Result<T, String> {
     writer
         .with_user_content_fence(|store| {
-            let prompt =
-                verified_prompt(store, resolver, source_id, session_id, event_id, revision)?;
+            let prompt = verified_prompt(store, resolver, source_id, selection)?;
             Ok(consume(&prompt))
         })
         .map_err(|error| error.to_string())?
@@ -349,6 +404,29 @@ pub fn with_verified_command<T>(
     selection: &CodexOperationSelection<'_>,
     consume: impl FnOnce(&VerifiedCommand) -> T,
 ) -> Result<T, String> {
+    with_verified_command_matching(store, resolver, source_id, selection, false, consume)
+}
+
+/// Apply terminal-result rules while the exact admitted command record and its
+/// independent content grant are fenced.
+pub fn with_verified_failed_command<T>(
+    store: &Store,
+    resolver: &SourceResolver<'_>,
+    source_id: &ExtensionId,
+    selection: &CodexOperationSelection<'_>,
+    consume: impl FnOnce(&VerifiedCommand) -> T,
+) -> Result<T, String> {
+    with_verified_command_matching(store, resolver, source_id, selection, true, consume)
+}
+
+fn with_verified_command_matching<T>(
+    store: &Store,
+    resolver: &SourceResolver<'_>,
+    source_id: &ExtensionId,
+    selection: &CodexOperationSelection<'_>,
+    failed: bool,
+    consume: impl FnOnce(&VerifiedCommand) -> T,
+) -> Result<T, String> {
     with_verified_operation(
         store,
         resolver,
@@ -358,12 +436,18 @@ pub fn with_verified_command<T>(
         |payload, evidence, grant_binding| {
             let CodexOperationPayload::Command {
                 recorded_invocation,
+                confirmed_failure,
             } = payload
             else {
                 return Err(operation_definition(OperationDetailKind::Command)
                     .unavailable
                     .into());
             };
+            if failed && !confirmed_failure {
+                return Err(operation_definition(OperationDetailKind::Command)
+                    .unavailable
+                    .into());
+            }
             Ok(consume(&VerifiedCommand {
                 recorded_invocation,
                 turn_id: evidence.turn_id,
@@ -423,10 +507,15 @@ fn verified_prompt(
     store: &Store,
     resolver: &SourceResolver<'_>,
     source_id: &ExtensionId,
-    session_id: Option<&str>,
-    event_id: &str,
-    revision: u32,
+    selection: PromptSelection<'_>,
 ) -> Result<VerifiedPrompt, String> {
+    let PromptSelection {
+        session_id,
+        event_id,
+        revision,
+        snapshot_id,
+        history_identity,
+    } = selection;
     if event_id.is_empty() || event_id.len() > 256 {
         return Err("invalid prompt preview event ID".into());
     }
@@ -438,6 +527,25 @@ fn verified_prompt(
         .current_content_grant(&source.scope)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| missing_approval(source.harness))?;
+    match (snapshot_id, history_identity) {
+        (None, None) => {}
+        (Some(snapshot), Some(identity)) => {
+            if store
+                .history_identity()
+                .map_err(|error| error.to_string())?
+                != identity
+            {
+                return Err("The prompt reference belongs to different history".into());
+            }
+            if !store
+                .contains_observation_at_snapshot(source_id, event_id, revision, snapshot)
+                .map_err(|error| error.to_string())?
+            {
+                return Err(NO_EVIDENCE.into());
+            }
+        }
+        _ => return Err("The selected prompt reference is incomplete".into()),
+    }
     let evidence = store
         .current_user_text_evidence(&source.scope, &grant, event_id, revision)
         .map_err(|error| error.to_string())?
@@ -460,7 +568,7 @@ fn verified_prompt(
     if FileStamp::from_file(&fresh.file)? != fresh.stamp {
         return Err(SOURCE_CHANGED.into());
     }
-    fresh.verify_additional_checkpoint(&evidence.cursor)?;
+    source.verify_additional_checkpoint()?;
     Ok(VerifiedPrompt {
         text,
         session_id: evidence.session_id,
@@ -521,6 +629,7 @@ pub struct BoundSource {
     harness: Harness,
     source_path: PathBuf,
     operation_kind: Option<OperationDetailKind>,
+    opencode_stamp: Option<PromptSourceStamp>,
 }
 
 impl BoundSource {
@@ -596,6 +705,7 @@ impl BoundSource {
             harness,
             source_path: source.source_root.clone(),
             operation_kind,
+            opencode_stamp: None,
         })
     }
 
@@ -627,14 +737,16 @@ impl BoundSource {
                     },
                 )
                 .collect::<Vec<_>>();
-            let texts = agenturm_opencode_harness::prove_user_prompts(
+            let proven = agenturm_opencode_harness::prove_user_prompts(
                 &self.source_path,
                 &first.cursor,
                 &first.session_id,
                 &candidates,
             )
             .map_err(|error| error.to_string())?;
-            let texts = texts
+            self.opencode_stamp = Some(proven.stamp);
+            let texts = proven
+                .texts
                 .into_iter()
                 .filter_map(|(event, text)| {
                     text_preview(UserContent::Text(text))
@@ -675,9 +787,12 @@ impl BoundSource {
         Ok(texts)
     }
 
-    fn verify_additional_checkpoint(&self, cursor: &str) -> Result<(), String> {
+    fn verify_additional_checkpoint(&self) -> Result<(), String> {
         if self.harness == Harness::OpenCode {
-            agenturm_opencode_harness::verify_prompt_checkpoint(&self.source_path, cursor)
+            self.opencode_stamp
+                .as_ref()
+                .ok_or(SOURCE_CHANGED)?
+                .verify(&self.source_path)
                 .map_err(|error| error.to_string())?;
         }
         Ok(())
@@ -1172,6 +1287,10 @@ struct CodexOperationItem {
     result: Option<serde_json::Value>,
     changes: Option<BTreeMap<String, NativeFileChange>>,
     command: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "present_payload_value")]
+    status: Option<serde_json::Value>,
+    #[serde(default, deserialize_with = "present_payload_value")]
+    exit_code: Option<serde_json::Value>,
 }
 
 impl CodexOperationItem {
@@ -1190,8 +1309,15 @@ impl CodexOperationItem {
         {
             return None;
         }
+        let confirmed_failure = command_failure::confirmed_failure(
+            &recorded_invocation,
+            self.status.as_ref(),
+            self.exit_code.as_ref(),
+            self.result.as_ref(),
+        );
         Some(CodexOperationPayload::Command {
             recorded_invocation,
+            confirmed_failure,
         })
     }
 
@@ -1301,6 +1427,8 @@ enum CodexOperationPayload {
     },
     Command {
         recorded_invocation: RecordedInvocation,
+        #[serde(skip)]
+        confirmed_failure: bool,
     },
 }
 
@@ -1322,6 +1450,7 @@ impl CodexOperationPayload {
                 .join("\n\n"),
             Self::Command {
                 recorded_invocation,
+                ..
             } => serde_json::to_string(recorded_invocation).map_err(|_| ())?,
         };
         serde_json::to_string(&display).map_err(|_| ())

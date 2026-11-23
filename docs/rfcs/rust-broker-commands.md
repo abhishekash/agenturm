@@ -198,14 +198,23 @@ Restart the gateway and reconnect after offline history restoration.
 The version 1 read API accepts one bearer-authenticated JSON `POST` to
 `/v1/history/read` per connection. First send `{"version":1,"request":{"op":"identity"}}`.
 Use the returned `history_identity` in subsequent requests and the returned
-snapshot ID when traversing a page. Session, observation, exact trace Review
-and workspace anchor checks follow the broker's source and history rules.
+snapshot ID when traversing a page. Session, observation, exact trace Review,
+trace-selected evaluation metadata and workspace anchor checks follow the
+broker's source and history rules. An evaluation request uses the selected
+trace's snapshot to verify membership, then returns current retained outcome
+metadata for the requested OTLP source.
 Headers are limited to 8 KiB, request bodies to 16 KiB and replies to 4 MiB.
 The gateway applies five-second HTTP input and output budgets and disables
 response caching.
 
+From Traces in either cockpit, press `E` to choose a loaded trace, then Enter
+for its evaluation revisions. `s` shows current outcomes for the same source
+with counts for the displayed page. Escape returns to the previous view with
+the selected revision or trace intact. The disposable Linux fixture is
+`python3 scripts/validate_rust_eval_cockpit.py --bin-dir /opt/agenturm/bin`.
+
 Protected content, broker administration and observation admission use
-their own native broker commands. Receiver host inspection and native
+their own native broker commands. Live Host inspection and native
 terminal routing are unavailable from the attached cockpit. Direct TLS and
 compatibility with the Python `/api/*` connection, metrics and Review
 endpoints remain open cutover work.
@@ -278,11 +287,31 @@ effective user. It includes source, Linux boot ID, PID and process start ticks
 for exact process history. The view marks scan or row truncation as partial.
 Processes that exit during sampling can be absent. Argument strings, environment variables, working paths
 and inferred session links are absent. Native broker readers browse the
-retained samples. The HTTP history gateway omits Host sources and samples.
+retained samples.
+
+Starting the reader gateway with `--include-host` enables recorded Host history
+for the attached cockpit and HTTP clients. The gateway serves Host sources in
+the dedicated broker reader's allowlist. Use `6` for the same sample and process
+drill-down over the connection. The gateway's default denies Host access.
+Ordinary session, activity and trace requests exclude Host samples.
+
+```sh
+agenturm broker serve-history --broker-config broker.json \
+  --listen 127.0.0.1:14319 --token-file reader-token --include-host
+```
+
+The enabled `GET /api/host` route uses the normal bearer token and
+`X-Agenturm-History-Binding` header. Optional `source_id` chooses an exact
+allowed `host.<label>` source. Use `limit` from 1 to 64 and pass the returned
+`next_cursor` as a URL-encoded `cursor` to continue at the same snapshot.
+The `samples` entries carry recorded metadata, with exact decimal strings for
+wide numeric counters. The gateway rejects prior bindings and snapshots
+following a restore.
 
 Run `python3 scripts/validate_rust_host_history.py --bin-dir /opt/agenturm/bin`
 in a disposable Linux guest to verify process ownership, each broker role and
-the 60-column terminal drill-down.
+the 60-column terminal drill-down. Use `validate_rust_remote_host_history.py`
+with the same arguments to exercise HTTP authorization and restore handling.
 
 ## Grant administration
 
@@ -357,7 +386,11 @@ agenturm broker content preview --broker-config reader.json --selection selectio
 agenturm broker cockpit --broker-config reader.json
 ```
 
-A user-text selection identifies the exact retained occurrence.
+A user-text selection identifies the exact retained occurrence. Copy the
+list entry's `history_identity` and `snapshot_id` into the nested kind to
+keep the same history, branch and receipt watermark. After restore or snapshot
+expiry, obtain a fresh selection. Legacy selections that omit both fields
+select an occurrence from current history.
 
 ```json
 {
@@ -365,9 +398,17 @@ A user-text selection identifies the exact retained occurrence.
   "session_id": "session-1",
   "event_id": "exact-event-id-from-the-prompt-list",
   "revision": 1,
-  "kind": { "kind": "user_text" }
+  "kind": {
+    "kind": "user_text",
+    "history_identity": "abcdef0123456789abcdef0123456789",
+    "snapshot_id": "r1:0123456789abcdef0123456789abcdef:17"
+  }
 }
 ```
+
+An OpenCode SQLite prompt with a retained admission digest can reopen after
+unrelated native writes or later sweeps. The broker verifies the original
+native row, turn and exact bytes against the digest before delivering text.
 
 For Codex operation details, use `codex_mcp_payload`, `codex_edit_detail`,
 or `codex_command_detail`
@@ -383,21 +424,59 @@ acknowledgements fail within the display deadline. Every private operation
 pins the broker history identity, preventing stale selections from silently
 crossing a replaced database. Ordinary queries retain metadata only.
 
+## Private evaluation text
+
+An authorized collector can opt in to the string-valued result `error` and
+score `detail` fields for an allowlisted OTLP source. Each private capture is
+admitted atomically with its exact outcome revision. The broker stores this
+text in its owned history database. Evaluation queries and the authenticated
+HTTP reader return structural metadata and a body-free detail selection.
+
+```sh
+agenturm broker import-evals --broker-config collector.json --source-id otlp.exported \
+  --file results.json --include-detail
+agenturm eval-detail binding --source-id otlp.exported > eval-binding.json
+agenturm broker grant approve --broker-config grant-admin.json --binding eval-binding.json
+agenturm broker evals --broker-config reader.json --source-id otlp.exported \
+  --trace-id 11111111111111111111111111111111 --json
+agenturm broker eval-detail preview --broker-config reader.json --selection selection.json
+agenturm broker grant revoke --broker-config grant-admin.json --binding eval-binding.json
+```
+
+Copy the revision's `detail_selection` object into `selection.json`. The
+separate reader delivers text under its current `eval.result_detail` approval.
+The final sink acknowledges delivery after flushing, or after the cockpit
+clears its private frame. The client deadline is 25 seconds. The broker waits
+up to 32 seconds for acknowledgement while the approval and retention fence
+is held. Restoring a backup requires fresh approval and selection.
+[Evaluation import and replay behavior](rust-cutover-workflows.md#private-evaluation-text)
+
 ## Investigate retained source evidence
 
 ```sh
+agenturm broker investigate failures --broker-config reader.json --kind tool
 agenturm broker investigate instruction 'keep the public API' \
   --broker-config reader.json --source-id harness.pi --session-id session-1
 agenturm broker investigate path src/retry.py \
   --broker-config reader.json --source-id harness.codex --session-id session-2
 agenturm broker investigate command 'pytest suite' \
   --broker-config reader.json --source-id harness.codex --session-id session-2
+agenturm broker investigate command 'pytest suite' --failed \
+  --broker-config reader.json --source-id harness.codex --session-id session-2
 agenturm broker investigate source "$event_id" --reference "$source_reference" \
   --broker-config reader.json
 ```
 
-For local history, run `agenturm investigate` and supply `--db` and
-`--config`. Instruction search matches literal word
+`failures` lists reported failure candidates in the reader's authorized
+history. It accepts optional source, session, and kind filters. A page
+scans up to `--limit` rows at a fixed snapshot and can return a continuation
+cursor even with zero matches. Eligible Codex shell candidates carry a
+reference for grant-verified source inspection. A current command-detail
+grant can confirm the selected failure while its occurrence remains retained.
+See [failure investigation](rust-cutover-workflows.md#investigate-retained-failures).
+
+For local history, run `agenturm investigate` with `--db`. Exact source and
+phrase reads also require `--config`. Instruction search matches literal word
 phrases in bounded approved user prompts. Path search matches the exact
 recorded path or move destination of a Codex edit approved under
 `codex.edit_detail`. Each search requires a source and session. Add
@@ -410,6 +489,9 @@ exact retained native Codex `CommandExecution` occurrence. A match has a
 It carries no execution-success claim. The proof withholds incomplete,
 oversized, credential-like, or control-bearing invocations. Output, working
 directory, and environment fields stay outside the projection.
+With `--failed`, each match also requires a source-confirmed terminal failure.
+Known informational exit-one commands and conflicting terminal evidence
+do not qualify.
 
 The command emits JSON Lines. Every match includes its event ID and
 `source_reference`. A final coverage record reports rows examined, proved
@@ -469,3 +551,37 @@ grant revocation, broker-backed task approval, and private modal redaction
 before Escape, quit and Ctrl-C return control to the terminal.
 
 [Broker protocol](rust-storage-broker.md)
+
+
+## Read source-aware metadata with HTTP GET
+
+The dedicated `broker serve-history` listener also provides these authenticated
+metadata routes: `/api/health`, `/api/sessions`, `/api/activity`, `/api/traces`,
+`/api/traces/<trace-id>/spans`, `/api/traces/<trace-id>/progress`, `/api/mcp`, `/api/metrics`, and `/api/hierarchy`.
+The response format is `agenturm.http-history/1`. It exposes Rust evidence
+and coverage rather than a Python receiver compatibility layer.
+
+First read `/api/health` with the listener's bearer credential. Preserve its
+`history_identity` as the `X-Agenturm-History-Binding` header on every other
+GET. Missing binding returns 428; a replaced history or branch returns 409.
+The reader's current source allowlist still applies. This is the same trusted
+loopback/SSH-forward endpoint described above, without direct public TLS.
+
+Queries accept `source_id`, `limit` (1–256), an opaque `cursor`, and optional
+`snapshot_id`. Evidence routes also accept `session_id`. A trace's `/spans` and `/progress`
+routes require an exact `otlp.*` source ID. Percent-encode query values;
+duplicate, unknown, malformed and over-limit selectors reject the request.
+
+`next_cursor` is an opaque JSON string: pass it unchanged as the next query's
+`cursor`. Page filters report how many metadata rows were inspected, so a
+filtered empty page can still have more evidence. Counts cover the current
+page. Token counters, cost/credit units, nanosecond times and snapshot tokens
+are strings to preserve exact integers in JavaScript clients.
+
+Ordinary metadata endpoints exclude Host samples as well as private content.
+An explicitly enabled `/api/host` route returns recorded Host samples under the
+reader's source allowlist. None of these routes returns prompt or SDK message
+bodies, private operation payloads, admits observations, changes policy, or
+invokes a live sampler. The typed `/v1/history/read` protocol remains available
+to the native cockpit. Private views and other receiver APIs retain their
+separate implementation requirements.

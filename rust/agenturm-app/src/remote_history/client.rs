@@ -4,7 +4,7 @@ use super::{Reply, Request, VERSION, http, loopback_address, parse_address_and_t
 use crate::trace_receiver::ProducerToken;
 use crate::{AgenturmApp, HistoryReader, cockpit_startup, cockpit_workflows, workspace_response};
 use agenturm_kernel::{
-    Observation, ObservationPage, ObservationQuery, ObservationStore, StoreCommit,
+    ExtensionId, Observation, ObservationPage, ObservationQuery, ObservationStore, StoreCommit,
 };
 use agenturm_storage_service::native_read::ReadFailure;
 use agenturm_storage_service::{
@@ -214,6 +214,10 @@ fn read_error(error: ReadFailure) -> String {
         }
         ReadFailure::Unavailable => "History receiver is unavailable".into(),
         ReadFailure::EvalTraceNotRetained => "Evaluation trace is no longer retained".into(),
+        ReadFailure::HostHistoryDisabled => {
+            "Recorded Host history is disabled. The receiver can enable it with --include-host."
+                .into()
+        }
     }
 }
 
@@ -270,12 +274,34 @@ impl ObservationStore for RemoteStore {
 }
 
 impl HistoryReader for RemoteStore {
-    fn allows_private_telemetry(&self) -> bool {
+    fn query_selected_evals(
+        &self,
+        source: &ExtensionId,
+        query: &agenturm_store::SelectedEvalQuery,
+    ) -> Result<Option<agenturm_store::SelectedEvalPage>, String> {
+        match self.request(ReaderHistoryRequest::SelectedEvals {
+            source_id: source.clone(),
+            query: query.clone(),
+        })? {
+            ReaderHistoryReply::SelectedEvals(page) => Ok(page),
+            _ => Err("History receiver sent an unexpected evaluation page".into()),
+        }
+    }
+    fn allows_private_capture(&self) -> bool {
         false
     }
 
     fn local_host_data(&self) -> bool {
         false
+    }
+
+    fn query_host_history(&self, query: &ObservationQuery) -> Result<ObservationPage, String> {
+        match self.request(ReaderHistoryRequest::HostHistory {
+            query: query.clone(),
+        })? {
+            ReaderHistoryReply::HostHistory(page) => Ok(page),
+            _ => Err("History receiver sent an unexpected Host page".into()),
+        }
     }
 
     fn workspace_ledger(&self, marker: &Path) -> Result<WorkspaceLedger, String> {

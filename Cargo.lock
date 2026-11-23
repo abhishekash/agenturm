@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agenturm-app"
-version = "0.3.5"
+version = "0.3.6"
 dependencies = [
  "agenturm-content",
  "agenturm-jsonl-source",
@@ -82,6 +82,7 @@ dependencies = [
  "serde",
  "serde_json",
  "sha2",
+ "shlex",
  "time",
 ]
 
@@ -195,6 +196,7 @@ dependencies = [
  "agenturm-protocol",
  "agenturm-source-process",
  "rusqlite",
+ "serde",
  "serde_json",
  "sha2",
 ]
@@ -205,6 +207,7 @@ version = "0.1.0"
 dependencies = [
  "agenturm-directory-source",
  "agenturm-jsonl-source",
+ "agenturm-protocol",
  "agenturm-source-process",
  "libc",
  "serde",

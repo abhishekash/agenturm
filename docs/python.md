@@ -79,6 +79,7 @@ from observatory import Client
 
 telemetry = Client(transport="otlp", strict=True)
 with telemetry.trace(session_id="thread-42", harness_id="harness.pi") as run:
+    run.progress("planning", percent=0)
     with run.span("lookup") as span:
         span.set_status("OK")
 ```
@@ -122,8 +123,14 @@ failures, including partial rejections, are available in `Client.last_error`.
 The timeout covers connecting, writing, and reading each request. Best-effort
 export skips invalid spans and attempts later batches after a failed request.
 With `strict=True`, a delivery error is raised when the application completes
-successfully. An application exception still propagates. Progress messages
-belong to the legacy transport.
+successfully. An application exception still propagates.
+
+`run.progress(stage, percent=...)` and `await run.aprogress(...)` publish
+metadata while the trace is open. Supply a public stage identifier. The
+optional percent is between 0 and 100 with up to two decimal places.
+An omitted percent stays unknown. The Rust receiver gets the stage, exact
+scope, and optional percent. The default legacy transport still sends
+the `message` argument to the Python receiver.
 
 The OpenAI Agents and LangChain wrappers can use the same client. Set the
 explicit scope on `Client` for the OpenAI Agents exporter or on the active

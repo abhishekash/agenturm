@@ -2,8 +2,8 @@
 
 use agenturm_kernel::ExtensionId;
 use agenturm_store::{
-    EvalImportReport, EvalOutcome, EvalPage, EvalQuery, EvalScore, MAX_EVAL_OUTCOMES,
-    RetainedEvalOutcome, Store,
+    EvalDetailRecord, EvalImportReport, EvalOutcome, EvalPage, EvalQuery, EvalResultDetail,
+    EvalScore, EvalScoreDetail, MAX_EVAL_OUTCOMES, RetainedEvalOutcome, Store,
 };
 use serde::Deserialize;
 use serde_json::Number;
@@ -11,8 +11,7 @@ use std::fmt::Write as _;
 use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
-pub(super) const IMPORT_USAGE: &str =
-    "agenturm import-evals --file <results.json|-> --db <path> --source-id otlp.<id>";
+pub(super) const IMPORT_USAGE: &str = "agenturm import-evals --file <results.json|-> --db <path> --source-id otlp.<id> [--include-detail]";
 pub(super) const QUERY_USAGE: &str = "agenturm evals --db <path> --source-id otlp.<id> [--trace-id <id> [--history [--before-revision <n>]] | --summary [--after-trace-id <id>]] [--limit <1..256>] [--json]";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -24,7 +23,7 @@ pub struct EvalOptions {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Action {
-    Import(PathBuf),
+    Import { path: PathBuf, include_detail: bool },
     Read { trace_id: String, json: bool },
     Browse { query: EvalQuery, json: bool },
 }
@@ -33,23 +32,23 @@ pub(super) fn parse(arguments: &[String], import: bool) -> Result<EvalOptions, S
     let usage = if import { IMPORT_USAGE } else { QUERY_USAGE };
     let (mut db, mut source, mut value) = (None, None, None);
     let (mut json, mut history, mut summary) = (false, false, false);
+    let mut include_detail = false;
     let (mut limit, mut before, mut after) = (None, None, None);
     let mut arguments = arguments.iter();
     while let Some(flag) = arguments.next() {
-        if !import {
-            let boolean = match flag.as_str() {
-                "--json" => Some(&mut json),
-                "--history" => Some(&mut history),
-                "--summary" => Some(&mut summary),
-                _ => None,
-            };
-            if let Some(boolean) = boolean {
-                if *boolean {
-                    return Err(usage.into());
-                }
-                *boolean = true;
-                continue;
+        let boolean = match (flag.as_str(), import) {
+            ("--include-detail", true) => Some(&mut include_detail),
+            ("--json", false) => Some(&mut json),
+            ("--history", false) => Some(&mut history),
+            ("--summary", false) => Some(&mut summary),
+            _ => None,
+        };
+        if let Some(boolean) = boolean {
+            if *boolean {
+                return Err(usage.into());
             }
+            *boolean = true;
+            continue;
         }
         let argument = arguments
             .next()
@@ -70,7 +69,10 @@ pub(super) fn parse(arguments: &[String], import: bool) -> Result<EvalOptions, S
         }
     }
     let action = if import {
-        Action::Import(PathBuf::from(value.ok_or(usage)?))
+        Action::Import {
+            path: PathBuf::from(value.ok_or(usage)?),
+            include_detail,
+        }
     } else if history || summary {
         if history && summary {
             return Err(usage.into());
@@ -125,8 +127,11 @@ pub(super) fn parse(arguments: &[String], import: bool) -> Result<EvalOptions, S
 
 pub fn execute_evals(options: &EvalOptions) -> Result<String, String> {
     match &options.action {
-        Action::Import(path) => {
-            let outcomes = prepare(path)?;
+        Action::Import {
+            path,
+            include_detail,
+        } => {
+            let Prepared { outcomes, details } = prepare(path, *include_detail)?;
             if outcomes.is_empty() {
                 return Ok(report(EvalImportReport::default()));
             }
@@ -134,7 +139,7 @@ pub fn execute_evals(options: &EvalOptions) -> Result<String, String> {
             Store::open_read_only(&options.db).map_err(history_error)?;
             let mut store = Store::open_collector(&options.db).map_err(history_error)?;
             let imported = store
-                .import_eval_outcomes(&options.source_id, &outcomes)
+                .import_eval_outcomes_with_details(&options.source_id, &outcomes, &details)
                 .map_err(|error| error.to_string())?;
             Ok(report(imported))
         }
@@ -161,11 +166,17 @@ pub(super) fn execute_with_store(
     store: &agenturm_storage_service::NativeStore,
 ) -> Result<String, String> {
     match &options.action {
-        Action::Import(path) => {
-            let outcomes = prepare(path)?;
-            let imported = store
-                .import_eval_outcomes(&options.source_id, &outcomes)
-                .map_err(|error| error.to_string())?;
+        Action::Import {
+            path,
+            include_detail,
+        } => {
+            let Prepared { outcomes, details } = prepare(path, *include_detail)?;
+            let imported = if details.is_empty() {
+                store.import_eval_outcomes(&options.source_id, &outcomes)
+            } else {
+                store.import_eval_outcomes_with_details(&options.source_id, &outcomes, &details)
+            }
+            .map_err(|error| error.to_string())?;
             Ok(report(imported))
         }
         Action::Browse { query, json } => {
@@ -187,7 +198,12 @@ fn history_error(error: agenturm_store::StoreError) -> String {
     format!("open history failed: {error}")
 }
 
-fn prepare(path: &Path) -> Result<Vec<EvalOutcome>, String> {
+struct Prepared {
+    outcomes: Vec<EvalOutcome>,
+    details: Vec<EvalDetailRecord>,
+}
+
+fn prepare(path: &Path, include_detail: bool) -> Result<Prepared, String> {
     use crate::trace_import::{MAX_EXPORT_BYTES, open_regular_export};
 
     let mut bytes = Vec::new();
@@ -205,17 +221,12 @@ fn prepare(path: &Path) -> Result<Vec<EvalOutcome>, String> {
     if bytes.len() as u64 > MAX_EXPORT_BYTES {
         return Err("Evaluation results exceed 4 MiB".into());
     }
-    let file: Results = serde_json::from_slice(&bytes).map_err(|error| {
-        format!(
-            "Invalid evaluation results at line {} column {}",
-            error.line(),
-            error.column()
-        )
-    })?;
+    let file: Results = serde_json::from_slice(&bytes).map_err(decode_error)?;
     if file.results.len() > MAX_EVAL_OUTCOMES {
         return Err("Evaluation results exceed 1024 outcomes".into());
     }
-    file.results
+    let outcomes = file
+        .results
         .into_iter()
         .enumerate()
         .map(|(index, record)| {
@@ -225,7 +236,27 @@ fn prepare(path: &Path) -> Result<Vec<EvalOutcome>, String> {
                 .map_err(|_| format!("Invalid evaluation metadata in result {}", index + 1))?;
             Ok(outcome)
         })
-        .collect()
+        .collect::<Result<Vec<_>, String>>()?;
+    let details = if include_detail {
+        let detail_file: DetailResults = serde_json::from_slice(&bytes).map_err(decode_error)?;
+        detail_file
+            .results
+            .into_iter()
+            .zip(&outcomes)
+            .filter_map(|(row, outcome)| row.into_record(&outcome.trace_id))
+            .collect()
+    } else {
+        Vec::new()
+    };
+    Ok(Prepared { outcomes, details })
+}
+
+fn decode_error(error: serde_json::Error) -> String {
+    format!(
+        "Invalid evaluation results at line {} column {}",
+        error.line(),
+        error.column()
+    )
 }
 
 #[derive(Deserialize)]
@@ -247,6 +278,48 @@ struct ScoreRow {
     scorer: String,
     passed: Option<bool>,
     score: Option<Number>,
+}
+
+#[derive(Deserialize)]
+struct DetailResults {
+    results: Vec<DetailRow>,
+}
+
+#[derive(Deserialize)]
+struct DetailRow {
+    error: Option<serde_json::Value>,
+    scores: Option<Vec<DetailScore>>,
+}
+
+#[derive(Deserialize)]
+struct DetailScore {
+    detail: Option<serde_json::Value>,
+}
+
+impl DetailRow {
+    fn into_record(self, trace_id: &str) -> Option<EvalDetailRecord> {
+        let text = |value: serde_json::Value| match value {
+            serde_json::Value::String(text) if !text.is_empty() => Some(text),
+            _ => None,
+        };
+        let error = self.error.and_then(text);
+        let scores: Vec<_> = self
+            .scores
+            .unwrap_or_default()
+            .into_iter()
+            .enumerate()
+            .filter_map(|(score_index, score)| {
+                score.detail.and_then(text).map(|detail| EvalScoreDetail {
+                    score_index,
+                    detail,
+                })
+            })
+            .collect();
+        (error.is_some() || !scores.is_empty()).then(|| EvalDetailRecord {
+            trace_id: trace_id.into(),
+            detail: EvalResultDetail { error, scores },
+        })
+    }
 }
 
 impl ResultRow {
@@ -340,4 +413,98 @@ fn display_page(page: EvalPage, query: &EvalQuery, json: bool) -> Result<String,
         let _ = writeln!(text, "More revisions: --before-revision {cursor}");
     }
     Ok(text)
+}
+
+pub(super) fn workspace_evals(
+    store: &impl crate::HistoryReader,
+    request: agenturm_ui::EvaluationRead,
+) -> Result<agenturm_ui::WorkResult, String> {
+    use agenturm_ui::{
+        EvaluationDetailEntry, EvaluationPage, EvaluationRow, EvaluationView, WorkResult,
+    };
+    const PAGE_SIZE: usize = 32;
+    let view = match &request.view {
+        EvaluationView::Revisions { before } => EvalQuery::History {
+            trace_id: request.trace.trace_id.clone(),
+            before_revision: *before,
+            limit: PAGE_SIZE,
+        },
+        EvaluationView::SourceSummary { after } => EvalQuery::Latest {
+            after_trace_id: after.clone(),
+            limit: PAGE_SIZE,
+        },
+    };
+    let query = agenturm_store::SelectedEvalQuery {
+        trace_id: request.trace.trace_id.clone(),
+        evidence_snapshot: request.trace.snapshot_id,
+        view,
+    };
+    let selected = store
+        .query_selected_evals(&request.trace.source_id, &query)?
+        .ok_or("The selected trace is no longer available. Reopen Traces to refresh.")?;
+    let continuation = match &request.view {
+        EvaluationView::Revisions { .. } => {
+            selected
+                .page
+                .next_before_revision
+                .map(|before| EvaluationView::Revisions {
+                    before: Some(before),
+                })
+        }
+        EvaluationView::SourceSummary { .. } => selected
+            .page
+            .next_trace_id
+            .map(|after| EvaluationView::SourceSummary { after: Some(after) }),
+    };
+    let rows = selected
+        .page
+        .outcomes
+        .into_iter()
+        .map(|row| {
+            let mut details = vec![
+                format!(
+                    "Task {}",
+                    row.outcome.task_id.as_deref().unwrap_or("unknown")
+                ),
+                format!(
+                    "Model {}",
+                    row.outcome.provider_model.as_deref().unwrap_or("unknown")
+                ),
+            ];
+            details.extend(row.outcome.scores.iter().map(|score| {
+                let verdict = match score.passed {
+                    Some(true) => "passed",
+                    Some(false) => "failed",
+                    None => "verdict unknown",
+                };
+                let value = score
+                    .score
+                    .as_ref()
+                    .map_or_else(|| "score unknown".into(), |score| format!("score {score}"));
+                format!("{} · {verdict} · {value}", score.scorer)
+            }));
+            EvaluationRow {
+                trace_id: row.outcome.trace_id,
+                revision: row.revision,
+                passed: row.outcome.passed,
+                details,
+                private_detail: row
+                    .detail_selection
+                    .filter(|_| store.allows_private_capture())
+                    .map(|detail| EvaluationDetailEntry {
+                        source: detail.trace_source_id,
+                        trace_id: detail.trace_id,
+                        revision: detail.revision,
+                        receipt_id: detail.receipt_id,
+                        snapshot_id: detail.snapshot_id,
+                    }),
+            }
+        })
+        .collect();
+    Ok(WorkResult::Evaluations(Box::new(EvaluationPage {
+        request,
+        current_revision: selected.current_revision,
+        rows,
+        continuation,
+    })))
 }

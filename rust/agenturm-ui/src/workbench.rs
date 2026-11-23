@@ -2,6 +2,7 @@
 
 use super::*;
 use crate::workspace::{RecordedSession, ReviewVersion};
+use agenturm_kernel::ReadSnapshot;
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::Duration;
 
@@ -58,6 +59,8 @@ pub struct PromptEntry {
     pub event_id: String,
     pub revision: u32,
     pub timestamp: u64,
+    pub snapshot_id: Option<ReadSnapshot>,
+    pub history_identity: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -159,9 +162,11 @@ impl io::Write for PromptDelivery {
     }
 }
 
+pub(crate) mod evaluation;
 mod host;
 
 pub enum WorkCommand {
+    Evaluations(Box<evaluation::EvaluationRead>),
     HostHistory(Option<agenturm_kernel::ObservationPosition>),
     ReviewNotes(RecordedSession),
     SaveReviewNote {
@@ -209,9 +214,10 @@ pub enum WorkCommand {
     Seen(RequestEntry),
     Locate(RequestEntry),
     Prompts(WorkAnchor),
-    RevealPrompt(PromptEntry, PromptDelivery),
+    RevealPrompt(Box<PromptEntry>, PromptDelivery),
     RevealOperation(OperationDetailEntry, PromptDelivery),
     RevealTelemetry(Box<TelemetrySpanEntry>, PromptDelivery),
+    RevealEvalDetail(Box<evaluation::EvaluationDetailEntry>, PromptDelivery),
 }
 
 pub struct ReviewNoteEntry {
@@ -221,6 +227,7 @@ pub struct ReviewNoteEntry {
 }
 
 pub enum WorkResult {
+    Evaluations(Box<evaluation::EvaluationPage>),
     HostHistory(agenturm_kernel::ObservationPage),
     ReviewNotes {
         session: RecordedSession,
@@ -285,9 +292,17 @@ enum Draft {
 pub(super) enum WorkInput {
     Reveal(PromptEntry),
     RevealTelemetry(TelemetrySpanEntry),
+    RevealEvaluation(evaluation::EvaluationDetailEntry),
     None,
+    Back,
     Close,
     Command(WorkCommand),
+}
+
+struct EvaluationReturn {
+    page: Box<evaluation::EvaluationPage>,
+    cursor: ListState,
+    scroll: u16,
 }
 
 pub(super) struct Workbench {
@@ -298,6 +313,7 @@ pub(super) struct Workbench {
     help: bool,
     review_note_scroll: u16,
     host_level: host::HostLevel,
+    evaluation_return: Option<EvaluationReturn>,
 }
 
 impl Workbench {
@@ -310,6 +326,7 @@ impl Workbench {
             help: false,
             review_note_scroll: 0,
             host_level: host::HostLevel::default(),
+            evaluation_return: None,
         };
         work.reset_cursor();
         work
@@ -326,7 +343,21 @@ impl Workbench {
             _ => None,
         };
         self.draft = None;
-        self.data = data;
+        let previous_data = std::mem::replace(&mut self.data, data);
+        match (&self.data, previous_data) {
+            (WorkResult::Evaluations(current), WorkResult::Evaluations(previous))
+                if current.summary() =>
+            {
+                if !previous.summary() {
+                    self.evaluation_return = Some(EvaluationReturn {
+                        page: previous,
+                        cursor: self.cursor,
+                        scroll: self.review_note_scroll,
+                    });
+                }
+            }
+            _ => self.evaluation_return = None,
+        }
         self.host_level = host::HostLevel::default();
         self.reset_cursor();
         if let (Some(id), WorkResult::Tasks { items, .. }) = (previous, &self.data)
@@ -367,6 +398,7 @@ impl Workbench {
 
     fn len(&self) -> usize {
         match &self.data {
+            WorkResult::Evaluations(page) => page.rows.len(),
             WorkResult::HostHistory(page) => self.host_level.len(page),
             WorkResult::ReviewNotes { items, .. } => items.len(),
             WorkResult::Tasks { items, .. } => items.len(),
@@ -412,12 +444,22 @@ impl Workbench {
             return self.host_level.action(page, &mut self.cursor, key.code);
         }
         match key.code {
+            KeyCode::Esc if self.evaluation_return.is_some() => {
+                let saved = self
+                    .evaluation_return
+                    .take()
+                    .expect("evaluation return checked");
+                self.data = WorkResult::Evaluations(saved.page);
+                self.cursor = saved.cursor;
+                self.review_note_scroll = saved.scroll;
+                WorkInput::Back
+            }
             KeyCode::Esc => WorkInput::Close,
-            KeyCode::PageDown if matches!(self.data, WorkResult::ReviewNotes { .. }) => {
+            KeyCode::PageDown if self.scrollable_details() => {
                 self.review_note_scroll = self.review_note_scroll.saturating_add(4);
                 WorkInput::None
             }
-            KeyCode::PageUp if matches!(self.data, WorkResult::ReviewNotes { .. }) => {
+            KeyCode::PageUp if self.scrollable_details() => {
                 self.review_note_scroll = self.review_note_scroll.saturating_sub(4);
                 WorkInput::None
             }
@@ -437,6 +479,7 @@ impl Workbench {
 
     fn action(&mut self, key: KeyCode, selected: usize) -> WorkInput {
         match (&self.data, key) {
+            (WorkResult::Evaluations(page), key) => return page.action(key, selected),
             (WorkResult::ReviewNotes { session, .. }, KeyCode::Char('e')) => {
                 self.draft = Some(Draft::ReviewNote {
                     session: session.clone(),
@@ -713,6 +756,13 @@ impl Workbench {
         self.draft.is_some()
     }
 
+    fn scrollable_details(&self) -> bool {
+        matches!(
+            self.data,
+            WorkResult::ReviewNotes { .. } | WorkResult::Evaluations(_)
+        )
+    }
+
     pub(super) fn draw(&mut self, frame: &mut Frame, pending: bool, status: Option<&str>) {
         let area = frame.area();
         if area.height < MIN_HEIGHT || area.width < MIN_WIDTH {
@@ -787,6 +837,13 @@ impl Workbench {
         }
         let selected = self.cursor.selected().unwrap_or_default();
         let (title, keys, options, details, empty) = match &self.data {
+            WorkResult::Evaluations(page) => (
+                page.title(),
+                page.keys(selected),
+                page.row_labels(),
+                page.details(selected),
+                page.empty(),
+            ),
             WorkResult::HostHistory(page) => {
                 let view = self.host_level.present(page, selected);
                 (
@@ -950,7 +1007,17 @@ impl Workbench {
             Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(body);
         let options: Vec<String> = options;
         if options.is_empty() {
-            frame.render_widget(Paragraph::new(empty).block(Block::bordered()), body);
+            let mut lines = vec![Line::from(empty)];
+            if matches!(self.data, WorkResult::Evaluations(_)) {
+                lines.push(Line::default());
+                lines.extend(details);
+            }
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .wrap(Wrap { trim: false })
+                    .block(Block::bordered()),
+                body,
+            );
         } else {
             let items = options
                 .into_iter()
@@ -963,7 +1030,7 @@ impl Workbench {
                 list,
                 &mut self.cursor,
             );
-            let paragraph = if matches!(self.data, WorkResult::ReviewNotes { .. }) {
+            let paragraph = if self.scrollable_details() {
                 let details = wrap_review_note(details, detail);
                 self.review_note_scroll = self
                     .review_note_scroll

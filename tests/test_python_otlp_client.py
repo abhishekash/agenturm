@@ -102,7 +102,7 @@ class PythonOtlpClientTests(unittest.TestCase):
                     turn_id="turn-2", worker_id="worker/one", attributes={"session.id": MARKER},
                 ) as run:
                     self.assertFalse(await run.aprogress(MARKER))
-                    self.assertIn("does not export progress", str(client.last_error))
+                    self.assertIn("safe identifier", str(client.last_error))
                     async with run.span(MARKER) as parent:
                         async with run.span(MARKER) as child:
                             child.set_attribute("agenturm.source.id", MARKER)
@@ -131,6 +131,45 @@ class PythonOtlpClientTests(unittest.TestCase):
             {"session.id": "session-1", "agenturm.source.id": "harness.pi",
              "agenturm.turn.id": "turn-2", "agenturm.worker.id": "worker/one"},
         )
+
+    def test_progress_is_sent_immediately_with_only_exact_scope_and_public_fields(self):
+        environment = {
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": ENDPOINT,
+            "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "authorization=Bearer%20" + "e1" * 32,
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            client = Client(transport="otlp", capture_content=True)
+            with client.trace(session_id="session-1", harness_id="harness.pi",
+                              turn_id="turn-2", worker_id="worker/one") as run:
+                self.assertTrue(run.progress("planning", MARKER, 0))
+                self.assertTrue(run.progress("waiting", MARKER))
+                self.assertTrue(run.progress("processing", MARKER, 12.34))
+                self.assertFalse(run.progress("step-ghp_fixture", MARKER))
+                self.assertFalse(run.progress("processing", MARKER, 0.001))
+                self.assertIn("two decimal places", str(client.last_error))
+                self.assertEqual(len(self.requests), 3)
+                self.assertEqual({row[3] for row in self.requests}, {"/native/v1/progress"})
+        event_ids = set()
+        for request, stage, basis_points in zip(
+            self.requests[:3], ("planning", "waiting", "processing"), (0, None, 1234)
+        ):
+            host, port, method, path, body, headers = request
+            self.assertEqual((host, port, method, path),
+                             ("127.0.0.1", 14318, "POST", "/native/v1/progress"))
+            self.assertEqual(headers["Authorization"], "Bearer " + "e1" * 32)
+            self.assertNotIn(MARKER.encode(), body)
+            record = json.loads(body)
+            event_id = record.pop("event_id")
+            self.assertRegex(event_id, "^[a-f0-9]{32}$")
+            event_ids.add(event_id)
+            self.assertGreater(int(record.pop("observed_at_unix_ns")), 0)
+            self.assertEqual(record.pop("percent_basis_points", None), basis_points)
+            self.assertEqual(record, {
+                "trace_id": run.trace_id, "stage": stage, "session_id": "session-1",
+                "target_source_id": "harness.pi", "turn_id": "turn-2", "worker_id": "worker/one",
+            })
+        self.assertEqual(len(event_ids), 3)
+        self.assertEqual(self.requests[3][3], "/v1/traces")
 
     def test_captured_text_requires_explicit_mode_bearer_session_and_safe_text(self):
         environment = {

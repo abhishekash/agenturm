@@ -1,10 +1,13 @@
 //! The source DB is opened read-only. Each poll has one SQLite snapshot and
 //! pages complete rows; only coarse facts cross the process boundary.
 
-use agenturm_protocol::observation::{McpCall, McpMethod, mcp_tool_labels};
+use agenturm_protocol::observation::{
+    McpCall, McpMethod, NativeCostBasis, ReportedCost, mcp_tool_labels,
+};
 use agenturm_source_process::Result;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use serde_json::{Value, json};
+use serde::Deserialize;
+use serde_json::{Value, json, value::RawValue};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
@@ -558,7 +561,12 @@ fn part_turn(
     verified_turn(db, cursor, session, seq)
 }
 
-fn message_facts(db: &Connection, cursor: &Cursor, row: SourceRow<'_>) -> Result<Vec<Value>> {
+fn message_facts(
+    db: &Connection,
+    cursor: &Cursor,
+    row: SourceRow<'_>,
+    native_costs: bool,
+) -> Result<Vec<Value>> {
     if row.session.is_empty()
         || row.session.len() > 256
         || row.id.is_empty()
@@ -584,6 +592,29 @@ fn message_facts(db: &Connection, cursor: &Cursor, row: SourceRow<'_>) -> Result
         "user" => vec![scope.record("message", json!({"role":"user"}))],
         "assistant" => {
             let mut facts = vec![scope.record("message", json!({"role":"assistant"}))];
+            if native_costs
+                && raw["time"]["completed"]
+                    .as_i64()
+                    .is_some_and(|ms| stamp(ms).is_ok())
+                && raw["cost"].is_number()
+                && let Some(cost) = assistant_cost(row.data)
+            {
+                let message_event = wire_id(
+                    scope.epoch,
+                    scope.table,
+                    scope.session,
+                    scope.row,
+                    "message",
+                );
+                facts.push(json!({
+                    "event_id": format!("{message_event}:cost"),
+                    "kind": "reported_cost",
+                    "revision": scope.revision,
+                    "time_ns": scope.time_ns,
+                    "identity": identity(scope.session, scope.turn, Some(&message_event)),
+                    "payload": cost,
+                }));
+            }
             if let Some(counters) = usage(&raw)? {
                 facts.push(scope.record("usage", counters));
             }
@@ -604,6 +635,17 @@ fn message_facts(db: &Connection, cursor: &Cursor, row: SourceRow<'_>) -> Result
         _ => vec![scope.diagnostic("unsupported_opencode_message")],
     };
     Ok(facts)
+}
+
+fn assistant_cost(raw: &str) -> Option<ReportedCost> {
+    #[derive(Deserialize)]
+    struct Assistant<'a> {
+        #[serde(borrow)]
+        cost: &'a RawValue,
+    }
+
+    let message: Assistant<'_> = serde_json::from_str(raw).ok()?;
+    ReportedCost::native_amount("USD", NativeCostBasis::Unknown, message.cost)
 }
 
 fn inline_tool_facts(
@@ -946,35 +988,50 @@ pub struct UserPromptEvidence<'a> {
     pub admitted_proof: Option<&'a str>,
 }
 
-pub fn verify_prompt_checkpoint(path: &Path, raw_cursor: &str) -> Result<()> {
-    const SOURCE_CHANGED: &str =
-        "Prompt source changed or no longer matches the committed checkpoint";
-    let (epoch, signature) = fingerprint(path).map_err(|_| invalid(SOURCE_CHANGED))?;
-    if !Cursor::parse(raw_cursor)?.is_some_and(|cursor| {
-        cursor.turns && cursor.epoch == epoch && cursor.signature == signature
-    }) {
-        return Err(invalid(SOURCE_CHANGED));
+const PROMPT_SOURCE_CHANGED: &str = "Prompt source changed during verification";
+
+/// The native database and WAL observed while verifying exact prompt bytes.
+pub struct PromptSourceStamp((String, String));
+
+impl PromptSourceStamp {
+    pub fn verify(&self, path: &Path) -> Result<()> {
+        if fingerprint(path).map_err(|_| invalid(PROMPT_SOURCE_CHANGED))? != self.0 {
+            return Err(invalid(PROMPT_SOURCE_CHANGED));
+        }
+        Ok(())
     }
-    Ok(())
 }
 
-/// Reconstructs exact user rows using the current native SQLite snapshot and
-/// each row's admission proof. The caller rechecks grants before disclosure.
+pub struct ProvenUserPrompts {
+    pub texts: BTreeMap<String, String>,
+    pub stamp: PromptSourceStamp,
+}
+
+/// Reconstructs exact user rows from a native SQLite read transaction. An
+/// admission digest permits proof after unrelated writes. Legacy rows still
+/// require the exact committed sweep. The caller rechecks the stamp and grant
+/// at disclosure.
 pub fn prove_user_prompts(
     path: &Path,
     raw_cursor: &str,
     session: &str,
     evidence: &[UserPromptEvidence<'_>],
-) -> Result<BTreeMap<String, String>> {
+) -> Result<ProvenUserPrompts> {
     const SOURCE_CHANGED: &str =
         "Prompt source changed or no longer matches the committed checkpoint";
     if evidence.len() > 256 || session.is_empty() || session.len() > 256 {
         return Err(invalid("OpenCode prompt selection exceeds its bound"));
     }
-    let (epoch, signature) = fingerprint(path).map_err(|_| invalid(SOURCE_CHANGED))?;
+    let checkpoint = PromptSourceStamp(fingerprint(path).map_err(|_| invalid(SOURCE_CHANGED))?);
+    let (epoch, signature) = &checkpoint.0;
     let cursor = Cursor::parse(raw_cursor)?
-        .filter(|cursor| cursor.turns && cursor.epoch == epoch && cursor.signature == signature)
+        .filter(|cursor| cursor.turns && cursor.epoch == *epoch)
         .ok_or_else(|| invalid(SOURCE_CHANGED))?;
+    let has_digest = evidence.iter().any(|row| row.admitted_proof.is_some());
+    let current_sweep = cursor.signature == *signature;
+    if !has_digest && !current_sweep {
+        return Err(invalid(SOURCE_CHANGED));
+    }
     preflight_sidecars(path)?;
     let db = Connection::open_with_flags(
         path,
@@ -983,18 +1040,33 @@ pub fn prove_user_prompts(
     db.busy_timeout(std::time::Duration::from_millis(250))?;
     db.execute_batch("PRAGMA query_only=ON; BEGIN")?;
     check_schema(&db)?;
+    let mut live_cursor = cursor.clone();
+    if has_digest {
+        bounded_count(&db, "session_message", MAX_SOURCE_ROWS)?;
+        live_cursor.message_max = db.query_row(
+            "SELECT COALESCE(MAX(rowid),0) FROM session_message",
+            [],
+            |row| row.get(0),
+        )?;
+    }
     let wanted: BTreeMap<_, _> = evidence
         .iter()
-        .filter(|row| row.admitted_proof.is_some() || row.revision == cursor.revision)
+        .filter(|row| {
+            row.admitted_proof.is_some() || (current_sweep && row.revision == cursor.revision)
+        })
         .map(|row| (row.event_id, row))
         .collect();
     let mut statement = db.prepare(
-        "SELECT rowid, id, seq, time_updated FROM session_message
-         WHERE session_id=?1 AND rowid<=?2 AND type='user'
+        "SELECT rowid, id, seq, time_updated, COALESCE(type='user', 0) FROM session_message
+         WHERE session_id=?1 AND rowid BETWEEN 1 AND ?2
            AND length(CAST(id AS BLOB)) BETWEEN 1 AND 512
          ORDER BY rowid LIMIT ?3",
     )?;
-    let mut rows = statement.query(params![session, cursor.message_max, MAX_SOURCE_ROWS + 1])?;
+    let mut rows = statement.query(params![
+        session,
+        live_cursor.message_max,
+        MAX_SOURCE_ROWS + 1
+    ])?;
     let mut count = 0;
     let mut seen = HashSet::new();
     let mut found = BTreeMap::new();
@@ -1011,15 +1083,24 @@ pub fn prove_user_prompts(
         if !seen.insert(expected.event_id) {
             return Err(invalid("OpenCode prompt identity is ambiguous"));
         }
+        let rowid: i64 = row.get(0)?;
+        let is_user: bool = row.get(4)?;
+        let turn_cursor = if expected.admitted_proof.is_some() {
+            &live_cursor
+        } else {
+            &cursor
+        };
+        if !is_user || rowid > turn_cursor.message_max {
+            continue;
+        }
         let seq: i64 = row.get(2)?;
         let updated: i64 = row.get(3)?;
         let native_stamp = stamp(updated)?.parse::<u64>()?;
         if native_stamp != expected.observed_at_unix_ns
-            || verified_turn(&db, &cursor, session, seq)?.as_deref() != Some(expected.turn_id)
+            || verified_turn(&db, turn_cursor, session, seq)?.as_deref() != Some(expected.turn_id)
         {
             continue;
         }
-        let rowid: i64 = row.get(0)?;
         let raw: Option<String> = db.query_row(
             "SELECT CASE WHEN length(CAST(data AS BLOB))<=?2 THEN data END
              FROM session_message WHERE rowid=?1",
@@ -1046,10 +1127,11 @@ pub fn prove_user_prompts(
         };
         found.insert(event_id, text.to_owned());
     }
-    if fingerprint(path).map_err(|_| invalid(SOURCE_CHANGED))? != (epoch, signature) {
-        return Err(invalid(SOURCE_CHANGED));
-    }
-    Ok(found)
+    checkpoint.verify(path)?;
+    Ok(ProvenUserPrompts {
+        texts: found,
+        stamp: checkpoint,
+    })
 }
 
 pub fn poll(
@@ -1058,6 +1140,27 @@ pub fn poll(
     raw_cursor: &str,
     max_records: usize,
     max_bytes: usize,
+) -> Result<Value> {
+    poll_with_native_costs(path, source_id, raw_cursor, max_records, max_bytes, true)
+}
+
+pub fn poll_legacy(
+    path: &Path,
+    source_id: &str,
+    raw_cursor: &str,
+    max_records: usize,
+    max_bytes: usize,
+) -> Result<Value> {
+    poll_with_native_costs(path, source_id, raw_cursor, max_records, max_bytes, false)
+}
+
+fn poll_with_native_costs(
+    path: &Path,
+    source_id: &str,
+    raw_cursor: &str,
+    max_records: usize,
+    max_bytes: usize,
+    native_costs: bool,
 ) -> Result<Value> {
     let previous = Cursor::parse(raw_cursor)?;
     let (epoch, signature) = match fingerprint(path) {
@@ -1266,7 +1369,7 @@ pub fn poll(
                 data: &data,
             };
             if phase == 'm' {
-                let facts = message_facts(&db, &cursor, row)?;
+                let facts = message_facts(&db, &cursor, row, native_costs)?;
                 if kind == "user"
                     && let Some(fact) = facts.first()
                     && let Some(event) = fact["event_id"].as_str()
@@ -1483,6 +1586,7 @@ mod tests {
                 updated: 15,
                 data: r#"{"outcome":"failed"}"#,
             },
+            true,
         )
         .unwrap();
         assert_eq!(facts[0]["identity"]["turn_id"], turn);
@@ -1528,6 +1632,7 @@ mod tests {
                 updated: 15,
                 data: &content,
             },
+            true,
         )
         .unwrap();
         assert!(
@@ -1546,6 +1651,7 @@ mod tests {
                 updated: 18,
                 data: &content,
             },
+            true,
         )
         .unwrap();
         let turn = &later[0]["identity"]["turn_id"];
@@ -1579,6 +1685,7 @@ mod tests {
                 updated: 20,
                 data: r#"{"outcome":"unknown"}"#,
             },
+            true,
         )
         .unwrap();
         assert!(ambiguous.is_empty());
