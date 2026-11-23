@@ -50,6 +50,36 @@ reads the same history. When the cockpit owns collection, it also receives
 OTLP/HTTP traces at `http://127.0.0.1:14318/v1/traces`. Set `AGENTURM_OTLP_PORT`
 to use another loopback port. Both stop on quit.
 
+A newly created default cockpit history uses a 14-day age policy. Existing
+histories retain their current policy; an explicitly selected database can
+receive a policy through the commands below. Active writers check the policy
+once a minute. The policy removes expired observation rows while preserving
+source checkpoints and replay receipts. Native source files and existing
+backups retain their original data.
+
+```sh
+"$agenturm" retention status --db history.sqlite
+"$agenturm" retention set --db history.sqlite --max-age-days 30
+"$agenturm" retention disable --db history.sqlite
+"$agenturm" retention run --db history.sqlite
+```
+
+`set` configures the age; `run` applies it immediately using the writer's
+clock. `disable` persists across restart. Increasing the age or disabling
+retention preserves the established cutoff and does not recover expired
+rows. Stop a local collector before changing its policy through a separate
+CLI process. A broker maintenance identity can configure, disable or apply
+the policy while the service is running:
+
+```sh
+"$agenturm" broker retention set --broker-config maintenance.json --max-age-days 30
+"$agenturm" broker retention status --broker-config reader.json
+```
+
+Reader and collector identities can inspect the broker policy. Its
+maintenance identity owns changes and explicit cleanup. Backups preserve the
+policy; a broker owner can disable it before starting a restored history.
+
 Use `↑` and `↓` to choose a session, `/` to search the loaded roster,
 and Enter to open its Overview. The newest roster page refreshes while open.
 Press `r` in Agents to refresh it immediately. Open Activity with `a` or

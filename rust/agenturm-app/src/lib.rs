@@ -2407,6 +2407,8 @@ impl Drop for WatchSignalRegistrations {
     }
 }
 
+type CollectorMaintenance<S> = fn(&mut S) -> Result<(), String>;
+
 pub struct ConfiguredCollector<S = Store> {
     kernel: Kernel,
     store: S,
@@ -2421,7 +2423,7 @@ pub struct ConfiguredCollector<S = Store> {
     #[cfg(target_os = "linux")]
     validate_local_database: bool,
     next_scan: Instant,
-    local_maintenance: Option<fn(&mut S) -> Result<(), String>>,
+    local_maintenance: Option<CollectorMaintenance<S>>,
     next_maintenance: Instant,
 }
 
