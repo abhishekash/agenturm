@@ -319,8 +319,8 @@ pub use agenturm_protocol::metric::{MetricDescriptor, MetricPoint, is_metric_sou
 pub use agenturm_protocol::observation::{
     FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, NANOUNITS_PER_CURRENCY_UNIT, NativeCostBasis,
     RelationshipKind, ReportedCost, SpanTokenUsage, TraceProgress, TraceSpan, TraceSpanIdentity,
-    TraceStatus, WorkerSpawn, is_github_pull_request, is_valid_mcp_metadata,
-    parse_currency_nanounits,
+    TraceStatus, WorkerSpawn, claude_file_edit_summary, is_github_pull_request,
+    is_valid_mcp_metadata, parse_currency_nanounits,
 };
 
 pub fn is_mcp_operation(identity: &ObservationIdentity) -> bool {

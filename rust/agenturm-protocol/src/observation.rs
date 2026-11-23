@@ -301,6 +301,52 @@ impl FileEdit {
     }
 }
 
+/// Derives the edit-count summary for one recognized Claude Code file-edit
+/// tool_use block. Adapters emit the resulting `file_edit` fact, and private
+/// detail reveal re-recognizes the exact same shape before any disclosure.
+/// The input carries file paths and content, which stay in the source
+/// transcript: only the counts below ever leave an adapter.
+///
+/// Recognized tools (case-insensitive) and their deterministic derivations:
+/// - `Write` counts one added file. The native input carries only `file_path`
+///   and `content` with no overwrite evidence, so an update can never be
+///   distinguished from a creation and `added` is the honest mapping.
+/// - `Edit` counts one updated file.
+/// - `MultiEdit` counts one update per edit in its `edits` array; an empty
+///   array or one larger than `FileEdit::MAX_CHANGES` is not summarized.
+///
+/// A missing, non-object, or file-less input is malformed and yields `None`.
+pub fn claude_file_edit_summary(name: &str, input: Option<&serde_json::Value>) -> Option<FileEdit> {
+    let fields = input?.as_object()?;
+    if !fields
+        .get("file_path")
+        .is_some_and(|path| path.as_str().is_some_and(|path| !path.is_empty()))
+    {
+        return None;
+    }
+    match name.to_ascii_lowercase().as_str() {
+        "write" => Some(FileEdit {
+            added: 1,
+            ..FileEdit::default()
+        }),
+        "edit" => Some(FileEdit {
+            updated: 1,
+            ..FileEdit::default()
+        }),
+        "multiedit" => {
+            let edits = fields.get("edits")?.as_array()?;
+            if !(1..=FileEdit::MAX_CHANGES).contains(&edits.len()) {
+                return None;
+            }
+            Some(FileEdit {
+                updated: u16::try_from(edits.len()).ok()?,
+                ..FileEdit::default()
+            })
+        }
+        _ => None,
+    }
+}
+
 #[derive(Debug, Default, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct Usage {
