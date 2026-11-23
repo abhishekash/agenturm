@@ -27,22 +27,6 @@ lint/upgrade-identity coverage gap. FD3's combined usage slice is merged in PR
 #385 (`1541481`). The rows below describe development still open. The SDK/CLI
 audit and test qualification are separate work categories.
 
-### Active implementation
-
-**FD4 — cross-host terminal routing is in progress in the shared checkout**
-(`main` at `1541481`, with uncommitted changes in
-`rust/agenturm-app/src/workflow_route.rs`,
-`rust/agenturm-app/src/remote_history/client.rs`, and
-`rust/agenturm-app/src/cockpit_workflows.rs`). The current slice adds an
-operator-supplied route file to the native remote cockpit, verifies the exact
-current request, and probes the receiver host for one unique tmux pane whose
-process ancestry matches the provider's exact resume command. Worker requests,
-unsupported providers, missing configuration, ambiguous/stale targets and
-unavailable routes fail closed. This is implementation-in-progress evidence,
-not a completed or merged feature: focused validation, return-selection review,
-security review, and confirmation of supported route transport semantics are
-still pending. The Python receiver explicitly rejects this option.
-
 ### Core Linux features
 
 | ID | Priority / owner | Feature still to implement | Dependency and completion condition |
@@ -50,7 +34,7 @@ still pending. The Python receiver explicitly rejects this option.
 | FD1 | Core / harness adapters | Remaining attributable native evidence: Pi same-session worker relationships, Claude asynchronous workers, and additional supported check/turn shapes. | Obtain positive native records for each shape, then add exact typed attribution through admission/reopen and the evidence UI. Missing exit codes or parent evidence stay unknown; fixtures or output prose cannot invent facts. Completed Claude worker spawning and neutral presence are not reopened. |
 | FD2 | Core / private evidence and UI | Provider-specific private edit and MCP detail beyond the implemented Codex routes. | Define each provider's exact retained/source proof and separate content approval. Implement scoped selection/reveal/revocation and clear unavailable cases. Existing whole-session Codex Review edits, MCP preview and linked-trace paths remain implemented. |
 | FD3 | Core / usage and cost | Combined usage/cost totals that safely handle overlapping producer reports. | **Combined slice implemented:** per-day combined totals exclude reports whose overlap is established through exact `(target source, session)` identity, count the exclusions, and sum only nonduplicated native reports plus the per-trace-deduplicated trace cohort and disjoint log-only cohort; currencies stay distinct, and native assistant cost records that forks can duplicate stay outside combined totals. Unattributed telemetry carries no identity link and contributes; that boundary is disclosed rather than inferred away. Older attached-receiver pages without the combined block stay readable. Remaining: cross-layer overlap without identity links cannot be detected and is never summed speculatively; installed, paired-state and broad qualification are delegated as CF6 in the [core feature test plan](../validation/rust-core-feature-test-plan.md). Existing seven-day and per-currency views remain implemented. |
-| FD4 | Core / remote workflow — **in progress** | Cross-host terminal routing to the exact recorded remote owner/session. | Current working-tree slice: native receiver `--route-file`, exact current-request check, bounded receiver-host process/tmux probes and unique-target verification. Still complete focused validation, return-selection review, security/transport review, and fail-closed acceptance. Resolve one exact target or report unavailable; routing never answers or approves. Existing local routing/resume and native/attached receiver reads are not missing features. |
+| FD4 | Core / remote workflow | Cross-host terminal routing to the exact recorded remote owner/session. | **Routing slice implemented:** an attached cockpit accepts an explicit operator-authored `--route-file` (one command word per line, for example `ssh` and `user@receiver-host`); `l` verifies the exact current request, runs fixed read-only tmux and `/proc` probes through the route, resolves the unique remote pane whose process ancestry carries the exact recorded resume command, re-verifies the pane's process, and presents the attach command for the operator. Routing never selects a remote pane, answers, or approves; worker requests, unsupported providers, missing configuration, ambiguous or stale targets and unreachable routes fail closed. The route must transport arguments the way `ssh` does; the legacy Python receiver protocol rejects a route file. Focused validation passed: eight routing tests including a fake-route end-to-end resolution, ambiguity and stale-pane rejection, an attach-option parse test, workspace strict Clippy and fmt. Remaining: per-host route persistence beyond attach-time configuration, transports that do not join arguments the way `ssh` does, an independent security/transport review, and installed/paired acceptance are delegated as CF7 in the [core feature test plan](../validation/rust-core-feature-test-plan.md). Existing local routing/resume and native/attached receiver reads are not missing features. |
 
 FD1–FD4 can progress independently after agreeing on any shared DTO, grant or
 transport contracts. An unavailable native witness is a dependency, not proof

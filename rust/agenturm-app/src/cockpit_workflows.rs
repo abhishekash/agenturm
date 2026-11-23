@@ -801,7 +801,7 @@ fn resume_runtime(owner: &WorkAnchor) -> Result<agenturm_ui::ResumeRuntime, Stri
     Err("This provider does not have a supported native resume command".into())
 }
 
-fn verify_current_request(
+pub(crate) fn verify_current_request(
     store: &impl super::HistoryReader,
     item: &RequestEntry,
 ) -> Result<(), String> {

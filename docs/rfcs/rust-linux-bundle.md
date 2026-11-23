@@ -281,6 +281,20 @@ and copies `codex resume …` or `claude --resume …` for supported sources.
 It never launches the command; Escape restores the request selection. Respond
 in the harness terminal.
 
+When the cockpit is attached with `--endpoint` and `--token-file`, the
+recorded terminal belongs to the receiver host. An explicit authenticated
+host route can be supplied at attach time with
+`agenturm cockpit --endpoint http://127.0.0.1:4318 --token-file <file>
+--route-file <route.txt>`: one command word per line, for example `ssh` and
+`user@receiver-host`. `l` then runs Agenturm's fixed read-only tmux and
+`/proc` probes through the route, resolves the unique remote pane whose
+process tree carries the exact recorded resume command, re-verifies the
+pane's process, and presents the attach command for the operator to run.
+Agenturm never selects a remote pane, answers, or approves; ambiguous,
+unreachable, or unsupported results stay unavailable. The route must
+transport arguments the way `ssh` does, and the legacy Python receiver
+protocol does not accept a route file.
+
 Press `S` in Workflow to open notification settings. Enter toggles desktop
 notifications; Tab selects the task token, USD and elapsed-minute thresholds;
 Ctrl+S saves them. Zero disables a threshold. `z` snoozes delivery for ten

@@ -53,6 +53,7 @@ baselines, not results for the new feature slices. Every new row starts
 | CF4 | Body-free OTLP error/fatal logs in failure investigation, including explicit `--kind log`; existing Findings private log view unchanged. | `/tmp/agenturm-core-development` | Separate test agent; not run on new source. |
 | CF5 | Implemented: exact native Claude worker-spawn facts and declared-child metadata in session evidence. | `/tmp/agenturm-native-presence` + `/tmp/agenturm-review-session-edits` | Separate test agent; execute on the supplied integrated source head. |
 | CF6 | Implemented: combined deduplicated usage/cost totals that exclude and count reports overlapping at exact `(target source, session)` identity; unattributed telemetry contributes with a disclosed boundary. | Development branch `feature/combined-usage-dedup` | Separate test agent; not run on new source. |
+| CF7 | Implemented: cross-host terminal routing through an explicit operator-authored attach-time route file; fixed read-only tmux and `/proc` probes resolve one exact remote pane or report unavailable. | Development branch (see PR) | Separate test agent; not run on new source. |
 
 Worktree paths identify current ownership, not release artifacts. The developer
 must supply the final integrated commit before the test owner freezes a binary.
@@ -238,6 +239,38 @@ developer checks, not installed qualification.
 | Scan/cohort limits | Days beyond trace-cohort or raw-scan bounds keep their existing partial flags; combined never claims coverage the cohort did not read. | Not run |
 
 All CF6 scenarios are **not run** until the test owner records actual results
+on the frozen integrated head.
+
+## CF7 — cross-host terminal routing
+
+Implemented with the FD4 routing slice. An attached native cockpit accepts an
+explicit operator-authored `--route-file` (one command word per line, for
+example `ssh` and `user@receiver-host`); the legacy Python receiver protocol
+rejects it. `l` verifies the exact current request, then runs three fixed,
+read-only, bounded probes through the route: a remote `/proc` snapshot whose
+matching processes are proved by exact byte comparison of the resume command
+tail (NUL-count, basename and length all checked), the tmux pane inventory,
+and a pane-process re-verification. The unique resolved target is presented as
+an attach command; Agenturm never selects a remote pane, answers, or approves.
+
+**Developer handoff:** eight focused routing tests including a fake-route
+end-to-end that emulates `ssh` argument joining — unique resolution, ambiguous
+snapshot rejection, stale pane rejection, base64 round-trip, route-file
+validation — plus the attach-option parse test, workspace all-target strict
+Clippy and fmt. These are developer checks against synthetic routes, not a
+qualification of any real transport.
+
+| Scenario | Required observation | Status |
+| --- | --- | --- |
+| Attached cockpit with a real route to a receiver host | One unique verified pane resolves; the presented attach command opens the exact recorded owner's terminal. | Not run |
+| Route semantics | A route that does not join arguments the way `ssh` does fails closed with unavailable, never a guessed target. | Not run |
+| Ambiguous, stale or missing remote state | Two candidate panes, a changed pane process between probes, or no matching process report unavailable with the request selection preserved. | Not run |
+| Worker/unsupported provider/missing configuration | Worker requests, non-Codex/Claude/Kiro sources, unsafe session identifiers and absent route files fail closed with exact reasons. | Not run |
+| Probe hygiene | Probes are read-only, bounded in output and time, carry no session bytes in script text, and leave no temporary files behind on the receiver host. | Not run |
+| Return selection at all three sizes | 120×32, 80×24 and 60×18 preserve the Workflow selection after routing results and errors. | Not run |
+| Python receiver protocol | `--route-file` with `--receiver-protocol python-v0.2.8` is rejected at parse time. | Not run |
+
+All CF7 scenarios are **not run** until the test owner records actual results
 on the frozen integrated head.
 
 ## Related Review identity fixes — delegated regression
