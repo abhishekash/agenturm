@@ -288,9 +288,17 @@ def main():
             committed_checkpoint = checkpoint(LIVE_SOURCE)
             assert committed_checkpoint is not None
             assert post(url, full_export, "application/json", token) == (200, b"{}")
+            assert checkpoint(LIVE_SOURCE) == committed_checkpoint
+
+            # An older event can create a receipt for the new cursor transition
+            # while retaining the exact same observation.
             assert post(progress_url, progress_body, "application/json", token) == (200, b"{}")
             assert query(LIVE_SOURCE) == observed
-            assert checkpoint(LIVE_SOURCE) == committed_checkpoint
+            progress_checkpoint = checkpoint(LIVE_SOURCE)
+            assert progress_checkpoint is not None
+            assert post(progress_url, progress_body, "application/json", token) == (200, b"{}")
+            assert query(LIVE_SOURCE) == observed
+            assert checkpoint(LIVE_SOURCE) == progress_checkpoint
             amended = json.dumps(progress | {"stage": "amended"}).encode()
             assert post(progress_url, amended, "application/json", token)[0] == 503
             assert query(LIVE_SOURCE) == observed

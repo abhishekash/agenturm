@@ -1,0 +1,89 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust 0.3.6</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / Rust 0.3.6</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/releases/rust-0.3.6.md">Markdown source ↗</a></nav><h1>Agenturm Rust 0.3.6</h1>
+<p>This release adds evaluation drill-down, private evaluation text, failure
+investigation, live SDK progress, and more retained metadata to the standalone
+Rust cockpit and receiver. The application, collector, receiver and storage
+service run without Python. Instrumented applications use their own producer SDKs.</p>
+<h2>Evaluation results and private text</h2>
+<p>Press <code>E</code> in Traces to choose an exact OTLP source and trace. The cockpit shows
+retained revisions, marks the current one, and displays the evaluation verdict
+alongside the span execution status. Press <code>s</code> for the source's current outcome
+page and its pass and fail counts. Escape returns through the same revision and
+trace selections. The metadata view works with local, broker and attached Rust
+history.</p>
+<p><code>import-evals --include-detail</code> optionally captures bounded result error text
+and per-score explanations. Press <code>d</code> on an eligible revision in the local or
+broker cockpit, or use <code>eval-detail preview</code> with the selection returned by
+<code>evals --json</code>. A separate <code>eval.result_detail</code> approval is required for the
+exact OTLP source. The reader verifies the capture receipt, the selected history
+snapshot and the retained supporting span. The cockpit clears the private view
+on close or expiry. HTTP reads return metadata and selection references only.
+Pruning the supporting span removes its private text. Replaying the import
+preserves the original revision and cannot restore pruned text.</p>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md#import-evaluation-results">Evaluation workflows and commands</a></p>
+<h2>Native evidence and live progress</h2>
+<p><code>investigate failures</code> pages retained failure evidence across authorized sources
+in local and broker history. Filter by source, session or failure kind. A
+coverage record identifies the scanned page and its continuation at the same
+snapshot. Eligible Codex command references can reopen the exact native record
+with the current command-detail approval.</p>
+<p>The Pi and OpenCode adapters retain completed assistant-message cost as USD
+nano-units with source provenance. Pi distinguishes explicitly provider-reported
+cost from its estimate. OpenCode preserves the reported amount with an unknown
+basis. Usage shows each report with its original operation and revision. A
+combined total remains open where instrumentation or forks repeat a report.</p>
+<p>OpenCode prompt preview can reverify retained text after later SQLite writes
+while the original message and part bytes still match the admission proof.
+The current source binding and approval remain required.</p>
+<p>The Python and Node manual SDKs publish <code>Run.progress</code> while a span is still
+open. Activity and Traces show the retained stage and optional percentage for
+the exact producer scope. The progress event ID is immutable within its source
+and the receiver acknowledges it after admission. Progress publishes bounded
+structural fields. Span completion and native agent state have separate evidence.</p>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">Failure, cost and progress commands</a></p>
+<h2>Remote metadata and recorded Host history</h2>
+<p><code>broker serve-history</code> now offers authenticated GET routes for sessions,
+activity, traces, exact trace spans and progress, MCP, metrics and hierarchy.
+Read <code>/api/health</code> first and pass the returned history binding on later
+requests. Scope filters, bounded pages and opaque cursors preserve the selected
+history. The receiver applies its current source allowlist. Precision-sensitive
+counters, units, timestamps and snapshot tokens are strings.</p>
+<p>Add <code>--include-host</code> when starting the listener to expose recorded samples via
+<code>GET /api/host</code> and the attached cockpit's Host history. Choose a sample, then a
+known process to see the loaded history for that process's exact boot and start
+identity. The reader fetches approved <code>host.*</code> history without sampling procfs.
+Ordinary metadata routes exclude Host samples and private content. Run the
+reader on trusted loopback or through an active SSH forward. Direct public TLS
+and Python receiver compatibility remain open.</p>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md#read-source-aware-metadata-with-http-get">HTTP reader and Host configuration</a></p>
+<h2>Upgrade and restore</h2>
+<p>Rust 0.3.6 writes schema 17. Read-only access accepts supported older Rust
+schemas. The first writable open upgrades the history transactionally and
+preserves its current numeric cursors. Rust 0.3.5 refuses the upgraded history.
+Keep a pre-upgrade backup and the matching older executable for rollback.</p>
+<p>A backup and restore establish a new read incarnation while preserving the
+logical history identity. Open a newly selected snapshot after restore and
+renew any private-content approvals before viewing restored evidence.</p>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-linux-bundle.md">Linux bundle and schema upgrade guide</a></p>
+<h2>Qualification and remaining gates</h2>
+<p>The Linux x86-64 archive has SHA-256
+<code>5a325704855774dbdaa333daba48dcbe9935a178aacb94c57f72086c3f27a693</code>.
+The exact package passed Python-free launch, managed install and restart,
+uninstall with retained history, and upgrade from 0.3.5. Linux guest checks
+covered evaluation disclosure across separate broker identities, metadata-only
+HTTP reads, backup and pruning, and keyboard navigation at 60×18 and 120×32.
+The cockpit restored terminal settings and cleared private text before exit.
+The frozen source passed 406 Rust library tests, 38 CLI process tests and
+strict workspace Clippy. Native Linux ARM64 candidate qualification also passed;
+the tag build attaches its separately qualified archive and checksum.</p>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-036-release.md">Exact archive and qualification record</a></p>
+<p>The standalone Rust installation remains opt-in. The default distribution
+entry point remains gated on the retained workflow inventory. Open gates include
+real Kiro transcript collection, verified isolation with a supported production
+connector endpoint, remaining legacy remote workflows, and additional native
+evidence and aggregation coverage.</p>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md">Rust-only execution plan</a></p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
