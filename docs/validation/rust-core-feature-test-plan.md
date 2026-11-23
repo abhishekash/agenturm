@@ -54,6 +54,7 @@ baselines, not results for the new feature slices. Every new row starts
 | CF5 | Implemented: exact native Claude worker-spawn facts and declared-child metadata in session evidence. | `/tmp/agenturm-native-presence` + `/tmp/agenturm-review-session-edits` | Separate test agent; execute on the supplied integrated source head. |
 | CF6 | Implemented: combined deduplicated usage/cost totals that exclude and count reports overlapping at exact `(target source, session)` identity; unattributed telemetry contributes with a disclosed boundary. | Development branch `feature/combined-usage-dedup` | Separate test agent; not run on new source. |
 | CF7 | Implemented: cross-host terminal routing through an explicit operator-authored attach-time route file; fixed read-only tmux and `/proc` probes resolve one exact remote pane or report unavailable. | Development branch (see PR) | Separate test agent; not run on new source. |
+| CF8 | Implemented: Claude private edit detail through the harness-generic operation contract — adapter `file_edit` summaries, schema-23 grants with a v22 upgrade path, bounded credential-screened reveal under a Claude fingerprint domain, cross-kind grant denial. | Development branch (see PR) | Separate test agent; not run on new source. |
 
 Worktree paths identify current ownership, not release artifacts. The developer
 must supply the final integrated commit before the test owner freezes a binary.
@@ -271,6 +272,41 @@ qualification of any real transport.
 | Python receiver protocol | `--route-file` with `--receiver-protocol python-v0.2.8` is rejected at parse time. | Not run |
 
 All CF7 scenarios are **not run** until the test owner records actual results
+on the frozen integrated head.
+
+## CF8 — Claude private edit detail
+
+Implemented with the FD2 first provider slice. The operation-detail reveal
+contract is harness-generic: a shared protocol recognition contract derives
+the `FileEdit` summary both in the Claude adapter fact and at reveal
+re-recognition, `claude.edit_detail` grants live at store schema 23 (with a
+verified v22 upgrade that preserves prior approvals), the source-side reveal
+locates the exact assistant row by committed byte offset within the admitted
+proof range, re-verifies session/worker/timestamp/operation identity, and
+extracts a bounded payload — strings truncated on char boundaries with an
+explicit `truncated` flag, and credential-shaped or bidirectional text
+withholds the whole payload. Cross-kind grants deny explicitly; malformed
+inputs withhold without failing the line; no turn identity is invented
+store-side or re-derived source-side.
+
+**Developer handoff:** adapter unit tests for Write/Edit/MultiEdit counts,
+case-insensitivity, no-leak and skip-on-malformed; a schema v22→v23 upgrade
+regression with prior-grant retention; and a real-binary integration test
+covering grant requirement, bounded reveals, 3 KiB→2 KiB truncation,
+wrong-turn/wrong-operation/malformed denials, cross-kind denial,
+changed-source denial and revoke — all green alongside every pre-existing
+Codex/Pi/Kiro content test. Workspace strict Clippy and fmt clean.
+
+| Scenario | Required observation | Status |
+| --- | --- | --- |
+| Installed binary + real Claude adapter against a real transcript | Grant-gated bounded reveal of exact edits; no content in query output. | Not run |
+| Schema upgrade on a live database | v22→v23 keeps prior approvals; `claude.edit_detail` grants become accepted; older kinds unchanged. | Not run |
+| Truncation and screening | Long content truncates at 2 KiB on a char boundary with the flag; credential-shaped or bidi text withholds the payload. | Not run |
+| Cross-kind and revoked grants | `codex.edit_detail` on a Claude source (and vice versa) denies; revoke denies; changed source bytes deny. | Not run |
+| Dense lines and malformed shapes | Dense batches keep the 256-record/64 KiB budget; missing input, non-file tools and out-of-range MultiEdit withhold without failing the line. | Not run |
+| Terminal reveal at all three sizes | 120×32, 80×24 and 60×18 render the bounded edit payload with selection preserved. | Not run |
+
+All CF8 scenarios are **not run** until the test owner records actual results
 on the frozen integrated head.
 
 ## Related Review identity fixes — delegated regression
