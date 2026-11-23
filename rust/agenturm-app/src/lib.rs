@@ -2184,7 +2184,7 @@ fn load_workspace_history(
                 }
             };
             let mut snapshot = app.refresh_history_query(store, query);
-            let panes = session_evidence::add_session_panes(
+            let mut panes = session_evidence::add_session_panes(
                 &mut snapshot,
                 &session.harness_id,
                 &session.session_id,
@@ -2193,6 +2193,7 @@ fn load_workspace_history(
             if !page.snapshot.observations.is_empty() {
                 page.review_pane = Some(panes.review.clone());
             }
+            page.operation_tables = std::mem::take(&mut panes.tables);
             page.initial_pane = Some(select_pane(panes));
             Ok(page)
         }
@@ -2203,6 +2204,7 @@ fn load_workspace_history(
                 .local_host_data()
                 .then(|| cockpit_host::add_host_pane(&mut snapshot));
             let mut page = inspector_activity::overview_page(snapshot);
+            page.operation_tables = ids.tables;
             page.initial_pane = Some(match view {
                 WorkspaceView::Overview => {
                     ExtensionId::parse("pane.overview").expect("built-in overview ID is valid")

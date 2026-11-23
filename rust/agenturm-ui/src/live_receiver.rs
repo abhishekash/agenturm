@@ -115,9 +115,9 @@ impl LiveView {
                 self.owner = None;
             }
             KeyCode::Char('2') => self.tab = Tab::Activity,
-            KeyCode::Char('8') => self.tab = Tab::Traces,
+            KeyCode::Char('4' | '8') => self.tab = Tab::Traces,
             KeyCode::Char('w') => self.tab = Tab::Pending,
-            KeyCode::Enter if self.tab == Tab::Agents => {
+            KeyCode::Enter | KeyCode::Char('e') if self.tab == Tab::Agents => {
                 if let Some(owner) = self
                     .agents
                     .selected()
@@ -162,21 +162,79 @@ impl LiveView {
             );
             return;
         }
+        frame.render_widget(Block::default().style(surface(CANVAS)), area);
         let [header, body, footer] = Layout::vertical([
-            Constraint::Length(2),
+            Constraint::Length(3),
             Constraint::Min(2),
             Constraint::Length(3),
         ])
         .areas(area);
-        let title = format!("Agenturm / {} · Python receiver", self.tab.title());
+        let connection = if self.error.is_some() {
+            "Reconnecting"
+        } else if self.page.is_none() {
+            "Connecting"
+        } else {
+            "Connected"
+        };
+        let title = Line::from(vec![
+            Span::styled(
+                format!("Agenturm / {} · Python receiver", self.tab.title()),
+                heading_style(),
+            ),
+            Span::styled(format!("   {connection}"), label_style()),
+        ]);
+        let tabs = [
+            (Tab::Agents, "1 Agents"),
+            (Tab::Activity, "2 Activity"),
+            (Tab::Traces, "4 Traces"),
+            (Tab::Pending, "w Pending"),
+        ]
+        .into_iter()
+        .map(|(tab, label)| {
+            Span::styled(
+                format!(" {label} "),
+                if self.tab == tab {
+                    selection_style()
+                } else {
+                    Style::default()
+                },
+            )
+        })
+        .collect::<Vec<_>>();
         let scope = self.owner.as_ref().map_or_else(
-            || "Bounded live metadata".to_owned(),
-            |owner| format!("{} / {}", owner.service, owner.session_id),
+            || "Session: All".to_owned(),
+            |o| {
+                format!(
+                    "Session: {} / {}",
+                    visible_text(&o.service),
+                    visible_text(&o.session_id)
+                )
+            },
         );
         frame.render_widget(
-            Paragraph::new(vec![Line::from(title), Line::from(visible_text(&scope))]),
+            Paragraph::new(vec![title, Line::from(tabs), Line::from(scope)])
+                .style(surface(SURFACE)),
             header,
         );
+        let [list, info] = if area.width >= 84 {
+            Layout::horizontal([Constraint::Percentage(61), Constraint::Percentage(39)]).areas(body)
+        } else {
+            Layout::vertical([
+                Constraint::Min(1),
+                Constraint::Length(if area.height >= 14 { 3 } else { 0 }),
+            ])
+            .areas(body)
+        };
+        let list_title = if self.tab == Tab::Agents {
+            " Sessions "
+        } else {
+            self.tab.title()
+        };
+        let inspector = if self.tab == Tab::Agents {
+            " Session inspector "
+        } else {
+            " Selected evidence "
+        };
         let rows = self.rows();
         let status = if let Some(error) = &self.error {
             visible_text(error)
@@ -206,8 +264,18 @@ impl LiveView {
             frame.render_widget(
                 Paragraph::new(message)
                     .wrap(Wrap { trim: true })
-                    .block(Block::bordered()),
-                body,
+                    .block(panel(list_title)),
+                list,
+            );
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::styled("Connection", label_style()),
+                    Line::from(status.as_str()),
+                    Line::from("R retry now"),
+                ])
+                .wrap(Wrap { trim: false })
+                .block(panel(inspector)),
+                info,
             );
         } else {
             let selection = if self.tab == Tab::Agents {
@@ -231,17 +299,21 @@ impl LiveView {
                 &mut self.detail
             };
             cursor.select(Some(index));
-            let [list, info] =
-                Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(body);
+
             frame.render_stateful_widget(
                 List::new(items)
-                    .block(Block::bordered())
+                    .block(panel(list_title))
                     .highlight_symbol("› ")
-                    .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
+                    .highlight_style(selection_style()),
                 list,
                 cursor,
             );
-            frame.render_widget(Paragraph::new(detail), info);
+            frame.render_widget(
+                Paragraph::new(detail)
+                    .wrap(Wrap { trim: false })
+                    .block(panel(inspector)),
+                info,
+            );
         }
         let keys = if self.tab == Tab::Agents {
             "↑↓ select · Enter session · 2 Activity · 8 Traces · w Pending"
@@ -320,7 +392,7 @@ pub fn run_live_receiver(
                     {
                         break Ok(());
                     }
-                    if key.code == KeyCode::Char('r') {
+                    if matches!(key.code, KeyCode::Char('r' | 'R')) {
                         next_read = Instant::now();
                     }
                     view.key(key.code);
@@ -337,4 +409,45 @@ pub fn run_live_receiver(
     // terminal exit independent of the remaining time in that read.
     drop(worker);
     result
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn disconnected_receiver_keeps_navigation_and_retry_visible() {
+        let mut view = LiveView {
+            page: None,
+            tab: Tab::Agents,
+            owner: None,
+            agents: ListState::default(),
+            detail: ListState::default(),
+            pending_read: false,
+            error: Some("HTTP 404".into()),
+        };
+        for (width, height) in [(120, 32), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| view.draw(frame)).unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            for expected in [
+                "Reconnecting",
+                "HTTP 404",
+                "Sessions",
+                "Session inspector",
+                "1 Agents",
+                "4 Traces",
+                "refresh",
+            ] {
+                assert!(text.contains(expected), "{expected} missing at {width}");
+            }
+        }
+    }
 }

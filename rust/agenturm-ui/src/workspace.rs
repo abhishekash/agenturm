@@ -3,6 +3,7 @@
 use super::*;
 use crate::workbench::{PromptReceiver, WorkInput, Workbench, prompt_channel};
 use agenturm_kernel::{ReadSnapshot, RelationshipKind};
+use ratatui::widgets::{Row, Table, TableState};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -150,7 +151,7 @@ struct AgentRow {
 struct AgentList {
     catalog: Option<SessionCatalog>,
     visible: Vec<AgentRow>,
-    selection: ListState,
+    selection: TableState,
     filter: Filter,
     search: String,
     editing: bool,
@@ -249,7 +250,14 @@ impl AgentList {
     }
 
     fn move_selection(&mut self, down: bool) {
-        move_selection(&mut self.selection, self.visible.len(), down);
+        if let Some(index) = self.selection.selected() {
+            let next = if down {
+                (index + 1).min(self.visible.len().saturating_sub(1))
+            } else {
+                index.saturating_sub(1)
+            };
+            self.selection.select(Some(next));
+        }
     }
 }
 
@@ -783,6 +791,11 @@ impl Workspace {
             return false;
         }
 
+        if let Some(table) = view.page.operation_table.active(&view.page.ui)
+            && table.key(key.code)
+        {
+            return false;
+        }
         if key.code == KeyCode::Char('E') && self.pending.is_none() && evaluation_details(view) {
             view.page.evaluation_picker = Some(ListState::default().with_selected(Some(0)));
             self.message = None;
@@ -811,7 +824,30 @@ impl Workspace {
                 .iter()
                 .any(|entry| entry.kind == kind)
         {
-            view.page.operation_picker = Some((kind, ListState::default().with_selected(Some(0))));
+            let selected = if let Some(table) = view.page.operation_table.active(&view.page.ui) {
+                let event = table.selected_row().and_then(|row| row.mcp_event.as_ref());
+                let matched = view
+                    .page
+                    .operation_details
+                    .iter()
+                    .filter(|entry| entry.kind == kind)
+                    .position(|entry| {
+                        event.is_some_and(|(source, id, revision)| {
+                            entry.source_id == *source
+                                && entry.event_id == *id
+                                && entry.revision == *revision
+                        })
+                    });
+                let Some(index) = matched else {
+                    self.message = Some("No payload reference for the selected operation".into());
+                    return false;
+                };
+                index
+            } else {
+                0
+            };
+            view.page.operation_picker =
+                Some((kind, ListState::default().with_selected(Some(selected))));
             self.message = None;
             return false;
         }
@@ -952,7 +988,7 @@ impl Workspace {
                 self.agents.filter = self.agents.filter.next();
                 self.agents.apply_filters(None);
             }
-            KeyCode::Char('r') => self.request(
+            KeyCode::Char('r' | 'R') => self.request(
                 sender,
                 WorkspaceRequest::Sessions(None),
                 Change::RefreshSessions,
@@ -996,7 +1032,7 @@ impl Workspace {
                 };
                 self.open(sender, HistorySelection::All(view));
             }
-            KeyCode::Enter | KeyCode::Char('a' | 'v' | 'u') => {
+            KeyCode::Enter | KeyCode::Char('e' | 'a' | 'v' | 'u') => {
                 if let Some(session) = self.agents.current().cloned() {
                     let view = match key {
                         KeyCode::Char('a') => SessionView::Activity,
@@ -1181,6 +1217,7 @@ pub fn run_workspace(
 }
 
 fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
+    frame.render_widget(Block::default().style(surface(CANVAS)), frame.area());
     if let Some(prompt) = &workspace.prompt {
         prompt.draw(frame);
         return;
@@ -1267,15 +1304,50 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
             return;
         }
         view.page.ui.set_viewport(area.width, area.height);
-        draw(
-            frame,
-            &view.page.ui,
-            !view.newer.is_empty(),
-            view.page
-                .turn_picker
-                .as_mut()
-                .map(|state| (view.page.turns.as_slice(), state)),
-        );
+        if !view.page.ui.help
+            && view.page.turn_picker.is_none()
+            && area.width >= MIN_WIDTH
+            && area.height >= MIN_HEIGHT
+            && let Some(table) = view.page.operation_table.active(&view.page.ui)
+        {
+            let [nav, body, keys, _] = Layout::vertical([
+                Constraint::Length(2),
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .areas(area);
+            let [brand, tabs] =
+                Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(nav);
+            frame.render_widget(
+                Paragraph::new(format!(
+                    " Agenturm   ·   {} observations",
+                    view.page.ui.observations
+                ))
+                .style(heading_style()),
+                brand,
+            );
+            draw_view_bar(frame, &view.page.ui, tabs);
+            table.draw(
+                frame,
+                body,
+                view.page.ui.selected_title().unwrap_or("Operations"),
+            );
+            frame.render_widget(
+                Paragraph::new("↑↓ select / scroll · Enter inspect · Esc back · ←→ views"),
+                keys,
+            );
+        } else {
+            draw(
+                frame,
+                &view.page.ui,
+                !view.newer.is_empty(),
+                view.page
+                    .turn_picker
+                    .as_mut()
+                    .map(|state| (view.page.turns.as_slice(), state)),
+            );
+        }
         if area.height != 0 {
             let has_details = |kind| {
                 view.page
@@ -1398,47 +1470,82 @@ fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message
         return;
     }
     let [header, content, footer] = Layout::vertical([
-        Constraint::Length(2),
+        Constraint::Length(if area.height < 14 { 2 } else { 4 }),
         Constraint::Min(1),
         Constraint::Length(2),
     ])
     .areas(area);
-    let total = agents
-        .catalog
-        .as_ref()
-        .map_or(0, |catalog| catalog.sessions.len());
-    let count = if pending && agents.catalog.is_none() {
-        "Loading…".into()
-    } else {
-        format!("{} of {} on page", agents.visible.len(), total)
+    let counts = agents.catalog.as_ref().map_or_else(
+        || "— working agents   — need attention".to_owned(),
+        |catalog| {
+            let working = catalog
+                .sessions
+                .iter()
+                .filter(|r| Filter::Active.accepts(r))
+                .count();
+            let attention = catalog
+                .sessions
+                .iter()
+                .filter(|r| Filter::Attention.accepts(r))
+                .count();
+            format!("{working} working agents   {attention} need attention · this page")
+        },
+    );
+    let [top, lower] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(header);
+    let [brand, connection] =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Length(25)]).areas(top);
+    frame.render_widget(
+        Paragraph::new(" Agenturm  /  Agents").style(heading_style()),
+        brand,
+    );
+    let status = match (agents.catalog.is_some(), pending) {
+        (false, true) => "Loading sessions",
+        (false, false) => "Unavailable · R retry",
+        (true, true) => "Loading…",
+        (true, false) => "History · R refresh",
     };
-    let filter = agents.filter.label();
-    let mut lines = vec![Line::from(vec![
-        Span::styled(
-            " Agenturm  /  Agents",
-            Style::default().add_modifier(Modifier::BOLD),
-        ),
-        Span::raw(format!("   {filter} · {count}")),
-    ])];
-    if agents.editing || !agents.search.is_empty() {
-        let cursor = if agents.editing { "▏" } else { "" };
-        lines.push(Line::from(format!(
-            " / {}{cursor}",
-            visible_text(&agents.search)
-        )));
-    }
-    if !agents.editing && agents.search.is_empty() {
-        let order = if agents.sort_by_state {
-            "Attention first"
+    frame.render_widget(
+        Paragraph::new(status).right_aligned().style(label_style()),
+        connection,
+    );
+    let nav = Line::from(vec![
+        Span::styled(" 1 Agents ", selection_style()),
+        Span::raw(if area.width >= 86 {
+            " 2 Activity  3 MCP Calls  4 Operations  5 Findings  6 Host  7 Usage  8 Traces"
+        } else if area.width >= 60 {
+            " 2 Activity  3 MCP Calls  4 Operations  F1 more"
         } else {
-            "Newest first"
-        };
-        lines.push(Line::from(format!("  {order}")));
-    }
-    frame.render_widget(Paragraph::new(lines), header);
+            " 2 Activity  3 MCP  F1 more"
+        }),
+    ]);
+    let filter = agents.filter.label();
+    let order = if agents.sort_by_state {
+        "Attention first"
+    } else {
+        "Updated ↓"
+    };
+    let search = if agents.editing || !agents.search.is_empty() {
+        format!(
+            "Search: {}{}",
+            visible_text(&agents.search),
+            if agents.editing { "▏" } else { "" }
+        )
+    } else {
+        "/ Search sessions".into()
+    };
+    let controls = Line::from(vec![
+        Span::styled(" Show  ", label_style()),
+        Span::raw(format!("{filter}  ·  {order}   {search}")),
+    ]);
+    let lines = if header.height > 2 {
+        vec![Line::raw(format!(" {counts}")), nav, controls]
+    } else {
+        vec![controls]
+    };
+    frame.render_widget(Paragraph::new(lines).style(surface(SURFACE)), lower);
     let wide = area.width >= 84;
     let [left, right] = if wide {
-        Layout::horizontal([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(content)
+        Layout::horizontal([Constraint::Percentage(61), Constraint::Percentage(39)]).areas(content)
     } else {
         [content, Rect::default()]
     };
@@ -1451,79 +1558,125 @@ fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message
         );
         return;
     }
-    if let Some(catalog) = &agents.catalog {
-        let items = agents.visible.iter().map(|item| {
-            let row = &catalog.sessions[item.index];
-            let indent = "  ".repeat(item.depth.min(6));
-            let marker = if item.has_children {
-                if agents.collapsed.contains(&session_key(row)) {
-                    "+ "
-                } else {
-                    "− "
-                }
+    let sessions = agents
+        .catalog
+        .as_ref()
+        .map(|catalog| catalog.sessions.as_slice());
+    let caption = match sessions {
+        Some(rows) => format!(" Sessions · {} of {} ", agents.visible.len(), rows.len()),
+        None if pending => " Sessions · loading ".into(),
+        None => " Sessions ".into(),
+    };
+    let table_block = panel(caption);
+    let table_area = table_block.inner(left);
+    frame.render_widget(table_block, left);
+    let rows = agents.visible.iter().filter_map(|item| {
+        let row = sessions?.get(item.index)?;
+        let indent = "  ".repeat(item.depth.min(6));
+        let marker = if item.has_children {
+            if agents.collapsed.contains(&session_key(row)) {
+                "▸ "
             } else {
-                ""
-            };
-            ListItem::new(visible_text(&format!(
-                "{indent}{marker}{} · {} · {}",
-                recorded_state(row),
-                source_label(&row.harness_id),
-                row.session_id
-            )))
-        });
-        if agents.visible.is_empty() {
-            let empty = if catalog.sessions.is_empty() {
-                "No sessions collected yet"
-            } else {
-                "No matches on this page"
-            };
-            frame.render_widget(
-                Paragraph::new(empty).block(Block::bordered().title("Sessions")),
-                left,
-            );
+                "▾ "
+            }
         } else {
-            frame.render_stateful_widget(
-                List::new(items)
-                    .block(Block::bordered().title("Sessions"))
-                    .highlight_symbol("› ")
-                    .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
-                left,
-                &mut agents.selection,
-            );
-        }
+            ""
+        };
+        let identity = Line::styled(
+            format!("{indent}{marker}{}", visible_text(&row.session_id)),
+            heading_style(),
+        );
+        let source = Line::styled(
+            format!("{indent}{}", visible_text(source_label(&row.harness_id))),
+            label_style(),
+        );
+        Some(
+            Row::new(vec![
+                Text::from(vec![identity, source]),
+                Text::from(visible_text(recorded_state(row))),
+                Text::from(age(row.updated_at_unix_ns)),
+            ])
+            .height(2),
+        )
+    });
+    frame.render_stateful_widget(
+        Table::new(
+            rows,
+            [
+                Constraint::Fill(1),
+                Constraint::Length(12),
+                Constraint::Length(8),
+            ],
+        )
+        .header(Row::new(["Session / source", "State", "Updated"]).style(heading_style()))
+        .highlight_symbol("› ")
+        .row_highlight_style(selection_style()),
+        table_area,
+        &mut agents.selection,
+    );
+    let empty = match sessions {
+        None if pending => "Waiting for session data…",
+        None => "Session history unavailable · r retry",
+        Some([]) => "No sessions collected yet · r refresh",
+        Some(_) => "No matches on this page · x clear filters",
+    };
+    if agents.visible.is_empty() && table_area.height > 1 {
+        frame.render_widget(
+            Paragraph::new(empty).wrap(Wrap { trim: false }),
+            Rect::new(
+                table_area.x,
+                table_area.y + 1,
+                table_area.width,
+                table_area.height - 1,
+            ),
+        );
     }
-    if wide && let Some(row) = agents.current() {
-        let mut lines = vec![
-            Line::from(visible_text(&row.session_id)),
-            Line::from(visible_text(&row.harness_id)),
-            Line::from(format!(
-                "Recorded state   {}",
-                visible_text(recorded_state(row))
-            )),
-            Line::from(format!(
-                "Last observation   {}",
-                age(row.updated_at_unix_ns)
-            )),
-        ];
-        if row.reviewed {
-            lines.push(Line::from("Review   Reviewed"));
-        }
-        if let Some(reason) = &row.reason {
-            lines.push(Line::from(format!("Reason   {}", visible_text(reason))));
-        }
-        if let Some(parent) = &row.parent_session_id {
+    if wide {
+        let mut lines = Vec::new();
+        if let Some(row) = agents.current() {
+            lines.push(Line::styled(visible_text(&row.session_id), heading_style()));
+            lines.push(Line::default());
+            for (label, value) in [
+                ("Agent", Some(row.harness_id.as_str())),
+                ("Status", Some(recorded_state(row))),
+                ("Reason", row.reason.as_deref()),
+                ("Parent", row.parent_session_id.as_deref()),
+                ("Turn", row.turn_id.as_deref()),
+            ] {
+                if let Some(value) = value {
+                    lines.push(Line::from(vec![
+                        Span::styled(format!("{label:<9}"), label_style()),
+                        Span::raw(visible_text(value)),
+                    ]));
+                }
+            }
             lines.push(Line::from(format!(
-                "Recorded parent   {}",
-                visible_text(parent)
+                "Updated  {}",
+                age(row.updated_at_unix_ns)
             )));
-        }
-        if let Some(turn) = &row.turn_id {
-            lines.push(Line::from(format!("Turn   {}", visible_text(turn))));
+            if row.reviewed {
+                lines.push(Line::from("Review   Reviewed"));
+            }
+        } else {
+            lines.push(Line::styled(empty, heading_style()));
+            if sessions.is_none() {
+                lines.push(Line::default());
+                lines.push(Line::styled("Connection", label_style()));
+                lines.push(Line::from(
+                    message
+                        .map(visible_text)
+                        .unwrap_or_else(|| "Waiting for the history reader".into()),
+                ));
+            }
         }
         frame.render_widget(
-            Paragraph::new(lines)
-                .wrap(Wrap { trim: false })
-                .block(Block::bordered().title("Selected session")),
+            Paragraph::new(lines).wrap(Wrap { trim: false }).block(
+                panel(" Session inspector ").title_bottom(if agents.current().is_some() {
+                    " e expand "
+                } else {
+                    ""
+                }),
+            ),
             right,
         );
     }
@@ -1651,6 +1804,7 @@ mod tests {
                 review_pane: None,
                 operation_details: Vec::new(),
                 private_telemetry_history: None,
+                operation_tables: Default::default(),
             })));
             let _ = frame(&mut workspace);
             assert!(!press(&mut workspace, KeyCode::Right));
@@ -1783,7 +1937,7 @@ mod tests {
             for text in ["Agents", "sample-session", "interrupted", "Enter overview"] {
                 assert!(screen.contains(text), "{text} missing at {width} columns");
             }
-            assert_eq!(screen.contains("Selected session"), width >= 84);
+            assert_eq!(screen.contains("Session inspector"), width >= 84);
         }
     }
 }

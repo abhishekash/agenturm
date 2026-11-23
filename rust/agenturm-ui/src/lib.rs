@@ -7,8 +7,10 @@
 #![forbid(unsafe_code)]
 
 mod live_receiver;
+mod operation_table;
 mod workbench;
 mod workspace;
+pub use operation_table::{OperationRow, OperationTables};
 
 pub use live_receiver::{LiveOwner, LivePage, LiveRow, run_live_receiver};
 
@@ -183,13 +185,8 @@ impl UiModel {
             self.scroll_limit = 0;
             return;
         };
-        let visible_lines = usize::from(self.viewport_height.saturating_sub(7).max(1));
-        let pane_width = if self.viewport_width < 64 {
-            self.viewport_width
-        } else {
-            self.viewport_width.saturating_sub(22)
-        };
-        self.scroll_limit = pane_lines(pane, pane_width.saturating_sub(2))
+        let visible_lines = usize::from(self.viewport_height.saturating_sub(8).max(1));
+        self.scroll_limit = pane_lines(pane, self.viewport_width.saturating_sub(2))
             .len()
             .saturating_sub(visible_lines)
             .min(usize::from(u16::MAX));
@@ -260,6 +257,7 @@ pub struct HistoryPage {
     pub review_pane: Option<ExtensionId>,
     pub operation_details: Vec<OperationDetailEntry>,
     pub private_telemetry_history: Option<String>,
+    pub operation_tables: OperationTables,
 }
 
 struct PageView {
@@ -268,6 +266,7 @@ struct PageView {
     turn_picker: Option<ListState>,
     review_pane: Option<ExtensionId>,
     operation_details: Vec<OperationDetailEntry>,
+    operation_table: operation_table::Browser,
     operation_picker: Option<(OperationDetailKind, ListState)>,
     telemetry_spans: Vec<TelemetrySpanEntry>,
     evaluation_traces: Vec<TraceEvaluationEntry>,
@@ -318,6 +317,7 @@ impl PageView {
             turn_picker: None,
             review_pane: page.review_pane,
             operation_details: page.operation_details,
+            operation_table: operation_table::Browser::new(page.operation_tables),
             operation_picker: None,
             telemetry_spans,
             evaluation_traces,
@@ -347,6 +347,7 @@ pub fn run_with_history(
         review_pane: None,
         operation_details: Vec::new(),
         private_telemetry_history: None,
+        operation_tables: Default::default(),
     };
     run_with_turn_activity(initial, |_, before| {
         let Some(cursor) = before else {
@@ -359,6 +360,7 @@ pub fn run_with_history(
             review_pane: None,
             operation_details: Vec::new(),
             private_telemetry_history: None,
+            operation_tables: Default::default(),
         }))
     })
 }
@@ -591,31 +593,29 @@ fn render_turn_picker(
 }
 
 fn render_panes(frame: &mut Frame, model: &UiModel, area: Rect) {
-    if area.width < 64 {
-        render_selected_pane(frame, model, area);
-        return;
-    }
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(22), Constraint::Min(1)])
-        .split(area);
-    let items = model
-        .panes
-        .iter()
-        .map(|pane| ListItem::new(pane.title.as_str()))
-        .collect::<Vec<_>>();
-    let list = List::new(items)
-        .block(Block::bordered().title("Views"))
-        .highlight_style(
+    let [bar, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+    draw_view_bar(frame, model, bar);
+    render_selected_pane(frame, model, body);
+}
+
+fn draw_view_bar(frame: &mut Frame, model: &UiModel, area: Rect) {
+    // Scroll the strip just enough to keep the active pane visible on a split terminal.
+    let mut tabs = Vec::new();
+    let mut used = 0;
+    for (index, pane) in model.panes.iter().enumerate() {
+        let style = if index == model.selected {
+            selection_style()
+        } else {
             Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("› ");
-    let mut state = ListState::default();
-    state.select(Some(model.selected));
-    frame.render_stateful_widget(list, columns[0], &mut state);
-    render_selected_pane(frame, model, columns[1]);
+        };
+        let tab = Span::styled(format!(" {} ", pane.title), style);
+        used += tab.width();
+        tabs.push(tab);
+        while index <= model.selected && used > usize::from(area.width) && tabs.len() > 1 {
+            used -= tabs.remove(0).width();
+        }
+    }
+    frame.render_widget(Paragraph::new(Line::from(tabs)), area);
 }
 
 fn render_selected_pane(frame: &mut Frame, model: &UiModel, area: Rect) {
@@ -623,7 +623,7 @@ fn render_selected_pane(frame: &mut Frame, model: &UiModel, area: Rect) {
     let content_width = area.width.saturating_sub(2);
     frame.render_widget(
         Paragraph::new(pane_lines(pane, content_width))
-            .block(Block::bordered().title(pane.title.as_str()))
+            .block(panel(pane.title.as_str()))
             .scroll((model.scroll as u16, 0)),
         area,
     );
@@ -640,18 +640,67 @@ fn pane_lines(pane: &Pane, width: u16) -> Vec<Line<'static>> {
     let mut output = Vec::new();
     for row in &pane.rows {
         let text = format!("{}  {}", visible_text(&row.label), visible_text(&row.value));
-        for (index, chunk) in wrap_display_width(&text, width).into_iter().enumerate() {
-            if index == 0 {
-                output.push(Line::from(Span::styled(
-                    chunk,
-                    Style::default().fg(Color::Magenta),
-                )));
-            } else {
-                output.push(Line::from(chunk));
-            }
-        }
+        output.extend(wrap_display_width(&text, width).into_iter().map(Line::from));
     }
     output
+}
+
+// Color roles from the Python 0.2.8 Current theme.
+const CANVAS: Color = Color::Rgb(14, 14, 20);
+const SURFACE: Color = Color::Rgb(21, 21, 30);
+const PANEL: Color = Color::Rgb(30, 30, 42);
+const TEXT: Color = Color::Rgb(243, 241, 237);
+const BORDER: Color = Color::Rgb(57, 55, 70);
+const ACCENT: Color = Color::Rgb(255, 189, 105);
+const SECONDARY: Color = Color::Rgb(197, 173, 255);
+
+fn colors() -> bool {
+    static ENABLED: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var_os("NO_COLOR").is_none());
+    *ENABLED
+}
+
+fn surface(background: Color) -> Style {
+    if colors() {
+        Style::default().fg(TEXT).bg(background)
+    } else {
+        Style::default()
+    }
+}
+
+fn heading_style() -> Style {
+    surface(PANEL).add_modifier(Modifier::BOLD)
+}
+
+fn label_style() -> Style {
+    if colors() {
+        Style::default().fg(SECONDARY)
+    } else {
+        Style::default()
+    }
+}
+
+fn selection_style() -> Style {
+    if colors() {
+        Style::default()
+            .fg(ACCENT)
+            .bg(Color::Rgb(48, 41, 30))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+    }
+}
+
+fn panel<'a>(title: impl Into<Line<'a>>) -> Block<'a> {
+    let block = Block::bordered()
+        .title(title)
+        .style(surface(SURFACE))
+        .title_style(heading_style());
+    if colors() {
+        block.border_style(Style::default().fg(BORDER))
+    } else {
+        block
+    }
 }
 
 fn visible_text(text: &str) -> String {

@@ -58,6 +58,8 @@ Package harnesses and capabilities independently while shipping a useful default
 
 ## Implementation order
 
+**UI acceptance before the default switch.** Use the tagged Python 0.2.8 cockpit as the visual and interaction reference. Compare the same screens at 120×32 and 60×18, including populated, loading and unavailable states. Check the summary header, horizontal view navigation, session hierarchy, operation tables, selected-row inspector, keyboard focus and return path. Record remaining differences per screen and resolve or explicitly accept them before cutover. Comparative performance benchmarking is deferred.
+
 Finish the standalone Rust application from a fresh data directory. Use the same acceptance checks for built-in and independently packaged plugins. Record the commit, platform, scenarios exercised, and result for each milestone.
 
 The [standalone execution validation record](../validation/rust-standalone-execution.md) tracks the Linux bundle, independent adapter, and recovery checks.
