@@ -1055,7 +1055,7 @@ mod tests {
         assert_eq!(commit(&mut store, &proto), 0);
         assert!(
             matches!(store.query_metric_history(&MetricHistoryQuery::Series {
-            source_id: Some(source), snapshot_id: None, after: None, limit: 64,
+            source_id: Some(source), snapshot_id: None, after: None, search: None, limit: 64,
         }, None).unwrap(), MetricHistoryPage::Series { rows, .. } if !rows.is_empty())
         );
     }

@@ -1,6 +1,23 @@
 # Rust-only Agenturm execution plan
 
-Status: scope reset on 21 November 2026 at the user's direction. This document supersedes the Python-bridge, compatibility, and migration portions of `rust-plugin-kernel-plan.md` for all future implementation.
+Status updated 23 November 2026. **Migration and feature development remain incomplete; default cutover is gated.** The Rust-only product decision dates from 21 November. This document supersedes the Python-bridge, compatibility, and migration portions of `rust-plugin-kernel-plan.md` for future implementation.
+
+## Current progress — 23 November 2026
+
+Use this status and the [detailed remaining-work plan](rust-migration-remaining-plan.md) for current scheduling. That separate plan distinguishes **feature development (F1–F5)**, **integration (I1–I3)** and **tests/qualification (Q1–Q10)**. Early milestone paragraphs below describe implementation history and must not override this progress record.
+
+| Area | Current status | Next completion condition |
+| --- | --- | --- |
+| Native Rust cockpit, telemetry, Workflow and protected evidence | PR [#379](https://github.com/abhishekash/agenturm/pull/379) merged as `52ec13b`. Runtime source `42712dd` passed **813 tests / 96 suites**, strict workspace all-target Clippy and all binaries. Exact optimized x86-64 archive passed installer/0.3.8 upgrade and **12 separate-UID KVM cases**. | Requalify the final combined archive after the newer slices land. |
+| Command center E1–E5 | Native human-readable titles, nickname fallback, project provenance, newest-update ordering and stable selection implemented. Twelve actual Codex transcript handles across two processes passed checks at 120×32, 80×24 and 60×18. | Final installed and simultaneous Claude acceptance; header-only roster behavior remains open (F1). Recorded lifecycle is not process liveness. |
+| Explicit receiver Findings | Merged PR [#380](https://github.com/abhishekash/agenturm/pull/380), `ef3d647` → `39474dd`; **819 tests / 96 suites**, strict Clippy, optimized actual-tagged Findings/Review journeys passed. All applicable CI jobs are green, including both Linux bundle targets and five selected SDK jobs. | Final combined-artifact regression; verified merge complete. |
+| Metric descriptions and full-catalog search | Joined code passed **833 tests / 96 suites**, strict Clippy and all binaries. Real HTTP and all three terminal sizes passed search beyond the first page, descriptions, snapshot binding and exact return. | Current-source CI and final optimized schema 21 upgrade/installed acceptance. |
+| Remote Host inventory | Latest-per-authorized-source query and reported hostname/platform implemented. Final chooser refresh/source-context correction passed **14 focused tests** plus the joined **833-test / 96-suite** run, strict workspace Clippy and all binaries. | Correction integrated; joined checks and updated separate-UID terminal/KVM fixture passed. Final optimized archive remains open. |
+| Remaining feature work | Header-only roster and native relationship/check evidence gaps; required Review/edit, MCP and SDK/usage coverage differences; automatic decoder installation; additional connector profiles/deployed acceptance; macOS. | Follow F1–F5. Some are independent support/extension gates rather than prerequisites for an opt-in Linux archive. No workflow is retired implicitly. |
+| Release/default switch | Rust 0.3.8 remains the latest public opt-in Linux release. No 0.3.9 publication or default change. | Final selected workflow acceptance and immutable-artifact checks. At most one public release per rolling 24 hours. |
+
+The 813, 819 and 833 test counts belong to successive source baselines and are **not additive**. The 833-test run predates the final Host chooser correction. No completion percentage is asserted while required workflow acceptance remains open. A real Kiro transcript and an approved production connector endpoint remain external inputs; macOS needs native runners and its D2-Mac checks. Comparative benchmarks remain deferred.
+
 
 ## Product decision
 
@@ -12,7 +29,7 @@ The application keeps three independent extension families:
 2. **Capabilities** derive optional, typed signals from authorized observations.
 3. **UI contributions** provide data-only panes; the Rust UI owns layout, navigation, focus and terminal lifecycle.
 
-Connectors remain a later runtime extension family. The new `agenturm-connector-api` crate defines preliminary, versioned inbound and outbound contracts; it does not yet register, supervise, authorize, or persist connector work. The **target** kernel owns extension identity, policy, durable writes, query boundaries and supervision. The current `agenturm-kernel` owns supervised admission and a bounded durable observation read port, but not product policy, app configuration (which lives in CLI input), or process supervision. Rust performance is a user-chosen implementation direction; no gain is claimed without whole-application measurements.
+Connectors are a separate runtime extension family with versioned inbound/outbound contracts and an implemented trusted pinned process driver. Local fixtures verify supervised progress, policy/replay and reconciliation; the locally qualified static Linux x86-64 isolated_linux / unix_status_v1 profile has process/credential/endpoint controls; additional profiles and deployed production acceptance remain open. The kernel owns validated admission and durable read contracts, while application configuration and process supervision have their own runtime boundaries. Typed admission and artifact pins are not OS isolation. Rust performance is a user-chosen implementation direction; no gain is claimed without whole-application measurements.
 
 ## Release cadence
 
@@ -27,6 +44,8 @@ The next batch is eligible no earlier than 24 November, 06:03:24 UTC
 Rust 0.3.9 remains an unpublished candidate.
 
 ## Milestones and gates
+
+The following milestone evidence is historical. Consult the current progress table and separate remaining-work plan before assigning work or interpreting an old open gate.
 
 ### 1. Rust composition kernel — foundation implemented
 
@@ -70,26 +89,23 @@ Package harnesses and capabilities independently while shipping a useful default
 
 ## Implementation order
 
-**UI acceptance before the default switch.** Use the tagged Python 0.2.8 cockpit as the visual and interaction reference. Compare the same screens at 120×32 and 60×18, including populated, loading and unavailable states. Check the summary header, horizontal view navigation, session hierarchy, operation tables, selected-row inspector, keyboard focus and return path. Record remaining differences per screen and resolve or explicitly accept them before cutover. Comparative performance benchmarking is deferred.
-
 Finish the standalone Rust application from a fresh data directory. Use the same acceptance checks for built-in and independently packaged plugins. Record the commit, platform, scenarios exercised, and result for each milestone.
 
 The [standalone execution validation record](../validation/rust-standalone-execution.md) tracks the Linux bundle, independent adapter, and recovery checks.
 
 ### Current UI implementation status — 23 November 2026
 
-Python 0.2.8 remains the visual and interaction reference. [Rust 0.3.8 is published](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.8) for Linux x86-64 and ARM64. PR #375 merged as `1c75980b587fd591a5cc0a87c74af4033cece5a0`; the default Rust switch remains gated.
+Python 0.2.8 remains the visual and interaction acceptance reference. The original `2fa075f` → `06d450c` handoff and its 97 tests are historical, superseded by the joined qualification above. Theme/design polish and the native command-center naming/recency changes are implemented. MCP inventory/related traces, metric history/exemplars, seven-day usage, grouped Findings and protected native sources, and Workflow settings/retry/resume are also implemented in the merged native batch.
 
-- Integrated the Agents table and persistent inspector, Python Current colors, horizontal navigation, and selectable MCP/Operations tables with server filtering and expanded evidence. Handoff commit `2fa075f` was integrated as `06d450c`.
-- The initial handoff passed 79 app and 18 UI library tests, strict Clippy, and terminal checks at 120×32 and 60×18. These results apply to the handoff revision.
-- Recorded task/activity labels, the central Python keyboard mapping, and selectable Activity/Traces/Usage/Findings/Host evidence views are integrated. Copy and export operate on bounded loaded metadata only. The command-center first screen has replaced the initial split inspector, with status filters, project headings and full-width task selection.
-- The joined UI passes 39 library tests, including populated/empty/loading/unavailable/cached-error layouts and complete compact help at 120×32, 80×24 and 60×18, exact selection restoration, and a selectable next-page action. The same runtime (`1df22a4`) subsequently passed the full offline workspace: 634 tests across 93 suites, zero failed or ignored, and strict all-target workspace Clippy.
-- Integrated Ctrl+F investigations over retained failures and explicitly granted source evidence, exact X Seen receipts with ambiguity selection, the authenticated legacy v internal-review filter, and z Readable/original captured prompt layouts. Current private display lifetime and redraw-before-acknowledgement remain enforced. Independent review reproduced a same-watermark database replacement issue in the new investigation path; the released implementation pins logical history identity and rechecks the local writer path before source proof. Positive and negative real terminal checks pass at 120×32 and 60×18.
-- Project grouping uses current exact local session-level task links and explicit operator-saved Git repository roots, with **Operator task workspace** provenance. Invalid, ambiguous, archived, worker/turn-only or mismatched-history candidates stay unavailable. In 0.3.8, native producer project metadata remains absent; the UI never infers it from checkout directories, private prompts, edits or process cwd.
-- Pending UI parity: configured-but-idle MCP server inventory and per-call related-trace navigation; generic OTLP metric point/history/exemplar browsing and the seven-day usage chart; grouped/generated Findings with occurrence counts; per-process project labels; and native internal approval review capture. These remain open requirements rather than retired workflows. Local extracted-package acceptance passed: prior-release reopen, empty startup/rolling collection, exact inspectors, restart/replay, backup, offline installer, all six packaged terminal lanes, and seven distinct-UID KVM cases. Required SDK jobs passed on the same frozen runtime. Both native Linux bundle CI jobs passed in run `45120054721`, including ARM64 upgrade and service checks. All required Rust/SDK jobs passed in run `45120054720`; the Python matrix was still running. Both published archives and sidecars were verified after [tag qualification](https://github.com/abhishekash/agenturm/actions/runs/45121070134). See [0.3.8 acceptance](../validation/rust-038-ui-acceptance.md). The command-center initial layout is the user-selected replacement for the Python split view.
-- Comparative performance benchmarking remains deferred. Rust 0.3.8 is an opt-in release; the remaining parity and production acceptance requirements below continue to gate the default switch.
+Metric descriptions/full-catalog search and recorded remote Host inventory are implemented follow-ups awaiting final integration/qualification. Exact Python-quality parity remains gated on the required installed journeys and visual/error-state checks; theme completion alone does not close it. See F2 and Q6 in the [remaining-work plan](rust-migration-remaining-plan.md).
 
-### Live roster and native names — implemented and qualified candidate
+### Command-center defect follow-up — E1–E5
+
+The original Rust 0.3.8 screenshot and diagnosis are retained in the [task list](rust-only-execution-tasks.md#pending-issue--running-sessions-missing-from-the-command-center) as historical evidence. Later implementation authorization superseded the earlier diagnosis-only instruction. The native batch now implements expanded discovery/context handling, exact titles/projects, nickname fallbacks, recency ordering and stable identity. Actual concurrent Codex-transcript checks passed at all three terminal sizes; historical Claude is separate, simultaneous live Claude remains unverified, and header-only native sources still lack retained rows before session facts arrive. Final installed acceptance remains open; retained lifecycle status must not be described as an OS-level live-process inventory.
+
+### Native roster qualification history
+
+This is the earlier native-batch record; the current progress table and remaining plan govern final combined acceptance.
 
 The later “do it” instruction authorized implementation of E1/E2/E3 from the
 [live-roster diagnosis](../validation/rust-live-roster-diagnosis.md). Parallel
@@ -141,11 +157,27 @@ The user selected the command-center screenshot supplied on 23 November as the l
 
 - Open with an Agenturm command-center header and a project grouping control.
 - Show selectable counts for All, Needs you, Working, Ready and Inactive. Counts and statuses come from recorded evidence and current collection state.
+- Identify each row primarily by its readable task or conversation name. Show agent name/provider and project context to disambiguate names. Put session IDs in inspection details and copy actions. Generic operation labels do not satisfy named-session acceptance.
+- When a task title is absent, use the native agent nickname as the row title. If both are absent, use concise provider/role/project context. Repeated “Name unavailable” labels fail roster acceptance. Track this correction as E4.
+- Always sort by latest update. Project groups follow their newest member and rows follow descending update time. Preserve selected identity across refreshes and use deterministic ties. Hierarchy and status sorting must not override recency. Track this correction as E5.
 - Place tasks under project path headings, each with its task count. Use aligned Tasks, Status and Updated columns, readable task titles, compact status markers and a full-width selected-row highlight.
 - Use the available width for the task list on initial launch. Enter opens the selected task or session inspector, and Escape returns to the same project, filter and task selection.
 - Support keyboard selection and additional rows through a Show more action. Preserve the project grouping, status text and updated age in compact terminals, truncating long task titles by display width.
 - Compare populated, empty, loading and unavailable screens at 120×32, 80×24 and 60×18. Use the screenshot's structure with Agenturm's visual identity, then verify the resulting first screen with the user.
 
+### Parallel work and dependencies
+
+Use the table below to assign remaining work. Steps 1–6 record milestone history. The [task breakdown](rust-only-execution-tasks.md) gives the acceptance check for each ID.
+
+| Work | Independent remaining work | Join/dependency |
+| --- | --- | --- |
+| Integration | I1 Findings merge; I2 Host correction plus Metrics; I3 source/docs consistency. | Serialize shared protocol/UI/Git changes; Q1 joined checks before freezing the final artifact. |
+| Harnesses | F1 attributable missing provider evidence; Q8 actual native qualification per provider. | Shared worker relationship contract first where needed; actual Kiro transcript remains external. |
+| Cockpit/workflows | F2 remaining edit/MCP, instrumentation and usage coverage inventory. | Q6 paired installed journeys after final integration. E1–E5 are implemented, not fresh feature assignments. |
+| Boundary/extensions | F3 decoder installation and F4 connector process/credential/egress controls. | Q9 needs boundary proof and approved endpoint. C1–C5 already have a verified separate-UID baseline. |
+| Distribution | F5 macOS design/implementation when native runners exist; current-head Linux/SDK CI Q7. | Q5 final optimized Linux archive, upgrade and recovery; Q10 separate native Mac acceptance; D3 remains gated. |
+
+**UI acceptance before switching the default (B1 → D3).** Use the [Python 0.2.8 workflow comparison](rust-cockpit-workflow-coverage.md) to list the required keyboard journeys and expected results. Run the same journeys on Python 0.2.8 and the installed Rust candidate at normal width and 60×18. Verify visible evidence, focus and return selection. For example, open an interrupted turn, inspect its tool activity and edits, then return to the same turn. Record layout or shortcut differences and resolve missing required behavior before cutover. Use the Python 0.2.8 screens as the visual and interaction reference. Compare populated, loading, unavailable and narrow layouts side by side. Check the summary header, horizontal views, session hierarchy, evidence tables, selected-row inspector, keyboard focus and return path. Track each visible difference until accepted or fixed. Defer comparative performance benchmarking to a later phase.
 
 ### Step 1 — Finish the harness plugin boundary
 
@@ -160,10 +192,6 @@ Start on `feature/rust-harness-decoder-api`. Keep harness-specific parsing in ad
 Build a standalone bundle containing the Rust app, plugin host and default harness adapters. Wire discovery for supported local harness data and exercise the collector as a systemd user service on a managed Linux host.
 
 **Acceptance.** Install the bundle on a clean host without Python. Discover real Pi and Codex data, collect one session from each, stop and restart collection, and open both sessions in the inspector. Verify that uninstall leaves collected data available.
-
-**macOS target (D2-Mac).** Qualify Apple Silicon (`aarch64-apple-darwin`) and Intel (`x86_64-apple-darwin`) as separate targets when native runners are available. Define and publish the minimum supported macOS version, bundle format, install/update/uninstall behavior, data/config locations, supported local harness discovery, and whether collection is foreground-only or also managed by `launchd`. The installer must not assume Linux paths, `systemd`, or Linux-only process controls. Verify Gatekeeper behavior and use signed/notarized release artifacts wherever required for a normal documented install; do not instruct users to bypass platform protections as the standard path.
-
-**D2-Mac acceptance.** On each advertised architecture, use the exact checksum-identified release artifact on a clean supported macOS host. Install without Python or a Rust toolchain; launch in a standard terminal; discover and collect supported native harness data; restart and reopen history; exercise query, inspect, backup, upgrade, and uninstall with history retained. If `launchd` collection is advertised, install, restart, and remove that service separately. Run the required cockpit journeys at normal and narrow terminal sizes, verify terminal restoration, and record unsupported harnesses or OS limitations before advertising support.
 
 **Verified on Ubuntu 24.04.5 x86-64.** The extracted bundle discovered and collected actual local Pi and Codex sessions under a user service, reopened both after restart, rendered them in a terminal, and retained history after uninstall. Discovery, collection and reopen also passed in an isolated filesystem without Python. Discovery can write a fixed configuration or configure watch to follow new files in the bounded selection.
 
@@ -220,19 +248,6 @@ download matched the qualified archive and its SHA-256.
 [Release](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.1) ·
 [Tagged build](https://github.com/abhishekash/agenturm/actions/runs/45024901558)
 
-**Rust 0.3.6 qualified and published on Linux x86-64 and ARM64.** The tag
-points to `67eb65056c23c7490b5b0c235bedecc3c73fb617`. Both architecture
-jobs passed archive qualification. The exact x86-64 package additionally
-passed the 0.3.5 schema upgrade, managed user service, separate-principal
-private evidence and broker checks, and retained keyboard journeys at
-120×32 and 60×18. Read-only histories remain unchanged; the first writer
-upgrades to schema 17, which Rust 0.3.5 refuses. Rollback requires a
-pre-upgrade backup. The default entry-point switch remains gated.
-
-[Release](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.6) ·
-[Validation](../validation/rust-036-release.md) ·
-[Tagged build](https://github.com/abhishekash/agenturm/actions/runs/45105969055)
-
 ### Step 6 — Add connector runtime support after the Rust release gates
 
 Use the existing inbound admission path and the connector API as the starting point. Wire explicit grants and supervised processes, then add durable outbound delivery and reconciliation.
@@ -245,7 +260,9 @@ using the same key, and confirmed-absence retry. The bundled driver exposes
 collection and delivery commands. Untrusted connector activation remains
 gated on OS isolation and credential control.
 
-## Final journey integration — 23 November 2026
+## Native journey integration history — 23 November 2026
+
+Historical source record retained from PR #379. Statements below about running tests, draft status and outstanding archive work describe that earlier source; use the current progress table and separate remaining plan for current status.
 
 The integration branch and [draft PR #379](https://github.com/abhishekash/agenturm/pull/379) implement the following Python 0.2.8 journeys. This is a development candidate; the final checksum-identified archive is still being qualified and the default distribution remains gated. The [paired cockpit audit](../validation/rust-ui-journey-parity.md) distinguishes tested behavior and remaining differences.
 
@@ -269,18 +286,22 @@ A real Kiro transcript and an approved production connector endpoint remain exte
 
 ## Remaining work and acceptance
 
-| Gate | Verified in the Rust path | Remaining acceptance |
+The [separate remaining-work plan](rust-migration-remaining-plan.md) is the detailed acceptance checklist. Its feature, integration and test IDs keep these categories distinct.
+
+| Gate | Verified progress | Remaining work |
 | --- | --- | --- |
-| Configured process boundary | An independently built adapter and the bundled adapters collect through the same pinned catalog, validation, commit and ACK path. An independent capability adds metrics and a pane. | The default cockpit loads explicitly selected, pinned independent capabilities from its user catalog. Automatic decoder installation and untrusted process activation remain open. |
-| Installed Linux collector | Codex, Pi, Claude Code and OpenCode were collected from real local data. Kiro has an end-to-end native fixture. Published Rust history and cursors reopen in the development bundle. | Collect a real Kiro session on a host with a native Kiro transcript. Qualify installer and user service on any additional platform before advertising it. |
-| Evidence and cockpit | Native review decisions, exact task handoffs, pending request routing, typed Codex MCP metadata, and explicit OTLP source/session links have terminal and durable checks. Prompt proofs cover grant-fenced JSONL history and older retained OpenCode SQLite occurrences with admission digests. | Add source-specific missing lifecycle and relationship evidence and richer review/edit and MCP detail. Verify more actual native turn shapes in the installed cockpit. |
-| Storage and recovery | Atomic records and cursors, crash replay, writer leases, and portable workspace backup/restore are exercised. Separate-principal Linux guests verified broker admission, reader queries, grants, retention, backup/restore and private disclosure fences. Restore preserves review and workbench state and disables private-content approvals. | Qualify the supported production connector against the deployed storage and child isolation boundary. Current source allowlists and private-content approvals remain required. |
-| Release and compatibility | Rust 0.3.6 is published for Linux x86-64 and ARM64. Native archive jobs passed install, restart, history upgrade, backup and retained-history uninstall; x86-64 additionally passed packaged private evidence and terminal workflows. | Additional operating systems remain unqualified. The retained remote compatibility and import inventory still gates the default entry point. |
-| Connector runtime | The pinned driver supervises local processes, checks policy epochs, persists inbound and outbound progress, and reconciles an ambiguous external effect before retrying. Sustained watch is exercised with local fixture executables. | Add verified least-privilege OS isolation and credential/egress control before enabling untrusted connectors. Exercise a supported production connector under that boundary. |
-| Full product cutover | The native cockpit, collector, telemetry receiver, and scoped extension paths can run without a Python process. | Account for the remaining Python CLI workflows, SDK-specific automatic instrumentation and payload views before changing the default distribution entry point. |
+| Native harnesses | Real Pi, Codex, Claude Code and OpenCode collection; Kiro native-format process fixtures. | F1: attributable worker/check/turn evidence gaps. Q8: per-provider installed scenarios and an actual Kiro transcript. |
+| Cockpit/workflows | Native command center, MCP inventory/trace navigation, telemetry history, usage, Findings, Workflow and selected tasks/imports/retention implemented. | F2: close remaining detailed edit/MCP and SDK/usage coverage inventory; I1–I3 integration; Q6 installed paired visual/keyboard acceptance. |
+| Metrics/Host follow-ups | 833-test joined baseline; real metric HTTP/PTY checks; Host correction has 14 focused passing tests. | Final Host correction and Q1–Q3 development checks passed; repeat on the final optimized artifact. Preserve exact source/snapshot, selection and recorded-source labels. |
+| Storage authority/recovery | Separate-UID Linux guests exercised broker admission/queries/grants/retention, backup/restore and disclosure boundaries. A qualification host is available; C1–C5 are no longer wholly missing implementation. | Q5 final schema 21 combined-artifact upgrade/recovery; F4 additional connector profiles and Q9 deployed endpoint acceptance; C6/C7 local static-x86-64 isolation and host-mediated transport are already implemented. |
+| Extensions/connectors | Explicit pinned catalog/capability loading and trusted connector replay/reconciliation implemented. | F3 automatic decoder installation; F4 additional connector profiles; C6/C7 local isolated_linux and unix_status_v1 controls are implemented. Keep unsupported profiles/unqualified production activation disabled. |
+| Distribution | Published Linux x86-64 and ARM64 Rust 0.3.8; both architectures passed PR #380 bundle CI. | Q5–Q7 final exact source/artifact qualification. F5/Q10 macOS remains unsupported pending native implementation/testing. |
+| Full default cutover | Rust native path can run without a Python process. | Required retained workflow inventory, installed paired journeys and applicable production/support gates must pass. No silent retirement or default change. |
 
-## Current blockers
+## Current blockers and release constraints
 
-- Full harness parity still needs the unsupported native evidence identified in the coverage matrix. Private-content delivery covers bounded retained Pi, Codex, Claude Code, and Kiro JSONL receipts, plus OpenCode SQLite rows whose retained admission digests still match the native source.
-- The trusted local collector and child adapters share an OS user. Separate-principal broker workflows are qualified in Linux guests; untrusted production connectors still require their supported endpoint and deployed isolation qualification.
-- Linux x86-64 and ARM64 archives are qualified. Other operating systems require their own release checks.
+- **Local work can continue:** qualify the integrated Host/Metrics and merged Findings path in the final combined bundle and close the remaining feature/coverage inventory. No command approval is pending.
+- **External inputs:** an actual Kiro transcript/host, approved production connector endpoint/configuration and native macOS runners. Local fixtures do not close these acceptance gates.
+- **Untrusted activation:** local isolated_linux and unix_status_v1 controls are qualified within their supported scope. HTTPS/general provider transport, production credential provisioning, other-architecture sandboxing and deployed acceptance remain open; keep unsupported paths disabled.
+- **Release cadence:** Rust 0.3.8 was published 23 November at 06:03:24 UTC. Earliest next public release is 24 November at 06:03:24 UTC / 07:03:24 Berlin, subject to checking for a newer release and passing qualification. Implementation continues between releases.
+- **Scope:** macOS is unsupported until D2-Mac passes. Performance benchmarking remains deferred. No automatic legacy Python database import is introduced.

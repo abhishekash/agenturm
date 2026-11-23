@@ -1,14 +1,17 @@
 //! Keyset reads of exact retained OTLP metric series, points, and exemplars.
 
 use crate::{
-    MAX_EVENT_ID_BYTES, ObservationKind, Result, Store, StoreError, retention, validate_identifier,
+    MAX_EVENT_ID_BYTES, ObservationBatch, ObservationKind, Result, Store, StoreError, StoredScope,
+    bounded_text_preview, retention, validate_identifier,
 };
 use agenturm_kernel::metric::{
-    MAX_METRIC_EXEMPLARS, MetricPoint, MetricSeries, is_metric_series_id, is_metric_source,
+    MAX_METRIC_DESCRIPTION_BYTES, MAX_METRIC_EXEMPLARS, MetricDescriptor, MetricPoint,
+    MetricSeries, is_metric_description, is_metric_series_id, is_metric_source,
 };
 use agenturm_kernel::{ExtensionId, ReadSnapshot, TraceSpanIdentity};
 use rusqlite::{Connection, OptionalExtension, params};
-use std::collections::BTreeSet;
+use sha2::{Digest, Sha256};
+use std::collections::{BTreeMap, BTreeSet};
 
 pub use agenturm_kernel::retained_history::{
     MAX_METRIC_HISTORY_PAGE, MetricExemplarTrace, MetricHistoryPage, MetricHistoryQuery,
@@ -37,6 +40,92 @@ pub(super) fn validate_index(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
+const DESCRIPTOR_INDEX_SQL: &str =
+    "CREATE INDEX agenturm_metric_descriptions_by_series ON agenturm_observations(
+            source_id, json_extract(kind_json, '$.series_id'), request_id)
+         WHERE json_extract(kind_json, '$.kind') = 'metric_descriptor';";
+
+pub(super) fn create_descriptor_index(connection: &Connection) -> Result<()> {
+    connection.execute_batch(DESCRIPTOR_INDEX_SQL)?;
+    Ok(())
+}
+
+pub(super) fn validate_descriptor_index(connection: &Connection) -> Result<()> {
+    let sql: String = connection.query_row(
+        "SELECT sql FROM sqlite_schema WHERE type='index' AND name='agenturm_metric_descriptions_by_series'",
+        [],
+        |row| row.get(0),
+    )?;
+    if sql != DESCRIPTOR_INDEX_SQL.trim_end_matches(';') {
+        return Err(StoreError::UnrecognizedDatabase);
+    }
+    Ok(())
+}
+
+pub fn metric_descriptor_event_id(descriptor: &MetricDescriptor) -> String {
+    let mut digest = Sha256::new();
+    digest.update(b"otlp.metric.descriptor/v1\0");
+    digest.update(descriptor.point_event_id.as_bytes());
+    digest.update([0]);
+    digest.update(descriptor.description.as_bytes());
+    format!("otlp-metric-description:{:x}", digest.finalize())
+}
+
+pub fn valid_metric_description(description: &str) -> bool {
+    is_metric_description(description)
+        && bounded_text_preview(description.into(), MAX_METRIC_DESCRIPTION_BYTES)
+            .is_ok_and(|safe| safe == description)
+}
+
+pub(super) fn validate_descriptor_batch(batch: &ObservationBatch) -> Result<()> {
+    if !batch
+        .observations
+        .iter()
+        .any(|row| matches!(row.kind, ObservationKind::MetricDescriptor(_)))
+    {
+        return Ok(());
+    }
+    if !is_metric_source(&batch.source_id) {
+        return Err(StoreError::Invalid(
+            "metric descriptor requires an OTLP source",
+        ));
+    }
+    let points: BTreeMap<_, _> = batch
+        .observations
+        .iter()
+        .filter_map(|row| {
+            if let ObservationKind::MetricPoint(point) = &row.kind {
+                Some((
+                    row.event_id.as_str(),
+                    (point.series.id.as_str(), row.observed_at_unix_ns),
+                ))
+            } else {
+                None
+            }
+        })
+        .collect();
+    let mut described = BTreeSet::new();
+    for row in &batch.observations {
+        let ObservationKind::MetricDescriptor(descriptor) = &row.kind else {
+            continue;
+        };
+        if row.identity.scope != StoredScope::Source
+            || row.revision != 0
+            || !descriptor.is_valid_at(row.observed_at_unix_ns)
+            || !valid_metric_description(&descriptor.description)
+            || row.event_id != metric_descriptor_event_id(descriptor)
+            || points.get(descriptor.point_event_id.as_str()).copied()
+                != Some((descriptor.series_id.as_str(), row.observed_at_unix_ns))
+            || !described.insert(descriptor.series_id.as_str())
+        {
+            return Err(StoreError::Invalid(
+                "metric descriptor needs one valid description and an exact metric point in the batch",
+            ));
+        }
+    }
+    Ok(())
+}
+
 impl Store {
     pub fn query_metric_history(
         &self,
@@ -52,12 +141,21 @@ impl Store {
                 source_id,
                 snapshot_id,
                 after,
+                search,
                 limit,
             } => {
                 validate_limit(*limit)?;
+                if search
+                    .as_deref()
+                    .is_some_and(|value| !MetricHistoryQuery::valid_search(value))
+                {
+                    return Err(StoreError::Invalid("metric catalog search is invalid"));
+                }
                 if let Some(cursor) = after {
                     validate_series(&cursor.series, allowed_sources)?;
                     if *snapshot_id != Some(cursor.snapshot_id)
+                        || &cursor.source_filter != source_id
+                        || &cursor.search != search
                         || source_id
                             .as_ref()
                             .is_some_and(|source| source != &cursor.series.source_id)
@@ -74,9 +172,12 @@ impl Store {
                     source_id.as_ref(),
                     snapshot,
                     watermark,
-                    after.as_ref(),
-                    *limit,
-                    allowed_sources,
+                    CatalogSelection {
+                        after: after.as_ref(),
+                        search: search.as_deref(),
+                        limit: *limit,
+                        allowed_sources,
+                    },
                 )
             }
             MetricHistoryQuery::Points {
@@ -168,24 +269,61 @@ fn validate_limit(limit: usize) -> Result<()> {
     Ok(())
 }
 
+struct CatalogSelection<'a> {
+    after: Option<&'a MetricSeriesPosition>,
+    search: Option<&'a str>,
+    limit: usize,
+    allowed_sources: Option<&'a BTreeSet<ExtensionId>>,
+}
+
 fn catalog(
     connection: &Connection,
     source: Option<&ExtensionId>,
     snapshot: ReadSnapshot,
     watermark: i64,
-    after: Option<&MetricSeriesPosition>,
-    limit: usize,
-    allowed_sources: Option<&BTreeSet<ExtensionId>>,
+    selection: CatalogSelection<'_>,
 ) -> Result<MetricHistoryPage> {
+    let CatalogSelection {
+        after,
+        search,
+        limit,
+        allowed_sources,
+    } = selection;
     let mut statement = connection.prepare(
-        "SELECT o.source_id, json_extract(o.kind_json, '$.series.id') AS series_id,
-                json_extract(o.kind_json, '$.series'), max(o.observed_at_unix_ns)
-         FROM agenturm_observations o JOIN agenturm_history_batches b USING (request_id)
-         WHERE json_extract(o.kind_json, '$.kind')='metric_point' AND b.sequence<=?1
-           AND (?2 IS NULL OR o.source_id=?2)
-           AND (?3 IS NULL OR (o.source_id, json_extract(o.kind_json, '$.series.id')) > (?3, ?4))
-           AND (?5 IS NULL OR o.source_id IN (SELECT value FROM json_each(?5)))
-         GROUP BY o.source_id, series_id ORDER BY o.source_id, series_id LIMIT ?6",
+        "WITH series AS (
+            SELECT o.source_id, json_extract(o.kind_json, '$.series.id') AS series_id,
+                   json_extract(o.kind_json, '$.series') AS metadata,
+                   max(o.observed_at_unix_ns) AS latest_unix_ns
+              FROM agenturm_observations o JOIN agenturm_history_batches b USING (request_id)
+             WHERE json_extract(o.kind_json, '$.kind')='metric_point' AND b.sequence<=?1
+               AND (?2 IS NULL OR o.source_id=?2)
+               AND (?3 IS NULL OR (o.source_id, json_extract(o.kind_json, '$.series.id')) > (?3, ?4))
+               AND (?5 IS NULL OR o.source_id IN (SELECT value FROM json_each(?5)))
+             GROUP BY o.source_id, series_id
+        ),
+        catalog AS (
+            SELECT series.*,
+                   (SELECT json_extract(d.kind_json, '$.description')
+                      FROM agenturm_observations d
+                      JOIN agenturm_history_batches h USING (request_id)
+                     WHERE json_extract(d.kind_json, '$.kind')='metric_descriptor'
+                       AND d.source_id=series.source_id
+                       AND json_extract(d.kind_json, '$.series_id')=series.series_id
+                       AND h.sequence<=?1
+                     ORDER BY h.sequence DESC LIMIT 1) AS description
+              FROM series
+        )
+        SELECT source_id, series_id, metadata, latest_unix_ns, description
+          FROM catalog
+         WHERE ?6 IS NULL
+            OR instr(lower(source_id), lower(?6))>0
+            OR instr(lower(json_extract(metadata, '$.name')), lower(?6))>0
+            OR instr(lower(json_extract(metadata, '$.service')), lower(?6))>0
+            OR instr(lower(json_extract(metadata, '$.kind')), lower(?6))>0
+            OR instr(lower(json_extract(metadata, '$.unit')), lower(?6))>0
+            OR instr(lower(json_extract(metadata, '$.scope')), lower(?6))>0
+            OR instr(lower(description), lower(?6))>0
+         ORDER BY source_id, series_id LIMIT ?7",
     )?;
     let parameters = params![
         watermark,
@@ -193,6 +331,7 @@ fn catalog(
         after.map(|item| item.series.source_id.as_str()),
         after.map(|item| item.series.series_id.as_str()),
         allowed_sources.map(serde_json::to_string).transpose()?,
+        search,
         (limit + 1) as i64,
     ];
     let mut cursor = statement.query(parameters)?;
@@ -213,9 +352,17 @@ fn catalog(
         if series.id != key.series_id || !series.is_valid() {
             return Err(StoreError::Invalid("stored metric series is invalid"));
         }
+        let description: Option<String> = row.get(4)?;
+        if description
+            .as_deref()
+            .is_some_and(|description| !valid_metric_description(description))
+        {
+            return Err(StoreError::Invalid("stored metric description is invalid"));
+        }
         entries.push(MetricSeriesEntry {
             key,
             series,
+            description,
             latest_unix_ns: row.get(3)?,
         });
     }
@@ -225,6 +372,8 @@ fn catalog(
         .map(|entry| MetricSeriesPosition {
             series: entry.key.clone(),
             snapshot_id: snapshot,
+            source_filter: source.cloned(),
+            search: search.map(str::to_owned),
         });
     Ok(MetricHistoryPage::Series {
         snapshot_id: snapshot,
@@ -409,6 +558,24 @@ mod tests {
         }
     }
 
+    fn descriptor(anchor: &StoredObservation, description: &str) -> StoredObservation {
+        let ObservationKind::MetricPoint(point) = &anchor.kind else {
+            panic!("metric anchor");
+        };
+        let descriptor = MetricDescriptor {
+            series_id: point.series.id.clone(),
+            point_event_id: anchor.event_id.clone(),
+            description: description.into(),
+        };
+        StoredObservation {
+            event_id: metric_descriptor_event_id(&descriptor),
+            revision: 0,
+            identity: anchor.identity.clone(),
+            observed_at_unix_ns: anchor.observed_at_unix_ns,
+            kind: ObservationKind::MetricDescriptor(descriptor),
+        }
+    }
+
     fn span() -> StoredObservation {
         StoredObservation {
             event_id: format!("otlp:{TRACE_ID}:{SPAN_ID}"),
@@ -451,6 +618,173 @@ mod tests {
     }
 
     #[test]
+    fn literal_catalog_search_runs_before_paging_and_binds_cursor_and_acl() {
+        let mut store = Store::open(":memory:").unwrap();
+        let source = ExtensionId::parse(OPEN).unwrap();
+        let allowed = [source.clone()].into_iter().collect();
+        let first = "0".repeat(64);
+        let second = "1".repeat(64);
+        let third = "2".repeat(64);
+        let second_point = point(2, &second, 0);
+        let third_point = point(3, &third, 0);
+        commit(
+            &mut store,
+            OPEN,
+            None,
+            "catalog",
+            vec![
+                point(1, &first, 0),
+                descriptor(&second_point, "Queue latency 95%"),
+                second_point,
+                descriptor(&third_point, "Queue latency 50%"),
+                third_point,
+            ],
+        );
+        let outside = point(9, &first, 0);
+        commit(
+            &mut store,
+            CLOSED,
+            None,
+            "outside",
+            vec![descriptor(&outside, "Queue latency 75%"), outside],
+        );
+
+        let query =
+            |source_id, snapshot_id, after, search: Option<&str>| MetricHistoryQuery::Series {
+                source_id,
+                snapshot_id,
+                after,
+                search: search.map(str::to_owned),
+                limit: 1,
+            };
+        let catalog = |query| store.query_metric_history(&query, Some(&allowed)).unwrap();
+        let MetricHistoryPage::Series { rows, .. } = catalog(query(None, None, None, None)) else {
+            panic!("metric catalog");
+        };
+        assert_eq!(rows[0].key.series_id, first);
+        assert_eq!(rows[0].description, None);
+
+        let MetricHistoryPage::Series {
+            snapshot_id,
+            rows,
+            next: Some(next),
+        } = catalog(query(Some(source.clone()), None, None, Some("LaTeNcY")))
+        else {
+            panic!("filtered metric catalog continuation");
+        };
+        assert_eq!(rows[0].key.series_id, second);
+        assert_eq!(rows[0].description.as_deref(), Some("Queue latency 95%"));
+
+        let MetricHistoryPage::Series {
+            rows, next: None, ..
+        } = catalog(query(
+            Some(source.clone()),
+            Some(snapshot_id),
+            Some(next.clone()),
+            Some("LaTeNcY"),
+        ))
+        else {
+            panic!("exact next match");
+        };
+        assert_eq!(rows[0].key.series_id, third);
+        for wrong in [
+            query(
+                Some(source.clone()),
+                Some(snapshot_id),
+                Some(next.clone()),
+                Some("%"),
+            ),
+            query(None, Some(snapshot_id), Some(next.clone()), Some("LaTeNcY")),
+            query(Some(source), None, Some(next), Some("LaTeNcY")),
+        ] {
+            assert!(store.query_metric_history(&wrong, Some(&allowed)).is_err());
+        }
+
+        let MetricHistoryPage::Series { rows, .. } = catalog(query(None, None, None, Some("95%")))
+        else {
+            panic!("literal wildcard character");
+        };
+        assert_eq!(rows[0].key.series_id, second);
+        let MetricHistoryPage::Series {
+            rows, next: None, ..
+        } = catalog(query(None, None, None, Some("75%")))
+        else {
+            panic!("denied description invisible");
+        };
+        assert!(rows.is_empty());
+    }
+
+    #[test]
+    fn descriptor_requires_a_same_batch_point_and_rejects_ambiguous_updates() {
+        let mut store = Store::open(":memory:").unwrap();
+        let point = point(4, &"f".repeat(64), 5);
+        let described = descriptor(&point, "A valid description");
+        for invalid in [
+            vec![described.clone()],
+            vec![
+                point.clone(),
+                described.clone(),
+                descriptor(&point, "Other description"),
+            ],
+            vec![point.clone(), descriptor(&point, "Password: unsafe")],
+        ] {
+            assert!(
+                ObservationBatch::new_deterministic(OPEN, None, "invalid", invalid.clone())
+                    .is_err()
+            );
+            let batch = ObservationBatch {
+                source_id: OPEN.into(),
+                request_id: "invalid-request".into(),
+                expected_cursor: None,
+                next_cursor: "invalid".into(),
+                observations: invalid,
+            };
+            assert!(store.commit_batch(&batch).is_err());
+            assert_eq!(store.source_cursor(OPEN).unwrap(), None);
+        }
+        commit(&mut store, OPEN, None, "valid", vec![point, described]);
+    }
+
+    #[test]
+    fn a_descriptor_only_durable_page_does_not_require_its_point_in_that_page() {
+        use agenturm_kernel::{Kernel, ObservationPosition, ObservationQuery};
+        let mut store = Store::open(":memory:").unwrap();
+        let anchor = point(5, &"f".repeat(64), 2);
+        let described = descriptor(&anchor, "A retained public description");
+        commit(
+            &mut store,
+            OPEN,
+            None,
+            "described",
+            vec![anchor.clone(), described.clone()],
+        );
+        let page = store.observation_page(1).unwrap();
+        assert_eq!(page.observations[0].event_id, anchor.event_id);
+        assert!(page.has_more);
+        let query = ObservationQuery {
+            harness_id: Some(OPEN.into()),
+            session_id: None,
+            before: Some(ObservationPosition {
+                observed_at_unix_ns: anchor.observed_at_unix_ns,
+                harness_id: OPEN.into(),
+                event_id: anchor.event_id,
+                revision: anchor.revision,
+                snapshot_id: page.snapshot_id,
+            }),
+            snapshot_id: Some(page.snapshot_id),
+            limit: 1,
+        };
+        let snapshot = Kernel::new().refresh_query_with_store(&store, query);
+        assert!(snapshot.failures.is_empty());
+        assert_eq!(snapshot.observations.len(), 1);
+        assert_eq!(snapshot.observations[0].event_id, described.event_id);
+        assert!(matches!(
+            snapshot.observations[0].kind,
+            agenturm_kernel::ObservationKind::MetricDescriptor(_)
+        ));
+    }
+
+    #[test]
     fn pinned_pages_and_exact_source_exemplar_never_resolve_a_sibling() {
         let mut store = Store::open(":memory:").unwrap();
         let source = ExtensionId::parse(OPEN).unwrap();
@@ -483,6 +817,7 @@ mod tests {
             source_id: None,
             snapshot_id,
             after,
+            search: None,
             limit: 1,
         };
         let MetricHistoryPage::Series {

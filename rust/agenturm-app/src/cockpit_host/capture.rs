@@ -2,7 +2,8 @@
 
 use super::{MAX_PROCESS_ENTRIES, PROCESS_SCAN_BUDGET, proc_field, read_kib, read_proc};
 use agenturm_kernel::{
-    HostCpu, HostProcess, HostProcessState, HostRuntime, HostSample, MAX_HOST_PROCESSES,
+    HostCpu, HostPlatform, HostProcess, HostProcessState, HostRuntime, HostSample,
+    MAX_HOST_PROCESSES,
 };
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read};
@@ -33,6 +34,8 @@ pub(crate) fn capture() -> Result<HostSample, String> {
     let (processes, processes_partial) = processes(root, uid)?;
     let sample = HostSample {
         boot_id: boot_id.trim().into(),
+        hostname: hostname(),
+        platform: Some(HostPlatform::Linux),
         clock_ticks_per_second: u64::try_from(hz).ok().filter(|hz| *hz > 0),
         cpu: host_cpu(&root.join("stat")),
         load_1m_milli: load.next().and_then(load_milli),
@@ -49,6 +52,22 @@ pub(crate) fn capture() -> Result<HostSample, String> {
         return Err("Invalid Linux boot identity or process sample".into());
     }
     Ok(sample)
+}
+
+pub(super) fn hostname() -> Option<String> {
+    read_hostname(File::open("/proc/sys/kernel/hostname").ok()?)
+}
+
+fn read_hostname(input: impl Read) -> Option<String> {
+    let mut text = String::new();
+    input
+        .take((HostSample::MAX_HOSTNAME_BYTES + 2) as u64)
+        .read_to_string(&mut text)
+        .ok()?;
+    if text.ends_with('\n') {
+        text.pop();
+    }
+    HostSample::valid_hostname(&text).then_some(text)
 }
 
 fn bytes(text: &str, field: &str) -> Option<u64> {
@@ -287,6 +306,29 @@ pub(super) fn recognized_runtime(name: &str) -> Option<HostRuntime> {
 mod tests {
     use super::*;
     use std::ffi::OsStr;
+
+    #[test]
+    fn hostname_capture_reads_only_a_bounded_label_and_optional_final_newline() {
+        assert_eq!(
+            read_hostname(&b"collector-1.example\n"[..]),
+            Some("collector-1.example".into())
+        );
+        assert_eq!(
+            read_hostname("n".repeat(64).as_bytes()),
+            Some("n".repeat(64))
+        );
+        for invalid in [
+            "\n",
+            "host\n\n",
+            " host\n",
+            "path/host\n",
+            "host\t\n",
+            &"n".repeat(65),
+        ] {
+            assert_eq!(read_hostname(invalid.as_bytes()), None);
+        }
+        assert_eq!(read_hostname(&b"abc\xff\n"[..]), None);
+    }
 
     #[test]
     fn process_stat_parses_parent_after_a_name_containing_parentheses() {

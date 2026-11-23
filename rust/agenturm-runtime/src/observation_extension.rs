@@ -569,6 +569,7 @@ fn kind_name(kind: &ObservationKind) -> &'static str {
         ObservationKind::OtlpActivityLog(_) => "otlp-activity-log",
         ObservationKind::OtlpErrorLog(_) => "otlp-error-log",
         ObservationKind::MetricPoint(_) => "metric-point",
+        ObservationKind::MetricDescriptor(_) => "metric-descriptor",
         ObservationKind::TraceProgress(_) => "trace-progress",
         ObservationKind::Lifecycle { .. } => "lifecycle",
         ObservationKind::Check { .. } => "check",

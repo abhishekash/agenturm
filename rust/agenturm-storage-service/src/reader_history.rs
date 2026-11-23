@@ -6,7 +6,7 @@ use crate::native_store::{NativeSelection, verify_read_binding};
 use agenturm_kernel::retained_history::{
     MetricHistoryPage, MetricHistoryQuery, UsageHistoryPage, UsageHistoryQuery,
 };
-use agenturm_kernel::{ExtensionId, ObservationPage, ObservationQuery};
+use agenturm_kernel::{ExtensionId, ObservationPage, ObservationQuery, ReadSnapshot};
 use agenturm_kernel::{ObservationKind, is_host_source};
 use agenturm_store::native_attention::{
     ExecutionClockPage, ExecutionClockQuery, NativeAttentionPage, NativeAttentionQuery,
@@ -30,6 +30,10 @@ pub enum ReaderHistoryRequest {
     History {
         query: ObservationQuery,
         selection: NativeSelection,
+    },
+    HostInventory {
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        snapshot_id: Option<ReadSnapshot>,
     },
     HostHistory {
         query: ObservationQuery,
@@ -72,6 +76,12 @@ pub enum ReaderHistoryRequest {
     },
 }
 
+impl ReaderHistoryRequest {
+    pub fn is_host_read(&self) -> bool {
+        matches!(self, Self::HostInventory { .. } | Self::HostHistory { .. })
+    }
+}
+
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(
     tag = "type",
@@ -84,6 +94,7 @@ pub enum ReaderHistoryReply {
     Sessions(SessionPage),
     History(ObservationPage),
     HostHistory(ObservationPage),
+    HostInventory(ObservationPage),
     TraceReview(Option<ResolvedTraceReview>),
     StandaloneTrace(ObservationPage),
     McpTraces(Option<ObservationPage>),
@@ -113,7 +124,7 @@ pub(crate) fn dispatch(
         }
         None => {}
     }
-    let host_history = matches!(&request, ReaderHistoryRequest::HostHistory { .. });
+    let host_history = request.is_host_read();
     let allowed = &allowed
         .iter()
         .filter(|source| is_host_source(source.as_str()) == host_history)
@@ -140,6 +151,10 @@ pub(crate) fn dispatch(
                     Ok(page)
                 })
                 .map(ReaderHistoryReply::History)
+        }
+        ReaderHistoryRequest::HostInventory { snapshot_id } => {
+            native_read::query_host_inventory(store, allowed, snapshot_id)
+                .map(ReaderHistoryReply::HostInventory)
         }
         ReaderHistoryRequest::HostHistory { query } => {
             native_read::query_host_history(store, allowed, &query)
@@ -276,6 +291,7 @@ mod tests {
                 snapshot_id,
                 limit: 1,
                 after,
+                search: None,
             },
         };
         let usage = |source_id| ReaderHistoryRequest::UsageHistory {
@@ -349,6 +365,8 @@ mod tests {
                 series_id: "1".repeat(64),
             },
             snapshot_id: snapshot,
+            source_filter: None,
+            search: None,
         };
         for request in [
             mcp(denied.clone()),

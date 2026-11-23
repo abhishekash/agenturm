@@ -308,6 +308,13 @@ fn import_cursor(observations: &[Observation]) -> Result<String, String> {
                 row.observed_at_unix_ns,
                 point,
             )),
+            ObservationKind::MetricDescriptor(descriptor) => serde_json::to_vec(&(
+                "metric_descriptor",
+                &row.event_id,
+                &row.identity,
+                row.observed_at_unix_ns,
+                descriptor,
+            )),
             ObservationKind::TraceSpanSummary(summary) => serde_json::to_vec(&(
                 "trace_span_summary",
                 &row.event_id,

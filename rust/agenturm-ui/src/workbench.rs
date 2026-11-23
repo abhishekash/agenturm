@@ -414,9 +414,11 @@ pub struct ReviewNoteEntry {
     pub note: String,
 }
 
-/// A current same-user Host snapshot supplied by the application.
+/// A same-user host capture or a retained sample from an authorized reader.
 pub struct CurrentHostSample {
     pub captured_at_unix_ns: u64,
+    /// The retained source, when this sample was read from a receiver.
+    pub recorded_source: Option<agenturm_kernel::ExtensionId>,
     pub sample: agenturm_kernel::HostSample,
 }
 
@@ -465,6 +467,7 @@ pub enum WorkResult {
     Investigation(Box<investigation::InvestigationPage>),
     Evaluations(Box<evaluation::EvaluationPage>),
     HostHistory(agenturm_kernel::ObservationPage),
+    HostInventory(agenturm_kernel::ObservationPage),
     HostNow(Option<Box<CurrentHostSample>>),
     ReviewNotes {
         session: RecordedSession,
@@ -616,6 +619,16 @@ impl Workbench {
         };
         let previous = self.selected_task().map(|item| item.id);
         let selected_process = self.current_process_identity();
+        let selected_host_stream = match &self.data {
+            WorkResult::HostInventory(page) => self.cursor.selected().and_then(|selected| {
+                page.observations
+                    .iter()
+                    .rev()
+                    .nth(selected)
+                    .map(|row| row.harness_id.clone())
+            }),
+            _ => None,
+        };
         let selected_request = match &self.data {
             WorkResult::Workflow { items, .. } => self
                 .cursor
@@ -644,8 +657,9 @@ impl Workbench {
         self.host_level = host::HostLevel::default();
         self.host_inspection = None;
         self.reset_cursor();
-        if let (Some((boot_id, pid, start_ticks)), WorkResult::HostNow(Some(capture))) =
+        if let (Some((source, boot_id, pid, start_ticks)), WorkResult::HostNow(Some(capture))) =
             (selected_process, &self.data)
+            && capture.recorded_source == source
             && capture.sample.boot_id == boot_id
             && let Some(index) = host::current_indices(&capture.sample, &self.host_filter)
                 .iter()
@@ -653,6 +667,15 @@ impl Workbench {
                     let process = &capture.sample.processes[index];
                     process.pid == pid && process.start_ticks == start_ticks
                 })
+        {
+            self.cursor.select(Some(index));
+        }
+        if let (Some(source), WorkResult::HostInventory(page)) = (selected_host_stream, &self.data)
+            && let Some(index) = page
+                .observations
+                .iter()
+                .rev()
+                .position(|row| row.harness_id == source)
         {
             self.cursor.select(Some(index));
         }
@@ -764,7 +787,9 @@ impl Workbench {
     fn len(&self) -> usize {
         match &self.data {
             WorkResult::Evaluations(page) => page.rows.len(),
-            WorkResult::HostHistory(page) => self.host_level.len(page, &self.host_filter),
+            WorkResult::HostHistory(page) | WorkResult::HostInventory(page) => {
+                self.host_level.len(page, &self.host_filter)
+            }
             WorkResult::HostNow(capture) => capture.as_ref().map_or(0, |capture| {
                 host::current_indices(&capture.sample, &self.host_filter).len()
             }),
@@ -814,7 +839,9 @@ impl Workbench {
             .map(|(_, delivery)| delivery)
     }
 
-    fn current_process_identity(&self) -> Option<(String, u32, u64)> {
+    fn current_process_identity(
+        &self,
+    ) -> Option<(Option<agenturm_kernel::ExtensionId>, String, u32, u64)> {
         let WorkResult::HostNow(Some(capture)) = &self.data else {
             return None;
         };
@@ -822,6 +849,7 @@ impl Workbench {
         let index = *visible.get(self.cursor.selected()?)?;
         let process = &capture.sample.processes[index];
         Some((
+            capture.recorded_source.clone(),
             capture.sample.boot_id.clone(),
             process.pid,
             process.start_ticks,
@@ -835,10 +863,9 @@ impl Workbench {
             return false;
         }
         match &self.data {
-            WorkResult::HostHistory(page) => {
-                self.host_level
-                    .filter_key(page, &mut self.host_filter, &mut self.cursor, key)
-            }
+            WorkResult::HostHistory(page) | WorkResult::HostInventory(page) => self
+                .host_level
+                .filter_key(page, &mut self.host_filter, &mut self.cursor, key),
             WorkResult::HostNow(Some(capture)) => {
                 let previous = self.cursor.selected().and_then(|row| {
                     host::current_indices(&capture.sample, &self.host_filter)
@@ -946,15 +973,19 @@ impl Workbench {
                 _ => {}
             }
         }
-        if let WorkResult::HostHistory(page) = &self.data
+        if let WorkResult::HostHistory(page) | WorkResult::HostInventory(page) = &self.data
             && !matches!(
                 key.code,
                 KeyCode::Down | KeyCode::Up | KeyCode::Char('j' | 'k')
             )
         {
-            return self
-                .host_level
-                .action(page, &mut self.cursor, &self.host_filter, key.code);
+            return self.host_level.action(
+                page,
+                &mut self.cursor,
+                &self.host_filter,
+                key.code,
+                matches!(self.data, WorkResult::HostInventory(_)),
+            );
         }
         match key.code {
             KeyCode::Esc if self.evaluation_return.is_some() => {
@@ -1429,8 +1460,12 @@ impl Workbench {
             draw_footer(frame, footer, keys, pending, status);
             return;
         }
-        if let WorkResult::HostHistory(page) = &self.data {
-            let view = self.host_level.present(page, &self.host_filter);
+        if let WorkResult::HostHistory(page) | WorkResult::HostInventory(page) = &self.data {
+            let view = self.host_level.present(
+                page,
+                &self.host_filter,
+                matches!(self.data, WorkResult::HostInventory(_)),
+            );
             let body = if matches!(self.host_level, host::HostLevel::Processes(_))
                 && let Some(label) = self.host_filter.label()
             {
@@ -1643,6 +1678,7 @@ impl Workbench {
                 "No spans in the loaded trace page",
             ),
             WorkResult::HostHistory(_)
+            | WorkResult::HostInventory(_)
             | WorkResult::HostNow(_)
             | WorkResult::Investigation(_)
             | WorkResult::WorkflowAlerts(_)

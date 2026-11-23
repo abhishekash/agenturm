@@ -177,8 +177,8 @@ fn handle(
     include_host: bool,
     read: &impl Fn(ReaderHistoryRequest) -> Result<ReaderHistoryReply, ReadFailure>,
 ) {
-    let read = |request| {
-        if !include_host && matches!(&request, ReaderHistoryRequest::HostHistory { .. }) {
+    let read = |request: ReaderHistoryRequest| {
+        if !include_host && request.is_host_read() {
             return Err(ReadFailure::HostHistoryDisabled);
         }
         read(request)

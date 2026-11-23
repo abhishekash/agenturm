@@ -10,6 +10,8 @@
 <li>Rust ran the actual Linux cockpit in a pseudo-terminal with <code>NO_COLOR=1</code>, a disposable native database and recorded fixture inputs. The development executable SHA-256 was <code>e6feb88973338498ba99c623b3315bbf9147e4c1c6bc409c1dc1a6e7bdd3ced2</code>. Captures covered populated, empty and loading screens and terminal restoration at all three sizes. The metric and usage qualification also admitted actual JSON and protobuf OTLP requests and opened the exact exemplar at all three sizes. The two fixture inventories differ, so the comparisons concern states and journeys rather than totals.</li>
 <li>The follow-up Rust UI branch passed 59 tests, including exact selection, search key ownership and return paths. Simulated read errors preserve the active evidence view. The PTY excerpts below precede the follow-up search changes. Release archive qualification, an end-to-end rerun of the joined search routes and performance benchmarks are separate gates.</li>
 </ul>
+<p>The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-host-metric-metadata.md">Host/Metrics follow-up</a> records the current
+joined source checks; captured excerpts below retain their original revision.</p>
 <h2>Journeys and remaining differences</h2>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -28,7 +30,7 @@
 <tr>
 <td>Metrics</td>
 <td>Local text search across the receiver's loaded catalog of up to 500 instruments, including descriptions.</td>
-<td><code>/</code> matches instrument, service, kind, unit, scope and source on the loaded 32-row page. The filter persists across catalog pages. A blank page after filtering still has a continuation if one exists. Description text is outside the retained typed metric fields. Point and exemplar drilldowns keep the selected series and snapshot.</td>
+<td><code>/</code> searches the retained authorized catalog before pagination across instrument, service, kind, unit, scope, source and description. Query/source/snapshot are cursor-bound; <code>d</code> opens description details. Schema 21 retains separately validated description companions without rewriting points. The joined frozen development app passed beyond-first-32 search at all three sizes; final optimized acceptance remains. Point and exemplar drilldowns keep the selected series and snapshot.</td>
 </tr>
 <tr>
 <td>Usage</td>
@@ -43,7 +45,7 @@
 <tr>
 <td>Host</td>
 <td>Live process table searches name, PID, parent PID, project and state. It displays host name and platform when reported.</td>
-<td><code>H</code> loads a typed same-user sample on the local Linux writer. Search covers runtime, PID, recorded parent PID, state and permitted working-directory basename. Inspection and refresh use boot ID, PID and process start. Recorded Host history is separate and can be made available through an explicitly enabled reader. The local sample is explicitly labeled Linux; current remote host inventory and a reported host name remain distinct gaps.</td>
+<td><code>H</code> loads a typed same-user sample on the local Linux writer. Search covers runtime, PID, recorded parent PID, state and permitted working-directory basename. Inspection and refresh use boot ID, PID and process start. Recorded Host history is separate and can be made available through an explicitly enabled reader. Reported local hostname and Linux platform are retained when valid; older missing fields stay unreported. Remote H reads the latest authorized recorded sample per source and labels source/time/age. Multiple streams use a distinct inventory chooser; refresh preserves source through reorder and process drilldown/return. Joined separate-UID KVM and all three terminal sizes passed; final optimized acceptance remains.</td>
 </tr>
 <tr>
 <td>Workflow</td>

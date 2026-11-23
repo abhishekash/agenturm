@@ -1,23 +1,93 @@
 """Verify opt-in recorded Host history, its native grants and restored bindings in Linux."""
 
 import argparse
+import fcntl
 import grp
 import json
 import os
 from pathlib import Path
+import pty
 import pwd
 import secrets
+import select
 import stat
+import struct
 import subprocess
+import sys
 import tempfile
+import termios
+import time
 from urllib.parse import urlencode, urlsplit
 
 from validate_rust_host_history import PRIVATE_SENTINEL, fake_harness, narrow_cockpit, read_line
+from validate_rust_private_eval_details import TerminalCells
 from validate_rust_remote_history import private_directory, request, request_get, stop, wait_for, write_token
 
 
 SOURCE = "host.remote-fixture"
 HIDDEN = "host.revoked-fixture"
+RECORDED_HOSTNAME = "recorded-host-fixture"
+
+
+def inventory_cockpit(command, root, uid, gid, viewer_home, size, markers, *, forbidden=(),
+                       refresh_stream=None):
+    columns, rows = size
+    env = {**os.environ, "HOME": str(viewer_home), "XDG_STATE_HOME": str(viewer_home / "state"),
+           "TERM": "xterm-256color"}
+    master, slave = pty.openpty()
+    fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", rows, columns, 0, 0))
+    original = termios.tcgetattr(slave)
+    screen = TerminalCells(columns, rows)
+    process = subprocess.Popen(command, cwd=root, env=env, stdin=slave, stdout=slave, stderr=slave,
+                               user=uid, group=gid, extra_groups=[])
+    excluded = (PRIVATE_SENTINEL, *forbidden)
+
+    def collect(timeout=0.05):
+        if select.select([master], [], [], timeout)[0]:
+            screen.feed(os.read(master, 8192))
+
+    def until(*expected):
+        deadline = time.monotonic() + 8
+        while time.monotonic() < deadline:
+            collect()
+            frame = screen.contents() or ""
+            assert not any(marker in frame for marker in excluded), frame
+            if all(marker in frame for marker in expected):
+                return
+            assert process.poll() is None, frame
+        raise AssertionError((size, expected, screen.contents()))
+
+    try:
+        until("Agenturm command center")
+        os.write(master, b"H")
+        until(*markers)
+        refreshed = None
+        if refresh_stream is not None:
+            # The newer sibling starts selected. Choose the older stream, then
+            # update it so it moves to the top of the refreshed inventory.
+            until(f"Source  {HIDDEN}")
+            os.write(master, b"\x1b[B")
+            until(f"Source  {SOURCE}")
+            refreshed = refresh_stream()
+            timestamp = str(refreshed["observed_at_unix_ns"])
+            os.write(master, b"R")
+            until("Recorded host streams", f"Source  {SOURCE}", timestamp)
+            os.write(master, b"\r")
+            until("Host processes", f"Source  {SOURCE}", "Recorded age", timestamp)
+            os.write(master, b"\x1b")
+            until("Recorded host streams", f"Source  {SOURCE}", timestamp)
+        os.write(master, b"q")
+        deadline = time.monotonic() + 5
+        while process.poll() is None and time.monotonic() < deadline:
+            collect()
+        assert process.poll() == 0 and termios.tcgetattr(slave) == original
+        return refreshed
+    finally:
+        if process.poll() is None:
+            process.kill()
+            process.wait(timeout=5)
+        os.close(master)
+        os.close(slave)
 
 
 def main():
@@ -93,19 +163,62 @@ def main():
                 stop(process)
                 raise
 
-        def record(source):
-            return json.loads(checked(collector, command("host", "record", "--source-id", source)))
+        def record(source, hostname=None):
+            argv = command("host", "record", "--source-id", source)
+            if hostname is None:
+                return json.loads(checked(collector, argv))
+            # The disposable guest records from a separate UTS namespace.
+            # This must never rename the viewer's or host's own namespace.
+            assert Path("/proc/sys/kernel/hostname").read_text().strip() != hostname
+            wrapper = """
+import os, socket, sys
+os.unshare(os.CLONE_NEWUTS)
+socket.sethostname(sys.argv[1])
+os.setgroups([])
+os.setgid(int(sys.argv[2]))
+os.setuid(int(sys.argv[3]))
+os.execv(sys.argv[4], sys.argv[4:])
+"""
+            return json.loads(checked(0, [sys.executable, "-c", wrapper, hostname,
+                                          str(client_gid), str(collector), *argv], gid=0))
 
         def host_request(**query):
             return {"op": "host_history", "query": {"limit": 64, **query}}
+
+        def inventory_request(**query):
+            return {"op": "host_inventory", **query}
+
+        def cockpit(endpoint):
+            return [app, "cockpit", "--endpoint", endpoint, "--token-file", client_token]
 
         service = start_service(f"{SOURCE},{HIDDEN}")
         gateway = harness = None
         try:
             harness = fake_harness(root, collector, client_gid, "codex")
-            first = record(SOURCE)
-            second = record(SOURCE)
-            record(HIDDEN)
+            first = record(SOURCE, RECORDED_HOSTNAME)
+            second = record(SOURCE, RECORDED_HOSTNAME)
+            sibling = record(HIDDEN)
+            gateway, endpoint = start_gateway(True)
+            _, identity = request(endpoint, token, {"op": "identity"})
+            _, wide_inventory = request(endpoint, token, inventory_request(), identity["history_identity"])
+            candidates = wide_inventory["result"]["Ok"]["value"]["observations"]
+            assert {row["event_id"] for row in candidates} == {second["event_id"], sibling["event_id"]}
+
+            def refresh_stream():
+                receipt = record(SOURCE, RECORDED_HOSTNAME)
+                _, refreshed = request(endpoint, token, inventory_request(), identity["history_identity"])
+                rows = refreshed["result"]["Ok"]["value"]["observations"]
+                assert {row["event_id"] for row in rows} == {receipt["event_id"], sibling["event_id"]}
+                newest = rows[-1]
+                assert newest["event_id"] == receipt["event_id"] and newest["harness_id"] == SOURCE
+                return newest
+
+            third = inventory_cockpit(cockpit(endpoint), root, viewer, viewer_gid, home, (120, 32),
+                                      ("Recorded host streams", SOURCE, HIDDEN, "R refresh streams"),
+                                      forbidden=("Remote latest recorded sample",),
+                                      refresh_stream=refresh_stream)
+            stop(gateway)
+            gateway = None
             saved = json.loads(checked(maintainer, command("backup")))
             stop(service)
             service = start_service(SOURCE)
@@ -115,6 +228,8 @@ def main():
             binding = identity["history_identity"]
             assert request_get(endpoint, token, "/api/host", binding)[0] == 403
             assert request(endpoint, token, host_request(), binding)[1]["result"] == {
+                "Err": {"code": "host_history_disabled"}}
+            assert request(endpoint, token, inventory_request(), binding)[1]["result"] == {
                 "Err": {"code": "host_history_disabled"}}
             assert request(endpoint, token, {"op": "query_host_history"}, binding)[0] == 400
             stop(gateway)
@@ -137,8 +252,10 @@ def main():
 
             code, page = request_get(endpoint, token, f"/api/host?source_id={SOURCE}&limit=1", binding)
             assert code == 200 and page["has_more"] and page["next_cursor"]
-            assert page["samples"][0]["event_id"] == second["event_id"]
+            assert page["samples"][0]["event_id"] == third["event_id"]
             data_sample = page["samples"][0]["kind"]
+            assert data_sample["platform"] == "linux"
+            assert data_sample["hostname"] == RECORDED_HOSTNAME
             assert isinstance(data_sample["memory_total_bytes"], str)
             assert isinstance(data_sample["clock_ticks_per_second"], str)
             assert isinstance(data_sample["cpu"]["user_ticks"], str)
@@ -146,14 +263,33 @@ def main():
             position = urlencode({"source_id": SOURCE, "cursor": page["next_cursor"], "limit": 1})
             older = request_get(endpoint, token, f"/api/host?{position}", binding)[1]
             assert older["snapshot_id"] == page["snapshot_id"]
+            assert older["samples"][0]["event_id"] == second["event_id"] and older["has_more"]
+            position = urlencode({"source_id": SOURCE, "cursor": older["next_cursor"], "limit": 1})
+            older = request_get(endpoint, token, f"/api/host?{position}", binding)[1]
+            assert older["snapshot_id"] == page["snapshot_id"]
             assert older["samples"][0]["event_id"] == first["event_id"]
             assert not older["has_more"]
             _, read = request(endpoint, token, host_request(), binding)
             retained = read["result"]["Ok"]["value"]["observations"]
-            assert {row["event_id"] for row in retained} == {first["event_id"], second["event_id"]}
+            assert {row["event_id"] for row in retained} == {
+                first["event_id"], second["event_id"], third["event_id"]}
             assert all(row["harness_id"] == SOURCE and row["identity"]["session_id"] is None
                        for row in retained)
             assert PRIVATE_SENTINEL not in json.dumps(retained)
+            _, inventory = request(endpoint, token, inventory_request(), binding)
+            current = inventory["result"]["Ok"]["value"]
+            [sample] = current["observations"]
+            assert sample["event_id"] == third["event_id"] and not current["has_more"]
+            assert any(row["pid"] == harness.pid and row["runtime"] == "codex"
+                       for row in sample["kind"]["processes"])
+            harness.terminate()
+            harness.wait(timeout=5)
+            for size in ((120, 32), (80, 24), (60, 18)):
+                inventory_cockpit(cockpit(endpoint), root, viewer, viewer_gid, home, size,
+                                  ("Remote latest recorded sample", SOURCE, RECORDED_HOSTNAME, "Codex",
+                                   str(harness.pid), str(sample["observed_at_unix_ns"])),
+                                  forbidden=(HIDDEN, "Host now"))
+            assert request(endpoint, token, inventory_request(), binding)[1] == inventory
             narrow_cockpit([app, "cockpit", "--endpoint", endpoint, "--token-file", client_token],
                            root, viewer, viewer_gid, home)
 
@@ -178,13 +314,28 @@ def main():
             assert request_get(endpoint, token, f"/api/host?snapshot_id={watermark}", new_binding)[0] == 409
             assert request(endpoint, token, host_request(snapshot_id=watermark), new_binding)[1]["result"] == {
                 "Err": {"code": "snapshot_replaced"}}
+            assert request(endpoint, token, inventory_request(snapshot_id=watermark), new_binding)[1]["result"] == {
+                "Err": {"code": "snapshot_replaced"}}
+            code, replaced = request(endpoint, token, inventory_request(), binding)
+            assert code == 200 and replaced["result"] == {"Err": {"code": "snapshot_replaced"}}
             code, fresh_page = request_get(endpoint, token, "/api/host", new_binding)
             assert code == 200
             assert fresh_page["snapshot_id"] == f'r1:{new_binding.split(":")[1]}:{watermark}'
             events = {row["event_id"] for row in fresh_page["samples"]}
-            assert events == {first["event_id"], second["event_id"], regrown["event_id"]}
+            assert events == {first["event_id"], second["event_id"], third["event_id"], regrown["event_id"]}
             assert rolled_back["event_id"] not in events
-            print("PASS opt-in Host GET/POST, exact grants, remote PTY drill-down and restored watermark fencing",
+            for _ in range(65):
+                latest = record(SOURCE)
+            assert request_get(endpoint, token, "/api/host?limit=64", new_binding)[1]["has_more"]
+            _, inventory = request(endpoint, token, inventory_request(), new_binding)
+            current = inventory["result"]["Ok"]["value"]
+            assert not current["has_more"]
+            [sample] = current["observations"]
+            assert sample["event_id"] == latest["event_id"] and sample["harness_id"] == SOURCE
+            inventory_cockpit(cockpit(endpoint), root, viewer, viewer_gid, home, (120, 32),
+                              ("Remote latest recorded sample", SOURCE, str(sample["observed_at_unix_ns"])),
+                              forbidden=(HIDDEN, "Host now"))
+            print("PASS opt-in Host GET/POST, exact grants, remote inventory/chooser, drill-down and restored watermark fencing",
                   flush=True)
         finally:
             if harness is not None and harness.poll() is None:

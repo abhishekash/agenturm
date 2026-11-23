@@ -18,6 +18,7 @@ mod eval_detail;
 mod eval_inventory;
 mod eval_outcome;
 mod history_projection;
+mod host_inventory;
 mod linked_trace;
 pub mod metric_history;
 pub mod native_attention;
@@ -101,7 +102,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 20;
+const SCHEMA_VERSION: i64 = 21;
 pub const MAX_HOST_HISTORY_PAGE: usize = 64;
 const MAX_BATCH_EVENTS: usize = 2_048;
 pub const MAX_OTLP_BATCH_SPANS: usize = 1_024;
@@ -121,7 +122,8 @@ const STORE_MARKER_V16: &str = "agenturm.observation-store.v16";
 const STORE_MARKER_V17: &str = "agenturm.observation-store.v17";
 const STORE_MARKER_V18: &str = "agenturm.observation-store.v18";
 const STORE_MARKER_V19: &str = "agenturm.observation-store.v19";
-const STORE_MARKER: &str = "agenturm.observation-store.v20";
+const STORE_MARKER_V20: &str = "agenturm.observation-store.v20";
+const STORE_MARKER: &str = "agenturm.observation-store.v21";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -155,6 +157,7 @@ pub enum ObservationKind {
     TraceProgress(agenturm_kernel::TraceProgress),
     HostSample(agenturm_kernel::HostSample),
     MetricPoint(agenturm_kernel::MetricPoint),
+    MetricDescriptor(agenturm_kernel::MetricDescriptor),
     TraceSpanSummary(agenturm_kernel::telemetry_summary::TraceSpanSummary),
     OtlpActivityLog(agenturm_kernel::telemetry_summary::OtlpActivityLog),
     OtlpErrorLog(agenturm_kernel::telemetry_summary::OtlpErrorLog),
@@ -355,6 +358,9 @@ impl ObservationBatch {
                     }
                     KernelObservationKind::MetricPoint(point) => {
                         ObservationKind::MetricPoint(point.clone())
+                    }
+                    KernelObservationKind::MetricDescriptor(descriptor) => {
+                        ObservationKind::MetricDescriptor(descriptor.clone())
                     }
                     KernelObservationKind::HostSample(sample) => {
                         ObservationKind::HostSample(sample.clone())
@@ -615,6 +621,13 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         ]);
         native_attention::validate_schema(connection)?;
     }
+    if version >= 21 {
+        expected.push((
+            "index".into(),
+            "agenturm_metric_descriptions_by_series".into(),
+        ));
+        metric_history::validate_descriptor_index(connection)?;
+    }
     expected.sort();
     if objects != expected {
         return Err(StoreError::UnrecognizedDatabase);
@@ -645,7 +658,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         17 => STORE_MARKER_V17,
         18 => STORE_MARKER_V18,
         19 => STORE_MARKER_V19,
-        20 => STORE_MARKER,
+        20 => STORE_MARKER_V20,
+        21 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -1124,6 +1138,7 @@ impl Store {
             telemetry_payload::create_schema(&transaction)?;
             eval_detail::create_schema(&transaction)?;
             metric_history::create_index(&transaction)?;
+            metric_history::create_descriptor_index(&transaction)?;
             usage_history::create_index(&transaction)?;
             native_attention::create_schema(&transaction)?;
             initialize_history_identity(&transaction)?;
@@ -1432,6 +1447,18 @@ impl Store {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             content_grant::migrate_grant_schema(&transaction, 20)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V20],
+            )?;
+            transaction.pragma_update(None, "user_version", 20)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 20)?;
+        }
+        if (2..21).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            metric_history::create_descriptor_index(&transaction)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],
@@ -2015,7 +2042,7 @@ impl Store {
                     OR (?14 = 0 AND (substr(observation.source_id,1,5)<>'host.'
                           OR json_extract(observation.kind_json,'$.kind')<>'host_sample')))
                AND CASE ?16
-                   WHEN 'activity' THEN json_extract(observation.kind_json,'$.kind')<>'trace_span_summary'
+                   WHEN 'activity' THEN json_extract(observation.kind_json,'$.kind') NOT IN ('trace_span_summary','metric_descriptor')
                    WHEN 'traces' THEN (
                        (json_extract(observation.kind_json,'$.kind')='trace_span'
                            AND (?17 IS NULL OR json_extract(observation.kind_json,'$.trace_id')=?17))
@@ -2178,6 +2205,9 @@ impl Store {
                     ObservationKind::OtlpErrorLog(log) => KernelObservationKind::OtlpErrorLog(log),
                     ObservationKind::MetricPoint(point) => {
                         KernelObservationKind::MetricPoint(point)
+                    }
+                    ObservationKind::MetricDescriptor(descriptor) => {
+                        KernelObservationKind::MetricDescriptor(descriptor)
                     }
                     ObservationKind::HostSample(sample) => {
                         KernelObservationKind::HostSample(sample)
@@ -2356,6 +2386,7 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
     {
         validate_otlp_metadata_batch(batch)?;
     }
+    metric_history::validate_descriptor_batch(batch)?;
     let mut event_ids = std::collections::BTreeSet::new();
     for observation in &batch.observations {
         validate_identifier(&observation.event_id, MAX_EVENT_ID_BYTES, "event ID")?;
@@ -2380,6 +2411,7 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
                     ObservationKind::Diagnostic { .. }
                         | ObservationKind::HostSample(_)
                         | ObservationKind::MetricPoint(_)
+                        | ObservationKind::MetricDescriptor(_)
                         | ObservationKind::OtlpErrorLog(_)
                         | ObservationKind::InternalReview(_)
                 ) && observation.identity.session_id.is_none()
@@ -2875,6 +2907,7 @@ mod tests {
     fn downgrade_fixture_to_v14(connection: &Connection) {
         connection.execute_batch(
             "DROP TABLE agenturm_native_attention_events; DROP TABLE agenturm_native_attention_senders;
+             DROP INDEX agenturm_metric_descriptions_by_series;
              DROP INDEX agenturm_metric_series_points;
              DROP INDEX agenturm_usage_history_by_time;
              DROP TABLE agenturm_eval_details;
@@ -2885,6 +2918,65 @@ mod tests {
              UPDATE agenturm_store_meta SET value='agenturm.observation-store.v14' WHERE key='format';
              PRAGMA user_version=14;"
         ).unwrap();
+    }
+
+    #[test]
+    fn metric_description_upgrade_preserves_v20_grants_and_receipts() {
+        let db = TempDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        let binding = TelemetryLogTextBinding {
+            source_id: ExtensionId::parse("otlp.fixture").unwrap(),
+            native_source_id: None,
+        };
+        let scope = binding.grant_scope().unwrap();
+        let grant = store.grant_content(&scope).unwrap();
+        let batch = ObservationBatch::new_deterministic(
+            "harness.fixture",
+            None,
+            "retained-cursor",
+            vec![event("retained-event", "session", 10)],
+        )
+        .unwrap();
+        assert_eq!(
+            store.commit_batch(&batch).unwrap(),
+            CommitOutcome::Committed { inserted: 1 }
+        );
+        let receipt = |store: &Store| -> (String, i64, String, String) {
+            store
+                .connection
+                .query_row(
+                    "SELECT r.batch_digest, h.sequence, o.event_digest, o.kind_json
+                   FROM agenturm_ingest_receipts r JOIN agenturm_history_batches h USING(request_id)
+                   JOIN agenturm_observations o USING(request_id)
+                  WHERE r.request_id=?1",
+                    [&batch.request_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap()
+        };
+        let original = receipt(&store);
+        store.connection.execute_batch(
+            "DROP INDEX agenturm_metric_descriptions_by_series;
+             UPDATE agenturm_store_meta SET value='agenturm.observation-store.v20' WHERE key='format';
+             PRAGMA user_version=20;",
+        ).unwrap();
+        drop(store);
+
+        let read_only = Store::open_read_only(&db.0).unwrap();
+        assert_eq!(receipt(&read_only), original);
+        assert_eq!(
+            read_only.current_content_grant(&scope).unwrap(),
+            Some(grant.clone())
+        );
+        drop(read_only);
+        let mut upgraded = Store::open(&db.0).unwrap();
+        validate_marked_shape(&upgraded.connection, 21).unwrap();
+        assert_eq!(receipt(&upgraded), original);
+        assert_eq!(upgraded.current_content_grant(&scope).unwrap(), Some(grant));
+        assert_eq!(
+            upgraded.commit_batch(&batch).unwrap(),
+            CommitOutcome::Replay
+        );
     }
 
     #[test]
@@ -2960,6 +3052,7 @@ mod tests {
         let tx = store.connection.transaction().unwrap();
         tx.execute_batch(
             "DROP TABLE agenturm_native_attention_events; DROP TABLE agenturm_native_attention_senders;
+             DROP INDEX agenturm_metric_descriptions_by_series;
              DROP INDEX agenturm_metric_series_points;
              DROP INDEX agenturm_usage_history_by_time;
              DROP TABLE agenturm_eval_details; DROP TABLE agenturm_eval_detail_admissions;",
@@ -3017,6 +3110,7 @@ mod tests {
         let snapshot = store.query_observations(&query).unwrap().snapshot_id;
         let identity = store.history_identity().unwrap();
         store.connection.execute_batch("DROP TABLE agenturm_native_attention_events; DROP TABLE agenturm_native_attention_senders;
+             DROP INDEX agenturm_metric_descriptions_by_series;
              DROP INDEX agenturm_metric_series_points; DROP INDEX agenturm_usage_history_by_time;").unwrap();
         store
             .connection
@@ -3612,6 +3706,8 @@ mod tests {
                 operation_id: None,
             };
             row.kind = ObservationKind::HostSample(agenturm_kernel::HostSample {
+                hostname: None,
+                platform: None,
                 boot_id: "12345678-1234-1234-1234-123456789abc".into(),
                 clock_ticks_per_second: Some(100),
                 cpu: None,

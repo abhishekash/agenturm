@@ -7,11 +7,12 @@ mod tests;
 
 use agenturm_kernel::metric::{
     ExponentialBuckets, MAX_METRIC_BUCKETS, MAX_METRIC_EXEMPLARS, MAX_METRIC_POINTS_PER_BATCH,
-    MetricData, MetricExemplar, MetricFloat, MetricKind, MetricNumber, MetricPoint, MetricQuantile,
-    MetricSeries, MetricTemporality, is_metric_label, is_metric_name, is_metric_source,
-    is_metric_unit,
+    MetricData, MetricDescriptor, MetricExemplar, MetricFloat, MetricKind, MetricNumber,
+    MetricPoint, MetricQuantile, MetricSeries, MetricTemporality, is_metric_label, is_metric_name,
+    is_metric_source, is_metric_unit,
 };
 use agenturm_kernel::{ExtensionId, Observation, ObservationIdentity, ObservationKind};
+use agenturm_store::metric_history::{metric_descriptor_event_id, valid_metric_description};
 use serde_json::Value;
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, btree_map::Entry};
@@ -146,6 +147,12 @@ fn series(
 struct Batch {
     count: usize,
     rows: BTreeMap<String, Observation>,
+    descriptions: BTreeMap<String, Option<DescribedPoint>>,
+}
+
+struct DescribedPoint {
+    observed_at_unix_ns: u64,
+    descriptor: MetricDescriptor,
 }
 
 impl Batch {
@@ -156,6 +163,7 @@ impl Batch {
         dimensions: &Dimensions,
         observed_at_unix_ns: u64,
         mut point: MetricPoint,
+        description: Option<&str>,
     ) -> DecodeResult<()> {
         self.count += 1;
         if self.count > MAX_METRIC_POINTS_PER_BATCH {
@@ -171,6 +179,14 @@ impl Batch {
             return Err(MALFORMED);
         }
         let event_id = point.event_id(observed_at_unix_ns);
+        if let Some(description) = description {
+            self.describe(
+                &point.series.id,
+                &event_id,
+                observed_at_unix_ns,
+                description,
+            );
+        }
         let row = Observation {
             harness_id: source.clone(),
             event_id: event_id.clone(),
@@ -191,8 +207,61 @@ impl Batch {
         Ok(())
     }
 
-    fn into_rows(self) -> Vec<Observation> {
-        self.rows.into_values().collect()
+    fn describe(
+        &mut self,
+        series: &str,
+        point_event_id: &str,
+        observed_at_unix_ns: u64,
+        description: &str,
+    ) {
+        let candidate = || DescribedPoint {
+            observed_at_unix_ns,
+            descriptor: MetricDescriptor {
+                series_id: series.into(),
+                point_event_id: point_event_id.into(),
+                description: description.into(),
+            },
+        };
+        match self.descriptions.entry(series.to_owned()) {
+            Entry::Vacant(slot) => {
+                slot.insert(Some(candidate()));
+            }
+            Entry::Occupied(mut slot) => {
+                let Some(prior) = slot.get() else {
+                    return;
+                };
+                if prior.descriptor.description != description {
+                    // Ambiguous metadata must not discard compatible points.
+                    slot.insert(None);
+                } else if (observed_at_unix_ns, point_event_id)
+                    > (
+                        prior.observed_at_unix_ns,
+                        prior.descriptor.point_event_id.as_str(),
+                    )
+                {
+                    slot.insert(Some(candidate()));
+                }
+            }
+        }
+    }
+
+    fn into_rows(self, source: &ExtensionId) -> Vec<Observation> {
+        self.rows
+            .into_values()
+            .chain(
+                self.descriptions
+                    .into_values()
+                    .flatten()
+                    .map(|row| Observation {
+                        harness_id: source.clone(),
+                        event_id: metric_descriptor_event_id(&row.descriptor),
+                        revision: 0,
+                        identity: ObservationIdentity::source(),
+                        observed_at_unix_ns: row.observed_at_unix_ns,
+                        kind: ObservationKind::MetricDescriptor(row.descriptor),
+                    }),
+            )
+            .collect()
     }
 }
 
@@ -266,14 +335,25 @@ fn json_batch(payload: &Value, source: &ExtensionId) -> DecodeResult<Vec<Observa
                     temporality,
                     monotonic,
                 )?;
+                let description = metric
+                    .get("description")
+                    .and_then(Value::as_str)
+                    .filter(|description| valid_metric_description(description));
                 for raw in array(content, "dataPoints")? {
                     let (at, point) = json_point(&series, raw)?;
-                    batch.push(source, &context, &json_dimensions(raw, 0)?, at, point)?;
+                    batch.push(
+                        source,
+                        &context,
+                        &json_dimensions(raw, 0)?,
+                        at,
+                        point,
+                        description,
+                    )?;
                 }
             }
         }
     }
-    Ok(batch.into_rows())
+    Ok(batch.into_rows(source))
 }
 
 fn only_one<T>(mut values: impl Iterator<Item = T>) -> DecodeResult<Option<T>> {

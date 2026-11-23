@@ -10,6 +10,7 @@ use agenturm_kernel::{
 };
 use ratatui::crossterm::event::KeyCode;
 use ratatui::widgets::ListState;
+use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 #[derive(Default)]
 pub(super) enum HostLevel {
@@ -36,7 +37,13 @@ const SAMPLES: EvidenceSpec = EvidenceSpec {
         ("Processes", 3),
         ("Coverage", 3),
     ],
-    empty: "No recorded host samples. Run agenturm host record.",
+    empty: "No recorded host samples are available.",
+};
+const INVENTORY: EvidenceSpec = EvidenceSpec {
+    title: "Recorded host streams",
+    inspector: "Selected stream sample",
+    empty: "No recorded host streams are available.",
+    ..SAMPLES
 };
 
 const PROCESSES: EvidenceSpec = EvidenceSpec {
@@ -99,25 +106,66 @@ pub(super) fn current_present(
         };
     };
     let sample = &capture.sample;
-    if sample.processes_partial {
-        spec.title = "Host now · partial";
-    }
+    spec.title = match (capture.recorded_source.is_some(), sample.processes_partial) {
+        (false, false) => "Host now",
+        (false, true) => "Host now · partial",
+        (true, false) => "Remote latest recorded sample",
+        (true, true) => "Remote latest recorded sample · partial",
+    };
     let mut table = spec.table(
         current_indices(sample, filter)
             .into_iter()
             .map(|index| process_row(&sample.processes[index], sample))
             .collect(),
     );
-    table.context = vec![detail(
-        "Captured",
-        workspace::age(capture.captured_at_unix_ns),
-    )];
+    table.context = if let Some(source) = &capture.recorded_source {
+        table.spec.inspector = "Recorded sample";
+        recorded_context(source.as_str(), capture.captured_at_unix_ns)
+    } else {
+        vec![detail(
+            "Captured",
+            workspace::age(capture.captured_at_unix_ns),
+        )]
+    };
     table.context.extend(sample_details(sample));
     Presentation {
         table,
         keys: filter
             .keys()
             .unwrap_or("/ search · Enter inspect · R refresh · Esc back"),
+    }
+}
+
+fn recorded_context(source: &str, observed_at_unix_ns: u64) -> Vec<MetricRow> {
+    let now = SystemTime::now().duration_since(UNIX_EPOCH).ok();
+    vec![
+        detail("Source", source),
+        detail("Recorded age", recorded_age(now, observed_at_unix_ns)),
+        detail(
+            "Recorded Unix ns",
+            if observed_at_unix_ns == 0 {
+                "Unknown".into()
+            } else {
+                observed_at_unix_ns.to_string()
+            },
+        ),
+    ]
+}
+
+fn recorded_age(now: Option<Duration>, observed_at_unix_ns: u64) -> String {
+    let Some(elapsed) = now
+        .filter(|_| observed_at_unix_ns > 0)
+        .and_then(|now| now.checked_sub(Duration::from_nanos(observed_at_unix_ns)))
+    else {
+        return "Unknown on viewer clock".into();
+    };
+    let seconds = elapsed.as_secs();
+    match seconds {
+        0..=59 => "<1m ago on viewer clock".into(),
+        60..=119 => "1m ago on viewer clock".into(),
+        120..=3599 => format!("Stale · {}m ago on viewer clock", seconds / 60),
+        3600..=86399 => format!("Stale · {}h ago on viewer clock", seconds / 3600),
+        _ => format!("Stale · {}d ago on viewer clock", seconds / 86400),
     }
 }
 
@@ -178,14 +226,18 @@ impl HostLevel {
         cursor: &mut ListState,
         filter: &Filter,
         key: KeyCode,
+        inventory: bool,
     ) -> WorkInput {
         let index = cursor.selected().unwrap_or_default();
         let (next, selected) = match (&*self, key) {
             (Self::Samples, KeyCode::Esc) => return WorkInput::Close,
+            (Self::Samples, KeyCode::Char('r' | 'R' | 'l')) if inventory => {
+                return WorkInput::Command(WorkCommand::HostNow);
+            }
             (Self::Samples, KeyCode::Char('r' | 'R' | 'l')) => {
                 return WorkInput::Command(WorkCommand::HostHistory(None));
             }
-            (Self::Samples, KeyCode::Char(']')) if page.has_more => {
+            (Self::Samples, KeyCode::Char(']')) if !inventory && page.has_more => {
                 return WorkInput::Command(WorkCommand::HostHistory(page.older_position()));
             }
             (Self::Samples, KeyCode::Enter) if sample(page, index).is_some() => {
@@ -220,15 +272,20 @@ impl HostLevel {
         WorkInput::None
     }
 
-    pub fn present(&self, page: &ObservationPage, filter: &Filter) -> Presentation {
+    pub fn present(
+        &self,
+        page: &ObservationPage,
+        filter: &Filter,
+        inventory: bool,
+    ) -> Presentation {
         match *self {
             Self::Samples => Presentation {
-                table: SAMPLES.table(
+                table: (if inventory { INVENTORY } else { SAMPLES }).table(
                     page.observations
                         .iter()
                         .rev()
                         .map(|row| {
-                            let (processes, coverage, mut details) = match &row.kind {
+                            let (processes, coverage, sample_context) = match &row.kind {
                                 ObservationKind::HostSample(data) => (
                                     data.processes.len().to_string(),
                                     sample_coverage(data).into(),
@@ -240,10 +297,15 @@ impl HostLevel {
                                     vec![detail("Sample", "Unavailable")],
                                 ),
                             };
-                            details.push(detail("Source", row.harness_id.as_str()));
+                            let mut details =
+                                recorded_context(row.harness_id.as_str(), row.observed_at_unix_ns);
+                            details.extend(sample_context);
                             EvidenceRow {
                                 cells: vec![
-                                    workspace::age(row.observed_at_unix_ns),
+                                    recorded_age(
+                                        SystemTime::now().duration_since(UNIX_EPOCH).ok(),
+                                        row.observed_at_unix_ns,
+                                    ),
                                     row.harness_id.as_str().into(),
                                     processes,
                                     coverage,
@@ -253,10 +315,12 @@ impl HostLevel {
                         })
                         .collect(),
                 ),
-                keys: if page.has_more {
-                    "Enter processes · ] older · l latest · Esc back"
+                keys: if inventory {
+                    "Enter choose stream · R refresh streams · Esc back"
+                } else if page.has_more {
+                    "Enter choose · ] older · l latest · Esc back"
                 } else {
-                    "Enter processes · R refresh · Esc back"
+                    "Enter choose · R refresh · Esc back"
                 },
             },
             Self::Processes(index) => {
@@ -269,23 +333,27 @@ impl HostLevel {
                     spec.empty = "No matching processes in this sample.";
                 }
                 let visible = process_indices(page, index, filter);
+                let mut table = spec.table(
+                    data.into_iter()
+                        .flat_map(|sample| {
+                            visible
+                                .iter()
+                                .map(|index| process_row(&sample.processes[*index], sample))
+                        })
+                        .collect(),
+                );
+                if inventory {
+                    table.context = inventory_context(page, index);
+                }
                 Presentation {
-                    table: spec.table(
-                        data.into_iter()
-                            .flat_map(|sample| {
-                                visible
-                                    .iter()
-                                    .map(|index| process_row(&sample.processes[*index], sample))
-                            })
-                            .collect(),
-                    ),
+                    table,
                     keys: filter
                         .keys()
                         .unwrap_or("/ search · Enter history · Esc samples"),
                 }
             }
-            Self::ProcessHistory { sample, process } => Presentation {
-                table: PROCESS_HISTORY.table(
+            Self::ProcessHistory { sample, process } => {
+                let mut table = PROCESS_HISTORY.table(
                     occurrences(page, sample, process)
                         .map(|(row, data, process)| {
                             let mut details = process_details(process, data);
@@ -301,11 +369,28 @@ impl HostLevel {
                             }
                         })
                         .collect(),
-                ),
-                keys: "Esc processes",
-            },
+                );
+                if inventory {
+                    table.context = inventory_context(page, sample);
+                }
+                Presentation {
+                    table,
+                    keys: "Esc processes",
+                }
+            }
         }
     }
+}
+
+fn inventory_context(page: &ObservationPage, index: usize) -> Vec<MetricRow> {
+    let Some((row, sample)) = sample(page, index) else {
+        return Vec::new();
+    };
+    let mut context = recorded_context(row.harness_id.as_str(), row.observed_at_unix_ns);
+    if let Some(hostname) = &sample.hostname {
+        context.push(detail("Hostname", hostname));
+    }
+    context
 }
 
 fn process_indices(page: &ObservationPage, index: usize, filter: &Filter) -> Vec<usize> {
@@ -363,8 +448,13 @@ fn sample_details(sample: &HostSample) -> Vec<MetricRow> {
             |value| format!("{}.{:03}", value / 1000, value % 1000),
         )
     };
-    vec![
-        detail("Platform", "Linux"),
+    let mut rows = vec![
+        detail(
+            "Platform",
+            sample
+                .platform
+                .map_or("Unreported", |platform| platform.label()),
+        ),
         detail(
             "Process coverage",
             format!(
@@ -403,7 +493,11 @@ fn sample_details(sample: &HostSample) -> Vec<MetricRow> {
                 },
             ),
         ),
-    ]
+    ];
+    if let Some(hostname) = &sample.hostname {
+        rows.insert(0, detail("Hostname", hostname));
+    }
+    rows
 }
 
 fn cwd_name(process: &HostProcess) -> &str {
@@ -496,6 +590,25 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
+    fn recorded_age_uses_the_viewer_clock_with_future_and_zero_unknown() {
+        let now = Some(Duration::from_secs(500));
+        assert_eq!(recorded_age(now, 0), "Unknown on viewer clock");
+        assert_eq!(
+            recorded_age(None, 495_000_000_000),
+            "Unknown on viewer clock"
+        );
+        assert_eq!(
+            recorded_age(now, 501_000_000_000),
+            "Unknown on viewer clock"
+        );
+        assert_eq!(recorded_age(now, 381_000_000_000), "1m ago on viewer clock");
+        assert_eq!(
+            recorded_age(now, 380_000_000_000),
+            "Stale · 2m ago on viewer clock"
+        );
+    }
+
+    #[test]
     fn process_history_keeps_source_boot_and_start_identity() {
         let event = |id: &str, source: &str, boot_id: &str, start_ticks| Observation {
             harness_id: ExtensionId::parse(source).unwrap(),
@@ -505,6 +618,8 @@ mod tests {
             observed_at_unix_ns: 0,
             kind: ObservationKind::HostSample(HostSample {
                 boot_id: boot_id.into(),
+                hostname: Some("fixture-host.example".into()),
+                platform: Some(agenturm_kernel::HostPlatform::Linux),
                 clock_ticks_per_second: Some(100),
                 cpu: None,
                 load_1m_milli: Some(0),
@@ -549,7 +664,7 @@ mod tests {
             sample: 0,
             process: 0,
         }
-        .present(&page, &Filter::default());
+        .present(&page, &Filter::default(), false);
         let selected = &view.table.rows[0];
         assert_eq!(selected.cells[1], "fixture-project");
         assert!(
@@ -577,7 +692,7 @@ mod tests {
                     .any(|row| row.label == "Parent PID" && row.value == expected)
             );
         }
-        let processes = HostLevel::Processes(0).present(&page, &Filter::default());
+        let processes = HostLevel::Processes(0).present(&page, &Filter::default(), false);
         for (width, height) in [(120, 32), (80, 24), (60, 18)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             for table in [&processes.table, &view.table] {
@@ -611,6 +726,7 @@ mod tests {
             );
             super::super::WorkResult::HostNow(Some(Box::new(CurrentHostSample {
                 captured_at_unix_ns: 0,
+                recorded_source: None,
                 sample,
             })))
         };
@@ -631,7 +747,7 @@ mod tests {
         }
         assert_eq!(
             work.current_process_identity(),
-            Some(("boot-a".into(), 12, 11))
+            Some((None, "boot-a".into(), 12, 11))
         );
         assert!(work.host_filter_key(KeyCode::Esc));
         assert_eq!(work.cursor.selected(), Some(1));
@@ -643,8 +759,109 @@ mod tests {
         work.apply(next);
         assert_eq!(
             work.current_process_identity(),
-            Some(("boot-a".into(), 12, 11))
+            Some((None, "boot-a".into(), 12, 11))
         );
+        assert_eq!(work.cursor.selected(), Some(0));
+
+        let recorded = |source: &str, sample: HostSample| {
+            let super::super::WorkResult::HostNow(Some(mut capture)) = current(sample) else {
+                unreachable!()
+            };
+            capture.recorded_source = Some(ExtensionId::parse(source).unwrap());
+            capture.captured_at_unix_ns = 10_000_000_000;
+            capture
+        };
+        let ObservationKind::HostSample(sample) = event("selected", "host.a", "boot-a", 11).kind
+        else {
+            unreachable!()
+        };
+        let remote = recorded("host.a", sample.clone());
+        let view = current_present(Some(&remote), &Filter::default());
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| view.table.draw(frame, frame.area(), 1))
+                .unwrap();
+            let screen = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(
+                screen.contains("Remote latest recorded sample")
+                    && screen.contains("Source  host.a")
+                    && screen.contains("Stale")
+                    && screen.contains("Recorded Unix ns  10000000000")
+                    && screen.contains("Hostname  fixture-host.example"),
+                "{width}×{height}: {screen}"
+            );
+        }
+        let mut work =
+            super::super::Workbench::new(super::super::WorkResult::HostNow(Some(remote)), None);
+        work.cursor.select(Some(1));
+        work.apply(super::super::WorkResult::HostNow(Some(recorded(
+            "host.a",
+            sample.clone(),
+        ))));
+        assert_eq!(work.cursor.selected(), Some(1));
+        work.apply(super::super::WorkResult::HostNow(Some(recorded(
+            "host.b", sample,
+        ))));
+        assert_eq!(work.cursor.selected(), Some(0));
+
+        let key = |code| {
+            ratatui::crossterm::event::KeyEvent::new(
+                code,
+                ratatui::crossterm::event::KeyModifiers::NONE,
+            )
+        };
+        let stream = |source, at| Observation {
+            observed_at_unix_ns: at,
+            ..event("selected", source, "boot-a", 11)
+        };
+        let inventory = |rows| {
+            super::super::WorkResult::HostInventory(ObservationPage {
+                observations: rows,
+                ..ObservationPage::default()
+            })
+        };
+        let mut work = super::super::Workbench::new(
+            inventory(vec![stream("host.a", 10), stream("host.b", 20)]),
+            None,
+        );
+        work.cursor.select(Some(1));
+        assert!(matches!(
+            work.key(key(KeyCode::Char('R'))),
+            WorkInput::Command(WorkCommand::HostNow)
+        ));
+        work.apply(inventory(vec![stream("host.b", 20), stream("host.a", 30)]));
+        assert_eq!(work.cursor.selected(), Some(0));
+        assert!(matches!(work.key(key(KeyCode::Enter)), WorkInput::None));
+        assert!(matches!(work.host_level, HostLevel::Processes(0)));
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| work.draw(frame, false, None))
+                .unwrap();
+            let screen = terminal
+                .backend()
+                .buffer()
+                .content
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(
+                screen.contains("Host processes")
+                    && screen.contains("Source  host.a")
+                    && screen.contains("Recorded age")
+                    && screen.contains("Recorded Unix ns  30"),
+                "{width}×{height}: {screen}"
+            );
+        }
+        assert!(matches!(work.key(key(KeyCode::Esc)), WorkInput::None));
+        assert!(matches!(work.host_level, HostLevel::Samples));
         assert_eq!(work.cursor.selected(), Some(0));
     }
 }

@@ -16,8 +16,9 @@ collection is available on Linux systems without a user manager.
 
 ## Build and install
 
-Rust 0.3.8 is the latest published opt-in release. Rust 0.3.9 is a qualified
-candidate for Linux x86-64 and ARM64, held for the next daily release batch.
+Rust 0.3.8 is the latest published opt-in release. The native-only Rust 0.3.9 baseline has qualified Linux x86-64/ARM64 artifacts.
+Subsequent Findings, Host and schema 21 Metrics changes are integrated in source;
+the final combined optimized archive remains in qualification for a later daily batch.
 Use the source installer from a checkout and verify the matching archive.
 
 ~~~sh
@@ -88,6 +89,23 @@ eligible no earlier than 24 November at 06:03:24 UTC (07:03:24 Europe/Berlin),
 subject to the completed batch's qualification and any later publication.
 Implementation, PR merges and candidate qualification continue between releases.
 See the [qualification record](../validation/rust-real-session-roster.md).
+
+## Current Host and metric metadata follow-up
+
+The joined source records validated metric descriptions as separate schema 21
+companions, preserving existing point payloads/IDs/receipts/grants. Catalog
+search applies before pagination and pins query/source/snapshot. Existing point
+cursors remain stable; older source-scoped catalog cursors need a fresh page.
+A writer performs supported schema upgrades; read-only access does not. Older
+executables refuse unsupported schema 21, so keep the pre-upgrade backup.
+
+Remote `H` reads the latest authorized recorded sample per source. It does not
+sample the viewer host. Multiple streams open a recorded-source chooser;
+refresh and process drilldown retain source/time/age and exact selection.
+Hostname/platform are shown only when reported. Joined source, real metric
+HTTP/terminal and separate-UID Host KVM checks passed; this is not yet a final
+optimized combined-archive claim. See the
+[Host/Metrics qualification](../validation/rust-host-metric-metadata.md).
 
 ## Open the cockpit
 
