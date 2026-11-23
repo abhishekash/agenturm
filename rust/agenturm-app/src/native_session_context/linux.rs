@@ -4,7 +4,7 @@ use agenturm_jsonl_source::{CursorProof, cursor_proof};
 use agenturm_kernel::ExtensionId;
 use agenturm_store::{SessionPage, Store};
 use rustix::fs::{Mode, OFlags, open, openat};
-use serde::Deserialize;
+use serde::{Deserialize, Deserializer, de::IgnoredAny};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, BTreeSet};
 use std::fs::{File, Metadata};
@@ -20,6 +20,7 @@ const CODEX: &str = "example.rust-codex-harness";
 const CLAUDE: &str = "example.rust-claude-harness";
 const MAX_HEADER_BYTES: usize = 256 * 1024;
 const MAX_RECORD_BYTES: usize = 1024 * 1024;
+const MAX_CLAUDE_PRELUDE_BYTES: usize = 64 * 1024;
 const MAX_CLAUDE_PREFIX: u64 = 16 * 1024 * 1024;
 const MAX_CLAUDE_ROSTER_BYTES: u64 = 32 * 1024 * 1024;
 const MAX_INDEX_BYTES: u64 = 2 * 1024 * 1024;
@@ -350,11 +351,44 @@ fn codex_header(file: &mut File, proof: &CursorProof) -> Option<(String, NativeC
 struct ClaudeRow {
     #[serde(rename = "type")]
     kind: Option<String>,
+    #[serde(default, deserialize_with = "present_claude_identifier")]
     session_id: Option<String>,
+    #[serde(default, deserialize_with = "present_claude_identifier")]
     agent_id: Option<String>,
     custom_title: Option<String>,
     agent_name: Option<String>,
     cwd: Option<String>,
+}
+
+fn present_claude_identifier<'de, D: Deserializer<'de>>(
+    deserializer: D,
+) -> Result<Option<String>, D::Error> {
+    String::deserialize(deserializer).map(Some)
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeFileHistoryPrelude {
+    message_id: String,
+    snapshot: ClaudeFileHistorySnapshot,
+    is_snapshot_update: bool,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct ClaudeFileHistorySnapshot {
+    message_id: String,
+    #[serde(rename = "trackedFileBackups")]
+    _backups: BTreeMap<String, IgnoredAny>,
+}
+
+fn claude_identifier(value: &str) -> bool {
+    !value.is_empty()
+        && value.len() <= 200
+        && value.as_bytes()[0].is_ascii_alphanumeric()
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'.' | b'_' | b':' | b'-'))
 }
 
 fn claude_metadata(
@@ -371,32 +405,72 @@ fn claude_metadata(
     if length == 0 || hash(&line) != proof.header_digest {
         return None;
     }
-    let first = serde_json::from_slice::<ClaudeRow>(&line).ok()?;
+    let mut first = serde_json::from_slice::<ClaudeRow>(&line).ok()?;
+    let from_prelude = first.session_id.is_none();
+    let within_budget = proof.offset <= MAX_CLAUDE_PREFIX && proof.offset <= *budget;
+    let mut digest = Sha256::new();
+    digest.update(&line);
+    let mut count = length as u64;
+    if from_prelude {
+        if !within_budget
+            || length > MAX_CLAUDE_PRELUDE_BYTES
+            || first.kind.as_deref() != Some("file-history-snapshot")
+            || first.agent_id.is_some()
+        {
+            return None;
+        }
+        let prelude: ClaudeFileHistoryPrelude = serde_json::from_slice(&line).ok()?;
+        if prelude.is_snapshot_update
+            || !claude_identifier(&prelude.message_id)
+            || prelude.message_id != prelude.snapshot.message_id
+        {
+            return None;
+        }
+        let next = next_line(&mut reader, &mut line, MAX_RECORD_BYTES)?;
+        first = serde_json::from_slice(&line).ok()?;
+        if first.kind.as_deref() != Some("user")
+            || !first.session_id.as_deref().is_some_and(claude_identifier)
+            || first
+                .agent_id
+                .as_deref()
+                .is_some_and(|id| !claude_identifier(id))
+        {
+            return None;
+        }
+        digest.update(&line);
+        count += next as u64;
+    }
     let session = first.session_id.as_ref()?.clone();
     if !keys.contains(&(source.clone(), session.clone())) {
         return None;
     }
 
     let header_workspace = workspace(first.cwd.as_deref());
-    let header_only = || NativeContext {
-        workspace: header_workspace.clone(),
-        partial_title: true,
-        ..NativeContext::default()
+    // Only an identity on the first physical line is proved by the header
+    // digest alone. A prelude-bound identity always requires the full prefix.
+    let header_only = || {
+        (!from_prelude).then(|| {
+            (
+                session.clone(),
+                NativeContext {
+                    workspace: header_workspace.clone(),
+                    partial_title: true,
+                    ..NativeContext::default()
+                },
+            )
+        })
     };
-    if proof.offset > MAX_CLAUDE_PREFIX || proof.offset > *budget {
-        return Some((session, header_only()));
+    if !within_budget {
+        return header_only();
     }
     *budget -= proof.offset;
-    let mut digest = Sha256::new();
-    digest.update(&line);
-    let mut count = length as u64;
     let agent = first.agent_id.clone();
     let mut metadata = NativeContext::default();
     update_claude(&mut metadata, first, &session, agent.as_deref());
     loop {
         let bytes = match next_line(&mut reader, &mut line, MAX_RECORD_BYTES) {
             Some(bytes) => bytes,
-            None if line.len() > MAX_RECORD_BYTES => return Some((session, header_only())),
+            None if line.len() > MAX_RECORD_BYTES => return header_only(),
             None => return None,
         };
         if bytes == 0 {
@@ -820,6 +894,74 @@ mod tests {
             .replace("Renamed Claude work", "Modified Claude work");
         fs::write(&source_path, rewritten).unwrap();
         let page = store.query_sessions(&SessionQuery::latest(20)).unwrap();
+        assert!(load(Some(&store), &db, &page, Some(&authority)).is_empty());
+    }
+
+    #[test]
+    fn claude_file_history_prelude_requires_committed_identity_and_metadata() {
+        let scratch = Scratch::new();
+        let db = scratch.0.join("history.sqlite");
+        let mut store = Store::open_collector(&db).unwrap();
+        let prelude = concat!(
+            r#"{"type":"file-history-snapshot","messageId":"snapshot-anchor","isSnapshotUpdate":false,"snapshot":{"messageId":"snapshot-anchor","trackedFileBackups":{"private-file":null}}}"#,
+            "\n",
+        );
+        let user = concat!(
+            r#"{"type":"user","sessionId":"exact","uuid":"different-id","cwd":"/work/verified","message":{"content":"Private prompt"}}"#,
+            "\n",
+        );
+        let title = concat!(
+            r#"{"type":"custom-title","sessionId":"exact","customTitle":"Explicit task title"}"#,
+            "\n",
+        );
+        let source = seed(
+            &mut store,
+            scratch.0.join("prefixed.jsonl"),
+            CLAUDE,
+            "harness.claude.prefixed",
+            "exact",
+            &format!("{prelude}{user}{title}"),
+        );
+        let invalid_prelude = seed(
+            &mut store,
+            scratch.0.join("invalid.jsonl"),
+            CLAUDE,
+            "harness.claude.invalid",
+            "exact",
+            &format!(
+                "{}{user}{title}",
+                prelude.replacen(
+                    r#""messageId":"snapshot-anchor""#,
+                    r#""messageId":"different""#,
+                    1
+                ),
+            ),
+        );
+        let path = source.source_root.clone();
+        let authority = SourceAuthority {
+            sources: vec![source, invalid_prelude],
+            codex_home: None,
+        };
+        let page = store.query_sessions(&SessionQuery::latest(20)).unwrap();
+        let projected = load(Some(&store), &db, &page, Some(&authority));
+        assert_eq!(projected.len(), 1);
+        let metadata = &projected[&(
+            ExtensionId::parse("harness.claude.prefixed").unwrap(),
+            "exact".into(),
+        )];
+        assert_eq!(metadata.title.as_deref(), Some("Explicit task title"));
+        assert_eq!(metadata.workspace.as_deref(), Some("/work/verified"));
+
+        // Same physical first line, inode, and size. Changing row two's
+        // workspace must still invalidate the entire context projection.
+        fs::write(
+            path,
+            format!(
+                "{prelude}{}{title}",
+                user.replace("/work/verified", "/work/tampered")
+            ),
+        )
+        .unwrap();
         assert!(load(Some(&store), &db, &page, Some(&authority)).is_empty());
     }
 
