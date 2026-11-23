@@ -20,6 +20,7 @@ pub(crate) const OPENCODE_PLUGIN_ID: &str = "example.rust-opencode-harness";
 const MAX_DISCOVERY_ENTRIES: usize = 100_000;
 const MAX_DISCOVERY_DEPTH: usize = 8;
 const MAX_TRACKED_TRANSCRIPTS: usize = 4_096;
+const MAX_RETAINED_AUTHORITY_SOURCES: usize = 256;
 const MAX_TRACKED_PATH_BYTES: usize = 2 * 1024 * 1024;
 const MAX_SCAN_TIME: Duration = Duration::from_millis(500);
 const MAX_CODEX_HEADER_BYTES: u64 = 64 * 1024;
@@ -200,6 +201,55 @@ impl FollowDiscovery {
         capacity: usize,
     ) -> Result<(Vec<super::CollectionSourceInput>, DiscoveryCoverage), String> {
         self.select(schedule, &open_transcripts::current(), capacity)
+    }
+
+    /// Recover configured native members for retained source IDs independently
+    /// of polling slots. Callers still verify each member's durable receipt.
+    pub(crate) fn authorize_retained_sources(
+        &self,
+        wanted: &BTreeSet<String>,
+    ) -> Result<Vec<AuthorizedSource>, String> {
+        if wanted.len() > MAX_RETAINED_AUTHORITY_SOURCES {
+            return Err("retained discovery exceeds the 256 source limit".into());
+        }
+        let open = open_transcripts::OpenTranscripts::default();
+        let reviews = BTreeMap::new();
+        let mut next_reviews = BTreeMap::new();
+        let mut coverage = DiscoveryCoverage::default();
+        let mut sources = Vec::new();
+        for (kind, plugin, root, shape) in self.targets() {
+            if !matches!(plugin, agenturm_runtime::CODEX_PLUGIN_ID | CLAUDE_PLUGIN_ID)
+                || !wanted.iter().any(|id| {
+                    id.strip_prefix("harness.")
+                        .and_then(|rest| rest.split_once('.'))
+                        .is_some_and(|(provider, _)| provider == kind)
+                })
+            {
+                continue;
+            }
+            let mut scan = TranscriptScan {
+                harness: kind,
+                shape,
+                open: &open,
+                reviews: &reviews,
+                next_reviews: &mut next_reviews,
+                coverage: &mut coverage,
+            };
+            for candidate in scan
+                .files(root)
+                .map_err(|error| format!("scan {kind} sessions failed: {error}"))?
+            {
+                let entry = source_entry(kind, plugin, &candidate.path)?;
+                if wanted.contains(&entry.source_id) {
+                    sources.push(AuthorizedSource {
+                        source_id: entry.source_id,
+                        plugin_id: entry.plugin_id,
+                        source_root: entry.source_root,
+                    });
+                }
+            }
+        }
+        Ok(sources)
     }
 
     fn select(
@@ -647,6 +697,99 @@ mod tests {
     use super::*;
     use std::fs::{File, FileTimes};
     use std::time::Duration;
+
+    #[test]
+    fn retained_authority_recovers_exact_configured_members_outside_polling_slots() {
+        let directory =
+            env::temp_dir().join(format!("agenturm-discover-retained-{}", std::process::id()));
+        let codex = directory.join("codex/sessions/2026/11");
+        let claude = directory.join("claude/projects/fixture");
+        let pi = directory.join("pi");
+        for path in [&codex, &claude, &pi] {
+            fs::create_dir_all(path).unwrap();
+        }
+        let codex_header = r#"{"type":"session_meta","payload":{"id":"session"}}"#;
+        let write = |path: &Path, first: &str, modified| {
+            fs::write(path, format!("{first}\n")).unwrap();
+            File::open(path)
+                .unwrap()
+                .set_times(
+                    FileTimes::new()
+                        .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(modified)),
+                )
+                .unwrap();
+        };
+        let retained = codex.join("retained.jsonl");
+        let review = codex.join("review.jsonl");
+        let claude_retained = claude.join("retained.jsonl");
+        let pi_retained = pi.join("retained.jsonl");
+        write(&retained, codex_header, 1);
+        for index in 0..20 {
+            write(
+                &codex.join(format!("newer-{index}.jsonl")),
+                codex_header,
+                10 + index,
+            );
+        }
+        write(
+            &review,
+            r#"{"type":"session_meta","payload":{"source":{"subagent":{"other":"guardian"}}}}"#,
+            100,
+        );
+        write(
+            &claude_retained,
+            r#"{"type":"user","sessionId":"native-claude"}"#,
+            1,
+        );
+        write(&pi_retained, r#"{"type":"session","id":"native-pi"}"#, 1);
+        let selection = FollowDiscovery {
+            codex_root: directory.join("codex/sessions"),
+            pi_root: pi,
+            claude_root: Some(directory.join("claude/projects")),
+            kiro_root: None,
+            opencode_db: None,
+            sessions_per_harness: 4,
+        };
+        let selected = selection.sources().unwrap();
+        assert!(!selected.iter().any(|entry| entry.source_root == retained));
+        let expected = [
+            source_entry("codex", agenturm_runtime::CODEX_PLUGIN_ID, &retained).unwrap(),
+            source_entry("claude", CLAUDE_PLUGIN_ID, &claude_retained).unwrap(),
+        ];
+        let mut wanted = expected
+            .iter()
+            .map(|entry| entry.source_id.clone())
+            .collect::<BTreeSet<_>>();
+        wanted.insert(
+            source_entry("codex", agenturm_runtime::CODEX_PLUGIN_ID, &review)
+                .unwrap()
+                .source_id,
+        );
+        wanted.insert(
+            source_entry("pi", PI_PLUGIN_ID, &pi_retained)
+                .unwrap()
+                .source_id,
+        );
+        wanted.insert("harness.codex.unconfigured".into());
+        let authorized = selection.authorize_retained_sources(&wanted).unwrap();
+        assert_eq!(authorized.len(), expected.len());
+        for entry in &expected {
+            assert!(authorized.iter().any(|source| (
+                source.source_id.as_str(),
+                source.plugin_id.as_str(),
+                source.source_root.as_path()
+            ) == (
+                entry.source_id.as_str(),
+                entry.plugin_id.as_str(),
+                entry.source_root.as_path()
+            )));
+        }
+        let over_limit = (0..=MAX_RETAINED_AUTHORITY_SOURCES)
+            .map(|index| format!("harness.codex.{index}"))
+            .collect();
+        assert!(selection.authorize_retained_sources(&over_limit).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn follow_discovery_budgets_all_harnesses_and_filters_kiro_paths() {
