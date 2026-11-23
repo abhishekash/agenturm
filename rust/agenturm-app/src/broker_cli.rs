@@ -13,7 +13,7 @@ const USAGE: &str = concat!(
     "       agenturm broker import-traces --broker-config <json> --file <otlp-json-path|-> --source-id otlp.<id>\n",
     "       agenturm broker import-jsonl --broker-config <json> --file <span-jsonl-path|-> --source-id otlp.<id> [--session-id <id>] [--payload-scope <standalone|harness-id> [--payload-format agent-harness]]\n",
     "       agenturm broker serve-traces --broker-config <json> --listen <loopback-IP:port> --source-id otlp.<id> --token-file <path>\n",
-    "       agenturm broker run --broker-config <json> --source-id otlp.<id> -- <program> [args...]\n",
+    "       agenturm broker run --broker-config <json> --source-id otlp.<id> [--instrument python [--service <name>] [--capture-content]] -- <program> [args...]\n",
     "       agenturm broker import-evals --broker-config <json> --file <results.json|-> --source-id otlp.<id> [--include-detail]\n",
     "       agenturm broker evals --broker-config <json> --source-id otlp.<id> --trace-id <id> [--json]\n",
     "       agenturm broker evals --list --broker-config <json> --source-id otlp.<id> [--source-id otlp.<id> ...] [--json]\n",

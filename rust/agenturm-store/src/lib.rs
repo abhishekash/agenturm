@@ -483,7 +483,7 @@ impl Display for StoreError {
             ),
             Self::TraceScopeTooLarge { max_rows } => write!(
                 f,
-                "trace exceeds the {max_rows}-row turn-resolution limit; select an explicit turn"
+                "trace exceeds the {max_rows}-row retained scope limit"
             ),
             Self::EventConflict { event_id } => {
                 write!(f, "event ID was reused with different content: {event_id}")

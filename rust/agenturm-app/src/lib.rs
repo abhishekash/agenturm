@@ -2742,7 +2742,11 @@ fn review_from_store(
         worker_id: worker_id.as_deref(),
     };
     let snapshot = page.snapshot_id;
-    review_receipt::render(history_page_data(page), scope, snapshot, output)
+    let mut data = history_page_data(page);
+    if let Some(identity) = store.workspace_history_identity() {
+        data["history_identity"] = serde_json::json!(identity);
+    }
+    review_receipt::render(data, scope, snapshot, output)
 }
 
 fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Value {
@@ -4004,7 +4008,7 @@ pub fn render(command: Command) -> String {
             "       agenturm retention <status|set|disable|run> --db <path> [--max-age-days <days>]\n",
             "       agenturm content <grant|revoke|list|preview> [options]\n",
             "       agenturm serve-traces --listen <loopback-IP:port> --db <path> --source-id otlp.<id> [--payload-scope <standalone|harness-id> --token-file <path>]\n",
-            "       agenturm run --db <path> [--source-id otlp.<id>] [--payload-scope <standalone|harness-id>] -- <program> [args...]\n",
+            "       agenturm run --db <path> [--source-id otlp.<id>] [--payload-scope <standalone|harness-id>] [--instrument python [--service <name>] [--capture-content]] -- <program> [args...]\n",
             "       agenturm trace-payload <binding|grant|revoke|snapshot|preview> [options]\n",
             "       agenturm eval-detail <binding|grant|revoke|preview> [options]\n",
             "       agenturm import-traces --file <otlp-json-path|-> --db <path> --source-id otlp.<id>\n",
