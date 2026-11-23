@@ -389,8 +389,9 @@ fn with_prompt<T, E: From<String>>(
     {
         return Err(RECEIPT_ERROR.to_owned().into());
     }
-    let (events, _, _) = read_evidence(&receiver, &scope, 5, deadline)?;
-    let mut matches = events
+    let evidence = read_evidence(&receiver, &scope, 5, false, deadline)?;
+    let mut matches = evidence
+        .members
         .iter()
         .filter(|event| matches_event(event, occurrence));
     let event = matches.next().ok_or_else(|| EVENT_ERROR.to_owned())?;

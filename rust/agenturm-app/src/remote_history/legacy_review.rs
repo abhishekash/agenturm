@@ -380,6 +380,12 @@ struct Event {
     agent_id: Option<String>,
     session_id: Option<String>,
     receiver_id: Option<String>,
+    // These receiver-supplied classification labels are needed for log
+    // prelude eligibility, but are outside the existing Task hash schema.
+    #[serde(skip_serializing)]
+    source: Option<String>,
+    #[serde(skip_serializing)]
+    actor: Option<String>,
     turn_id: Option<String>,
     time_unix_nano: Option<u64>,
     end_unix_nano: Option<u64>,
@@ -402,7 +408,13 @@ struct Event {
     new_path: Option<String>,
 }
 
-type Evidence = (Vec<Event>, Option<String>, Vec<&'static str>);
+#[derive(Default)]
+struct Evidence {
+    members: Vec<Event>,
+    request_prelude: Option<Event>,
+    cursor: Option<String>,
+    reasons: Vec<&'static str>,
+}
 
 fn fetch_health(receiver: &LegacyReceiver, deadline: Instant) -> Result<Health, String> {
     let health: Health = receiver.get_for_native("/api/health", deadline)?;
@@ -504,10 +516,13 @@ fn prepare_review(
     };
     let policy = health.local_agents.for_scope(&scope)?;
     validate(&scope, &policy)?;
-    let (events, cursor, reasons) = if policy.denied {
-        (Vec::new(), None, vec!["Metadata-only capture"])
+    let evidence = if policy.denied {
+        Evidence {
+            reasons: vec!["Metadata-only capture"],
+            ..Evidence::default()
+        }
     } else {
-        read_evidence(receiver, &scope, options.pages, deadline)?
+        read_evidence(receiver, &scope, options.pages, true, deadline)?
     };
     let authority = ReviewAuthority {
         origin,
@@ -529,9 +544,7 @@ fn prepare_review(
     let projection = projection::build(
         &authority.scope,
         run.as_ref(),
-        &events,
-        cursor,
-        reasons,
+        evidence,
         &authority.policy,
         captured_at,
     );
@@ -624,6 +637,7 @@ fn read_evidence(
     receiver: &LegacyReceiver,
     scope: &Scope,
     pages: usize,
+    include_request_prelude: bool,
     deadline: Instant,
 ) -> Result<Evidence, String> {
     let mut events = BTreeMap::new();
@@ -631,6 +645,7 @@ fn read_evidence(
     let mut cursor = None;
     let mut bytes = 0;
     let mut reasons = Vec::new();
+    let mut request_prelude = None;
     for _ in 0..pages {
         let page: ActivityPage =
             receiver.get_for_review(&scope.activity_path(cursor.as_deref()), deadline)?;
@@ -645,6 +660,19 @@ fn read_evidence(
         {
             return Err("Python receiver sent invalid Review activity or cursor".into());
         }
+        if include_request_prelude && cursor.is_none() {
+            request_prelude = request_context(&page.review_context, scope)?.cloned();
+            if let Some(prelude) = &request_prelude {
+                bytes += serde_json::to_vec(prelude)
+                    .map_err(|_| "Invalid Review request context")?
+                    .len();
+                if bytes > MAX_BYTES {
+                    return Err(
+                        "Python receiver Review request context exceeds its byte limit".into(),
+                    );
+                }
+            }
+        }
         cursor = page.next_cursor;
         for event in page.review_context.into_iter().chain(page.activity) {
             if event
@@ -653,6 +681,14 @@ fn read_evidence(
                 .is_some_and(|id| id != &scope.receiver)
             {
                 return Err("Python receiver activity changed Review identity".into());
+            }
+            if let Some(prelude) = &request_prelude
+                && (event.source_id == prelude.source_id || event.id == prelude.id)
+            {
+                if &event != prelude {
+                    return Err("Python receiver repeated a conflicting Review event".into());
+                }
+                continue;
             }
             if !event.matches(scope) {
                 // The Python server's session-only filter can still return
@@ -671,7 +707,9 @@ fn read_evidence(
             let size = serde_json::to_vec(&event)
                 .map_err(|_| "Invalid Review activity")?
                 .len();
-            if events.len() == MAX_ROWS || bytes + size > MAX_BYTES {
+            if events.len() + usize::from(request_prelude.is_some()) == MAX_ROWS
+                || bytes + size > MAX_BYTES
+            {
                 reasons.push("Review event or payload limit reached");
                 break;
             }
@@ -690,10 +728,74 @@ fn read_evidence(
     if reasons.is_empty() && cursor.is_some() {
         reasons.push("Earlier evidence available; load explicitly");
     }
-    Ok((events, cursor, reasons))
+    Ok(Evidence {
+        members: events,
+        request_prelude,
+        cursor,
+        reasons,
+    })
+}
+
+fn request_context<'a>(context: &'a [Event], scope: &Scope) -> Result<Option<&'a Event>, String> {
+    let mut logs = context
+        .iter()
+        .filter(|event| event.matches_request_prelude(scope));
+    let prelude = logs.next();
+    if logs.next().is_some_and(|next| Some(next) != prelude) {
+        return Err("Python receiver repeated a conflicting Review request context".into());
+    }
+    Ok(prelude)
 }
 
 impl Event {
+    /// The tagged OpenCode adapter indexes a user request as an unspanned log
+    /// scoped to the native turn. The receiver returns exactly the current
+    /// user context on the first Review page, separately from step members.
+    fn matches_request_prelude(&self, scope: &Scope) -> bool {
+        scope.kind == "turn"
+            && scope.producer == "opencode"
+            && !scope.turn_id.is_empty()
+            && scope.turn_steps.contains(&scope.run_id)
+            && self.service.as_deref() == Some(&scope.producer)
+            && self.session_id.as_deref() == Some(&scope.session_id)
+            && self.agent_id.as_deref() == Some(&scope.agent_id)
+            && self.turn_id.as_deref() == Some(&scope.turn_id)
+            && self.receiver_id.as_deref() == Some(&scope.receiver)
+            && self.source.as_deref() == Some("log")
+            && self.actor.as_deref() == Some("user")
+            && self.domain == "message"
+            && self.action == "user"
+            && self.result == "observed"
+            && self.trace_id.is_none()
+            && self.span_id.is_none()
+            && self.time_unix_nano.is_some_and(|stamp| stamp > 0)
+            && self.end_unix_nano.is_none()
+            && self.reported_result.is_none()
+            && self.detail_role.is_none()
+            && self.operation_evidence.is_none()
+            && self.from_path.is_none()
+            && self.to_path.is_none()
+            && self.old_path.is_none()
+            && self.new_path.is_none()
+            && self
+                .detail
+                .as_ref()
+                .and_then(Value::as_str)
+                .is_some_and(|detail| !detail.trim().is_empty())
+            && self.source_id.as_deref().is_some_and(|digest| {
+                digest.len() == 64
+                    && digest
+                        .bytes()
+                        .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+                    && self
+                        .id
+                        .as_ref()
+                        .and_then(Value::as_str)
+                        .and_then(|id| id.strip_prefix("log:"))
+                        == Some(digest)
+            })
+    }
+
     fn matches(&self, scope: &Scope) -> bool {
         self.service.as_deref() == Some(&scope.producer)
             && self.session_id.as_deref() == Some(&scope.session_id)
@@ -792,6 +894,78 @@ mod tests {
                 .get("turn_steps")
                 .is_none()
         );
+    }
+
+    #[test]
+    fn tagged_opencode_prelude_authorizes_only_the_first_page_request() {
+        let mut scope = scope();
+        scope.kind = "turn";
+        scope.producer = "opencode".into();
+        scope.turn_id = "1".repeat(32);
+        scope.turn_steps.insert(scope.run_id.clone());
+        let digest = "d".repeat(64);
+        let raw = json!({
+            "id": format!("log:{digest}"), "source_id": digest, "source": "log", "actor": "user",
+            "trace_id": null, "span_id": null, "service": scope.producer, "agent_id": scope.agent_id,
+            "session_id": scope.session_id, "receiver_id": scope.receiver, "turn_id": scope.turn_id,
+            "time_unix_nano": 11, "domain": "message", "action": "user", "result": "observed",
+            "detail": "Captured native request"
+        });
+        let prelude: Event = serde_json::from_value(raw.clone()).unwrap();
+        assert!(prelude.matches_request_prelude(&scope));
+        assert!(!prelude.matches(&scope));
+        let identical = [prelude.clone(), prelude.clone()];
+        assert_eq!(request_context(&identical, &scope).unwrap(), Some(&prelude));
+        let mut conflicting = prelude.clone();
+        conflicting.detail = Some(json!("Conflicting text"));
+        assert!(request_context(&[prelude.clone(), conflicting], &scope).is_err());
+        for (field, replacement) in [
+            ("source", json!("span")),
+            ("actor", json!("assistant")),
+            ("action", json!("assistant")),
+            ("result", json!("unknown")),
+            ("id", json!("log:forged")),
+            ("span_id", json!("a".repeat(16))),
+            ("trace_id", json!("7".repeat(32))),
+            ("receiver_id", Value::Null),
+            ("service", json!("codex")),
+            ("agent_id", json!("ag1_sibling")),
+            ("session_id", json!("sibling")),
+            ("turn_id", json!("7".repeat(32))),
+            ("operation_evidence", json!({"exit": 0})),
+            ("detail", json!({"command": "private"})),
+        ] {
+            let mut changed = raw.clone();
+            changed[field] = replacement;
+            let changed: Event = serde_json::from_value(changed).unwrap();
+            assert!(
+                request_context(&[changed], &scope).unwrap().is_none(),
+                "{field}"
+            );
+        }
+        let unchanged_task_schema = serde_json::to_value(&prelude).unwrap();
+        assert!(unchanged_task_schema.get("source").is_none());
+        assert!(unchanged_task_schema.get("actor").is_none());
+        let policy = LocalPolicy::default().for_scope(&scope).unwrap();
+        let blank = projection::build(&scope, None, Evidence::default(), &policy, 1.0);
+        assert!(blank["request"].is_null());
+        let receipt = projection::build(
+            &scope,
+            None,
+            Evidence {
+                request_prelude: Some(prelude),
+                ..Evidence::default()
+            },
+            &policy,
+            1.0,
+        );
+        assert_eq!(receipt["request"]["text"], "Captured native request");
+        assert_eq!(receipt["request"]["source"]["source_id"], digest);
+        assert!(receipt["request"]["source"].get("trace_id").is_none());
+        assert_eq!(receipt["window"]["count"], 0);
+        assert_eq!(receipt["errors"], json!([]));
+        assert_eq!(receipt["checks"], json!([]));
+        assert!(receipt["agent_update"].is_null());
     }
 
     #[test]
@@ -929,7 +1103,16 @@ mod tests {
                 .ends_with("cursor=cursor%26agent_id%3Dsibling")
         );
         let policy = LocalPolicy::default().for_scope(&scope).unwrap();
-        let receipt = projection::build(&scope, None, &events, None, Vec::new(), &policy, 1.0);
+        let receipt = projection::build(
+            &scope,
+            None,
+            Evidence {
+                members: events.to_vec(),
+                ..Evidence::default()
+            },
+            &policy,
+            1.0,
+        );
         assert_eq!(receipt["request"]["text"], "Change the fixture");
         assert_eq!(receipt["checks"][0]["result"], "unknown");
         assert_eq!(receipt["checks"][1]["result"], "passed");

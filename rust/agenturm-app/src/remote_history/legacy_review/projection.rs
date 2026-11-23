@@ -2,7 +2,9 @@
 
 mod commands;
 
-use super::{CapturePolicy, Event, Run, Scope, unsafe_display, valid_identity, valid_trace};
+use super::{
+    CapturePolicy, Event, Evidence, Run, Scope, unsafe_display, valid_identity, valid_trace,
+};
 use serde_json::{Map, Value, json};
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -14,12 +16,17 @@ const USAGE_NOTE: &str = "Recorded run usage only; session lifetime, descendant 
 pub(super) fn build(
     scope: &Scope,
     run: Option<&Run>,
-    events: &[Event],
-    cursor: Option<String>,
-    mut reasons: Vec<&'static str>,
+    evidence: Evidence,
     policy: &CapturePolicy,
     captured_at: f64,
 ) -> Value {
+    let Evidence {
+        members,
+        request_prelude,
+        cursor,
+        mut reasons,
+    } = evidence;
+    let events = members.as_slice();
     let edits: Vec<_> = events
         .iter()
         .filter_map(|event| edit(event, scope))
@@ -154,9 +161,23 @@ pub(super) fn build(
             "next_cursor": cursor, "scope_revision": null, "capture_revision": super::continuity::frozen_capture_revision(policy),
             "coverage": coverage, "reasons": reasons, "note": CAPTURE_NOTE,
         },
-        "request": latest_message("user", scope, events),
+        "request": review_request(scope, events, request_prelude.as_ref()),
         "agent_update": latest_message("assistant", scope, events),
     })
+}
+
+fn review_request(scope: &Scope, members: &[Event], prelude: Option<&Event>) -> Option<Value> {
+    let member = latest_message("user", scope, members);
+    let prelude = prelude.and_then(|row| latest_message("user", scope, std::slice::from_ref(row)));
+    match (prelude, member) {
+        (Some(prelude), Some(member))
+            if member["source"]["time_unix_nano"].as_u64()
+                > prelude["source"]["time_unix_nano"].as_u64() =>
+        {
+            Some(member)
+        }
+        (prelude, member) => prelude.or(member),
+    }
 }
 
 fn reference(event: &Event, scope: &Scope) -> Value {
