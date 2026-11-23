@@ -57,26 +57,16 @@ pub(crate) fn deliver(
         output: None,
     };
     let deadline = Instant::now() + REVIEW_TIME;
-    let mut scope = Scope::initial(&options, receiver.native_identity());
-    let health = fetch_health(receiver, deadline)?;
-    let policy = health.local_agents.for_scope(&scope)?;
-    if policy.denied {
-        return Err("Private Review is unavailable under the current capture policy".into());
-    }
-    resolve_run(receiver, &health, &mut scope, options.whole_turn, deadline)?;
-    if !exact_selection(selection, &scope) {
-        return Err(SCOPE_ERROR.into());
-    }
-    // Reuse the same bounded, exact-owner collector as the public Review CLI.
-    // Its independently connected receiver must agree with the pinned UI identity.
-    let mut encoded = Vec::new();
-    execute(&options, &mut encoded)?;
-    let projection: Value =
-        serde_json::from_slice(&encoded).map_err(|_| "Cannot decode private Review")?;
-    if projection.get("scope") != Some(&serde_json::to_value(&scope).map_err(|_| SCOPE_ERROR)?) {
-        return Err(SCOPE_ERROR.into());
-    }
-    let full = output::render(&projection);
+    let review = prepare_review(receiver, &options, deadline, |scope, policy| {
+        if policy.denied {
+            return Err("Capture policy denies private Review".into());
+        }
+        if !exact_selection(selection, scope) {
+            return Err(SCOPE_ERROR.into());
+        }
+        Ok(())
+    })?;
+    let full = output::render(&review.projection);
     let mut end = full.len().min(MODAL_BYTES);
     let encoded = loop {
         while !full.is_char_boundary(end) {
@@ -98,27 +88,7 @@ pub(crate) fn deliver(
     delivery
         .write_all(&encoded)
         .map_err(|_| "Private Review display closed")?;
-    delivery.flush_guarded(|deadline| {
-        let current = fetch_health(receiver, deadline)?;
-        if current.review_turn_filter != health.review_turn_filter
-            || current.review_run_summary != health.review_run_summary
-            || policy != current.local_agents.for_scope(&scope)?
-        {
-            return Err(POLICY_ERROR.into());
-        }
-        let mut selected = Scope::initial(&options, receiver.native_identity());
-        resolve_run(
-            receiver,
-            &current,
-            &mut selected,
-            options.whole_turn,
-            deadline,
-        )?;
-        if !exact_selection(selection, &selected) {
-            return Err(SCOPE_ERROR.into());
-        }
-        Ok(())
-    })
+    delivery.flush_guarded(|deadline| review.authority.verify(receiver, deadline))
 }
 
 #[cfg(test)]
@@ -152,6 +122,7 @@ mod tests {
             endpoint_fallback: false,
             run_end_ns: None,
             turn_id: String::new(),
+            turn_steps: BTreeSet::new(),
         };
         assert!(exact_selection(&selection, &scope));
         scope.agent_id = "sibling".into();

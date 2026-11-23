@@ -1,8 +1,8 @@
 //! Rehydrate one frozen source selection without accepting text from a receipt.
 
 use super::{
-    CapturePolicy, Event, LegacyReceiver, Scope, fetch_health, projection, read_evidence,
-    resolve_run, valid_identity, valid_trace,
+    CapturePolicy, Event, LegacyReceiver, ReviewAuthority, Scope, fetch_health, projection,
+    read_evidence, resolve_run, run_witness, valid_identity, valid_trace,
 };
 use crate::RemoteHistoryOptions;
 use agenturm_store::{
@@ -190,6 +190,7 @@ impl Scope {
             },
             endpoint_fallback: false,
             turn_id: data.turn_id.clone(),
+            turn_steps: std::collections::BTreeSet::new(),
         })
     }
 }
@@ -363,7 +364,8 @@ fn with_prompt<T, E: From<String>>(
     }
     let deadline = Instant::now() + Duration::from_secs(15);
     let receiver = LegacyReceiver::connect(options)?;
-    let mut scope = Scope::for_task(selected, occurrence, &receiver)?;
+    let origin = Scope::for_task(selected, occurrence, &receiver)?;
+    let mut scope = origin.clone();
     let health = fetch_health(&receiver, deadline)?;
     let policy = health.local_agents.for_scope(&scope)?;
     let capture_sha256 = hash(&policy)?;
@@ -380,7 +382,10 @@ fn with_prompt<T, E: From<String>>(
         || scope.agent_id != selected.agent_id
         || scope.turn_id != selected.turn_id
         || scope.run_id != selected.run_id
-        || (turn && !resolved.is_some_and(|run| run.step_trace_ids.contains(&occurrence.trace_id)))
+        || (turn
+            && !resolved
+                .as_ref()
+                .is_some_and(|run| run.step_trace_ids.contains(&occurrence.trace_id)))
     {
         return Err(RECEIPT_ERROR.to_owned().into());
     }
@@ -415,12 +420,14 @@ fn with_prompt<T, E: From<String>>(
     if matches!(expected, Expected::Proof(source) if &proof != source) {
         return Err(EVENT_ERROR.to_owned().into());
     }
-    let current = fetch_health(&receiver, deadline)?;
-    if current.review_turn_filter != health.review_turn_filter
-        || current.review_run_summary != health.review_run_summary
-        || current.local_agents.for_scope(&scope)? != policy
-    {
-        return Err(POLICY_ERROR.to_owned().into());
+    ReviewAuthority {
+        origin,
+        scope,
+        policy,
+        capabilities: (health.review_turn_filter, health.review_run_summary),
+        witness: run_witness(resolved.as_ref(), turn),
+        whole_turn: turn,
     }
+    .verify(&receiver, deadline)?;
     consume(proof, &excerpt)
 }

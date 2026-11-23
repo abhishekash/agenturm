@@ -3,7 +3,11 @@
 use super::*;
 use crate::workspace::{RecordedSession, ReviewVersion};
 use agenturm_kernel::ReadSnapshot;
-use std::sync::{Arc, Mutex, mpsc};
+use std::sync::{
+    Arc, Mutex,
+    atomic::{AtomicBool, Ordering},
+    mpsc,
+};
 use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -107,12 +111,14 @@ pub struct PromptDelivery {
     frames: mpsc::Sender<Vec<u8>>,
     acknowledgement: mpsc::Receiver<()>,
     active: Arc<Mutex<bool>>,
+    guarded_active: Arc<AtomicBool>,
 }
 
 pub(super) struct PromptReceiver {
     pub(super) frames: mpsc::Receiver<Vec<u8>>,
     pub(super) acknowledgement: mpsc::Sender<()>,
     pub(super) active: Arc<Mutex<bool>>,
+    pub(super) guarded_active: Arc<AtomicBool>,
     pub(super) kind: PromptKind,
 }
 
@@ -145,17 +151,20 @@ pub(super) fn prompt_channel(kind: PromptKind) -> (PromptDelivery, PromptReceive
     let (frames, received) = mpsc::channel();
     let (acknowledgement, ack) = mpsc::channel();
     let active = Arc::new(Mutex::new(true));
+    let guarded_active = Arc::new(AtomicBool::new(true));
     (
         PromptDelivery {
             buffer: Vec::new(),
             frames,
             acknowledgement: ack,
             active: Arc::clone(&active),
+            guarded_active: Arc::clone(&guarded_active),
         },
         PromptReceiver {
             frames: received,
             acknowledgement,
             active,
+            guarded_active,
             kind,
         },
     )
@@ -175,6 +184,7 @@ impl PromptDelivery {
         const UNCONFIRMED: &str = "Private Review redaction was not acknowledged";
         if let Err(error) = verify(Instant::now() + CHECK_LIMIT) {
             self.buffer.clear();
+            self.close_guard();
             return Err(error);
         }
         self.frames
@@ -189,7 +199,7 @@ impl PromptDelivery {
             {
                 Ok(()) => return Ok(()),
                 Err(mpsc::RecvTimeoutError::Disconnected) => {
-                    self.close_gate()?;
+                    self.close_guard();
                     return Err(UNCONFIRMED.into());
                 }
                 Err(mpsc::RecvTimeoutError::Timeout) => {}
@@ -201,7 +211,7 @@ impl PromptDelivery {
                 Err(UNCONFIRMED.into())
             };
             if let Err(error) = verified {
-                self.close_gate()?;
+                self.close_guard();
                 self.acknowledgement
                     .recv_timeout(deadline.saturating_duration_since(Instant::now()))
                     .map_err(|_| UNCONFIRMED.to_owned())?;
@@ -210,9 +220,8 @@ impl PromptDelivery {
         }
     }
 
-    fn close_gate(&self) -> Result<(), String> {
-        *self.active.lock().map_err(|_| "Review guard unavailable")? = false;
-        Ok(())
+    fn close_guard(&self) {
+        self.guarded_active.store(false, Ordering::Release);
     }
 }
 

@@ -2025,6 +2025,18 @@ pub fn run_workspace(
                     drop(gate);
                     dirty = false;
                 }
+                // Async work can queue a public resume command without a
+                // further key event. Flush only after public redraw/ACK.
+                if workspace.prompt.is_none()
+                    && workspace.prompt_receiver.is_none()
+                    && workspace.redact_then_acknowledge.is_none()
+                    && let Some(bytes) = workspace.view_io.clipboard.take()
+                {
+                    use std::io::Write;
+                    let mut output = io::stdout().lock();
+                    output.write_all(&bytes)?;
+                    output.flush()?;
+                }
                 if event::poll(Duration::from_millis(80))? {
                     match event::read()? {
                         Event::Key(key)
@@ -2049,12 +2061,6 @@ pub fn run_workspace(
                                     workspace.acknowledge_redaction();
                                 }
                                 break Ok(());
-                            }
-                            if let Some(bytes) = workspace.view_io.clipboard.take() {
-                                use std::io::Write;
-                                let mut output = io::stdout().lock();
-                                output.write_all(&bytes)?;
-                                output.flush()?;
                             }
                             dirty = true;
                         }
@@ -3270,6 +3276,7 @@ mod tests {
                 frames,
                 acknowledgement,
                 active: Arc::clone(&active),
+                guarded_active: Arc::new(std::sync::atomic::AtomicBool::new(true)),
                 kind: PromptKind::User,
             };
             let (sender, requests) = mpsc::channel();

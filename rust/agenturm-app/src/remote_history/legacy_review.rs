@@ -20,9 +20,9 @@ const PAGE_SIZE: usize = 200;
 const MAX_BYTES: usize = 2 * 1024 * 1024;
 const REVIEW_TIME: Duration = Duration::from_secs(15);
 const SCOPE_ERROR: &str = "Python receiver did not prove the selected execution identity";
-const POLICY_ERROR: &str = "Python receiver capture policy changed while reading Review evidence";
+const POLICY_ERROR: &str = "Review capture policy changed";
 
-#[derive(Clone, Debug, Serialize)]
+#[derive(Clone, Debug, Eq, PartialEq, Serialize)]
 struct Scope {
     receiver: String,
     producer: String,
@@ -34,9 +34,11 @@ struct Scope {
     endpoint_fallback: bool,
     run_end_ns: Option<u64>,
     turn_id: String,
+    #[serde(skip)]
+    turn_steps: BTreeSet<String>,
 }
 
-#[derive(Clone, Debug, Default, Deserialize)]
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq)]
 struct Owner {
     #[serde(default)]
     producer: String,
@@ -76,6 +78,7 @@ impl Scope {
             endpoint_fallback: false,
             run_end_ns: None,
             turn_id: String::new(),
+            turn_steps: BTreeSet::new(),
         }
     }
 
@@ -191,6 +194,7 @@ impl LocalPolicy {
             endpoint_fallback: false,
             run_end_ns: None,
             turn_id: String::new(),
+            turn_steps: BTreeSet::new(),
         };
         let policy = self.for_scope(&scope)?;
         // Tagged investigation references have no capture-safety generation.
@@ -418,22 +422,103 @@ fn fetch_health(receiver: &LegacyReceiver, deadline: Instant) -> Result<Health, 
 pub(crate) fn execute(options: &LegacyReviewOptions, stdout: &mut dyn Write) -> Result<(), String> {
     let deadline = Instant::now() + REVIEW_TIME;
     let receiver = LegacyReceiver::connect(&options.receiver)?;
-    let mut scope = Scope::initial(options, receiver.native_identity());
-    let health = fetch_health(&receiver, deadline)?;
+    let review = prepare_review(&receiver, options, deadline, |_, _| Ok(()))?;
+    output::publish(
+        &review.projection,
+        options.format,
+        options.output.as_deref(),
+        || review.authority.verify(&receiver, deadline),
+        stdout,
+    )
+}
+
+struct PreparedReview {
+    projection: Value,
+    authority: ReviewAuthority,
+}
+
+struct ReviewAuthority {
+    origin: Scope,
+    scope: Scope,
+    policy: CapturePolicy,
+    capabilities: (bool, bool),
+    witness: Option<RunWitness>,
+    whole_turn: bool,
+}
+
+#[derive(Eq, PartialEq)]
+struct RunWitness {
+    owner: Option<Owner>,
+}
+
+fn run_witness(run: Option<&Run>, turn: bool) -> Option<RunWitness> {
+    run.map(|run| {
+        let owner = if turn {
+            &run.scope_owner
+        } else {
+            &run.review_owner
+        };
+        RunWitness {
+            owner: owner
+                .as_ref()
+                .filter(|owner| !owner.producer.is_empty())
+                .cloned(),
+        }
+    })
+}
+
+impl ReviewAuthority {
+    fn verify(&self, receiver: &LegacyReceiver, deadline: Instant) -> Result<(), String> {
+        let current = fetch_health(receiver, deadline)?;
+        if self.capabilities != (current.review_turn_filter, current.review_run_summary)
+            || self.policy != current.local_agents.for_scope(&self.scope)?
+        {
+            return Err(POLICY_ERROR.into());
+        }
+        if !self.policy.denied {
+            let mut scope = self.origin.clone();
+            let run = resolve_run(receiver, &current, &mut scope, self.whole_turn, deadline)?;
+            if scope != self.scope || run_witness(run.as_ref(), self.whole_turn) != self.witness {
+                return Err("Python receiver Review owner or exact turn membership changed".into());
+            }
+        }
+        Ok(())
+    }
+}
+
+fn prepare_review(
+    receiver: &LegacyReceiver,
+    options: &LegacyReviewOptions,
+    deadline: Instant,
+    validate: impl FnOnce(&Scope, &CapturePolicy) -> Result<(), String>,
+) -> Result<PreparedReview, String> {
+    let origin = Scope::initial(options, receiver.native_identity());
+    let mut scope = origin.clone();
+    let health = fetch_health(receiver, deadline)?;
     let run = if health.local_agents.for_scope(&scope)?.denied {
         // The tagged receiver can put historical task text in run summaries.
         // An already denied scope needs only its projected metadata receipt.
         None
     } else {
-        resolve_run(&receiver, &health, &mut scope, options.whole_turn, deadline)?
+        resolve_run(receiver, &health, &mut scope, options.whole_turn, deadline)?
     };
     let policy = health.local_agents.for_scope(&scope)?;
+    validate(&scope, &policy)?;
     let (events, cursor, reasons) = if policy.denied {
         (Vec::new(), None, vec!["Metadata-only capture"])
     } else {
-        read_evidence(&receiver, &scope, options.pages, deadline)?
+        read_evidence(receiver, &scope, options.pages, deadline)?
     };
-    let captured_at = if policy.denied {
+    let authority = ReviewAuthority {
+        origin,
+        scope,
+        policy,
+        capabilities: (health.review_turn_filter, health.review_run_summary),
+        witness: run_witness(run.as_ref(), options.whole_turn),
+        whole_turn: options.whole_turn,
+    };
+    authority.verify(receiver, deadline)?;
+    let captured_at = if authority.policy.denied {
         0.0
     } else {
         SystemTime::now()
@@ -442,31 +527,18 @@ pub(crate) fn execute(options: &LegacyReviewOptions, stdout: &mut dyn Write) -> 
             .as_secs_f64()
     };
     let projection = projection::build(
-        &scope,
+        &authority.scope,
         run.as_ref(),
         &events,
         cursor,
         reasons,
-        &policy,
+        &authority.policy,
         captured_at,
     );
-    let verify = || {
-        let current = fetch_health(&receiver, deadline)?;
-        if health.review_turn_filter != current.review_turn_filter
-            || health.review_run_summary != current.review_run_summary
-            || policy != current.local_agents.for_scope(&scope)?
-        {
-            return Err(POLICY_ERROR.into());
-        }
-        Ok(())
-    };
-    output::publish(
-        &projection,
-        options.format,
-        options.output.as_deref(),
-        verify,
-        stdout,
-    )
+    Ok(PreparedReview {
+        projection,
+        authority,
+    })
 }
 
 fn resolve_run(
@@ -496,8 +568,13 @@ fn resolve_run(
             || turn.trace_id != scope.run_id
             || !valid_trace(&turn.turn_id)
             || turn.step_trace_ids.len() > MAX_ROWS
-            || !turn.step_trace_ids.iter().any(|id| id == &scope.run_id)
-            || turn.step_trace_ids.iter().any(|id| !valid_trace(id))
+        {
+            return Err(SCOPE_ERROR.into());
+        }
+        let steps: BTreeSet<_> = turn.step_trace_ids.iter().cloned().collect();
+        if steps.len() != turn.step_trace_ids.len()
+            || !steps.contains(&scope.run_id)
+            || steps.iter().any(|id| !valid_trace(id))
         {
             return Err(SCOPE_ERROR.into());
         }
@@ -505,6 +582,7 @@ fn resolve_run(
         scope.agent_id.clone_from(&owner.agent_id);
         scope.session_id.clone_from(&owner.session_id);
         scope.turn_id.clone_from(&turn.turn_id);
+        scope.turn_steps = steps;
         return Ok(Some(turn));
     }
     let run = if health.review_run_summary {
@@ -624,6 +702,10 @@ impl Event {
                 self.trace_id.as_deref() == Some(&scope.run_id)
             } else {
                 self.turn_id.as_deref() == Some(&scope.turn_id)
+                    && self
+                        .trace_id
+                        .as_ref()
+                        .is_some_and(|trace| scope.turn_steps.contains(trace))
             }
     }
 
@@ -686,6 +768,45 @@ mod tests {
     use super::*;
     use serde_json::json;
 
+    #[test]
+    fn a_same_owner_event_still_requires_a_frozen_turn_step() {
+        let mut scope = scope();
+        scope.kind = "turn";
+        scope.turn_id = "1".repeat(32);
+        scope.turn_steps.insert(scope.run_id.clone());
+        let mut row: Event = serde_json::from_value(json!({
+            "id": "record", "source_id": "record", "trace_id": scope.run_id,
+            "service": scope.producer, "agent_id": scope.agent_id, "session_id": scope.session_id,
+            "turn_id": scope.turn_id, "time_unix_nano": 11,
+            "domain": "message", "action": "user", "detail": "Captured test request"
+        }))
+        .unwrap();
+        assert!(row.matches(&scope));
+        row.trace_id = Some("c".repeat(32));
+        assert!(!row.matches(&scope));
+        row.trace_id = None;
+        assert!(!row.matches(&scope));
+        assert!(
+            serde_json::to_value(&scope)
+                .unwrap()
+                .get("turn_steps")
+                .is_none()
+        );
+    }
+
+    #[test]
+    fn removal_of_supplied_run_owner_evidence_changes_the_witness() {
+        let mut run: Run = serde_json::from_value(json!({
+            "trace_id": "a".repeat(32),
+            "review_owner": { "producer": "codex", "agent_id": "actor", "session_id": "session" }
+        }))
+        .unwrap();
+        let original = run_witness(Some(&run), false);
+        assert!(original != run_witness(None, false));
+        run.review_owner = None;
+        assert!(original != run_witness(Some(&run), false));
+    }
+
     fn scope() -> Scope {
         Scope {
             receiver: "a".repeat(32),
@@ -698,6 +819,7 @@ mod tests {
             kind: "run",
             endpoint_fallback: false,
             turn_id: String::new(),
+            turn_steps: BTreeSet::new(),
         }
     }
 

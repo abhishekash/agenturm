@@ -50,6 +50,10 @@ impl PromptScreen {
         now >= self.expires
     }
 
+    pub(crate) fn expires_at(&self) -> Instant {
+        self.expires
+    }
+
     pub(crate) fn key(&mut self, code: KeyCode) {
         if code == KeyCode::Char('z') && self.kind == PromptKind::User {
             self.original = !self.original;
