@@ -10,7 +10,7 @@ use agenturm_kernel::{ExtensionId, ObservationPage, ObservationQuery};
 use agenturm_kernel::{ObservationKind, is_host_source};
 use agenturm_store::{
     EvalInventory, EvalInventoryQuery, McpTraceQuery, ResolvedTraceReview, SelectedEvalPage,
-    SelectedEvalQuery, SessionPage, SessionQuery, Store, TraceReviewQuery, WorkspaceAnchor,
+    SelectedEvalQuery, SessionPage, SessionQuery, StandaloneTraceQuery, Store, TraceReviewQuery, WorkspaceAnchor,
     WorkspaceHistory,
 };
 use serde::{Deserialize, Serialize};
@@ -32,6 +32,9 @@ pub enum ReaderHistoryRequest {
     },
     TraceReview {
         query: TraceReviewQuery,
+    },
+    StandaloneTrace {
+        query: StandaloneTraceQuery,
     },
     McpTraces {
         query: McpTraceQuery,
@@ -72,6 +75,7 @@ pub enum ReaderHistoryReply {
     History(ObservationPage),
     HostHistory(ObservationPage),
     TraceReview(Option<ResolvedTraceReview>),
+    StandaloneTrace(ObservationPage),
     McpTraces(Option<ObservationPage>),
     MetricHistory(MetricHistoryPage),
     UsageHistory(Box<UsageHistoryPage>),
@@ -132,6 +136,10 @@ pub(crate) fn dispatch(
         ReaderHistoryRequest::TraceReview { query } => {
             native_read::review_trace_turn(store, allowed, query)
                 .map(ReaderHistoryReply::TraceReview)
+        }
+        ReaderHistoryRequest::StandaloneTrace { query } => {
+            native_read::query_standalone_trace(store, allowed, query)
+                .map(ReaderHistoryReply::StandaloneTrace)
         }
         ReaderHistoryRequest::McpTraces { query } => {
             native_read::query_mcp_traces(store, allowed, query).map(ReaderHistoryReply::McpTraces)

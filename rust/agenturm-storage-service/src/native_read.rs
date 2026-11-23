@@ -9,7 +9,7 @@ use agenturm_kernel::{
 };
 use agenturm_store::{
     EvalInventory, EvalInventoryQuery, McpTraceQuery, ResolvedTraceReview, SessionPage,
-    SessionQuery, Store, StoreError, TraceReviewQuery,
+    SessionQuery, StandaloneTraceQuery, Store, StoreError, TraceReviewQuery,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -156,6 +156,20 @@ pub fn review_trace_turn(
     store
         .review_trace_turn(&query, Some(allowed_sources))
         .map_err(failure)
+}
+
+pub fn query_standalone_trace(
+    store: &Store,
+    allowed_sources: &BTreeSet<ExtensionId>,
+    mut query: StandaloneTraceQuery,
+) -> Result<ObservationPage, ReadFailure> {
+    authorize(allowed_sources, Some(query.source_id.as_str()))?;
+    authorize(allowed_sources, query.before.as_ref().map(|cursor| cursor.harness_id.as_str()))?;
+    if !(1..=MAX_DURABLE_SNAPSHOT_OBSERVATIONS).contains(&query.limit) {
+        return Err(ReadFailure::InvalidRequest);
+    }
+    query.limit = query.limit.min(MAX_NATIVE_HISTORY_ROWS);
+    store.query_standalone_trace(&query, Some(allowed_sources)).map_err(failure)
 }
 
 pub fn query_mcp_traces(

@@ -14,7 +14,7 @@ use agenturm_storage_service::{
     NativeSelection, ReaderHistoryReply, ReaderHistoryRequest, logical_read_identity,
 };
 use agenturm_store::{
-    McpTraceQuery, ResolvedTraceReview, SessionPage, SessionQuery, TraceReviewQuery,
+    McpTraceQuery, ResolvedTraceReview, SessionPage, SessionQuery, StandaloneTraceQuery, TraceReviewQuery,
     WorkspaceAnchor, WorkspaceHistory, WorkspaceLedger,
 };
 use agenturm_ui::{WorkCommand, WorkspaceRequest};
@@ -395,6 +395,13 @@ impl HistoryReader for RemoteStore {
         })? {
             ReaderHistoryReply::TraceReview(page) => Ok(page),
             _ => Err("History receiver sent an unexpected trace Review page".into()),
+        }
+    }
+
+    fn query_standalone_trace(&self, query: &StandaloneTraceQuery) -> Result<ObservationPage, String> {
+        match self.request(ReaderHistoryRequest::StandaloneTrace { query: query.clone() })? {
+            ReaderHistoryReply::StandaloneTrace(page) => Ok(page),
+            _ => Err("History receiver sent an unexpected standalone trace page".into()),
         }
     }
 

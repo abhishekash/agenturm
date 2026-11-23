@@ -22,7 +22,7 @@ use agenturm_store::{
     AutomaticRetentionPolicy, AutomaticRetentionStatus, EvalDetailRecord, EvalDetailSelection,
     EvalImportReport, EvalInventory, EvalInventoryQuery, EvalOutcome, EvalPage, EvalQuery,
     EvalResultDetail, McpTraceQuery, ObservationBatch, ResolvedTraceReview, RetainedEvalOutcome,
-    RetentionOutcome, SelectedEvalPage, SelectedEvalQuery, SessionPage, SessionQuery, Store,
+    RetentionOutcome, SelectedEvalPage, SelectedEvalQuery, SessionPage, SessionQuery, StandaloneTraceQuery, Store,
     TelemetryBinding, TelemetryPayload, TelemetryPayloadRecord, TelemetryPayloadSelection,
     TraceReviewQuery, WorkspaceAnchor, WorkspaceHistory,
 };
@@ -71,6 +71,10 @@ pub(crate) enum NativeOperation {
     },
     ReviewTraceTurn {
         query: TraceReviewQuery,
+        expected_history_identity: String,
+    },
+    QueryStandaloneTrace {
+        query: StandaloneTraceQuery,
         expected_history_identity: String,
     },
     QueryMcpTraces {
@@ -434,6 +438,15 @@ pub(crate) fn dispatch(
             return NativeReply::TraceReview(
                 authorize_read(store, role, Some(&expected_history_identity))
                     .and_then(|()| native_read::review_trace_turn(store, allowed, query)),
+            );
+        }
+        NativeOperation::QueryStandaloneTrace {
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::History(
+                authorize_read(store, role, Some(&expected_history_identity))
+                    .and_then(|()| native_read::query_standalone_trace(store, allowed, query)),
             );
         }
         NativeOperation::QueryMcpTraces {
@@ -1436,6 +1449,19 @@ impl NativeStore {
     ) -> Result<Option<ObservationPage>, NativeClientError> {
         self.exchange::<Result<Option<ObservationPage>, ReadFailure>>(
             NativeOperation::QueryMcpTraces {
+                query: query.clone(),
+                expected_history_identity: self.require_read_binding()?,
+            },
+        )?
+        .map_err(NativeClientError::Read)
+    }
+
+    pub fn query_standalone_trace(
+        &self,
+        query: &StandaloneTraceQuery,
+    ) -> Result<ObservationPage, NativeClientError> {
+        self.exchange::<Result<ObservationPage, ReadFailure>>(
+            NativeOperation::QueryStandaloneTrace {
                 query: query.clone(),
                 expected_history_identity: self.require_read_binding()?,
             },

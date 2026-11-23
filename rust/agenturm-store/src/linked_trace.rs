@@ -59,7 +59,98 @@ pub struct McpTraceQuery {
     pub before: Option<ObservationPosition>,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct StandaloneTraceQuery {
+    pub source_id: ExtensionId,
+    pub session_id: String,
+    pub trace_id: String,
+    pub worker_id: Option<String>,
+    pub snapshot_id: Option<ReadSnapshot>,
+    pub before: Option<ObservationPosition>,
+    pub limit: usize,
+}
+
 impl Store {
+    /// Reads the exact retained telemetry trace and its span metadata companions.
+    /// The producer source owns the trace. Native links remain recorded metadata.
+    pub fn query_standalone_trace(
+        &self,
+        query: &StandaloneTraceQuery,
+        allowed_sources: Option<&BTreeSet<ExtensionId>>,
+    ) -> Result<ObservationPage> {
+        if allowed_sources.is_some_and(|allowed| !allowed.contains(&query.source_id)) {
+            return Err(StoreError::Invalid("trace source is unavailable"));
+        }
+        if !query.source_id.as_str().starts_with("otlp.")
+            || !valid_trace_id(&query.trace_id)
+            || !(1..=MAX_DURABLE_SNAPSHOT_OBSERVATIONS).contains(&query.limit)
+        {
+            return Err(StoreError::Invalid("standalone trace review scope is invalid"));
+        }
+        validate_identifier(&query.session_id, MAX_SESSION_KEY_BYTES, "session ID")?;
+        if let Some(worker) = &query.worker_id {
+            validate_identifier(worker, MAX_SESSION_KEY_BYTES, "worker ID")?;
+        }
+        if let Some(cursor) = &query.before {
+            validate_identifier(&cursor.event_id, MAX_EVENT_ID_BYTES, "trace event ID")?;
+            if cursor.harness_id != query.source_id.as_str()
+                || query.snapshot_id != Some(cursor.snapshot_id)
+                || cursor.observed_at_unix_ns > i64::MAX as u64
+            {
+                return Err(StoreError::Invalid("trace cursor does not match the review scope"));
+            }
+        }
+        let transaction = self.connection.unchecked_transaction()?;
+        let (snapshot_id, watermark) = retention::resolve_read_snapshot(&transaction, query.snapshot_id)?;
+        let prefix = format!("otlp:{}:", query.trace_id);
+        let before = query.before.as_ref();
+        let mut statement = transaction.prepare(STANDALONE_TRACE_SQL)?;
+        let mut results = statement.query(rusqlite::named_params! {
+            ":source": query.source_id.as_str(),
+            ":session": query.session_id,
+            ":worker": query.worker_id,
+            ":trace": query.trace_id,
+            ":prefix": prefix,
+            ":prefix_end": format!("{prefix}~"),
+            ":watermark": watermark,
+            ":scan_limit": MAX_TRACE_SCOPE_ROWS + 1,
+            ":limit": query.limit + 1,
+            ":before_time": before.map(|item| item.observed_at_unix_ns as i64),
+            ":before_event": before.map(|item| item.event_id.as_str()),
+            ":before_revision": before.map(|item| item.revision),
+        })?;
+        let mut observations = Vec::new();
+        while let Some(row) = results.next()? {
+            if row.get::<_, usize>(0)? > MAX_TRACE_SCOPE_ROWS {
+                return Err(StoreError::TraceScopeTooLarge { max_rows: MAX_TRACE_SCOPE_ROWS });
+            }
+            if !row.get::<_, bool>(1)? {
+                return Err(StoreError::Invalid("trace cursor occurrence is outside the review scope"));
+            }
+            let Some(event_id) = row.get::<_, Option<String>>(2)? else { break };
+            let kind = serde_json::from_str::<KernelObservationKind>(&row.get::<_, String>(7)?)?;
+            observations.push(Observation {
+                harness_id: query.source_id.clone(),
+                event_id,
+                revision: row.get(3)?,
+                identity: agenturm_kernel::ObservationIdentity {
+                    scope: agenturm_kernel::ObservationScope::Session,
+                    session_id: Some(query.session_id.clone()),
+                    worker_id: row.get(4)?,
+                    turn_id: row.get(5)?,
+                    operation_id: None,
+                },
+                observed_at_unix_ns: row.get(6)?,
+                kind,
+            });
+        }
+        let has_more = observations.len() > query.limit;
+        observations.truncate(query.limit);
+        observations.reverse();
+        Ok(ObservationPage { observations, snapshot_id, has_more })
+    }
+
     /// Revalidates the selected MCP receipt and reads its explicitly linked
     /// spans in one SQLite snapshot. An absent or inaccessible call has no
     /// page, while a retained call can have a page with no linked spans.
@@ -198,12 +289,7 @@ impl Store {
             || !query.trace_source_id.starts_with("otlp.")
             || ExtensionId::parse(&query.harness_id).is_err()
             || ExtensionId::parse(&query.trace_source_id).is_err()
-            || query.trace_id.len() != 32
-            || !query
-                .trace_id
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-            || !query.trace_id.bytes().any(|byte| byte != b'0')
+            || !valid_trace_id(&query.trace_id)
         {
             return Err(StoreError::Invalid(
                 "trace source, owner, or identity is invalid",
@@ -270,6 +356,82 @@ impl Store {
         }))
     }
 }
+
+fn valid_trace_id(value: &str) -> bool {
+    value.len() == 32
+        && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        && value.bytes().any(|byte| byte != b'0')
+}
+
+// The source/event primary key bounds the initial trace-range scan. Each
+// companion is looked up by its exact event ID and matched to its retained
+// structural span before the cursor or result page is evaluated.
+const STANDALONE_TRACE_SQL: &str = "
+    WITH spans AS MATERIALIZED (
+        SELECT span.event_id, span.revision, span.worker_id, span.turn_id,
+               span.observed_at_unix_ns, span.kind_json,
+               json_extract(span.kind_json,'$.span_id') AS span_id
+        FROM agenturm_observations AS span
+        CROSS JOIN agenturm_history_batches AS admission ON admission.request_id=span.request_id
+        WHERE span.source_id=:source AND span.event_id>=:prefix AND span.event_id<:prefix_end
+          AND span.scope='session' AND span.session_id=:session AND span.operation_id IS NULL
+          AND (:worker IS NULL OR span.worker_id=:worker)
+          AND admission.sequence<=:watermark
+          AND json_extract(span.kind_json,'$.kind')='trace_span'
+          AND json_extract(span.kind_json,'$.trace_id')=:trace
+          AND span.event_id=:prefix || json_extract(span.kind_json,'$.span_id')
+        LIMIT :scan_limit
+    ), bounds AS (
+        SELECT count(*) AS span_count FROM spans
+    ), candidates AS MATERIALIZED (
+        SELECT event_id, revision, worker_id, turn_id, observed_at_unix_ns, kind_json FROM spans
+        WHERE (SELECT span_count FROM bounds)<:scan_limit
+        UNION ALL
+        SELECT companion.event_id, companion.revision, companion.worker_id, companion.turn_id,
+               companion.observed_at_unix_ns, companion.kind_json
+        FROM spans
+        CROSS JOIN agenturm_observations AS companion
+          ON companion.source_id=:source AND companion.revision=spans.revision
+         AND companion.event_id IN (spans.event_id || ':summary',
+             'otlp-usage:' || :trace || ':' || spans.span_id,
+             'otlp-cost:' || :trace || ':' || spans.span_id)
+        CROSS JOIN agenturm_history_batches AS admission
+          ON admission.request_id=companion.request_id
+        WHERE (SELECT span_count FROM bounds)<:scan_limit
+          AND companion.scope='session' AND companion.session_id=:session
+          AND companion.worker_id IS spans.worker_id AND companion.turn_id IS spans.turn_id
+          AND companion.operation_id IS NULL
+          AND companion.observed_at_unix_ns=spans.observed_at_unix_ns
+          AND admission.sequence<=:watermark
+          AND (
+               (companion.event_id=spans.event_id || ':summary'
+                AND json_extract(companion.kind_json,'$.kind')='trace_span_summary'
+                AND json_extract(companion.kind_json,'$.trace_id')=:trace
+                AND json_extract(companion.kind_json,'$.span_id')=spans.span_id)
+            OR (companion.event_id='otlp-usage:' || :trace || ':' || spans.span_id
+                AND json_extract(companion.kind_json,'$.kind')='span_token_usage'
+                AND json_extract(companion.kind_json,'$.span.trace_id')=:trace
+                AND json_extract(companion.kind_json,'$.span.span_id')=spans.span_id)
+            OR (companion.event_id='otlp-cost:' || :trace || ':' || spans.span_id
+                AND json_extract(companion.kind_json,'$.kind')='reported_cost'
+                AND json_extract(companion.kind_json,'$.span.trace_id')=:trace
+                AND json_extract(companion.kind_json,'$.span.span_id')=spans.span_id)
+          )
+    ), page AS (
+        SELECT event_id, revision, worker_id, turn_id, observed_at_unix_ns, kind_json
+        FROM candidates
+        WHERE :before_time IS NULL OR (observed_at_unix_ns,event_id,revision)
+             < (:before_time,:before_event,:before_revision)
+        ORDER BY observed_at_unix_ns DESC,event_id DESC,revision DESC
+        LIMIT :limit
+    )
+    SELECT bounds.span_count, (:before_time IS NULL OR EXISTS (
+               SELECT 1 FROM candidates AS anchor WHERE anchor.observed_at_unix_ns=:before_time
+                 AND anchor.event_id=:before_event AND anchor.revision=:before_revision
+           )), page.event_id, page.revision, page.worker_id, page.turn_id,
+           page.observed_at_unix_ns, page.kind_json
+    FROM bounds LEFT JOIN page ON true
+    ORDER BY page.observed_at_unix_ns DESC,page.event_id DESC,page.revision DESC";
 
 #[cfg(test)]
 mod tests {
