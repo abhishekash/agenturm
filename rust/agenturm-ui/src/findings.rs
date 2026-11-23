@@ -39,6 +39,8 @@ pub struct FindingOccurrence {
     pub position: ObservationPosition,
     pub identity: ObservationIdentity,
     pub details: Vec<MetricRow>,
+    /// A body-free selector for the existing protected source viewer.
+    pub source_reference: Option<String>,
 }
 
 #[derive(Clone, Copy)]
@@ -80,6 +82,13 @@ impl Browser {
         self.page
             .groups
             .get(*self.visible.get(self.group.selected()?)?)
+    }
+
+    pub(super) fn inspected_occurrence(&self) -> Option<&FindingOccurrence> {
+        if !matches!(self.level, Level::Detail) {
+            return None;
+        }
+        self.group()?.occurrences.get(self.occurrence.selected()?)
     }
 
     pub(super) fn editing_filter(&self) -> bool {
@@ -190,6 +199,13 @@ impl Browser {
         match self.level {
             Level::Groups => "/ search · ↑↓ select · Enter occurrences · [ ] pages",
             Level::Occurrences => "↑↓ select · Enter exact evidence · Esc findings",
+            Level::Detail
+                if self
+                    .inspected_occurrence()
+                    .is_some_and(|occurrence| occurrence.source_reference.is_some()) =>
+            {
+                "s source · ↑↓ scroll · PgUp/PgDn · Esc occurrences"
+            }
             Level::Detail => "↑↓ scroll · PgUp/PgDn · Esc occurrences",
         }
     }
@@ -390,6 +406,14 @@ impl Browser {
                 .iter()
                 .map(|field| (field.label.as_str(), field.value.as_str())),
         );
+        fields.push((
+            "Source body",
+            if row.source_reference.is_some() {
+                "s requests a grant-checked preview"
+            } else {
+                "Unavailable for this occurrence"
+            },
+        ));
         let width = area.width.saturating_sub(2).max(1);
         let height = usize::from(area.height.saturating_sub(2)).max(1);
         let lines = fields
@@ -477,6 +501,7 @@ mod tests {
                     label: "Reason".into(),
                     value: "confirmed-fixture".into(),
                 }],
+                source_reference: None,
             }
         };
         let page = FindingsPage {

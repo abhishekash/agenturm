@@ -3,7 +3,7 @@
 use agenturm_kernel::native_review::{InternalReviewState, NativeRequestKind, NativeRequestState};
 use agenturm_kernel::{
     ExtensionId, MetricRow, Observation, ObservationKind, ObservationPosition, ObservationScope,
-    Snapshot, TraceStatus,
+    ReadSnapshot, Snapshot, TraceStatus,
 };
 use agenturm_ui::{FindingGroup, FindingOccurrence, FindingsPage};
 use std::cmp::Reverse;
@@ -33,7 +33,10 @@ fn anchor(row: &Observation) -> Anchor<'_> {
     )
 }
 
-pub(super) fn project(snapshot: &Snapshot) -> FindingsPage {
+pub(super) fn project(
+    snapshot: &Snapshot,
+    source_reference: impl Fn(&Observation, ReadSnapshot) -> Option<String>,
+) -> FindingsPage {
     let mut latest = BTreeMap::new();
     for row in &snapshot.observations {
         let retained = latest
@@ -50,6 +53,12 @@ pub(super) fn project(snapshot: &Snapshot) -> FindingsPage {
         .copied()
         .filter_map(|row| companion(row, false))
         .collect::<BTreeSet<_>>();
+    let commands = latest
+        .values()
+        .copied()
+        .filter(|row| codex_failed_command(row))
+        .filter_map(|row| Some((companion(row, true)?, row)))
+        .collect::<BTreeMap<_, _>>();
     let mut groups = BTreeMap::new();
     for row in latest.into_values() {
         if companion(row, true).is_some_and(|key| companions.contains(&key)) {
@@ -59,6 +68,13 @@ pub(super) fn project(snapshot: &Snapshot) -> FindingsPage {
             continue;
         };
         let key = (row.harness_id.clone(), kind, severity.to_owned(), signal);
+        let protected_source = if codex_failed_command(row) {
+            Some(row)
+        } else if matches!(row.kind, ObservationKind::Check { .. }) {
+            companion(row, false).and_then(|key| commands.get(&key).copied())
+        } else {
+            None
+        };
         let occurrence = FindingOccurrence {
             position: ObservationPosition {
                 observed_at_unix_ns: row.observed_at_unix_ns,
@@ -69,6 +85,8 @@ pub(super) fn project(snapshot: &Snapshot) -> FindingsPage {
             },
             identity: row.identity.clone(),
             details,
+            source_reference: protected_source
+                .and_then(|candidate| source_reference(candidate, snapshot.history_snapshot_id)),
         };
         groups.entry(key).or_insert_with(Vec::new).push(occurrence);
     }
@@ -113,6 +131,14 @@ pub(super) fn project(snapshot: &Snapshot) -> FindingsPage {
         scanned: snapshot.observations.len(),
         has_older: snapshot.observations_truncated,
     }
+}
+
+fn codex_failed_command(row: &Observation) -> bool {
+    matches!(&row.kind, ObservationKind::Tool { category, result }
+        if category == "shell" && failure(result))
+        && row.event_id.starts_with("codex:")
+        && row.event_id.ends_with(":tool")
+        && row.identity.worker_id.is_none()
 }
 
 type Companion<'a> = (Anchor<'a>, &'a str, &'a str, u32, u64, &'a str);
@@ -294,6 +320,10 @@ mod tests {
     use super::*;
     use agenturm_kernel::{McpMethod, ObservationIdentity};
     use serde_json::json;
+
+    fn project(snapshot: &Snapshot) -> FindingsPage {
+        super::project(snapshot, |_, _| None)
+    }
 
     fn row(
         source: &str,
@@ -526,6 +556,53 @@ mod tests {
                 && group.kind == "Tool"
                 && group.occurrences[0].position.event_id == "codex:record:10:tool"
         }));
+    }
+
+    #[test]
+    fn a_check_mints_source_only_for_its_exact_retained_main_command() {
+        let main = |source, id, revision, kind| {
+            let mut row = row(source, id, "worker", revision, kind);
+            row.identity.worker_id = None;
+            row
+        };
+        let source = "harness.codex.fixture";
+        let tool_id = "codex:record:9:tool";
+        let check_id = "codex:record:9:check";
+        let check = ObservationKind::Check {
+            category: "test".into(),
+            result: "failed".into(),
+        };
+        let snapshot = Snapshot {
+            history_snapshot_id: 88.into(),
+            observations: vec![
+                main(source, tool_id, 3, tool("shell", "failed")),
+                main(source, check_id, 3, check.clone()),
+                main(source, "codex:record:10:check", 5, check.clone()),
+                main("harness.codex.sibling", check_id, 3, check.clone()),
+                row(source, check_id, "foreign-worker", 3, check),
+            ],
+            ..Snapshot::default()
+        };
+        let page = super::project(&snapshot, |command, pinned| {
+            assert_eq!(pinned, 88.into());
+            assert_eq!(command.event_id, tool_id);
+            assert_eq!(command.harness_id.as_str(), source);
+            assert_eq!(command.revision, 3);
+            assert!(command.identity.worker_id.is_none());
+            Some("opaque-main-command".into())
+        });
+        let occurrences = page.groups.iter().flat_map(|group| &group.occurrences);
+        let selected = occurrences
+            .clone()
+            .filter(|row| row.source_reference.is_some())
+            .collect::<Vec<_>>();
+        assert_eq!(occurrences.count(), 4);
+        assert_eq!(selected.len(), 1);
+        assert_eq!(selected[0].position.event_id, check_id);
+        assert_eq!(
+            selected[0].source_reference.as_deref(),
+            Some("opaque-main-command")
+        );
     }
 
     #[test]

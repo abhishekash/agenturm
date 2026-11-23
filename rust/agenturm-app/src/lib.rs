@@ -1985,7 +1985,8 @@ fn workspace_response_with_sources(
             before,
             include_reviews,
         } => {
-            let mut page = load_workspace_history(app, store, selection, before, include_reviews)?;
+            let mut page =
+                load_workspace_history(app, store, db, selection, before, include_reviews)?;
             page.history_identity = store.workspace_history_identity();
             page.private_telemetry_history = store.private_telemetry_history();
             if store.session_title_store().is_some() {
@@ -2446,6 +2447,7 @@ impl HistoryReader for agenturm_storage_service::NativeStore {
 fn load_workspace_history(
     app: &mut AgenturmApp,
     store: &impl HistoryReader,
+    db: &std::path::Path,
     selection: HistorySelection,
     before: Option<ObservationPosition>,
     include_reviews: bool,
@@ -2647,8 +2649,26 @@ fn load_workspace_history(
                     page.snapshot.history_snapshot_id,
                 )?));
             }
-            page.features.findings =
-                Some((ids.findings.clone(), findings::project(&page.snapshot)));
+            let history_identity = store.workspace_history_identity();
+            page.features.findings = Some((
+                ids.findings.clone(),
+                findings::project(&page.snapshot, |row, snapshot_id| {
+                    #[cfg(target_os = "linux")]
+                    if store.allows_private_capture() {
+                        return investigate_cli::cockpit::finding_reference(
+                            row,
+                            snapshot_id,
+                            db,
+                            history_identity.as_deref(),
+                        )
+                        .ok()
+                        .flatten();
+                    }
+                    #[cfg(not(target_os = "linux"))]
+                    let _ = (row, snapshot_id, &history_identity);
+                    None
+                }),
+            ));
             page.operation_tables = ids.tables;
             page.evidence_tables = ids.evidence;
             page.initial_pane = match view {

@@ -635,6 +635,7 @@ enum Change {
     MarkReviewed(RecordedSession),
     Work(Option<WorkAnchor>),
     WorkflowResume(Box<RequestEntry>),
+    FindingSource { cancelled: bool },
     Investigation,
 }
 
@@ -717,6 +718,9 @@ impl Workspace {
             if !cancelled {
                 self.finish_metric_read(result);
             }
+            return;
+        }
+        if matches!(change, Change::FindingSource { cancelled: true }) {
             return;
         }
         if matches!(change, Change::Investigation) && self.investigation.is_none() {
@@ -836,7 +840,10 @@ impl Workspace {
                 self.message = Some("Review saved for this evidence".into());
             }
             (
-                Change::Work(_) | Change::WorkflowResume(_) | Change::Investigation,
+                Change::Work(_)
+                | Change::WorkflowResume(_)
+                | Change::FindingSource { .. }
+                | Change::Investigation,
                 Ok(WorkspaceResponse::Work(WorkResult::Status(status))),
             ) => {
                 self.prompt_receiver = None;
@@ -1109,6 +1116,16 @@ impl Workspace {
             return true;
         }
         let code = keymap::plain(key).unwrap_or(KeyCode::Null);
+        if self.prompt.is_none()
+            && let Some(Change::FindingSource { cancelled }) = &mut self.pending
+        {
+            if code == KeyCode::Esc {
+                *cancelled = true;
+                self.prompt_receiver = None;
+                self.message = None;
+            }
+            return code == KeyCode::Char('q');
+        }
         if self.metadata_filter_key(sender, code) {
             return false;
         }
@@ -1409,6 +1426,37 @@ impl Workspace {
         }
         if let Some(destination) = keymap::destination(code) {
             self.navigate(sender, destination);
+            return false;
+        }
+
+        if code == KeyCode::Char('s')
+            && !view.page.ui.help
+            && let Some(occurrence) = view
+                .page
+                .active_findings()
+                .and_then(|browser| browser.inspected_occurrence())
+        {
+            if self.pending.is_none() && self.prompt_receiver.is_none() {
+                if let Some(reference) = occurrence.source_reference.clone()
+                    && let Some(history_identity) = view.page.history_identity.clone()
+                {
+                    let (delivery, receiver) = prompt_channel(PromptKind::Investigation);
+                    self.request(
+                        sender,
+                        WorkspaceRequest::Work(WorkCommand::RevealInvestigation {
+                            reference,
+                            history_identity: Some(history_identity),
+                            delivery,
+                        }),
+                        Change::FindingSource { cancelled: false },
+                    );
+                    if self.pending.is_some() {
+                        self.prompt_receiver = Some(receiver);
+                    }
+                } else {
+                    self.message = Some("Protected source unavailable for this finding".into());
+                }
+            }
             return false;
         }
 
@@ -2807,6 +2855,152 @@ mod tests {
             workspace.finish(response(selected.clone()));
             assert!(workspace.view_io.clipboard.is_none());
         }
+    }
+
+    #[test]
+    fn finding_source_uses_the_exact_occurrence_and_redacts_before_return() {
+        use std::io::Write;
+        let pane = ExtensionId::parse("app.workspace-findings").unwrap();
+        let source = ExtensionId::parse("harness.codex.fixture").unwrap();
+        let reference = "opaque-checked-reference";
+        let pinned = 72.into();
+        let mut workspace = Workspace::new();
+        let mut page = empty_history_page();
+        page.history_identity = Some("finding-history".into());
+        page.snapshot.history_snapshot_id = pinned;
+        page.initial_pane = Some(pane.clone());
+        page.snapshot.panes.insert(
+            pane.clone(),
+            agenturm_kernel::PaneModel {
+                title: "Findings".into(),
+                rows: Vec::new(),
+            },
+        );
+        let occurrence = |id: &str, source_reference| crate::FindingOccurrence {
+            position: ObservationPosition {
+                observed_at_unix_ns: 12,
+                harness_id: source.as_str().into(),
+                event_id: id.into(),
+                revision: 1,
+                snapshot_id: pinned,
+            },
+            identity: agenturm_kernel::ObservationIdentity::session("fixture-session"),
+            source_reference,
+            details: Vec::new(),
+        };
+        page.features.findings = Some((
+            pane,
+            crate::FindingsPage {
+                groups: vec![crate::FindingGroup {
+                    source_id: source.clone(),
+                    kind: "Check",
+                    severity: "error".into(),
+                    signal: "Failed check".into(),
+                    occurrences: vec![
+                        occurrence("unsupported-sibling", None),
+                        occurrence("selected-check", Some(reference.into())),
+                    ],
+                }],
+                snapshot_id: pinned,
+                scanned: 2,
+                has_older: false,
+            },
+        ));
+        workspace.history.push(HistoryView::new(
+            HistorySelection::All(WorkspaceView::Findings),
+            page,
+        ));
+        let (sender, requests) = mpsc::channel();
+        let key = |workspace: &mut Workspace, code| {
+            assert!(!press(workspace, &sender, code));
+        };
+        key(&mut workspace, KeyCode::Char('s'));
+        key(&mut workspace, KeyCode::Enter);
+        key(&mut workspace, KeyCode::Enter);
+        key(&mut workspace, KeyCode::Char('s'));
+        assert!(requests.try_recv().is_err());
+        assert_eq!(
+            workspace.message.as_deref(),
+            Some("Protected source unavailable for this finding")
+        );
+        key(&mut workspace, KeyCode::Esc);
+        key(&mut workspace, KeyCode::Down);
+        key(&mut workspace, KeyCode::Enter);
+        let request = |workspace: &mut Workspace| {
+            key(workspace, KeyCode::Char('s'));
+            let WorkspaceRequest::Work(WorkCommand::RevealInvestigation {
+                reference: selected,
+                history_identity,
+                delivery,
+            }) = requests.try_recv().unwrap()
+            else {
+                panic!("expected gated finding source reveal")
+            };
+            assert_eq!(selected, reference);
+            assert_eq!(history_identity.as_deref(), Some("finding-history"));
+            delivery
+        };
+
+        let mut cancelled = request(&mut workspace);
+        key(&mut workspace, KeyCode::Esc);
+        assert_eq!(
+            cancelled.flush().unwrap_err().kind(),
+            std::io::ErrorKind::BrokenPipe
+        );
+        workspace.finish(Err("late callback failure".into()));
+        assert!(workspace.message.is_none());
+
+        let mut delivery = request(&mut workspace);
+        let body = "synthetic-granted-finding-command";
+        serde_json::to_writer(&mut delivery, body).unwrap();
+        let send = std::thread::spawn(move || delivery.flush());
+        let receiver = workspace.prompt_receiver.take().unwrap();
+        let bytes = receiver
+            .frames
+            .recv_timeout(Duration::from_secs(1))
+            .unwrap();
+        let text: String = serde_json::from_slice(&bytes).unwrap();
+        workspace.prompt = Some(PromptScreen::new(text, receiver, Instant::now()));
+        key(&mut workspace, KeyCode::Char('c'));
+        key(&mut workspace, KeyCode::Char('x'));
+        assert!(workspace.view_io.clipboard.is_none());
+        assert!(workspace.view_io.form.is_none());
+        let mut terminal = Terminal::new(TestBackend::new(60, 18)).unwrap();
+        terminal
+            .draw(|frame| draw_workspace(frame, &mut workspace))
+            .unwrap();
+        assert!(terminal.backend().to_string().contains(body));
+        key(&mut workspace, KeyCode::Esc);
+        assert!(!send.is_finished());
+        terminal
+            .draw(|frame| draw_workspace(frame, &mut workspace))
+            .unwrap();
+        let redacted = terminal.backend().to_string();
+        assert!(!redacted.contains(body));
+        assert!(!redacted.contains(reference));
+        assert!(redacted.contains("selected-check"));
+        workspace.acknowledge_redaction();
+        assert!(send.join().unwrap().is_ok());
+        workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::Status(
+            String::new(),
+        ))));
+        let selected = workspace
+            .history
+            .last_mut()
+            .unwrap()
+            .page
+            .active_findings()
+            .and_then(|browser| browser.inspected_occurrence())
+            .unwrap();
+        assert_eq!(selected.position.event_id, "selected-check");
+        assert!(
+            !workspace
+                .loaded_view()
+                .unwrap()
+                .plain_text()
+                .unwrap()
+                .contains(reference)
+        );
     }
 
     #[test]
