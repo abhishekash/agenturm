@@ -6,7 +6,7 @@ use super::{RemoteHistoryOptions, http};
 use crate::trace_receiver::ProducerToken;
 use projection::{Activity, Connection, Pages, Report, Session, Trace};
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
-use std::collections::{BTreeMap, BTreeSet};
+use std::collections::BTreeMap;
 use std::io::BufReader;
 use std::net::{SocketAddr, TcpStream};
 use std::time::{Duration, Instant};
@@ -546,22 +546,26 @@ impl AttentionState {
             return false;
         }
         let mut by_sender = BTreeMap::new();
-        let mut sequences = BTreeSet::new();
+        let mut sequences = BTreeMap::new();
         let mut current = BTreeMap::new();
         let previous_rows = || self.states.values().flat_map(BTreeMap::values);
+        // A receiver can prune an occurrence while this reader still retains
+        // evidence of the sequence already used by that sender.
         for row in previous_rows().chain(&inventory.observations) {
+            let sender = row.sender_id.as_str();
             if !row.valid(receiver)
                 || by_sender
-                    .insert(&row.sender_id, row.scope())
+                    .insert(sender, row.scope())
                     .is_some_and(|scope| scope != row.scope())
+                || sequences
+                    .insert((sender, row.sequence), row)
+                    .is_some_and(|previous| previous != row)
             {
                 return false;
             }
         }
         for row in &inventory.observations {
-            if !sequences.insert((&row.sender_id, row.sequence))
-                || current.insert(row.key(), row).is_some()
-            {
+            if current.insert(row.key(), row).is_some() {
                 return false;
             }
         }
@@ -720,6 +724,31 @@ mod tests {
         assert!(state.merge(RECEIVER, inventory(true, vec![fixture(2, true)])));
         assert!(!state.merge(RECEIVER, inventory(true, vec![fixture(3, false)])));
         assert!(state.states["sender"]["request"].resolved);
+    }
+
+    #[test]
+    fn rejects_resolution_reusing_a_retired_request_sequence() {
+        let mut state = AttentionState::default();
+        let pending = fixture(1, false);
+        let mut other = fixture(2, true);
+        other.request_id = "other-request".into();
+        let original = vec![pending, other];
+        assert!(state.merge(RECEIVER, inventory(true, original.clone())));
+        assert!(state.merge(RECEIVER, inventory(true, original)));
+        let before = state.report(RECEIVER, true);
+        assert_eq!(before.pending.len(), 1);
+
+        // The receiver stopped retaining the other request, but this reader
+        // still knows its sender had already used sequence 2.
+        let mut conflict = fixture(2, true);
+        conflict.event_id = "new-event-with-reused-sequence".into();
+        let mut unrelated = fixture(3, false);
+        unrelated.request_id = "unrelated".into();
+        assert!(!state.merge(RECEIVER, inventory(true, vec![unrelated, conflict])));
+        assert_eq!(state.report(RECEIVER, true), before);
+
+        assert!(state.merge(RECEIVER, inventory(true, vec![fixture(3, true)])));
+        assert!(state.report(RECEIVER, true).pending.is_empty());
     }
 
     #[test]
