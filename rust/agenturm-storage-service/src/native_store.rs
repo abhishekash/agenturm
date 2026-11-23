@@ -60,6 +60,10 @@ pub(crate) enum NativeOperation {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         expected_history_identity: Option<String>,
     },
+    QueryHostHistory {
+        query: ObservationQuery,
+        expected_history_identity: Option<String>,
+    },
     ReviewTraceTurn {
         query: TraceReviewQuery,
         expected_history_identity: String,
@@ -356,6 +360,15 @@ pub(crate) fn dispatch(
             return NativeReply::Sessions(
                 authorize_read(store, role, expected_history_identity.as_deref())
                     .and_then(|()| native_read::query_sessions(store, allowed, &query)),
+            );
+        }
+        NativeOperation::QueryHostHistory {
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::History(
+                authorize_read(store, role, expected_history_identity.as_deref())
+                    .and_then(|()| native_read::query_host_history(store, allowed, &query)),
             );
         }
         NativeOperation::ReviewTraceTurn {
@@ -840,6 +853,17 @@ impl NativeStore {
 
     pub fn query_sessions(&self, query: &SessionQuery) -> Result<SessionPage, NativeClientError> {
         self.exchange::<Result<SessionPage, ReadFailure>>(NativeOperation::QuerySessions {
+            query: query.clone(),
+            expected_history_identity: self.read_binding.clone(),
+        })?
+        .map_err(NativeClientError::Read)
+    }
+
+    pub fn query_host_history(
+        &self,
+        query: &ObservationQuery,
+    ) -> Result<ObservationPage, NativeClientError> {
+        self.exchange::<Result<ObservationPage, ReadFailure>>(NativeOperation::QueryHostHistory {
             query: query.clone(),
             expected_history_identity: self.read_binding.clone(),
         })?

@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 0.3.4</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md">Markdown source ↗</a></nav><h1>Native broker commands</h1>
+</style></head><body><main><nav><strong>Agenturm / Rust 0.3.5 candidate</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md">Markdown source ↗</a></nav><h1>Native broker commands</h1>
 <p>The Linux bundle includes <code>agenturm-storage-service</code> and explicit broker clients. The broker owns the history database and authenticates the client UID and primary GID. The client verifies the configured broker UID and GID before sending a request. Configure each native source ID in the service allowlist.</p>
 <p>Create the data directory as mode <code>0700</code>, owned by the broker identity. Create the transport directory as mode <code>2710</code>, owned by the broker identity with the client's primary group. Run the service as its dedicated non-root identity.</p>
 <pre><code class="language-sh">agenturm-storage-service --data-root /srv/agenturm/history \
@@ -74,12 +74,13 @@ exact native scope exists in the selected history snapshot.</p>
 to check the installed binaries with separate storage, collector and
 reader identities.</p>
 <h3>Preview opted-in telemetry text</h3>
-<p>The trace receiver defaults to metadata. To accept captured text, configure the
-exact source at the broker with <code>--native-telemetry-payload-sources otlp.example=harness.codex</code>.
-For standalone SDK sessions configure <code>otlp.example</code> without a native
-source and use <code>--payload-scope standalone</code> on the launcher. Include
-these sources in <code>--native-sources</code>.</p>
-<pre><code>agenturm broker run --broker-config broker.json --source-id otlp.example \
+<p>The trace receiver defaults to metadata. To accept private captured text,
+enable the exact source at the broker with
+<code>--native-telemetry-payload-sources otlp.example=harness.codex</code>. For a
+standalone SDK session, configure <code>otlp.example</code> without a native source and
+use <code>--payload-scope standalone</code> on the launcher. Names in this policy must
+also be present in <code>--native-sources</code>.</p>
+<pre><code class="language-sh">agenturm broker run --broker-config broker.json --source-id otlp.example \
   --payload-scope harness.codex -- python -m observatory run --transport otlp \
   --capture-content --harness-id harness.codex --session-id example-session agent.py
 agenturm trace-payload binding --source-id otlp.example \
@@ -87,34 +88,43 @@ agenturm trace-payload binding --source-id otlp.example \
 agenturm broker grant approve --broker-config broker.json --binding payload-binding.json
 agenturm broker trace-payload snapshot --broker-config broker.json \
   --source-id otlp.example --session-id example-session
-agenturm broker trace-payload preview --broker-config broker.json --selection payload.json</code></pre>
-<p>The grant administrator approves the binding. The dedicated reader supplies a
-selection with <code>binding</code> containing <code>source_id</code> and
-<code>native_source_id</code>, the exact <code>trace_id</code>, <code>span_id</code>,
-<code>session_id</code>, <code>turn_id</code> and <code>worker_id</code>, and the
-returned <code>snapshot_id</code>. Use null for absent native, turn and worker
-IDs. The response labels producer-captured text. Native linkage is a producer assertion.
-In the local or broker cockpit, open Traces with <kbd>8</kbd>, press <kbd>d</kbd> to
-select a span, and use Enter to open the private text modal. Escape clears the
-display and returns to the span list.</p>
-<p>Local <code>run</code> generates a bearer for payload capture. Local
-<code>serve-traces</code> requires an owner-only bearer file. The local
-<code>trace-payload</code> commands use <code>--db history.sqlite</code>.
-An explicit Python OTLP client can opt into bounded input or output text,
-and automatic capture projects OpenInference user and assistant message
-text. Limits are 2 KiB per slot and 64 KiB per batch.</p>
-<p>Metadata queries, review receipts and SSH history reads omit payload text.
-A conflicting payload retry fails without changing the recorded span.
-Pruning removes the text and preserves retry evidence. A private backup
-retains the captured text. Restore requires a fresh snapshot and approval.
-Python and Node can send explicit text slots. OpenInference selects message
-text for OpenAI, Anthropic and LangChain. LangGraph callbacks and the OpenAI
-Agents SDK exporter require explicit <code>capture_content=True</code>.
-Pydantic AI and Google ADK can supply structured GenAI message text.
-The projections omit headers, tools, images, reasoning fields, and
-arbitrary provider objects.</p>
-<p>Provider setup is documented in the
-<a href="https://openai.github.io/openai-agents-python/tracing/">OpenAI Agents tracing guide</a>,
+agenturm broker trace-payload preview --broker-config broker.json --selection payload.json
+</code></pre>
+<p>The grant administrator approves the binding and the dedicated broker reader
+runs preview. The selection JSON names <code>binding</code> with <code>source_id</code> and
+<code>native_source_id</code> (null for a standalone session), the exact <code>trace_id</code>,
+<code>span_id</code>, <code>session_id</code>, <code>turn_id</code>, and <code>worker_id</code> (null when absent),
+and the returned <code>snapshot_id</code>. The response labels the text as
+<code>producer_captured_telemetry</code>. A claimed native linkage is a producer
+assertion. In the local or broker cockpit, open Traces with <code>8</code>, press
+<code>d</code> to select a span, and use Enter to open the private text modal. Escape
+clears the display and returns to the span list.</p>
+<p>Local <code>run</code> supports the same <code>--payload-scope</code> with an explicit
+<code>--source-id</code> and a generated bearer. Local <code>serve-traces</code> requires an
+owner-only bearer file when payload capture is enabled. Use
+<code>trace-payload grant|revoke|snapshot|preview --db history.sqlite</code> in the
+local workflow. A manual Python OTLP client uses <code>capture_content=True</code>
+and explicit <code>agenturm.payload.input</code> or <code>agenturm.payload.output</code> text.
+The automatic producer projects text from supported OpenInference user and
+assistant message fields. A text slot is limited to 2 KiB and a batch to
+64 KiB of captured text.</p>
+<p>Metadata queries, review receipts, and SSH history reads omit payload text.
+An exact retry can recover its prior admission. Changing a captured text
+slot or adding a payload to a span already admitted as metadata conflicts
+with that occurrence. A broker backup retains the data in its private
+history file. Restore rotates the read snapshot and requires a fresh
+approval. Pruning removes the retained text and keeps replay evidence.</p>
+<p>The Python and Node clients accept explicit bounded text fields. Set
+<code>captureContent: true</code> on the Node client and provide the same
+<code>agenturm.payload.input</code> and <code>agenturm.payload.output</code> attributes.
+OpenInference selects user and assistant text for OpenAI, Anthropic and
+LangChain. The LangGraph callback and OpenAI Agents exporter also require
+their own <code>capture_content=True</code> setting. Pydantic AI and Google ADK can
+supply structured GenAI message text through the Python SDK exporter.
+The Google ADK legacy trace fields are also supported when its content
+capture is enabled. These projections omit headers, tools, images,
+reasoning fields, and arbitrary provider objects.</p>
+<p>Provider setup is documented in the <a href="https://openai.github.io/openai-agents-python/tracing/">OpenAI Agents tracing guide</a>,
 <a href="https://pydantic.dev/docs/ai/api/models/instrumented/">Pydantic AI instrumentation settings</a>,
 and <a href="https://google.github.io/adk-docs/observability/traces/">Google ADK trace guide</a>.</p>
 <p>The broker cockpit supports saved tasks, handoffs, request seen state and
@@ -172,6 +182,36 @@ agenturm broker import-traces --broker-config broker.json \
   --file otlp.json --source-id otlp.exported
 </code></pre>
 <p>The same structural import and replay rules apply to local and broker history. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md#import-exported-spans">Span export format</a></p>
+<h2>Record and read Host history</h2>
+<p>Run explicit Linux capture using the account that owns the processes you
+want to observe. In broker mode give that collector a <code>host.&lt;label&gt;</code> source
+in <code>--native-sources</code>. <code>--watch</code> records one sample per interval until
+interrupted. The default is five seconds and the range is 1–60 seconds.</p>
+<pre><code class="language-sh">agenturm host record --db history.sqlite --source-id host.workstation --watch
+agenturm host history --db history.sqlite --limit 10
+agenturm broker host record --broker-config broker.json --source-id host.workstation --watch
+agenturm broker host history --broker-config broker.json --source-id host.workstation
+</code></pre>
+<p>The JSON history rows preserve optional load averages in thousandths, memory
+in bytes and cumulative CPU counters in Linux clock ticks. The sample carries
+the clock tick frequency when available. A missing value is <code>null</code> and an
+observed zero is <code>0</code>. The response returns up to 64 samples and an <code>older</code>
+position for the same history snapshot. Pass that JSON object to <code>--before</code>
+with the same source filter to continue the traversal.</p>
+<p>From the cockpit's session list, press <code>6</code> for host history. Enter opens the
+selected sample's process list and Enter again opens the selected process's
+history within the loaded page. Escape returns one level. Use <code>]</code> to read
+older samples or <code>r</code> for the latest page. Press <code>H</code> from a local cockpit for
+the live summary.</p>
+<p>Each capture records up to 32 known runtime processes owned by the collector's
+effective user. It includes source, Linux boot ID, PID and process start ticks
+for exact process history. The view marks scan or row truncation as partial.
+Processes that exit during sampling can be absent. Argument strings, environment variables, working paths
+and inferred session links are absent. Native broker readers browse the
+retained samples. The HTTP history gateway omits Host sources and samples.</p>
+<p>Run <code>python3 scripts/validate_rust_host_history.py --bin-dir /opt/agenturm/bin</code>
+in a disposable Linux guest to verify process ownership, each broker role and
+the 60-column terminal drill-down.</p>
 <h2>Grant administration</h2>
 <p>The service can authorize separate reader, grant administrator and maintenance
 identities using <code>--native-reader UID:GID</code>,

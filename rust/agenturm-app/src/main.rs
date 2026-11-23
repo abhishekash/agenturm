@@ -48,6 +48,12 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         }
+        Command::Host(options) => {
+            if let Err(message) = agenturm_app::execute_host(&options, std::io::stdout().lock()) {
+                eprintln!("host failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
         #[cfg(target_os = "linux")]
         Command::Window(options) => {
             return match agenturm_app::execute_new_window(&options) {

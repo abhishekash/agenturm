@@ -78,6 +78,13 @@ pub(super) fn execute(
     command: WorkCommand,
 ) -> Result<WorkResult, String> {
     match command {
+        WorkCommand::HostHistory(before) => store
+            .query_host_history(&ObservationQuery {
+                snapshot_id: before.as_ref().map(|position| position.snapshot_id),
+                before,
+                ..ObservationQuery::latest(agenturm_store::MAX_HOST_HISTORY_PAGE)
+            })
+            .map(WorkResult::HostHistory),
         WorkCommand::ReviewNotes(session) => review_notes(store, db, session, None),
         WorkCommand::SaveReviewNote { session, note } => {
             review_notes(store, db, session, Some(&note))

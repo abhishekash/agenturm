@@ -227,6 +227,44 @@ agenturm broker import-traces --broker-config broker.json \
 
 The same structural import and replay rules apply to local and broker history. [Span export format](rust-cutover-workflows.md#import-exported-spans)
 
+## Record and read Host history
+
+Run explicit Linux capture using the account that owns the processes you
+want to observe. In broker mode give that collector a `host.<label>` source
+in `--native-sources`. `--watch` records one sample per interval until
+interrupted. The default is five seconds and the range is 1–60 seconds.
+
+```sh
+agenturm host record --db history.sqlite --source-id host.workstation --watch
+agenturm host history --db history.sqlite --limit 10
+agenturm broker host record --broker-config broker.json --source-id host.workstation --watch
+agenturm broker host history --broker-config broker.json --source-id host.workstation
+```
+
+The JSON history rows preserve optional load averages in thousandths, memory
+in bytes and cumulative CPU counters in Linux clock ticks. The sample carries
+the clock tick frequency when available. A missing value is `null` and an
+observed zero is `0`. The response returns up to 64 samples and an `older`
+position for the same history snapshot. Pass that JSON object to `--before`
+with the same source filter to continue the traversal.
+
+From the cockpit's session list, press `6` for host history. Enter opens the
+selected sample's process list and Enter again opens the selected process's
+history within the loaded page. Escape returns one level. Use `]` to read
+older samples or `r` for the latest page. Press `H` from a local cockpit for
+the live summary.
+
+Each capture records up to 32 known runtime processes owned by the collector's
+effective user. It includes source, Linux boot ID, PID and process start ticks
+for exact process history. The view marks scan or row truncation as partial.
+Processes that exit during sampling can be absent. Argument strings, environment variables, working paths
+and inferred session links are absent. Native broker readers browse the
+retained samples. The HTTP history gateway omits Host sources and samples.
+
+Run `python3 scripts/validate_rust_host_history.py --bin-dir /opt/agenturm/bin`
+in a disposable Linux guest to verify process ownership, each broker role and
+the 60-column terminal drill-down.
+
 ## Grant administration
 
 The service can authorize separate reader, grant administrator and maintenance

@@ -87,6 +87,7 @@ impl Store {
             Some(turn.worker_id.as_deref()),
             query.linked_traces,
             allowed_sources,
+            false,
         )?;
         debug_assert_eq!(page.snapshot_id, turn.snapshot_id);
         Ok(Some(ResolvedTraceReview {

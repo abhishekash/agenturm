@@ -242,6 +242,7 @@ pub enum ObservationKind {
         result: String,
     },
     TraceSpan(TraceSpan),
+    HostSample(HostSample),
     Lifecycle {
         state: String,
         reason_code: Option<String>,
@@ -299,6 +300,10 @@ pub fn is_anchored_pull_request(
         && is_github_pull_request(repository, number)
 }
 
+pub use agenturm_protocol::host::{
+    HostCpu, HostProcess, HostProcessState, HostRuntime, HostSample, MAX_HOST_PROCESSES,
+    is_host_source,
+};
 pub use agenturm_protocol::observation::{
     CostSpan, FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, NANOUNITS_PER_CURRENCY_UNIT,
     RelationshipKind, ReportedCost, TraceSpan, TraceStatus, is_github_pull_request,
@@ -435,6 +440,19 @@ pub struct ObservationPage {
     pub has_more: bool,
     /// Highest durable batch receipt visible when this query began.
     pub snapshot_id: ReadSnapshot,
+}
+
+impl ObservationPage {
+    pub fn older_position(&self) -> Option<ObservationPosition> {
+        let row = self.observations.first().filter(|_| self.has_more)?;
+        Some(ObservationPosition {
+            observed_at_unix_ns: row.observed_at_unix_ns,
+            harness_id: row.harness_id.as_str().to_owned(),
+            event_id: row.event_id.clone(),
+            revision: row.revision,
+            snapshot_id: self.snapshot_id,
+        })
+    }
 }
 
 /// Exclusive keyset cursor for deterministic paging through durable history.
@@ -961,8 +979,12 @@ impl Kernel {
                         });
                     ordered.push(observation);
                 }
-                for rows in grouped.values() {
-                    match validate_raw_observation_slice(rows, MAX_DURABLE_SNAPSHOT_OBSERVATIONS) {
+                for (source, rows) in &grouped {
+                    match validate_raw_observation_slice(
+                        source,
+                        rows,
+                        MAX_DURABLE_SNAPSHOT_OBSERVATIONS,
+                    ) {
                         Ok(_) => {}
                         Err(message) => {
                             conversion_error = Some(message);
@@ -994,7 +1016,7 @@ impl Kernel {
         for (id, harness) in &mut self.harnesses {
             let result = catch_unwind(AssertUnwindSafe(|| harness.poll()));
             match result {
-                Ok(Ok(rows)) => match validate_raw_observations(rows) {
+                Ok(Ok(rows)) => match validate_raw_observations(id, rows) {
                     Ok(rows) => {
                         snapshot
                             .observations
@@ -1096,7 +1118,7 @@ impl Kernel {
                 ));
                 continue;
             }
-            let rows = match validate_raw_observations(prepared.observations) {
+            let rows = match validate_raw_observations(id, prepared.observations) {
                 Ok(rows) => rows
                     .into_iter()
                     .map(|row| Observation {
@@ -1329,19 +1351,16 @@ fn bounded(value: &str, max_bytes: usize) -> String {
     value[..end].to_owned()
 }
 
-fn validate_raw_observations(rows: Vec<RawObservation>) -> Result<Vec<RawObservation>, String> {
-    validate_raw_observations_limit(rows, MAX_OBSERVATIONS_PER_HARNESS)
-}
-
-fn validate_raw_observations_limit(
+fn validate_raw_observations(
+    source: &ExtensionId,
     rows: Vec<RawObservation>,
-    max_observations: usize,
 ) -> Result<Vec<RawObservation>, String> {
-    validate_raw_observation_slice(&rows, max_observations)?;
+    validate_raw_observation_slice(source, &rows, MAX_OBSERVATIONS_PER_HARNESS)?;
     Ok(rows)
 }
 
 fn validate_raw_observation_slice(
+    source: &ExtensionId,
     rows: &[RawObservation],
     max_observations: usize,
 ) -> Result<(), String> {
@@ -1370,8 +1389,10 @@ fn validate_raw_observation_slice(
                 .as_ref()
                 .is_some_and(|value| valid_identity_part(value, MAX_SESSION_KEY_BYTES)),
             ObservationScope::Source => {
-                matches!(row.kind, ObservationKind::Diagnostic { .. })
-                    && row.identity.session_id.is_none()
+                matches!(
+                    row.kind,
+                    ObservationKind::Diagnostic { .. } | ObservationKind::HostSample(_)
+                ) && row.identity.session_id.is_none()
                     && row.identity.worker_id.is_none()
                     && row.identity.turn_id.is_none()
                     && row.identity.operation_id.is_none()
@@ -1395,6 +1416,15 @@ fn validate_raw_observation_slice(
                 .is_none_or(|value| valid_identity_part(value, MAX_SESSION_KEY_BYTES))
         {
             return Err("native session, worker, turn, or operation identity is invalid".into());
+        }
+        if let ObservationKind::HostSample(sample) = &row.kind
+            && (row.identity.scope != ObservationScope::Source
+                || !is_host_source(source.as_str())
+                || !sample.is_valid())
+        {
+            return Err(
+                "host sample requires a valid host source and source-scoped metrics".into(),
+            );
         }
         if let ObservationKind::Activity { category } = &row.kind
             && (category.is_empty()

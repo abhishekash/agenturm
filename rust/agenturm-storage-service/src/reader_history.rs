@@ -4,6 +4,7 @@ use crate::native_admin::Role;
 use crate::native_read::{self, ReadFailure};
 use crate::native_store::{NativeSelection, verify_read_binding};
 use agenturm_kernel::{ExtensionId, ObservationPage, ObservationQuery};
+use agenturm_kernel::{ObservationKind, is_host_source};
 use agenturm_store::{
     ResolvedTraceReview, SessionPage, SessionQuery, Store, TraceReviewQuery, WorkspaceAnchor,
     WorkspaceHistory,
@@ -67,6 +68,11 @@ pub(crate) fn dispatch(
         }
         None => {}
     }
+    let allowed = &allowed
+        .iter()
+        .filter(|source| !is_host_source(source.as_str()))
+        .cloned()
+        .collect();
     match request {
         ReaderHistoryRequest::Identity => store
             .history_identity()
@@ -77,6 +83,16 @@ pub(crate) fn dispatch(
         }
         ReaderHistoryRequest::History { query, selection } => {
             native_read::query_history(store, allowed, &query, selection.as_history())
+                .and_then(|page| {
+                    if page
+                        .observations
+                        .iter()
+                        .any(|row| matches!(row.kind, ObservationKind::HostSample(_)))
+                    {
+                        return Err(ReadFailure::Unavailable);
+                    }
+                    Ok(page)
+                })
                 .map(ReaderHistoryReply::History)
         }
         ReaderHistoryRequest::TraceReview { query } => {

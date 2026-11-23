@@ -159,7 +159,10 @@ impl io::Write for PromptDelivery {
     }
 }
 
+mod host;
+
 pub enum WorkCommand {
+    HostHistory(Option<agenturm_kernel::ObservationPosition>),
     ReviewNotes(RecordedSession),
     SaveReviewNote {
         session: RecordedSession,
@@ -218,6 +221,7 @@ pub struct ReviewNoteEntry {
 }
 
 pub enum WorkResult {
+    HostHistory(agenturm_kernel::ObservationPage),
     ReviewNotes {
         session: RecordedSession,
         items: Vec<ReviewNoteEntry>,
@@ -293,6 +297,7 @@ pub(super) struct Workbench {
     target: Option<WorkAnchor>,
     help: bool,
     review_note_scroll: u16,
+    host_level: host::HostLevel,
 }
 
 impl Workbench {
@@ -304,6 +309,7 @@ impl Workbench {
             target,
             help: false,
             review_note_scroll: 0,
+            host_level: host::HostLevel::default(),
         };
         work.reset_cursor();
         work
@@ -321,6 +327,7 @@ impl Workbench {
         };
         self.draft = None;
         self.data = data;
+        self.host_level = host::HostLevel::default();
         self.reset_cursor();
         if let (Some(id), WorkResult::Tasks { items, .. }) = (previous, &self.data)
             && let Some(index) = items.iter().position(|item| item.id == id)
@@ -360,6 +367,7 @@ impl Workbench {
 
     fn len(&self) -> usize {
         match &self.data {
+            WorkResult::HostHistory(page) => self.host_level.len(page),
             WorkResult::ReviewNotes { items, .. } => items.len(),
             WorkResult::Tasks { items, .. } => items.len(),
             WorkResult::Handoffs { items, .. } => items.len(),
@@ -395,6 +403,14 @@ impl Workbench {
             return WorkInput::None;
         }
         let selected = self.cursor.selected().unwrap_or_default();
+        if let WorkResult::HostHistory(page) = &self.data
+            && !matches!(
+                key.code,
+                KeyCode::Down | KeyCode::Up | KeyCode::Char('j' | 'k')
+            )
+        {
+            return self.host_level.action(page, &mut self.cursor, key.code);
+        }
         match key.code {
             KeyCode::Esc => WorkInput::Close,
             KeyCode::PageDown if matches!(self.data, WorkResult::ReviewNotes { .. }) => {
@@ -715,7 +731,7 @@ impl Workbench {
         if self.help {
             frame.render_widget(Paragraph::new(" Workbench keys"), header);
             frame.render_widget(
-                Paragraph::new("Tasks · n new linked · N blank · e edit · c done\nl link selected session or turn · r links · Del delete\nG capture Git · g saved Git · h new handoff · o handoffs\nHandoffs · e edit · x export MD+HTML · Del delete · b tasks\nWorkflow · s seen · l locate · r refresh\nPrompts · Enter reveal · ↑↓ scroll · Esc close")
+                Paragraph::new("Tasks · n new linked · N blank · e edit · c done\nl link selected session or turn · r links · Del delete\nG capture Git · g saved Git · h new handoff · o handoffs\nHandoffs · e edit · x export MD+HTML · Del delete · b tasks\nWorkflow · s seen · l locate · r refresh\nPrompts · Enter reveal · ↑↓ scroll · Esc close\nHost history · Enter drill down · ] older · Esc back")
                     .wrap(Wrap { trim: false }).block(Block::bordered()),
                 body,
             );
@@ -771,6 +787,16 @@ impl Workbench {
         }
         let selected = self.cursor.selected().unwrap_or_default();
         let (title, keys, options, details, empty) = match &self.data {
+            WorkResult::HostHistory(page) => {
+                let view = self.host_level.present(page, selected);
+                (
+                    view.title,
+                    view.keys,
+                    view.options,
+                    view.details,
+                    view.empty,
+                )
+            }
             WorkResult::ReviewNotes { session, items } => (
                 "Review decisions",
                 "e new · ↑↓ select · PgUp/PgDn read · Esc review",

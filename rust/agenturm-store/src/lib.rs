@@ -70,6 +70,7 @@ use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
 const SCHEMA_VERSION: i64 = 16;
+pub const MAX_HOST_HISTORY_PAGE: usize = 64;
 const MAX_BATCH_EVENTS: usize = 2_048;
 const MAX_SOURCE_ID_BYTES: usize = 96;
 const MAX_REQUEST_ID_BYTES: usize = 128;
@@ -114,6 +115,7 @@ pub enum ObservationKind {
         result: String,
     },
     TraceSpan(agenturm_kernel::TraceSpan),
+    HostSample(agenturm_kernel::HostSample),
     Lifecycle {
         state: String,
         reason_code: Option<String>,
@@ -287,6 +289,9 @@ impl ObservationBatch {
                     },
                     KernelObservationKind::TraceSpan(span) => {
                         ObservationKind::TraceSpan(span.clone())
+                    }
+                    KernelObservationKind::HostSample(sample) => {
+                        ObservationKind::HostSample(sample.clone())
                     }
                     KernelObservationKind::Lifecycle { state, reason_code } => {
                         ObservationKind::Lifecycle {
@@ -1572,6 +1577,42 @@ impl Store {
         self.query_history(query, None, None, false, Some(allowed_sources))
     }
 
+    /// Reads exact retained host samples under the normal history watermark.
+    pub fn query_host_history(
+        &self,
+        query: &ObservationQuery,
+        allowed_sources: Option<&BTreeSet<ExtensionId>>,
+    ) -> Result<ObservationPage> {
+        if query.limit > MAX_HOST_HISTORY_PAGE
+            || query.session_id.is_some()
+            || query
+                .harness_id
+                .as_deref()
+                .is_some_and(|id| !agenturm_kernel::is_host_source(id))
+            || query.before.as_ref().is_some_and(|position| {
+                !agenturm_kernel::is_host_source(position.harness_id.as_str())
+                    || query
+                        .harness_id
+                        .as_deref()
+                        .is_some_and(|id| id != position.harness_id.as_str())
+            })
+        {
+            return Err(StoreError::Invalid(
+                "invalid host history scope or page limit",
+            ));
+        }
+        let transaction = self.connection.unchecked_transaction()?;
+        Self::query_history_in(
+            &transaction,
+            query,
+            None,
+            None,
+            false,
+            allowed_sources,
+            true,
+        )
+    }
+
     /// Reads a bounded history page for one exact native turn.
     pub fn query_turn_observations(
         &self,
@@ -1667,6 +1708,7 @@ impl Store {
             worker_filter,
             linked_traces,
             allowed_sources,
+            false,
         )
     }
 
@@ -1677,6 +1719,7 @@ impl Store {
         worker_filter: Option<Option<&str>>,
         linked_traces: bool,
         allowed_sources: Option<&BTreeSet<ExtensionId>>,
+        host_history: bool,
     ) -> Result<ObservationPage> {
         if query.limit == 0 || query.limit > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
             return Err(StoreError::Invalid("observation page limit is invalid"));
@@ -1750,6 +1793,10 @@ impl Store {
                AND (?9 IS NULL OR observation.turn_id=?9)
                AND (?10 = 0 OR observation.worker_id IS ?11)
                AND (?13 IS NULL OR observation.source_id IN (SELECT value FROM json_each(?13)))
+               AND ((?14 = 1 AND substr(observation.source_id,1,5)='host.'
+                     AND json_extract(observation.kind_json,'$.kind')='host_sample')
+                    OR (?14 = 0 AND (substr(observation.source_id,1,5)<>'host.'
+                          OR json_extract(observation.kind_json,'$.kind')<>'host_sample')))
                AND (?4 IS NULL OR
                     (observation.observed_at_unix_ns,observation.source_id,
                      observation.event_id,observation.revision) <
@@ -1776,6 +1823,7 @@ impl Store {
                 worker_filter.flatten(),
                 linked_traces,
                 allowed_sources.map(serde_json::to_string).transpose()?,
+                host_history,
             ],
             |row| {
                 let revision: i64 = row.get(2)?;
@@ -1871,6 +1919,9 @@ impl Store {
                         result,
                     },
                     ObservationKind::TraceSpan(span) => KernelObservationKind::TraceSpan(span),
+                    ObservationKind::HostSample(sample) => {
+                        KernelObservationKind::HostSample(sample)
+                    }
                     ObservationKind::Lifecycle { state, reason_code } => {
                         KernelObservationKind::Lifecycle { state, reason_code }
                     }
@@ -2046,8 +2097,10 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
                 "session ID",
             )?,
             StoredScope::Source
-                if matches!(observation.kind, ObservationKind::Diagnostic { .. })
-                    && observation.identity.session_id.is_none()
+                if matches!(
+                    observation.kind,
+                    ObservationKind::Diagnostic { .. } | ObservationKind::HostSample(_)
+                ) && observation.identity.session_id.is_none()
                     && observation.identity.worker_id.is_none()
                     && observation.identity.turn_id.is_none()
                     && observation.identity.operation_id.is_none() => {}
@@ -2068,6 +2121,15 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
         }
         if observation.observed_at_unix_ns > i64::MAX as u64 {
             return Err(StoreError::Invalid("timestamp exceeds SQLite INTEGER"));
+        }
+        if let ObservationKind::HostSample(sample) = &observation.kind
+            && (observation.identity.scope != StoredScope::Source
+                || !agenturm_kernel::is_host_source(&batch.source_id)
+                || !sample.is_valid())
+        {
+            return Err(StoreError::Invalid(
+                "host sample requires a valid host source and source-scoped metrics",
+            ));
         }
         if let ObservationKind::Activity { category } = &observation.kind
             && (category.is_empty()
@@ -2578,6 +2640,82 @@ mod tests {
             next_cursor: "cursor-1".into(),
             observations,
         }
+    }
+
+    #[test]
+    fn host_history_enforces_type_scope_and_pins_pages() {
+        let mut store = Store::open(":memory:").unwrap();
+        let host = "host.fixture";
+        let make_batch = |source: &str, event_id: &str, timestamp, previous: Option<&str>| {
+            let mut row = event(event_id, "unused", timestamp);
+            row.identity = ObservationIdentity {
+                scope: StoredScope::Source,
+                session_id: None,
+                worker_id: None,
+                turn_id: None,
+                operation_id: None,
+            };
+            row.kind = ObservationKind::HostSample(agenturm_kernel::HostSample {
+                boot_id: "12345678-1234-1234-1234-123456789abc".into(),
+                clock_ticks_per_second: Some(100),
+                cpu: None,
+                load_1m_milli: Some(0),
+                load_5m_milli: None,
+                load_15m_milli: None,
+                memory_total_bytes: Some(1024),
+                memory_available_bytes: None,
+                processes: Vec::new(),
+                processes_partial: false,
+            });
+            ObservationBatch {
+                source_id: source.into(),
+                request_id: event_id.into(),
+                expected_cursor: previous.map(str::to_owned),
+                next_cursor: event_id.into(),
+                observations: vec![row],
+            }
+        };
+        let mut invalid = make_batch("harness.codex", "invalid", 1, None);
+        assert!(matches!(
+            store.commit_batch(&invalid),
+            Err(StoreError::Invalid(_))
+        ));
+        invalid.source_id = host.into();
+        invalid.observations[0].identity = event("unused", "session", 1).identity;
+        assert!(matches!(
+            store.commit_batch(&invalid),
+            Err(StoreError::Invalid(_))
+        ));
+
+        store
+            .commit_batch(&make_batch(host, "first", 1, None))
+            .unwrap();
+        store
+            .commit_batch(&make_batch(host, "second", 2, Some("first")))
+            .unwrap();
+        assert!(store.observation_page(20).unwrap().observations.is_empty());
+        let page = store
+            .query_host_history(&ObservationQuery::latest(1), None)
+            .unwrap();
+        assert_eq!(page.observations[0].event_id, "second");
+        let next = page.older_position().unwrap();
+        store
+            .commit_batch(&make_batch(host, "third", 3, Some("second")))
+            .unwrap();
+        let query = ObservationQuery {
+            before: Some(next),
+            snapshot_id: Some(page.snapshot_id),
+            ..ObservationQuery::latest(1)
+        };
+        let page = store.query_host_history(&query, None).unwrap();
+        assert_eq!(page.observations[0].event_id, "first");
+        assert!(
+            store
+                .query_host_history(&query, Some(&BTreeSet::new()))
+                .unwrap()
+                .observations
+                .is_empty()
+        );
     }
 
     fn batch_after(

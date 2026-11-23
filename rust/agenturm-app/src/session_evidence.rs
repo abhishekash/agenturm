@@ -584,6 +584,10 @@ pub(super) fn describe_observation(kind: &ObservationKind) -> (&'static str, Str
     match kind {
         ObservationKind::SessionStarted => ("Session", "started".into()),
         ObservationKind::SessionEnded => ("Session", "ended".into()),
+        ObservationKind::HostSample(sample) => (
+            "Host sample",
+            format!("{} recorded processes", sample.processes.len()),
+        ),
         ObservationKind::Activity { category } => ("Activity", category.clone()),
         ObservationKind::Usage {
             input_tokens,

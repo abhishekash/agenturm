@@ -135,6 +135,21 @@ pub fn query_sessions(
         .map_err(failure)
 }
 
+pub fn query_host_history(
+    store: &Store,
+    allowed_sources: &BTreeSet<ExtensionId>,
+    query: &ObservationQuery,
+) -> Result<ObservationPage, ReadFailure> {
+    authorize(allowed_sources, query.harness_id.as_deref())?;
+    authorize(
+        allowed_sources,
+        query.before.as_ref().map(|row| row.harness_id.as_str()),
+    )?;
+    store
+        .query_host_history(query, Some(allowed_sources))
+        .map_err(failure)
+}
+
 fn authorize(
     allowed_sources: &BTreeSet<ExtensionId>,
     source_id: Option<&str>,

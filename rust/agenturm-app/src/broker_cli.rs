@@ -17,6 +17,7 @@ const USAGE: &str = concat!(
     "       agenturm broker import-evals --broker-config <json> --file <results.json|-> --source-id otlp.<id>\n",
     "       agenturm broker evals --broker-config <json> --source-id otlp.<id> --trace-id <id> [--json]\n",
     "       agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path>\n",
+    "       agenturm broker host <record|history> --broker-config <json> [options]\n",
     "       agenturm broker trace-payload <snapshot|preview> --broker-config <json> [options]\n",
     "       agenturm broker grant <check|approve|revoke> --broker-config <json> --binding <json>\n",
     "       agenturm broker content list --broker-config <json> --source-id <id> --session-id <id>\n",
@@ -80,6 +81,7 @@ enum BrokerCommand {
     Run(trace_run::TraceInvocation),
     Investigation(Box<InvestigationOptions>),
     Retention(RetentionOptions),
+    Host(HostOptions),
     Grant {
         verb: String,
         binding: PathBuf,
@@ -188,6 +190,12 @@ pub(super) fn parse_os(args: &[OsString]) -> Result<BrokerOptions, String> {
         return Ok(BrokerOptions {
             config,
             command: BrokerCommand::Retention(retention_cli::parse(&command[1..], true)?),
+        });
+    }
+    if command.first().is_some_and(|verb| verb == "host") {
+        return Ok(BrokerOptions {
+            config,
+            command: BrokerCommand::Host(host_cli::parse(&command[1..], true)?),
         });
     }
     let management = match command.as_slice() {
@@ -462,6 +470,10 @@ pub fn execute(options: &BrokerOptions) -> Result<ExitCode, BrokerExecutionError
         }
         BrokerCommand::Retention(options) => {
             print!("{}", retention_cli::execute_broker(options, &store)?);
+            return Ok(ExitCode::SUCCESS);
+        }
+        BrokerCommand::Host(options) => {
+            host_cli::execute_broker(options, store, std::io::stdout().lock())?;
             return Ok(ExitCode::SUCCESS);
         }
         BrokerCommand::Investigation(options) => {

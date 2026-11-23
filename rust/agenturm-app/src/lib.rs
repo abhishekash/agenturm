@@ -16,6 +16,7 @@ mod content_preview;
 mod discovery;
 mod eval_import;
 mod handoff_export;
+mod host_cli;
 mod inspector_activity;
 mod investigate_cli;
 #[cfg(target_os = "linux")]
@@ -46,6 +47,7 @@ pub use attention::{AttentionOptions, execute_attention};
 pub use content_preview::{ContentOptions, execute_content, execute_content_stdout};
 pub use discovery::{discover, execute_discover};
 pub use eval_import::{EvalOptions, execute_evals};
+pub use host_cli::{HostOptions, execute as execute_host};
 pub use investigate_cli::{InvestigationOptions, execute_investigation};
 #[cfg(target_os = "linux")]
 pub use new_window::{WindowOptions, execute as execute_new_window};
@@ -211,6 +213,7 @@ pub enum Command {
     Version,
     Status,
     Attention(AttentionOptions),
+    Host(HostOptions),
     Task(TaskOptions),
     Inspect(InspectOptions),
     Cockpit {
@@ -832,6 +835,7 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         #[cfg(target_os = "linux")]
         Some("adapter") => adapter_install::parse(&args[1..]).map(Command::InstallAdapter),
         Some("attention") => attention::parse(&args[1..]).map(Command::Attention),
+        Some("host") => host_cli::parse(&args[1..], false).map(Command::Host),
         Some("task") => task_cli::parse(&args[1..]).map(Command::Task),
         Some("cockpit") if args.len() == 1 => Ok(Command::Cockpit {
             db: None,
@@ -1956,6 +1960,12 @@ trait HistoryReader: ObservationStore {
     fn local_host_data(&self) -> bool {
         true
     }
+    fn query_host_history(
+        &self,
+        _: &ObservationQuery,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        Err("Host history is unavailable from this receiver".into())
+    }
     fn workspace_ledger(
         &self,
         marker: &std::path::Path,
@@ -1978,6 +1988,12 @@ trait HistoryReader: ObservationStore {
 }
 
 impl HistoryReader for Store {
+    fn query_host_history(
+        &self,
+        query: &ObservationQuery,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        Store::query_host_history(self, query, None).map_err(|error| error.to_string())
+    }
     fn workspace_ledger(
         &self,
         marker: &std::path::Path,
@@ -2012,6 +2028,16 @@ impl HistoryReader for Store {
 
 #[cfg(target_os = "linux")]
 impl HistoryReader for agenturm_storage_service::NativeStore {
+    fn local_host_data(&self) -> bool {
+        false
+    }
+    fn query_host_history(
+        &self,
+        query: &ObservationQuery,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        self.query_host_history(query)
+            .map_err(|error| error.to_string())
+    }
     fn workspace_ledger(
         &self,
         marker: &std::path::Path,
@@ -2346,6 +2372,7 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                     "kind":"reported_cost", "currency":cost.currency,
                     "nanounits":cost.nanounits.to_string(), "span":cost.span,
                 }),
+                ObservationKind::HostSample(sample) => serde_json::json!({"kind":"host_sample", "sample":sample}),
                 ObservationKind::Diagnostic { code, severity } => {
                     serde_json::json!({"kind":"diagnostic", "code":code, "severity":severity})
                 }
@@ -3409,6 +3436,8 @@ pub fn render(command: Command) -> String {
             "       agenturm attention status --db <path>\n",
             "       agenturm attention watch --db <path> [--once | --max-polls <1..10000>] [--interval-ms <100..60000>]\n",
             "       agenturm attention <status|watch> --endpoint http://<loopback-IP:port> --token-file <path> [watch options]\n",
+            "       agenturm host record --db <path> --source-id host.<label> [--watch [--interval-ms <1000..60000>]]\n",
+            "       agenturm host history --db <path> [--source-id host.<label>] [--limit <1..64>] [--before <position-json>]\n",
             "       agenturm task <list|add|show|complete|reopen|link|unlink|handoffs|export> [options]\n",
             "       agenturm discover [--follow] [--sessions-per-harness <1..8>]\n",
             "       agenturm collect --config <json-path> --db <path>\n",
@@ -3444,6 +3473,7 @@ pub fn render(command: Command) -> String {
         | Command::Prune { .. }
         | Command::Retention(_)
         | Command::Summary(_)
+        | Command::Host(_)
         | Command::Content(_)
         | Command::TracePayload(_) => String::new(),
         Command::Discover { .. } | Command::Cockpit { .. } => String::new(),

@@ -917,13 +917,18 @@ impl Workspace {
                     );
                 }
             }
-            KeyCode::Char('g' | '2'..='8') => {
+            KeyCode::Char('6') => self.request(
+                sender,
+                WorkspaceRequest::Work(WorkCommand::HostHistory(None)),
+                Change::Work(None),
+            ),
+            KeyCode::Char('g' | 'H' | '2'..='5' | '7' | '8') => {
                 let view = match key {
                     KeyCode::Char('2') => WorkspaceView::Activity,
                     KeyCode::Char('3') => WorkspaceView::Mcp,
                     KeyCode::Char('4') => WorkspaceView::Operations,
                     KeyCode::Char('5') => WorkspaceView::Findings,
-                    KeyCode::Char('6') => WorkspaceView::Host,
+                    KeyCode::Char('H') => WorkspaceView::Host,
                     KeyCode::Char('7') => WorkspaceView::Usage,
                     KeyCode::Char('8') => WorkspaceView::Traces,
                     _ => WorkspaceView::Overview,
@@ -1329,7 +1334,7 @@ fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message
     };
     if agents.help {
         frame.render_widget(
-            Paragraph::new("Enter Overview · a Activity · v Review · u Usage\n2 Activity · 3 MCP · 4 Operations · 5 Findings\n6 Host · 7 Usage · 8 Traces · g History\nb Tasks · w Workflow · p Prompts\n/ Search · x Clear · f Filter · s Sort · r Refresh\n←/→ Collapse/expand · h Flat/tree · [ ] Page · q Quit")
+            Paragraph::new("Enter Overview · a Activity · v Review · u Usage\n2 Activity · 3 MCP · 4 Operations · 5 Findings\n6 Host history · H Live host · 7 Usage · 8 Traces\ng History · b Tasks · w Workflow · p Prompts\n/ Search · x Clear · f Filter · s Sort · r Refresh\n←/→ Collapse/expand · h Flat/tree · [ ] Page · q Quit")
                 .wrap(Wrap { trim: false })
                 .block(Block::bordered().title(HELP_CLOSE_HINT)),
             content,
