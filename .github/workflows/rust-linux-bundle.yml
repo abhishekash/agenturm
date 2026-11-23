@@ -40,6 +40,7 @@ jobs:
             fi
           fi
           scripts/verify-rust-linux-bundle.sh "$archive"
+          scripts/verify-rust-installer.sh "$archive"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agenturm-rust-linux-x86_64
@@ -94,6 +95,7 @@ jobs:
           scripts/verify-rust-linux-bundle.sh "${archives[0]}" \
             --previous "$RUNNER_TEMP/agenturm-arm64-prior/agenturm-0.2.0-linux-aarch64.tar.gz" \
             --systemd-user
+          scripts/verify-rust-installer.sh "${archives[0]}"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
           name: agenturm-rust-linux-aarch64-qualification
