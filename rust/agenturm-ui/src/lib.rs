@@ -6,8 +6,11 @@
 
 #![forbid(unsafe_code)]
 
+mod live_receiver;
 mod workbench;
 mod workspace;
+
+pub use live_receiver::{LiveOwner, LivePage, LiveRow, run_live_receiver};
 
 pub use workbench::evaluation::{
     EvaluationDetailEntry, EvaluationPage, EvaluationRead, EvaluationRow, EvaluationView,
@@ -256,7 +259,7 @@ pub struct HistoryPage {
     pub initial_pane: Option<ExtensionId>,
     pub review_pane: Option<ExtensionId>,
     pub operation_details: Vec<OperationDetailEntry>,
-    pub private_telemetry: bool,
+    pub private_telemetry_history: Option<String>,
 }
 
 struct PageView {
@@ -277,7 +280,7 @@ impl PageView {
             .initial_pane
             .as_ref()
             .and_then(|pane| page.snapshot.panes.keys().position(|id| id == pane));
-        let telemetry_spans = if page.private_telemetry {
+        let telemetry_spans = if let Some(history_identity) = &page.private_telemetry_history {
             page.snapshot
                 .observations
                 .iter()
@@ -287,6 +290,7 @@ impl PageView {
                         return None;
                     };
                     Some(TelemetrySpanEntry {
+                        history_identity: history_identity.clone(),
                         source_id: observation.harness_id.clone(),
                         native_source_id: span.target_source_id.clone(),
                         trace_id: span.trace_id.clone(),
@@ -342,7 +346,7 @@ pub fn run_with_history(
         initial_pane: None,
         review_pane: None,
         operation_details: Vec::new(),
-        private_telemetry: false,
+        private_telemetry_history: None,
     };
     run_with_turn_activity(initial, |_, before| {
         let Some(cursor) = before else {
@@ -354,7 +358,7 @@ pub fn run_with_history(
             initial_pane: None,
             review_pane: None,
             operation_details: Vec::new(),
-            private_telemetry: false,
+            private_telemetry_history: None,
         }))
     })
 }

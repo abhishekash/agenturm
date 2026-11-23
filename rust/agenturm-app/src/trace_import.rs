@@ -25,8 +25,8 @@ pub(super) const MAX_EXPORT_SPANS: usize = agenturm_store::MAX_OTLP_BATCH_SPANS;
 const CURSOR_PREFIX: &str = "otlp-json/1:";
 const TURN_KEY: &str = "agenturm.turn.id";
 const WORKER_KEY: &str = "agenturm.worker.id";
-const PAYLOAD_INPUT: &str = "agenturm.payload.input";
-const PAYLOAD_OUTPUT: &str = "agenturm.payload.output";
+pub(super) const PAYLOAD_INPUT: &str = "agenturm.payload.input";
+pub(super) const PAYLOAD_OUTPUT: &str = "agenturm.payload.output";
 
 pub(super) const TRACE_IMPORT_USAGE: &str =
     "agenturm import-traces --file <otlp-json-path|-> --db <path> --source-id otlp.<id>";
@@ -207,9 +207,9 @@ pub(super) fn commit_payloads(
     binding: &TelemetryBinding,
     rows: &[Observation],
     payloads: &[TelemetryPayloadRecord],
-) -> Result<(), String> {
+) -> Result<usize, String> {
     if payloads.is_empty() {
-        return commit(db, &binding.source_id, rows).map(|_| ());
+        return commit(db, &binding.source_id, rows);
     }
     let mut store =
         Store::open_collector(db).map_err(|error| format!("open history failed: {error}"))?;
@@ -218,7 +218,8 @@ pub(super) fn commit_payloads(
         .map_err(|_| "Automatic retention could not run")?;
     let batch = prepare_payload_batch(&store, binding, rows)?;
     match store.commit_telemetry_batch(&batch, binding, payloads) {
-        Ok(CommitOutcome::Replay | CommitOutcome::Committed { .. }) => Ok(()),
+        Ok(CommitOutcome::Replay) => Ok(0),
+        Ok(CommitOutcome::Committed { inserted }) => Ok(inserted),
         Err(error) => Err(error.to_string()),
     }
 }
@@ -345,16 +346,7 @@ pub(super) fn protobuf_response(rejected: usize) -> Vec<u8> {
     proto::response(rejected)
 }
 
-pub(super) fn project(
-    spans: impl IntoIterator<Item = OtlpSpan>,
-    source_id: &ExtensionId,
-    launch_session: Option<&str>,
-) -> Result<(Vec<Observation>, usize), String> {
-    let (observations, skipped, _) = project_payloads(spans, source_id, launch_session, None)?;
-    Ok((observations, skipped))
-}
-
-fn project_payloads(
+pub(super) fn project_payloads(
     spans: impl IntoIterator<Item = OtlpSpan>,
     source_id: &ExtensionId,
     launch_session: Option<&str>,

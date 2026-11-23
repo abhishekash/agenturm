@@ -94,8 +94,10 @@ covered evaluation disclosure across separate broker identities, metadata-only
 HTTP reads, backup and pruning, and keyboard navigation at 60×18 and 120×32.
 The cockpit restored terminal settings and cleared private text before exit.
 The frozen source passed 406 Rust library tests, 38 CLI process tests and
-strict workspace Clippy. Native Linux ARM64 candidate qualification also passed;
-the tag build attaches its separately qualified archive and checksum.
+strict workspace Clippy. The native Linux ARM64 archive also passed the tagged
+build's prior-release upgrade and systemd user-service qualification and is
+published with its checksum. Its SHA-256 is
+`74e1c6e20ac6427bf2c7c57268643254676bd2c17e3651f617da594c1dcae71b`.
 
 [Exact archive and qualification record](../validation/rust-036-release.md)
 

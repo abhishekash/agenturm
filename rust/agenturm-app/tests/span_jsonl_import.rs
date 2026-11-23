@@ -487,6 +487,309 @@ fn maximum_export_commits_span_cost_and_usage_atomically() {
     }
 }
 
+#[test]
+fn opted_in_payloads_use_an_exact_grant_and_keep_replay_retirement() {
+    let scratch = Scratch::new();
+    let db = scratch.0.join("history.sqlite");
+    let file = scratch.0.join("spans.jsonl");
+    let scope = ["--payload-scope", HARNESS];
+    let mut root = span(ROOT, None, "OK");
+    root["attributes"]["agenturm.payload.input"] = json!("bounded model input");
+    root["attributes"]["agenturm.payload.output"] = json!("bounded model response");
+    write_jsonl(&file, &[root.clone()]);
+
+    let wrong_binding = failure(import_file(&db, &file, &["--payload-scope", "standalone"]));
+    assert!(wrong_binding.contains("configured explicit source and session"));
+    assert!(!db.exists());
+    assert!(check(import_file(&db, &file, &scope)).contains("Imported 1 spans"));
+    let cursor = source_cursor(&db);
+    let metadata = || check(run(&db, &["query", "--harness-id", SOURCE]));
+    assert!(!metadata().contains("bounded model"));
+    let selection = payload_selection(&db, ROOT, Some(HARNESS));
+    let preview = || preview_payload(&db, &scratch, &selection);
+    assert!(!preview().status.success());
+    grant_payloads(&db, HARNESS);
+    let expected = json!({"origin": "producer_captured_telemetry", "payload": {
+        "input": "bounded model input", "output": "bounded model response",
+    }});
+    assert_eq!(
+        serde_json::from_str::<Value>(&check(preview())).unwrap(),
+        expected
+    );
+
+    let mut wrong_worker = selection.clone();
+    wrong_worker["worker_id"] = json!("worker/two");
+    assert!(
+        !preview_payload(&db, &scratch, &wrong_worker)
+            .status
+            .success()
+    );
+    assert!(check(import_file(&db, &file, &scope)).contains("Imported 0 spans"));
+    assert!(check(import_file(&db, &file, &[])).contains("Imported 0 spans"));
+    assert_eq!(source_cursor(&db), cursor);
+
+    let mut conflict = root.clone();
+    conflict["attributes"]["agenturm.payload.input"] = json!(PRIVATE);
+    let earlier_new_span = span("0202020202020202", None, "OK");
+    let before = metadata();
+    write_jsonl(&file, &[earlier_new_span, conflict.clone()]);
+    assert!(failure(import_file(&db, &file, &scope)).contains("Cannot commit"));
+    assert_eq!(metadata(), before);
+    assert_eq!(source_cursor(&db), cursor);
+
+    check(run(
+        &db,
+        &["prune", "--before-unix-ns", &(END + 1).to_string()],
+    ));
+    assert!(!preview().status.success());
+    write_jsonl(&file, &[root]);
+    assert!(check(import_file(&db, &file, &scope)).contains("Imported 0 spans"));
+    write_jsonl(&file, &[conflict]);
+    assert!(failure(import_file(&db, &file, &scope)).contains("Cannot commit"));
+    assert_eq!(source_cursor(&db), cursor);
+    assert!(
+        Store::open_read_only(&db)
+            .unwrap()
+            .observations()
+            .unwrap()
+            .is_empty()
+    );
+    assert!(!preview().status.success());
+}
+
+#[test]
+fn payload_selection_rejects_other_fresh_history_and_requires_refresh_after_restore() {
+    let scratch = Scratch::new();
+    let original = scratch.0.join("original.sqlite");
+    let unrelated = scratch.0.join("unrelated.sqlite");
+    let restored = scratch.0.join("restored.sqlite");
+    let file = scratch.0.join("spans.jsonl");
+    for (db, body) in [
+        (&original, "Captured original text"),
+        (&unrelated, "Captured unrelated text"),
+    ] {
+        let mut row = span(ROOT, None, "OK");
+        row["attributes"]["agenturm.payload.input"] = json!(body);
+        write_jsonl(&file, &[row]);
+        check(import_file(db, &file, &["--payload-scope", HARNESS]));
+        grant_payloads(db, HARNESS);
+    }
+    let original_selection = payload_selection(&original, ROOT, Some(HARNESS));
+    let unrelated_selection = payload_selection(&unrelated, ROOT, Some(HARNESS));
+    assert_eq!(
+        original_selection["snapshot_id"],
+        unrelated_selection["snapshot_id"]
+    );
+    assert_ne!(
+        original_selection["history_identity"],
+        unrelated_selection["history_identity"]
+    );
+    let error = failure(preview_payload(&unrelated, &scratch, &original_selection));
+    assert!(error.contains("restored or replaced"));
+    assert!(
+        check(preview_payload(&unrelated, &scratch, &unrelated_selection))
+            .contains("Captured unrelated text")
+    );
+
+    let mut legacy = original_selection.clone();
+    legacy.as_object_mut().unwrap().remove("history_identity");
+    let error = failure(preview_payload(&original, &scratch, &legacy));
+    assert!(error.contains("Refresh it with trace-payload snapshot"));
+    assert!(
+        check(preview_payload(&original, &scratch, &original_selection))
+            .contains("Captured original text")
+    );
+
+    check(run(
+        &original,
+        &["backup", "--output", restored.to_str().unwrap()],
+    ));
+    grant_payloads(&restored, HARNESS);
+    let error = failure(preview_payload(&restored, &scratch, &original_selection));
+    assert!(error.contains("restored or replaced"));
+    let refreshed = payload_selection(&restored, ROOT, Some(HARNESS));
+    assert_eq!(
+        refreshed["history_identity"],
+        original_selection["history_identity"]
+    );
+    assert_ne!(refreshed["snapshot_id"], original_selection["snapshot_id"]);
+    assert!(
+        check(preview_payload(&restored, &scratch, &refreshed)).contains("Captured original text")
+    );
+}
+
+#[test]
+fn agent_harness_profile_maps_only_selected_payload_slots() {
+    let scratch = Scratch::new();
+    let file = scratch.0.join("agent-harness.jsonl");
+    let mut root = span(ROOT, None, "OK");
+    root["name"] = json!("agent.run");
+    root["attributes"] = json!({
+        "agent.task": "Summarize these notes", "agent.summary": "The summary is ready",
+        "agent.cost_usd": 500.0, "agent.usage.input_tokens": 999,
+        "agenturm.payload.input": PRIVATE,
+    });
+    let mut tool = span(CHILD, Some(ROOT), "OK");
+    tool["name"] = json!("tool.call");
+    tool["attributes"] = json!({
+        "tool.arguments": "{\"path\":\"notes.txt\"}", "tool.result": "A bounded note",
+        "tool.proposed_arguments": PRIVATE, "tool.error_message": PRIVATE,
+    });
+    tool["events"] = json!([{"name": "hitl.decision", "attributes": {"hitl.rationale": PRIVATE}}]);
+    let mut model = span("3333333333333333", Some(ROOT), "OK");
+    model["name"] = json!("llm.complete");
+    model["attributes"] = json!({"tool.result": PRIVATE, "llm.cost_usd": 0.001,
+        "llm.cost_known": true, "llm.usage.input_tokens": 17});
+    write_jsonl(&file, &[root, tool, model]);
+    let db = scratch.0.join("history.sqlite");
+    let session = ["--session-id", SESSION];
+    assert!(
+        failure(import_file(
+            &db,
+            &file,
+            &["--payload-format", "agent-harness"]
+        ))
+        .contains("--payload-scope")
+    );
+    check(import_file(&db, &file, &session));
+    assert!(
+        failure(import_file(
+            &db,
+            &file,
+            &[
+                "--session-id",
+                SESSION,
+                "--payload-scope",
+                "standalone",
+                "--payload-format",
+                "agent-harness",
+            ]
+        ))
+        .contains("Cannot commit")
+    );
+
+    let db = scratch.0.join("opted-in.sqlite");
+    let options = [
+        "--session-id",
+        SESSION,
+        "--payload-scope",
+        "standalone",
+        "--payload-format",
+        "agent-harness",
+    ];
+    assert_eq!(
+        check(import_file(&db, &file, &options)),
+        "Imported 5 observations from 3 spans, 1 reported cost records and 1 token usage records.\n"
+    );
+    grant_payloads(&db, "standalone");
+    for (span_id, input, output) in [
+        (ROOT, "Summarize these notes", "The summary is ready"),
+        (CHILD, "{\"path\":\"notes.txt\"}", "A bounded note"),
+    ] {
+        let selection = payload_selection(&db, span_id, None);
+        let preview = check(preview_payload(&db, &scratch, &selection));
+        assert_eq!(
+            serde_json::from_str::<Value>(&preview).unwrap()["payload"],
+            json!({"input": input, "output": output})
+        );
+        let metadata = check(run(&db, &["query", "--harness-id", SOURCE]));
+        assert!(!metadata.contains(input) && !metadata.contains(output));
+    }
+    let model_selection = payload_selection(&db, "3333333333333333", None);
+    assert!(
+        !preview_payload(&db, &scratch, &model_selection)
+            .status
+            .success()
+    );
+    assert!(check(import_file(&db, &file, &options)).contains("Imported 0 observations"));
+}
+
+#[test]
+fn invalid_payload_type_text_and_total_reject_before_admission() {
+    let scratch = Scratch::new();
+    let db = scratch.0.join("history.sqlite");
+    let file = scratch.0.join("spans.jsonl");
+    let scope = ["--payload-scope", HARNESS];
+    let mut valid = span(ROOT, None, "OK");
+    valid["attributes"]["agenturm.payload.input"] = json!("bounded model input");
+    for payload in [
+        Value::Null,
+        json!([PRIVATE]),
+        json!(format!("sk-{PRIVATE}")),
+        json!("x".repeat(2049)),
+    ] {
+        let mut invalid = span(CHILD, Some(ROOT), "OK");
+        invalid["attributes"]["agenturm.payload.output"] = payload;
+        write_jsonl(&file, &[valid.clone(), invalid]);
+        let error = failure(import_file(&db, &file, &scope));
+        assert!(!error.contains("bounded model input"));
+        assert!(!db.exists());
+    }
+    let mut rows: Vec<_> = (1..=33)
+        .map(|id| {
+            let mut row = span(&format!("{id:016x}"), None, "OK");
+            row["attributes"]["agenturm.payload.input"] = json!("x".repeat(2048));
+            row
+        })
+        .collect();
+    write_jsonl(&file, &rows);
+    assert!(failure(import_file(&db, &file, &scope)).contains("exceeds 64 KiB"));
+    assert!(!db.exists());
+    rows.pop();
+    write_jsonl(&file, &rows);
+    assert!(check(import_file(&db, &file, &scope)).contains("Imported 32 spans"));
+}
+
+fn grant_payloads(db: &Path, scope: &str) {
+    check(run(
+        db,
+        &[
+            "trace-payload",
+            "grant",
+            "--source-id",
+            SOURCE,
+            "--payload-scope",
+            scope,
+        ],
+    ));
+}
+
+fn payload_selection(db: &Path, span_id: &str, native_source_id: Option<&str>) -> Value {
+    let snapshot = check(run(
+        db,
+        &[
+            "trace-payload",
+            "snapshot",
+            "--source-id",
+            SOURCE,
+            "--session-id",
+            SESSION,
+        ],
+    ));
+    let snapshot: Value = serde_json::from_str(&snapshot).unwrap();
+    json!({
+        "history_identity": snapshot["history_identity"],
+        "binding": {"source_id": SOURCE, "native_source_id": native_source_id},
+        "trace_id": TRACE, "span_id": span_id, "session_id": SESSION,
+        "turn_id": native_source_id.map(|_| TURN), "worker_id": native_source_id.map(|_| WORKER),
+        "snapshot_id": snapshot["snapshot_id"],
+    })
+}
+
+fn preview_payload(db: &Path, scratch: &Scratch, selection: &Value) -> Output {
+    let path = scratch.0.join("selection.json");
+    std::fs::write(&path, selection.to_string()).unwrap();
+    run(
+        db,
+        &[
+            "trace-payload",
+            "preview",
+            "--selection",
+            path.to_str().unwrap(),
+        ],
+    )
+}
+
 fn span(id: &str, parent: Option<&str>, status: &str) -> Value {
     json!({
         "trace_id": TRACE, "span_id": id, "parent_span_id": parent,
@@ -525,7 +828,7 @@ fn write_jsonl(path: &Path, spans: &[Value]) {
 }
 
 fn source_cursor(db: &Path) -> String {
-    Store::open(db)
+    Store::open_read_only(db)
         .unwrap()
         .source_cursor(SOURCE)
         .unwrap()

@@ -6,7 +6,10 @@ use agenturm_kernel::{
 };
 use agenturm_storage_service::native_read::ReadFailure;
 use agenturm_storage_service::{NativeSelection, ReaderHistoryReply, ReaderHistoryRequest};
-use agenturm_store::{MAX_HOST_HISTORY_PAGE, SessionPosition, SessionQuery};
+use agenturm_store::{
+    EvalInventoryQuery, MAX_EVAL_INVENTORY_SOURCES, MAX_HOST_HISTORY_PAGE, SessionPosition,
+    SessionQuery,
+};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -22,6 +25,7 @@ pub(super) enum View {
 
 pub(super) enum Request {
     Health,
+    EvalInventory(EvalInventoryQuery),
     Sessions(SessionQuery),
     HostHistory(ObservationQuery),
     History {
@@ -44,6 +48,20 @@ impl Request {
             } else {
                 Err("400 Bad Request")
             };
+        }
+        if path == "/api/outcomes" {
+            let raw = fields.remove("source_ids").ok_or("400 Bad Request")?;
+            if !fields.is_empty() {
+                return Err("400 Bad Request");
+            }
+            let source_ids = raw
+                .split(',')
+                .take(MAX_EVAL_INVENTORY_SOURCES + 1)
+                .map(|source| ExtensionId::parse(source).map_err(|_| "400 Bad Request"))
+                .collect::<Result<Vec<_>, _>>()?;
+            let query = EvalInventoryQuery { source_ids };
+            query.validate().map_err(|_| "400 Bad Request")?;
+            return Ok(Self::EvalInventory(query));
         }
         let host_history = path == "/api/host";
         let view = match path {
@@ -193,6 +211,24 @@ impl Request {
                 };
                 json!({ "status":"ok", "read_only":true, "version":env!("CARGO_PKG_VERSION") })
             }
+            Self::EvalInventory(query) => {
+                let ReaderHistoryReply::EvalInventory(inventory) =
+                    read(ReaderHistoryRequest::EvalInventory { query })?
+                else {
+                    return Err(ReadFailure::Unavailable);
+                };
+                let mut value =
+                    serde_json::to_value(&inventory).map_err(|_| ReadFailure::Unavailable)?;
+                for (row, outcome) in value["outcomes"]
+                    .as_array_mut()
+                    .ok_or(ReadFailure::Unavailable)?
+                    .iter_mut()
+                    .zip(&inventory.outcomes)
+                {
+                    row["revision"] = json!(outcome.revision.to_string());
+                }
+                value
+            }
             Self::Sessions(query) => {
                 let ReaderHistoryReply::Sessions(page) =
                     read(ReaderHistoryRequest::Sessions { query })?
@@ -286,7 +322,11 @@ fn exact_integers(value: &mut Value) {
             for (key, value) in fields {
                 let exact = matches!(
                     key.as_str(),
-                    "snapshot_id" | "nanounits" | "nanocredits" | "clock_ticks_per_second"
+                    "snapshot_id"
+                        | "trace_evidence_snapshot"
+                        | "nanounits"
+                        | "nanocredits"
+                        | "clock_ticks_per_second"
                 ) || [
                     "_unix_ns",
                     "_unix_nano",
@@ -355,6 +395,111 @@ fn decode(value: &str) -> Result<String, &'static str> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn outcome_inventory_requires_only_an_explicit_unique_source_set() {
+        let Request::EvalInventory(query) =
+            Request::parse("/api/outcomes?source_ids=otlp.a%2Cotlp.b")
+                .ok()
+                .unwrap()
+        else {
+            panic!("expected an outcome inventory request");
+        };
+        assert_eq!(
+            query
+                .source_ids
+                .iter()
+                .map(ExtensionId::as_str)
+                .collect::<Vec<_>>(),
+            ["otlp.a", "otlp.b"]
+        );
+        for target in [
+            "/api/outcomes",
+            "/api/outcomes?source_ids=otlp.a,otlp.a",
+            "/api/outcomes?source_ids=otlp.a,harness.pi",
+            "/api/outcomes?source_ids=otlp.a,",
+            "/api/outcomes?source_ids=otlp.a&source_ids=otlp.b",
+            "/api/outcomes?source_id=otlp.a",
+            "/api/outcomes?source_ids=otlp.a&limit=1",
+            "/api/outcomes?source_ids=otlp.a&cursor=x",
+            "/api/outcomes?source_ids=otlp.a&session_id=x",
+            "/api/outcomes?source_ids=otlp.a&snapshot_id=1",
+        ] {
+            assert!(
+                matches!(Request::parse(target), Err("400 Bad Request")),
+                "{target}"
+            );
+        }
+        let too_many = (0..=16)
+            .map(|index| format!("otlp.s{index}"))
+            .collect::<Vec<_>>()
+            .join(",");
+        assert!(matches!(
+            Request::parse(&format!("/api/outcomes?source_ids={too_many}")),
+            Err("400 Bad Request")
+        ));
+    }
+
+    #[test]
+    fn outcome_inventory_http_preserves_precision_and_unknown_score_values() {
+        use agenturm_store::{
+            EvalInventory, EvalInventoryRow, EvalOutcome, EvalScore, EvaluationMetadata,
+        };
+
+        let exact = (1_u64 << 53) + 1;
+        let output = Request::parse("/api/outcomes?source_ids=otlp.a")
+            .ok()
+            .unwrap()
+            .execute("read-binding", &|request| {
+                let ReaderHistoryRequest::EvalInventory { query } = request else {
+                    panic!("expected an authorized reader request");
+                };
+                let trace_source_id = query.source_ids[0].clone();
+                Ok(ReaderHistoryReply::EvalInventory(EvalInventory {
+                    source_ids: query.source_ids,
+                    trace_evidence_snapshot: ReadSnapshot::new(exact, None),
+                    evaluation_metadata: EvaluationMetadata::Current,
+                    outcomes: vec![EvalInventoryRow {
+                        trace_source_id,
+                        revision: exact,
+                        outcome: EvalOutcome {
+                            trace_id: "11".repeat(16),
+                            passed: false,
+                            task_id: None,
+                            provider_model: None,
+                            scores: vec![
+                                EvalScore {
+                                    scorer: "zero".into(),
+                                    passed: Some(false),
+                                    score: Some(0.into()),
+                                },
+                                EvalScore {
+                                    scorer: "unknown".into(),
+                                    passed: Some(true),
+                                    score: None,
+                                },
+                            ],
+                        },
+                    }],
+                }))
+            })
+            .unwrap();
+        assert_eq!(output["history_identity"], "read-binding");
+        assert_eq!(output["evaluation_metadata"], "current");
+        assert_eq!(output["trace_evidence_snapshot"], exact.to_string());
+        assert_eq!(output["outcomes"][0]["revision"], exact.to_string());
+        assert_eq!(output["outcomes"][0]["outcome"]["scores"][0]["score"], 0);
+        assert_eq!(
+            output["outcomes"][0]["outcome"]["scores"][0]["passed"],
+            false
+        );
+        assert!(output["outcomes"][0]["outcome"]["scores"][1]["score"].is_null());
+        assert_eq!(
+            output["outcomes"][0]["outcome"]["scores"][1]["passed"],
+            true
+        );
+        assert!(output["outcomes"][0].get("detail_selection").is_none());
+    }
     use agenturm_kernel::{
         Observation, ObservationIdentity, ObservationPage, TraceSpan, TraceStatus,
     };

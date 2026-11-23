@@ -127,7 +127,7 @@ pub fn execute_trace_run(options: &TraceRunOptions) -> Result<ExitCode, String> 
         token,
         Some(options.db.clone()),
         move |source, rows, payloads| match &payload {
-            Some(binding) => commit_payloads(&db, binding, &rows, &payloads),
+            Some(binding) => commit_payloads(&db, binding, &rows, &payloads).map(|_| ()),
             None => commit(&db, source, &rows).map(|_| ()),
         },
     )

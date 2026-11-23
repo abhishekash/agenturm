@@ -158,9 +158,44 @@ fn evaluation_import_reopens_exact_retained_trace_and_preserves_execution_status
     assert_eq!(next["failed"], 1);
     assert!(next["page"]["next_trace_id"].is_null());
 
+    let inventory = |db: &Path, first: &str, second: &str| -> Value {
+        serde_json::from_str(&checked(run(
+            db,
+            &[
+                "evals",
+                "--list",
+                "--source-id",
+                first,
+                "--source-id",
+                second,
+                "--json",
+            ],
+        )))
+        .unwrap()
+    };
+    let complete = inventory(&db, SIBLING, PRIMARY);
+    assert_eq!(complete, inventory(&db, PRIMARY, SIBLING));
+    assert_eq!(complete["source_ids"], json!([PRIMARY, SIBLING]));
+    assert_eq!(complete["evaluation_metadata"], "current");
+    let rows = complete["outcomes"].as_array().unwrap();
+    assert_eq!(rows.len(), 3);
+    assert_eq!(rows[0]["outcome"], corrected["outcome"]);
+    assert_eq!(rows[0]["revision"], 2);
+    assert_eq!(rows[1]["outcome"]["trace_id"], SIBLING_ONLY);
+    assert_eq!(rows[2]["trace_source_id"], SIBLING);
+    assert_eq!(rows[2]["outcome"]["trace_id"], TRACE);
+    assert_eq!(rows[2]["revision"], 1);
+    assert_eq!(rows[2]["outcome"]["passed"], false);
+
     let backup = scratch.0.join("backup.sqlite");
     checked(run(&db, &["backup", "--output", path(&backup)]));
     assert_eq!(eval(&backup, PRIMARY), corrected);
+    let restored = inventory(&backup, PRIMARY, SIBLING);
+    assert_eq!(restored["outcomes"], complete["outcomes"]);
+    assert_ne!(
+        restored["trace_evidence_snapshot"],
+        complete["trace_evidence_snapshot"]
+    );
     let bytes = std::fs::read(&backup).unwrap();
     for private in [
         "private-error-marker",
@@ -179,6 +214,10 @@ fn evaluation_import_reopens_exact_retained_trace_and_preserves_execution_status
     checked(run(&db, &["prune", "--before-unix-ns", "450"]));
     assert_eq!(eval(&db, PRIMARY), Value::Null);
     assert_eq!(eval(&db, SIBLING)["outcome"]["passed"], false);
+    assert_eq!(
+        inventory(&db, PRIMARY, SIBLING)["outcomes"],
+        json!([rows[2]])
+    );
     assert!(
         failed(import(PRIMARY, vec![correction.clone()]))
             .contains("absent from the selected retained source")
@@ -186,6 +225,10 @@ fn evaluation_import_reopens_exact_retained_trace_and_preserves_execution_status
 
     import_traces(PRIMARY, vec![span(TRACE, "1111111111111113", 700)]);
     assert_eq!(eval(&db, PRIMARY), Value::Null);
+    assert_eq!(
+        inventory(&db, PRIMARY, SIBLING)["outcomes"],
+        json!([rows[2]])
+    );
     assert!(checked(import(PRIMARY, vec![original.clone()])).contains("Replayed 1"));
     assert!(checked(import(PRIMARY, vec![correction.clone()])).contains("Replayed 1"));
     assert_eq!(eval(&db, PRIMARY), Value::Null);
@@ -353,6 +396,24 @@ fn evaluation_detail_is_atomic_exact_and_fenced_by_both_receipts() {
     let meta = metadata(&db);
     assert_eq!(meta["revision"], 2);
     assert_eq!(meta["detail_selection"]["snapshot_id"], json!(admitted));
+    let listing = checked(run(
+        &db,
+        &["evals", "--list", "--source-id", PRIMARY, "--json"],
+    ));
+    for private in [
+        "bounded scorer explanation",
+        "bounded evaluator error",
+        "untyped provider body",
+        "detail_selection",
+        "receipt_id",
+    ] {
+        assert!(!listing.contains(private));
+    }
+    let listing: Value = serde_json::from_str(&listing).unwrap();
+    assert_eq!(listing["trace_evidence_snapshot"], json!(admitted));
+    assert_eq!(listing["outcomes"].as_array().unwrap().len(), 1);
+    assert_eq!(listing["outcomes"][0]["revision"], 2);
+    assert_eq!(listing["outcomes"][0]["outcome"], meta["outcome"]);
     let captured = &meta["detail_selection"];
     checked(run(
         &db,

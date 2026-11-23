@@ -73,7 +73,7 @@ exact native scope exists in the selected history snapshot.</p>
 <code>python3 scripts/validate_rust_broker_otlp.py --bin-dir /opt/agenturm/bin</code>
 to check the installed binaries with separate storage, collector and
 reader identities.</p>
-<h3>Preview opted-in telemetry text</h3>
+<h3 id="preview-opted-in-telemetry-text">Preview opted-in telemetry text</h3>
 <p>The trace receiver defaults to metadata. To accept private captured text,
 enable the exact source at the broker with
 <code>--native-telemetry-payload-sources otlp.example=harness.codex</code>. For a
@@ -94,7 +94,9 @@ agenturm broker trace-payload preview --broker-config broker.json --selection pa
 runs preview. The selection JSON names <code>binding</code> with <code>source_id</code> and
 <code>native_source_id</code> (null for a standalone session), the exact <code>trace_id</code>,
 <code>span_id</code>, <code>session_id</code>, <code>turn_id</code>, and <code>worker_id</code> (null when absent),
-and the returned <code>snapshot_id</code>. The response labels the text as
+and both <code>history_identity</code> and <code>snapshot_id</code> from the same snapshot reply.
+Use a fresh snapshot after a restore or when updating an older selection file
+that lacks <code>history_identity</code>. The response labels the text as
 <code>producer_captured_telemetry</code>. A claimed native linkage is a producer
 assertion. In the local or broker cockpit, open Traces with <code>8</code>, press
 <code>d</code> to select a span, and use Enter to open the private text modal. Escape
@@ -189,7 +191,12 @@ credentialed 60-column cockpit and attention client.</p>
 agenturm broker import-traces --broker-config broker.json \
   --file otlp.json --source-id otlp.exported
 </code></pre>
-<p>The same structural import and replay rules apply to local and broker history. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md#import-exported-spans">Span export format</a></p>
+<p>The same structural import and replay rules apply to local and broker history.
+For private JSONL text, configure the exact source and binding in
+<code>--native-telemetry-payload-sources</code> and pass the corresponding <code>--payload-scope</code>
+to <code>broker import-jsonl</code>. The collector can admit text and the configured reader
+can preview it after the grant administrator approves the telemetry binding.
+<a href="rust-cutover-workflows.html#import-exported-spans">Span export format</a></p>
 <h2>Record and read Host history</h2>
 <p>Run explicit Linux capture using the account that owns the processes you
 want to observe. In broker mode give that collector a <code>host.&lt;label&gt;</code> source
@@ -341,8 +348,8 @@ crossing a replaced database. Ordinary queries retain metadata only.</p>
 <p>An authorized collector can opt in to the string-valued result <code>error</code> and
 score <code>detail</code> fields for an allowlisted OTLP source. Each private capture is
 admitted atomically with its exact outcome revision. The broker stores this
-text in its owned history database. Evaluation queries and the authenticated
-HTTP reader return structural metadata and a body-free detail selection.</p>
+text in its owned history database. Selected-trace evaluation queries return
+structural metadata and a body-free detail selection.</p>
 <pre><code class="language-sh">agenturm broker import-evals --broker-config collector.json --source-id otlp.exported \
   --file results.json --include-detail
 agenturm eval-detail binding --source-id otlp.exported &gt; eval-binding.json
@@ -352,7 +359,7 @@ agenturm broker evals --broker-config reader.json --source-id otlp.exported \
 agenturm broker eval-detail preview --broker-config reader.json --selection selection.json
 agenturm broker grant revoke --broker-config grant-admin.json --binding eval-binding.json
 </code></pre>
-<p>Copy the revision's <code>detail_selection</code> object into <code>selection.json</code>. The
+<p>Copy the selected revision's <code>detail_selection</code> object into <code>selection.json</code>. The
 separate reader delivers text under its current <code>eval.result_detail</code> approval.
 The final sink acknowledges delivery after flushing, or after the cockpit
 clears its private frame. The client deadline is 25 seconds. The broker waits
@@ -442,9 +449,10 @@ grant revocation, broker-backed task approval, and private modal redaction
 before Escape, quit and Ctrl-C return control to the terminal.</p>
 <p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-storage-broker.md">Broker protocol</a></p>
 <h2>Read source-aware metadata with HTTP GET</h2>
-<p>The dedicated <code>broker serve-history</code> listener also provides these authenticated
-metadata routes: <code>/api/health</code>, <code>/api/sessions</code>, <code>/api/activity</code>, <code>/api/traces</code>,
-<code>/api/traces/&lt;trace-id&gt;/spans</code>, <code>/api/traces/&lt;trace-id&gt;/progress</code>, <code>/api/mcp</code>, <code>/api/metrics</code>, and <code>/api/hierarchy</code>.
+<p>The dedicated <code>broker serve-history</code> listener also provides authenticated
+metadata routes including <code>/api/health</code>, <code>/api/sessions</code>, <code>/api/activity</code>,
+<code>/api/traces</code>, <code>/api/traces/&lt;trace-id&gt;/spans</code>, <code>/api/traces/&lt;trace-id&gt;/progress</code>,
+<code>/api/mcp</code>, <code>/api/metrics</code>, <code>/api/hierarchy</code> and <code>/api/outcomes</code>.
 The response format is <code>agenturm.http-history/1</code>. It exposes Rust evidence
 and coverage rather than a Python receiver compatibility layer.</p>
 <p>First read <code>/api/health</code> with the listener's bearer credential. Preserve its
@@ -461,6 +469,26 @@ duplicate, unknown, malformed and over-limit selectors reject the request.</p>
 filtered empty page can still have more evidence. Counts cover the current
 page. Token counters, cost/credit units, nanosecond times and snapshot tokens
 are strings to preserve exact integers in JavaScript clients.</p>
+<p>For a current evaluation inventory, give <code>/api/outcomes</code> one <code>source_ids</code>
+parameter with one to 16 comma-separated, distinct <code>otlp.*</code> source IDs. For
+example, <code>/api/outcomes?source_ids=otlp.exported,otlp.ci</code>. This route accepts
+only <code>source_ids</code>. It authorizes the entire set before collecting any outcomes.
+Each row identifies its source, latest retained revision and outcome metadata.
+<code>trace_evidence_snapshot</code> and revision numbers are strings. The
+<code>evaluation_metadata</code> value is <code>current</code>. Evaluation metadata reflects the
+read transaction, and the snapshot identifies its trace evidence. Zero scores
+remain numeric zero, and unknown scores remain <code>null</code>. The inventory carries
+no private text or reveal selection.</p>
+<p>A request that exceeds 1,024 candidate source/trace keys or 2 MiB of serialized
+rows returns 413 without a partial inventory. Candidate keys include retired
+keys preserved for replay protection. The broker CLI applies the same rules.</p>
+<pre><code class="language-sh">agenturm broker evals --broker-config reader.json --list \
+  --source-id otlp.exported --source-id otlp.ci --json
+</code></pre>
+<p>Run the evaluation inventory fixture in a disposable Linux guest with the
+candidate app and storage service. It checks separate UIDs, scope, private
+field exclusion, restore, and overflow.
+<a href="https://github.com/abhishekash/agenturm/blob/main/scripts/validate_rust_eval_inventory.py">Evaluation inventory fixture</a></p>
 <p>Ordinary metadata endpoints exclude Host samples as well as private content.
 An explicitly enabled <code>/api/host</code> route returns recorded Host samples under the
 reader's source allowlist. None of these routes returns prompt or SDK message

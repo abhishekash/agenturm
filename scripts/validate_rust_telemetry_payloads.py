@@ -156,9 +156,9 @@ def main():
         def command(*args):
             return [binaries / "agenturm", "broker", "--broker-config", config, *args]
 
-        def run(uid, *args, code=0):
+        def run(uid, *args, code=0, input_text=None):
             result = subprocess.run(args, cwd=root, **principal(uid), capture_output=True,
-                                    text=True, timeout=15)
+                                    text=True, input=input_text, timeout=15)
             assert result.returncode == code, (args[1:3], result.stdout, result.stderr)
             return result
 
@@ -195,7 +195,7 @@ def main():
         def snapshot():
             reply = run(reader, *command("trace-payload", "snapshot", "--source-id", SOURCE,
                                          "--session-id", SESSION))
-            return json.loads(reply.stdout)["snapshot_id"]
+            return json.loads(reply.stdout)
 
         def preview(*, code=0, uid=reader):
             result = run(uid, *command("trace-payload", "preview", "--selection", selector_path),
@@ -299,7 +299,7 @@ def main():
 
             selected = {
                 "binding": binding, "trace_id": TRACE, "span_id": SPAN, "session_id": SESSION,
-                "turn_id": "turn-fixture", "worker_id": "worker-fixture", "snapshot_id": snapshot(),
+                "turn_id": "turn-fixture", "worker_id": "worker-fixture", **snapshot(),
             }
             selector_path.write_text(json.dumps(selected))
             selector_path.chmod(0o644)
@@ -308,6 +308,14 @@ def main():
             preview(code=1, uid=collector)
             preview(code=1, uid=admin)
             assert preview() == {"input": INPUT, "output": OUTPUT}
+            old_selection = dict(selected)
+            del old_selection["history_identity"]
+            selector_path.write_text(json.dumps(old_selection))
+            stale = run(reader, *command("trace-payload", "preview", "--selection", selector_path), code=1)
+            assert not stale.stdout and "Refresh it with trace-payload snapshot" in stale.stderr
+            selector_path.write_text(json.dumps({**selected, "history_identity": "0" * 32}))
+            preview(code=1)
+            selector_path.write_text(json.dumps(selected))
             for columns, rows, close in [(60, 18, b"\x1b"), (120, 32, b"q"), (60, 18, b"\x03")]:
                 cockpit_preview(command("cockpit"), principal(reader), state,
                                 columns=columns, rows=rows, close=close)
@@ -356,17 +364,65 @@ def main():
             preview(code=1)
             assert grant("approve")["epoch"] == 3
             preview(code=1)
-            selected["snapshot_id"] = snapshot()
+            refreshed = snapshot()
+            assert refreshed["history_identity"] == selected["history_identity"]
+            selected.update(refreshed)
             assert selected["snapshot_id"].startswith("r1:")
             selector_path.write_text(json.dumps(selected))
             assert preview() == {"input": INPUT, "output": OUTPUT}
             run(maintenance, *command("prune", "--before-unix-ns", str(started + 2)))
             preview(code=1)
+
+            imported_path = root / "imported.jsonl"
+            os.close(os.open(imported_path, os.O_WRONLY | os.O_CREAT | os.O_EXCL, 0o600))
+            os.chown(imported_path, collector, client_gid)
+            imported_span = {
+                "trace_id": TRACE, "span_id": "3333333333333333", "parent_span_id": None,
+                "start_unix_nano": started + 3, "end_unix_nano": started + 4,
+                "status": "OK", "attributes": {
+                    "session.id": SESSION, "agenturm.payload.input": INPUT,
+                    "agenturm.payload.output": OUTPUT, "input.value": UNRELATED,
+                },
+            }
+
+            def import_payload(uid, scope, code=0, stdin=False):
+                text = json.dumps(imported_span) + "\n"
+                if not stdin:
+                    imported_path.write_text(text)
+                reply = run(uid, *command("import-jsonl", "--file", "-" if stdin else imported_path,
+                                          "--source-id", SOURCE, "--payload-scope", scope),
+                            code=code, input_text=text if stdin else None)
+                assert all(text not in reply.stdout + reply.stderr for text in [INPUT, OUTPUT, UNRELATED])
+                return reply.stdout
+
+            # The collector may admit this source only with its exact private binding.
+            assert not import_payload(collector, "standalone", code=1)
+            probe = run(reader, sys.executable, "-c",
+                        "import sys; open(sys.argv[1], 'rb').read(1)", imported_path, code=1)
+            assert "PermissionError" in probe.stderr
+            imported_span["attributes"].update({
+                "agenturm.source.id": HARNESS, "agenturm.turn.id": "turn-fixture",
+                "agenturm.worker.id": "worker-fixture",
+            })
+            assert not import_payload(reader, HARNESS, code=1, stdin=True)
+            assert "Imported 1 spans" in import_payload(collector, HARNESS)
+            selected.update(span_id=imported_span["span_id"], **snapshot())
+            selector_path.write_text(json.dumps(selected))
+            assert preview() == {"input": INPUT, "output": OUTPUT}
+            assert "Imported 0 spans" in import_payload(collector, HARNESS)
+            assert snapshot() == {key: selected[key] for key in ("history_identity", "snapshot_id")}
+            run(maintenance, *command("prune", "--before-unix-ns", str(started + 5)))
+            preview(code=1)
+            assert "Imported 0 spans" in import_payload(collector, HARNESS)
+            imported_span["attributes"]["agenturm.payload.input"] = "Different imported text"
+            assert not import_payload(collector, HARNESS, code=1)
+            preview(code=1)
+
         finally:
             for process in (receiver, gateway, service):
                 if process is not None:
                     stop(process)
-        print("PASS private payload and exact reported cost, stable replay, all disclosure exits, broker fencing and restore",
+        print("PASS live and JSONL private payload, exact cost, replay, disclosure, broker fencing and restore",
               flush=True)
 
 

@@ -127,6 +127,19 @@ download matched the qualified archive and its SHA-256.
 [Release](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.1) ·
 [Tagged build](https://github.com/abhishekash/agenturm/actions/runs/45024901558)
 
+**Rust 0.3.6 qualified and published on Linux x86-64 and ARM64.** The tag
+points to `67eb65056c23c7490b5b0c235bedecc3c73fb617`. Both architecture
+jobs passed archive qualification. The exact x86-64 package additionally
+passed the 0.3.5 schema upgrade, managed user service, separate-principal
+private evidence and broker checks, and retained keyboard journeys at
+120×32 and 60×18. Read-only histories remain unchanged; the first writer
+upgrades to schema 17, which Rust 0.3.5 refuses. Rollback requires a
+pre-upgrade backup. The default entry-point switch remains gated.
+
+[Release](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.6) ·
+[Validation](../validation/rust-036-release.md) ·
+[Tagged build](https://github.com/abhishekash/agenturm/actions/runs/45105969055)
+
 ### Step 6 — Add connector runtime support after the Rust release gates
 
 Use the existing inbound admission path and the connector API as the starting point. Wire explicit grants and supervised processes, then add durable outbound delivery and reconciliation.
@@ -146,13 +159,13 @@ gated on OS isolation and credential control.
 | Configured process boundary | An independently built adapter and the bundled adapters collect through the same pinned catalog, validation, commit and ACK path. An independent capability adds metrics and a pane. | The default cockpit loads explicitly selected, pinned independent capabilities from its user catalog. Automatic decoder installation and untrusted process activation remain open. |
 | Installed Linux collector | Codex, Pi, Claude Code and OpenCode were collected from real local data. Kiro has an end-to-end native fixture. Published Rust history and cursors reopen in the development bundle. | Collect a real Kiro session on a host with a native Kiro transcript. Qualify installer and user service on any additional platform before advertising it. |
 | Evidence and cockpit | Native review decisions, exact task handoffs, pending request routing, typed Codex MCP metadata, and explicit OTLP source/session links have terminal and durable checks. Prompt proofs cover grant-fenced JSONL history and older retained OpenCode SQLite occurrences with admission digests. | Add source-specific missing lifecycle and relationship evidence and richer review/edit and MCP detail. Verify more actual native turn shapes in the installed cockpit. |
-| Storage and recovery | Atomic records and cursors, crash replay, writer leases, and portable workspace backup/restore are exercised. Restore preserves review and workbench state and disables private-content approvals. | A standalone broker must serve observation admission, queries, grants, and retention under a distinct principal. The available host denied user-namespace mapping and offered no noninteractive secondary UID. The feature-off service tests exercised their own contracts and refused standalone history writes. |
-| Release and compatibility | The published Rust 0.3.1 archive passed Ubuntu 24.04.5 x86-64 install, restart, history upgrade, and uninstall. | Additional operating systems and architectures remain unqualified. |
+| Storage and recovery | Atomic records and cursors, crash replay, writer leases, and portable workspace backup/restore are exercised. Separate-principal Linux guests verified broker admission, reader queries, grants, retention, backup/restore and private disclosure fences. Restore preserves review and workbench state and disables private-content approvals. | Qualify the supported production connector against the deployed storage and child isolation boundary. Current source allowlists and private-content approvals remain required. |
+| Release and compatibility | Rust 0.3.6 is published for Linux x86-64 and ARM64. Native archive jobs passed install, restart, history upgrade, backup and retained-history uninstall; x86-64 additionally passed packaged private evidence and terminal workflows. | Additional operating systems remain unqualified. The retained remote compatibility and import inventory still gates the default entry point. |
 | Connector runtime | The pinned driver supervises local processes, checks policy epochs, persists inbound and outbound progress, and reconciles an ambiguous external effect before retrying. Sustained watch is exercised with local fixture executables. | Add verified least-privilege OS isolation and credential/egress control before enabling untrusted connectors. Exercise a supported production connector under that boundary. |
 | Full product cutover | The native cockpit, collector, telemetry receiver, and scoped extension paths can run without a Python process. | Account for the remaining Python CLI workflows, SDK-specific automatic instrumentation and payload views before changing the default distribution entry point. |
 
 ## Current blockers
 
 - Full harness parity still needs the unsupported native evidence identified in the coverage matrix. Private-content delivery covers bounded retained Pi, Codex, Claude Code, and Kiro JSONL receipts, plus OpenCode SQLite rows whose retained admission digests still match the native source.
-- The collector and child adapters share an OS user. A separate storage authority or child isolation remains necessary for untrusted executables.
-- Ubuntu 24.04 x86-64 is the qualified release platform. Other platforms require their own release checks.
+- The trusted local collector and child adapters share an OS user. Separate-principal broker workflows are qualified in Linux guests; untrusted production connectors still require their supported endpoint and deployed isolation qualification.
+- Linux x86-64 and ARM64 archives are qualified. Other operating systems require their own release checks.

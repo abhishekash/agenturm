@@ -145,7 +145,10 @@ pub fn execute_payload_stdout(options: &PayloadCommand) -> Result<(), String> {
             read: PayloadRead::Snapshot { source, session },
         } => {
             let store = Store::open_read_only(db).map_err(|error| error.to_string())?;
-            println!("{}", snapshot(&store, source, session)?);
+            let identity = store.history_identity().map_err(|_| {
+                "Telemetry history identity is unavailable. Upgrade the history with the Rust writer, then refresh the selection."
+            })?;
+            println!("{}", snapshot(&store, source, session, &identity)?);
         }
         PayloadCommand::Read {
             db,
@@ -177,7 +180,7 @@ pub(super) fn execute_broker(
         .map_err(|error| error.to_string())?;
     match options {
         PayloadRead::Snapshot { source, session } => {
-            println!("{}", snapshot(&store, source, session)?);
+            println!("{}", snapshot(&store, source, session, &identity)?);
             Ok(())
         }
         PayloadRead::Preview(path) => {
@@ -195,6 +198,7 @@ fn snapshot(
     store: &impl ObservationStore,
     source: &ExtensionId,
     session: &str,
+    history_identity: &str,
 ) -> Result<String, String> {
     let page = store.query_observations(&ObservationQuery {
         harness_id: Some(source.as_str().to_owned()),
@@ -204,7 +208,11 @@ fn snapshot(
     if page.observations.is_empty() {
         return Err("The selected telemetry session has no retained span metadata".into());
     }
-    Ok(json!({"snapshot_id": page.snapshot_id.to_string()}).to_string())
+    Ok(json!({
+        "history_identity": history_identity,
+        "snapshot_id": page.snapshot_id.to_string(),
+    })
+    .to_string())
 }
 
 fn open_local(db: &Path) -> Result<Store, String> {
@@ -223,7 +231,9 @@ fn load_selection(path: &Path) -> Result<TelemetryPayloadSelection, String> {
     if input.len() > 4096 {
         return Err("Telemetry payload selection exceeds 4 KiB".into());
     }
-    serde_json::from_slice(&input).map_err(|_| "Invalid telemetry payload selection".into())
+    serde_json::from_slice(&input).map_err(|_| {
+        "Invalid telemetry payload selection. Refresh it with trace-payload snapshot and include the returned history_identity and snapshot_id.".into()
+    })
 }
 
 pub(super) fn modal_selection(
@@ -236,6 +246,7 @@ pub(super) fn modal_selection(
         .transpose()
         .map_err(|_| "Invalid native telemetry source")?;
     Ok(TelemetryPayloadSelection {
+        history_identity: span.history_identity,
         binding: TelemetryBinding {
             source_id: span.source_id,
             native_source_id,

@@ -78,6 +78,7 @@ pub struct OperationDetailEntry {
 /// Exact metadata for a producer-captured span text request.
 #[derive(Clone, Debug)]
 pub struct TelemetrySpanEntry {
+    pub history_identity: String,
     pub source_id: ExtensionId,
     pub native_source_id: Option<String>,
     pub trace_id: String,

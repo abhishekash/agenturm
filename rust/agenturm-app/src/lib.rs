@@ -777,7 +777,7 @@ fn lifecycle_evidence_rows(
 fn default_cockpit_flag(flag: &str) -> bool {
     matches!(
         flag,
-        "--db" | "--once" | "--new-window" | "--endpoint" | "--token-file"
+        "--db" | "--once" | "--new-window" | "--endpoint" | "--token-file" | "--receiver-protocol"
     )
 }
 
@@ -850,9 +850,12 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         }),
         #[cfg(target_os = "linux")]
         Some("cockpit")
-            if args[1..]
-                .iter()
-                .any(|arg| matches!(arg.as_str(), "--endpoint" | "--token-file")) =>
+            if args[1..].iter().any(|arg| {
+                matches!(
+                    arg.as_str(),
+                    "--endpoint" | "--token-file" | "--receiver-protocol"
+                )
+            }) =>
         {
             remote_history::parse_attach(&args[1..]).map(Command::RemoteCockpit)
         }
@@ -1882,7 +1885,7 @@ fn workspace_response(
         }
         WorkspaceRequest::History { selection, before } => {
             let mut page = load_workspace_history(app, store, selection, before)?;
-            page.private_telemetry = store.allows_private_capture();
+            page.private_telemetry_history = store.private_telemetry_history();
             Ok(WorkspaceResponse::History(page))
         }
     }
@@ -1969,6 +1972,9 @@ trait HistoryReader: ObservationStore {
     fn allows_private_capture(&self) -> bool {
         cfg!(target_os = "linux")
     }
+    fn private_telemetry_history(&self) -> Option<String> {
+        None
+    }
 
     fn local_host_data(&self) -> bool {
         true
@@ -2001,6 +2007,10 @@ trait HistoryReader: ObservationStore {
 }
 
 impl HistoryReader for Store {
+    #[cfg(target_os = "linux")]
+    fn private_telemetry_history(&self) -> Option<String> {
+        self.history_identity().ok()
+    }
     fn query_selected_evals(
         &self,
         source: &ExtensionId,
@@ -2049,6 +2059,11 @@ impl HistoryReader for Store {
 
 #[cfg(target_os = "linux")]
 impl HistoryReader for agenturm_storage_service::NativeStore {
+    fn private_telemetry_history(&self) -> Option<String> {
+        self.read_binding()
+            .and_then(agenturm_storage_service::logical_read_identity)
+            .map(str::to_owned)
+    }
     fn query_selected_evals(
         &self,
         source: &ExtensionId,
@@ -3507,7 +3522,7 @@ pub fn render(command: Command) -> String {
             "       agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path> [--include-host]\n",
             "       agenturm cockpit [--new-window] [--db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]]\n",
             "       agenturm cockpit --once [--db <path>] [--json] [--limit <1..256>]\n",
-            "       agenturm cockpit --endpoint http://<loopback-IP:port> --token-file <path> [--new-window]\n",
+            "       agenturm cockpit --endpoint http://<loopback-IP:port> --token-file <path> [--receiver-protocol python-v0.2.8] [--new-window | --once [--json]]\n",
             "       agenturm broker cockpit --broker-config <json> [--new-window]\n",
             "       agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]\n",
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
@@ -3525,12 +3540,14 @@ pub fn render(command: Command) -> String {
             "       agenturm trace-payload <binding|grant|revoke|snapshot|preview> [options]\n",
             "       agenturm eval-detail <binding|grant|revoke|preview> [options]\n",
             "       agenturm import-traces --file <otlp-json-path|-> --db <path> --source-id otlp.<id>\n",
-            "       agenturm import-jsonl --file <span-jsonl-path|-> --db <path> --source-id otlp.<id> [--session-id <id>]\n",
+            "       agenturm import-jsonl --file <span-jsonl-path|-> --db <path> --source-id otlp.<id> [--session-id <id>] [--payload-scope <standalone|harness-id> [--payload-format agent-harness]]\n",
             "       agenturm import-evals --file <results.json|-> --db <path> --source-id otlp.<id> [--include-detail]\n",
             "       agenturm evals --db <path> --source-id otlp.<id> [--trace-id <id> [--history [--before-revision <n>]] | --summary [--after-trace-id <id>]] [--limit <1..256>] [--json]\n",
+            "       agenturm evals --list --db <path> --source-id otlp.<id> [--source-id otlp.<id> ...] [--json]\n",
             "       agenturm attention status --db <path>\n",
             "       agenturm attention watch --db <path> [--once | --max-polls <1..10000>] [--interval-ms <100..60000>]\n",
-            "       agenturm attention <status|watch> --endpoint http://<loopback-IP:port> --token-file <path> [watch options]\n",
+            "       agenturm attention <status|watch> --endpoint http://<loopback-IP:port> --token-file <path> [--receiver-protocol python-v0.2.8] [watch options]\n",
+            "       Python receiver mode reads bounded live metadata with no private views or saved Review evidence.\n",
             "       agenturm host record --db <path> --source-id host.<label> [--watch [--interval-ms <1000..60000>]]\n",
             "       agenturm host history --db <path> [--source-id host.<label>] [--limit <1..64>] [--before <position-json>]\n",
             "       agenturm task <list|add|show|complete|reopen|link|unlink|handoffs|export> [options]\n",

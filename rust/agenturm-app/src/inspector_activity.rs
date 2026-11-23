@@ -41,7 +41,7 @@ pub(super) fn overview_page(snapshot: Snapshot) -> HistoryPage {
     }
     HistoryPage {
         operation_details: operation_details(&snapshot),
-        private_telemetry: false,
+        private_telemetry_history: None,
         snapshot,
         turns,
         initial_pane: None,
@@ -138,7 +138,7 @@ pub(super) fn turn_page(mut snapshot: Snapshot, turn: &RecordedTurn) -> HistoryP
     );
     HistoryPage {
         operation_details: operation_details(&snapshot),
-        private_telemetry: false,
+        private_telemetry_history: None,
         snapshot,
         turns: Vec::new(),
         initial_pane: Some(pane_id),

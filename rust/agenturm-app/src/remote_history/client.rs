@@ -21,17 +21,45 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const ATTACH_USAGE: &str =
-    "agenturm cockpit --endpoint http://<loopback-IP:port> --token-file <path>";
+const ATTACH_USAGE: &str = "agenturm cockpit --endpoint http://<loopback-IP:port> --token-file <path> [--receiver-protocol python-v0.2.8]";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RemoteHistoryOptions {
     endpoint: SocketAddr,
     token_file: PathBuf,
+    python_receiver: bool,
+}
+
+impl RemoteHistoryOptions {
+    pub(crate) fn is_python(&self) -> bool {
+        self.python_receiver
+    }
+    pub(super) fn endpoint(&self) -> SocketAddr {
+        self.endpoint
+    }
+    pub(super) fn token_file(&self) -> &Path {
+        &self.token_file
+    }
 }
 
 pub(crate) fn parse(args: &[String]) -> Result<RemoteHistoryOptions, String> {
-    let (address, token_file) = parse_address_and_token(args, "--endpoint", ATTACH_USAGE)?;
+    let mut python_receiver = false;
+    let mut native_args = Vec::with_capacity(args.len());
+    let (pairs, extra) = args.as_chunks::<2>();
+    for pair in pairs {
+        if pair[0] == "--receiver-protocol" {
+            if python_receiver || pair[1] != super::legacy::PROTOCOL {
+                return Err(ATTACH_USAGE.into());
+            }
+            python_receiver = true;
+        } else {
+            native_args.extend_from_slice(pair);
+        }
+    }
+    if !extra.is_empty() {
+        return Err(ATTACH_USAGE.into());
+    }
+    let (address, token_file) = parse_address_and_token(&native_args, "--endpoint", ATTACH_USAGE)?;
     let address = address
         .strip_prefix("http://")
         .ok_or("History attach expects a loopback HTTP endpoint")?;
@@ -39,10 +67,14 @@ pub(crate) fn parse(args: &[String]) -> Result<RemoteHistoryOptions, String> {
     Ok(RemoteHistoryOptions {
         endpoint,
         token_file,
+        python_receiver,
     })
 }
 
 pub fn execute_remote_cockpit(options: &RemoteHistoryOptions) -> Result<(), String> {
+    if options.is_python() {
+        return super::legacy::cockpit(options);
+    }
     let (store, marker) = open_workspace(options)?;
     let mut app = AgenturmApp::default_composition();
     agenturm_ui::run_workspace(move |request| {
@@ -87,6 +119,11 @@ pub(crate) struct RemoteStore {
 
 impl RemoteStore {
     pub(crate) fn open(options: &RemoteHistoryOptions) -> Result<Self, String> {
+        if options.is_python() {
+            return Err(
+                "Python receivers provide live metadata through their explicit protocol".into(),
+            );
+        }
         let token = ProducerToken::from_file(&options.token_file)?;
         let reply = exchange(
             options.endpoint,
@@ -214,6 +251,12 @@ fn read_error(error: ReadFailure) -> String {
         }
         ReadFailure::Unavailable => "History receiver is unavailable".into(),
         ReadFailure::EvalTraceNotRetained => "Evaluation trace is no longer retained".into(),
+        ReadFailure::EvalInventoryTooLarge {
+            max_trace_keys,
+            max_row_bytes,
+        } => format!(
+            "Evaluation inventory exceeds the {max_trace_keys}-key or {max_row_bytes}-byte limit"
+        ),
         ReadFailure::HostHistoryDisabled => {
             "Recorded Host history is disabled. The receiver can enable it with --include-host."
                 .into()
