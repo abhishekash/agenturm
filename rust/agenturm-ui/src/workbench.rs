@@ -196,6 +196,8 @@ impl io::Write for PromptDelivery {
 pub(crate) mod evaluation;
 mod host;
 pub(crate) mod investigation;
+pub(crate) mod workflow_resume;
+use workflow_resume::WorkflowResume;
 
 pub enum WorkCommand {
     Investigate(Box<investigation::InvestigationRead>),
@@ -254,6 +256,7 @@ pub enum WorkCommand {
         note: String,
     },
     Workflow,
+    WorkflowResume(RequestEntry),
     SessionAttention(RecordedSession),
     Seen(RequestEntry),
     Locate(RequestEntry),
@@ -306,6 +309,7 @@ pub enum WorkResult {
         items: Vec<RequestEntry>,
         partial: bool,
     },
+    WorkflowResume(Box<WorkflowResume>),
     AttentionRequests(Vec<RequestEntry>),
     Prompts(Vec<PromptEntry>),
     TelemetrySpans(Vec<TelemetrySpanEntry>),
@@ -370,6 +374,7 @@ pub(super) struct Workbench {
     host_inspection: Option<crate::evidence_view::Inspection>,
     host_inspection_bounds: (usize, usize),
     evaluation_return: Option<EvaluationReturn>,
+    resume_preview: Option<(Box<WorkflowResume>, String)>,
 }
 
 impl Workbench {
@@ -386,6 +391,7 @@ impl Workbench {
             host_inspection: None,
             host_inspection_bounds: (1, 0),
             evaluation_return: None,
+            resume_preview: None,
         };
         work.reset_cursor();
         work
@@ -403,6 +409,7 @@ impl Workbench {
             _ => None,
         };
         self.draft = None;
+        self.resume_preview = None;
         let previous_data = std::mem::replace(&mut self.data, data);
         match (&self.data, previous_data) {
             (WorkResult::Evaluations(current), WorkResult::Evaluations(previous))
@@ -457,7 +464,28 @@ impl Workbench {
     }
 
     pub(super) fn follows_requests(&self) -> bool {
-        matches!(self.data, WorkResult::Workflow { .. }) && !self.help
+        matches!(self.data, WorkResult::Workflow { .. })
+            && !self.help
+            && self.resume_preview.is_none()
+    }
+
+    pub(super) fn accept_resume(
+        &mut self,
+        receipt: Box<WorkflowResume>,
+    ) -> Result<String, &'static str> {
+        let WorkResult::Workflow { items, .. } = &self.data else {
+            return Err("The selected workflow request changed");
+        };
+        if self.help
+            || self.cursor.selected().and_then(|index| items.get(index)) != Some(&receipt.request)
+        {
+            return Err("The selected workflow request changed");
+        }
+        let command = receipt
+            .command()
+            .ok_or("Native resume is unavailable for this request")?;
+        self.resume_preview = Some((receipt, command.clone()));
+        Ok(command)
     }
 
     pub(super) fn note_seen(&mut self, recorded: &RequestEntry) {
@@ -495,7 +523,10 @@ impl Workbench {
             }
             WorkResult::Prompts(items) => items.len(),
             WorkResult::TelemetrySpans(spans) => spans.len(),
-            WorkResult::Investigation(_) | WorkResult::Seen(_) | WorkResult::Status(_) => 0,
+            WorkResult::Investigation(_)
+            | WorkResult::WorkflowResume(_)
+            | WorkResult::Seen(_)
+            | WorkResult::Status(_) => 0,
         }
     }
 
@@ -553,6 +584,14 @@ impl Workbench {
     }
 
     pub(super) fn key(&mut self, key: event::KeyEvent) -> WorkInput {
+        if self.resume_preview.is_some() {
+            return if key.code == KeyCode::Esc {
+                self.resume_preview = None;
+                WorkInput::Back
+            } else {
+                WorkInput::None
+            };
+        }
         if key.code == KeyCode::F(1) || (self.help && key.code == KeyCode::Esc) {
             self.help = !self.help;
             return WorkInput::None;
@@ -805,6 +844,11 @@ impl Workbench {
             {
                 return WorkInput::Command(WorkCommand::Locate(item.clone()));
             }
+            (WorkResult::Workflow { items, .. }, KeyCode::Char('c'))
+                if let Some(item) = items.get(selected) =>
+            {
+                return WorkInput::Command(WorkCommand::WorkflowResume(item.clone()));
+            }
             (WorkResult::Prompts(items), KeyCode::Enter)
                 if let Some(item) = items.get(selected) =>
             {
@@ -941,10 +985,33 @@ impl Workbench {
             Constraint::Length(2),
         ])
         .areas(area);
+        if let Some((receipt, command)) = &self.resume_preview {
+            frame.render_widget(
+                Paragraph::new(" Agenturm / Native resume command").style(heading_style()),
+                header,
+            );
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(format!(
+                        "Source  {}",
+                        visible_text(&receipt.request.owner.source)
+                    )),
+                    Line::from(""),
+                    Line::styled(command.clone(), label_style()),
+                    Line::from(""),
+                    Line::from("Check for an active session before running the command."),
+                ])
+                .wrap(Wrap { trim: false })
+                .block(panel(" Selected request ")),
+                body,
+            );
+            draw_footer(frame, footer, "Esc Workflow", pending, status);
+            return;
+        }
         if self.help {
             frame.render_widget(Paragraph::new(" Workbench keys"), header);
             frame.render_widget(
-                Paragraph::new("Tasks · n new linked · N blank · e edit · c done\nl link selected session or turn · r links · Del delete\nG capture Git · g saved Git · h new handoff · o handoffs\nHandoffs · e edit · x export MD+HTML · Del delete · b tasks\nWorkflow · r seen · l locate · R refresh · p pause\nPrompts · Enter reveal · m activity details · Esc close\nHost history · Enter drill down · ] older · Esc back")
+                Paragraph::new("Tasks · n new linked · N blank · e edit · c done\nl link selected session or turn · r links · Del delete\nG capture Git · g saved Git · h new handoff · o handoffs\nHandoffs · e edit · x export MD+HTML · Del delete · b tasks\nWorkflow · r seen · l locate · c copy resume · R refresh\nPrompts · Enter reveal · m activity details · Esc close\nHost history · Enter drill down · ] older · Esc back")
                     .wrap(Wrap { trim: false }).block(panel("")),
                 body,
             );
@@ -1171,7 +1238,7 @@ impl Workbench {
                 } else {
                     "Workflow"
                 },
-                "r seen · l locate terminal · R refresh · Esc back",
+                "r seen · l locate · c copy resume · R refresh · Esc back",
                 items
                     .iter()
                     .map(|item| {
@@ -1239,6 +1306,7 @@ impl Workbench {
             WorkResult::HostHistory(_)
             | WorkResult::HostNow(_)
             | WorkResult::Investigation(_)
+            | WorkResult::WorkflowResume(_)
             | WorkResult::Seen(_)
             | WorkResult::Status(_) => return,
         };

@@ -32,6 +32,7 @@ pub use workbench::evaluation::{
 pub use workbench::investigation::{
     InvestigationKind, InvestigationMatch, InvestigationPage, InvestigationRead,
 };
+pub use workbench::workflow_resume::{ResumeRuntime, WorkflowResume};
 
 pub use workbench::{
     CurrentHostSample, HandoffEntry, OperationDetailEntry, OperationDetailKind, PromptDelivery,

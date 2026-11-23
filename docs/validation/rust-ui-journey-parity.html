@@ -75,11 +75,11 @@ th:first-child,td:first-child {white-space:nowrap}
 <tr>
 <td>Workflow</td>
 <td>Attention list includes review, seen, locate, resume, refresh and settings controls.</td>
-<td>Pending requests retain exact recorded scope. Seen and Locate are available from the workbench, and desktop notification settings use the explicit attention command. The Python screen's integrated resume and settings controls differ from the Rust workflow.</td>
+<td>Pending requests retain exact recorded scope. Seen and Locate are available from the workbench. On local history, <code>c</code> verifies the selected request and copies a fixed Codex or Claude resume command for its main session. The command preview returns to the same row. Desktop delivery uses the explicit attention command. The integrated task thresholds, snooze and failed-notification retry controls remain open.</td>
 </tr>
 </tbody>
 </table>
-<p>At 60×18, compact view labels can consume the full tab line. The follow-up avoids a partially rendered trailing tab and keeps numbered navigation and help available. Scoped loading, errors and modal returns keep the selected evidence anchor. The Rust command center follows the separately requested roster layout.</p>
+<p>At 60×18, compact view labels can consume the full tab line. The follow-up avoids a partially rendered trailing tab and keeps numbered navigation and help available. Scoped loading, errors and modal returns keep the selected evidence anchor. The Rust command center follows the separately requested roster layout. The Workflow resume follow-up passed 61 UI tests, including rejection of a different source or read snapshot, selection movement during the read, closing during the read, unsupported sessions and safe command rendering at all three sizes.</p>
 <h2>Captured terminal excerpts</h2>
 <h3>MCP inventory at 60×18</h3>
 <pre><code class="language-text">┌ MCP servers · i calls / inventory ───────────────────────┐

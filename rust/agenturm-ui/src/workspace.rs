@@ -634,6 +634,7 @@ enum Change {
     ReviewVisibility,
     MarkReviewed(RecordedSession),
     Work(Option<WorkAnchor>),
+    WorkflowResume(Box<RequestEntry>),
     Investigation,
 }
 
@@ -707,7 +708,9 @@ impl Workspace {
             return;
         };
         self.refresh_after = Instant::now() + REFRESH_INTERVAL;
-        if matches!(change, Change::Work(_)) && std::mem::take(&mut self.discard_work_result) {
+        if matches!(change, Change::Work(_) | Change::WorkflowResume(_))
+            && std::mem::take(&mut self.discard_work_result)
+        {
             return;
         }
         if let Change::MetricHistory { cancelled } = change {
@@ -833,7 +836,7 @@ impl Workspace {
                 self.message = Some("Review saved for this evidence".into());
             }
             (
-                Change::Work(_) | Change::Investigation,
+                Change::Work(_) | Change::WorkflowResume(_) | Change::Investigation,
                 Ok(WorkspaceResponse::Work(WorkResult::Status(status))),
             ) => {
                 self.prompt_receiver = None;
@@ -845,6 +848,29 @@ impl Workspace {
             ) => {
                 if let Some(investigation) = &mut self.investigation {
                     investigation.apply(*page);
+                }
+            }
+            (
+                Change::WorkflowResume(expected),
+                Ok(WorkspaceResponse::Work(WorkResult::WorkflowResume(receipt))),
+            ) => {
+                let result = self
+                    .work
+                    .as_mut()
+                    .filter(|_| *expected == receipt.request)
+                    .ok_or("The selected workflow request changed")
+                    .and_then(|work| work.accept_resume(receipt));
+                match result
+                    .map_err(str::to_owned)
+                    .and_then(|command| crate::loaded_view::clipboard_request(&command))
+                {
+                    Ok(request) => {
+                        self.view_io.clipboard = Some(request);
+                        self.message = Some(
+                            "Clipboard request sent · terminal permission/support required".into(),
+                        );
+                    }
+                    Err(error) => self.message = Some(error),
                 }
             }
             (Change::Work(_), Ok(WorkspaceResponse::Work(WorkResult::Seen(entry)))) => {
@@ -1207,15 +1233,29 @@ impl Workspace {
                 WorkInput::RevealEvaluation(_) => {}
                 WorkInput::None => {}
                 WorkInput::Back => {
-                    self.discard_work_result = matches!(self.pending, Some(Change::Work(_)));
+                    self.discard_work_result = matches!(
+                        self.pending,
+                        Some(Change::Work(_) | Change::WorkflowResume(_))
+                    );
                     self.message = None;
                 }
                 WorkInput::Close => {
-                    self.discard_work_result = matches!(self.pending, Some(Change::Work(_)));
+                    self.discard_work_result = matches!(
+                        self.pending,
+                        Some(Change::Work(_) | Change::WorkflowResume(_))
+                    );
                     self.prompt_receiver = None;
                     self.queued_prompt = None;
                     self.work = None;
                     self.message = None;
+                }
+                WorkInput::Command(WorkCommand::WorkflowResume(item)) => {
+                    let expected = Box::new(item.clone());
+                    self.request(
+                        sender,
+                        WorkspaceRequest::Work(WorkCommand::WorkflowResume(item)),
+                        Change::WorkflowResume(expected),
+                    );
                 }
                 WorkInput::Command(command) => {
                     self.request(sender, WorkspaceRequest::Work(command), Change::Work(None))
@@ -2683,6 +2723,90 @@ mod tests {
         assert_eq!(row.state.as_deref(), Some("paused"));
         assert_eq!(row.pending_requests.len(), 1);
         assert!(row.pending_requests[0].seen);
+    }
+
+    #[test]
+    fn workflow_resume_copies_only_the_exact_requested_row_and_preserves_selection() {
+        let selected = RequestEntry {
+            owner: WorkAnchor {
+                source: "harness.codex.fixture".into(),
+                session: "fixture-session".into(),
+                worker: None,
+                turn: Some("fixture-turn".into()),
+            },
+            event_id: "selected-approval".into(),
+            revision: 3,
+            timestamp: 1,
+            reason: "approval".into(),
+            seen: false,
+            proof: RequestProof {
+                snapshot_id: 99.into(),
+                history_identity: Some("fixture-history".into()),
+            },
+        };
+        let mut sibling = selected.clone();
+        sibling.owner.source = "harness.codex.sibling".into();
+        sibling.revision = 4;
+        let response = |request| {
+            Ok(WorkspaceResponse::Work(WorkResult::WorkflowResume(
+                Box::new(crate::WorkflowResume {
+                    request,
+                    runtime: crate::ResumeRuntime::Codex,
+                }),
+            )))
+        };
+        let (sender, requests) = mpsc::channel();
+        let request = |workspace: &mut Workspace| {
+            assert!(!press(workspace, &sender, KeyCode::Char('c')));
+            let WorkspaceRequest::Work(WorkCommand::WorkflowResume(item)) =
+                requests.try_recv().unwrap()
+            else {
+                panic!("expected exact native resume request");
+            };
+            item
+        };
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            let mut workspace = Workspace::new();
+            workspace.work = Some(Workbench::new(
+                WorkResult::Workflow {
+                    items: vec![sibling.clone(), selected.clone()],
+                    partial: false,
+                },
+                None,
+            ));
+            assert!(!press(&mut workspace, &sender, KeyCode::Down));
+            assert_eq!(request(&mut workspace), selected);
+            assert!(!press(&mut workspace, &sender, KeyCode::Up));
+            workspace.finish(response(sibling.clone()));
+            assert!(workspace.view_io.clipboard.is_none());
+            assert!(!press(&mut workspace, &sender, KeyCode::Down));
+            assert_eq!(request(&mut workspace), selected);
+            let mut wrong_proof = selected.clone();
+            wrong_proof.proof.snapshot_id = 100.into();
+            workspace.finish(response(wrong_proof));
+            assert!(workspace.view_io.clipboard.is_none());
+            assert_eq!(request(&mut workspace), selected);
+            workspace.finish(response(selected.clone()));
+            assert_eq!(
+                workspace.view_io.clipboard.take(),
+                Some(
+                    crate::loaded_view::clipboard_request("codex resume fixture-session").unwrap()
+                )
+            );
+            terminal
+                .draw(|frame| draw_workspace(frame, &mut workspace))
+                .unwrap();
+            let display = terminal.backend().to_string();
+            assert!(display.contains("Native resume command"));
+            assert!(display.contains("codex resume fixture-session"));
+            assert!(!press(&mut workspace, &sender, KeyCode::Down));
+            assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+            assert_eq!(request(&mut workspace), selected);
+            assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+            workspace.finish(response(selected.clone()));
+            assert!(workspace.view_io.clipboard.is_none());
+        }
     }
 
     #[test]

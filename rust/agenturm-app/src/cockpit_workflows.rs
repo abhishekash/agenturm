@@ -229,6 +229,16 @@ pub(super) fn execute(
         }
         WorkCommand::SessionAttention(session) => session_attention(store, db, session),
         WorkCommand::Seen(item) => mark_seen(store, db, item),
+        WorkCommand::WorkflowResume(item) => {
+            verify_current_request(store, &item)?;
+            let runtime = resume_runtime(&item.owner)?;
+            Ok(WorkResult::WorkflowResume(Box::new(
+                agenturm_ui::WorkflowResume {
+                    request: item,
+                    runtime,
+                },
+            )))
+        }
         WorkCommand::Locate(item) => {
             verify_current_request(store, &item)?;
             if item.owner.worker.is_some() {
@@ -640,6 +650,39 @@ fn same_request(left: &RequestEntry, right: &RequestEntry) -> bool {
         && left.revision == right.revision
         && left.proof.history_identity == right.proof.history_identity
         && left.proof.snapshot_id.incarnation() == right.proof.snapshot_id.incarnation()
+}
+
+fn resume_runtime(owner: &WorkAnchor) -> Result<agenturm_ui::ResumeRuntime, String> {
+    if owner.worker.is_some()
+        || owner.session.len() > 200
+        || !owner
+            .session
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        || !owner
+            .session
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+    {
+        return Err(
+            "A resume command requires an exact main session with a safe native identifier".into(),
+        );
+    }
+    for (source, runtime) in [
+        ("harness.codex", agenturm_ui::ResumeRuntime::Codex),
+        ("harness.claude", agenturm_ui::ResumeRuntime::Claude),
+    ] {
+        if owner.source == source
+            || owner
+                .source
+                .strip_prefix(source)
+                .is_some_and(|rest| rest.starts_with('.'))
+        {
+            return Ok(runtime);
+        }
+    }
+    Err("This provider does not have a supported native resume command".into())
 }
 
 fn verify_current_request(
