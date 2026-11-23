@@ -224,3 +224,90 @@ fn file_stamp(_path: &Path) -> Result<(u64, u64)> {
         "desktop attention state is unavailable on this platform",
     ))
 }
+
+#[cfg(all(test, target_os = "linux"))]
+mod tests {
+    use super::*;
+
+    struct Scratch(PathBuf);
+
+    impl Scratch {
+        fn new() -> Self {
+            let stamp = SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "agenturm-desktop-test-{}-{stamp}",
+                std::process::id()
+            ));
+            fs::create_dir(&root).unwrap();
+            Self(root)
+        }
+    }
+
+    impl Drop for Scratch {
+        fn drop(&mut self) {
+            let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn claims_are_atomic_and_a_restored_read_incarnation_starts_silent() {
+        let root = Scratch::new();
+        let history = root.0.join("history.sqlite");
+        let writer = Store::open_collector(&history).unwrap();
+        let identity = writer.history_identity().unwrap();
+        let ledger = WorkspaceLedger::open(history).unwrap();
+        let request = DesktopAttentionRequest {
+            anchor: WorkspaceAnchor {
+                harness_id: ExtensionId::parse("harness.codex").unwrap(),
+                session_id: "session".into(),
+                turn_id: Some("turn".into()),
+                worker_id: None,
+            },
+            event_id: "codex:fixture:1:lifecycle".into(),
+            revision: 0,
+            observed_at_unix_ns: 11,
+        };
+        let rows = std::slice::from_ref(&request);
+        assert_eq!(
+            ledger
+                .claim_desktop_attention(&identity, 1.into(), 10, &[])
+                .unwrap(),
+            0
+        );
+        let claim = || {
+            ledger
+                .claim_desktop_attention(&identity, 2.into(), 12, rows)
+                .unwrap()
+        };
+        let claims = std::thread::scope(|scope| {
+            let left = scope.spawn(claim);
+            let right = scope.spawn(claim);
+            left.join().unwrap() + right.join().unwrap()
+        });
+        assert_eq!(claims, 1);
+        assert_eq!(claim(), 0);
+        assert!(
+            ledger
+                .claim_desktop_attention(&identity, 1.into(), 12, rows)
+                .is_err()
+        );
+
+        let incarnation = "1".repeat(32).parse().unwrap();
+        let restored = ReadSnapshot::new(2, Some(incarnation));
+        assert_eq!(
+            ledger
+                .claim_desktop_attention(&identity, restored, 13, rows)
+                .unwrap(),
+            0
+        );
+        assert_eq!(
+            ledger
+                .claim_desktop_attention(&identity, restored, 14, rows)
+                .unwrap(),
+            0
+        );
+    }
+}
