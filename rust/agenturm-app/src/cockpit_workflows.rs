@@ -76,6 +76,29 @@ pub(super) fn execute(
     command: WorkCommand,
 ) -> Result<WorkResult, String> {
     match command {
+        WorkCommand::HostNow => {
+            #[cfg(target_os = "linux")]
+            let capture = store
+                .local_host_data()
+                .then(|| {
+                    let sample = crate::cockpit_host::capture().ok()?;
+                    let captured_at_unix_ns = u64::try_from(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .ok()?
+                            .as_nanos(),
+                    )
+                    .ok()?;
+                    Some(Box::new(agenturm_ui::CurrentHostSample {
+                        captured_at_unix_ns,
+                        sample,
+                    }))
+                })
+                .flatten();
+            #[cfg(not(target_os = "linux"))]
+            let capture = None;
+            Ok(WorkResult::HostNow(capture))
+        }
         WorkCommand::ExportView {
             document,
             directory,

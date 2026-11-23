@@ -77,15 +77,14 @@ pub(super) fn name(row: &RecordedSession) -> std::borrow::Cow<'_, str> {
     {
         label.push_str(&format!(" · {role}"));
     }
-    if row.project_origin.is_some() {
-        if let Some(project) = row
+    if row.project_origin.is_some()
+        && let Some(project) = row
             .project_path
             .as_deref()
             .and_then(|path| std::path::Path::new(path).file_name())
             .and_then(|name| name.to_str())
-        {
-            label.push_str(&format!(" · {project}"));
-        }
+    {
+        label.push_str(&format!(" · {project}"));
     }
     label.into()
 }
@@ -109,10 +108,9 @@ fn supporting_context(row: &RecordedSession, grouping: Grouping, duplicate: bool
         .as_deref()
         .and_then(|context| context.agent_name.as_deref())
         .filter(|value| !value.is_empty())
+        && name(row).as_ref() != value
     {
-        if name(row).as_ref() != value {
-            parts.push(visible_text(value));
-        }
+        parts.push(visible_text(value));
     }
     if duplicate {
         parts.push("Same name".into());
@@ -279,7 +277,7 @@ pub(super) fn draw(
     );
     if agents.help {
         let help = format!(
-            "{}\n{} · H live Host · U Usage\nTab / Shift+Tab Status filter · / Search · a Reset\nCtrl+F Investigate retained evidence\nEnter Inspect · Esc Back · Ctrl+R / V Review · P Prompts\nX Mark request seen · v Internal reviews\nF2 Themes · Ctrl+P Appearance
+            "{}\n{} · H Host now · U Usage\nTab / Shift+Tab Status filter · / Search · a Reset\nCtrl+F Investigate retained evidence\nEnter Inspect · Esc Back · Ctrl+R / V Review · P Prompts\nX Mark request seen · v Internal reviews\nF2 Themes · Ctrl+P Appearance
 G Group project/source/none · f Tree/flat · newest first\n←/→ Collapse/expand · p Pause · Y To review\nAlt+↑/↓ Parent/child · Alt+→ Needs attention\n[ Newer · ] Show more · l Latest · R Refresh\nb Tasks · w Workflow · c Copy · x Export · q Quit",
             keymap::navigation_hints(&keymap::NAVIGATION[..5]),
             keymap::navigation_hints(&keymap::NAVIGATION[5..])

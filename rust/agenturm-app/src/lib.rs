@@ -74,7 +74,9 @@ pub use private_output::with_private_stdout;
 #[cfg(target_os = "linux")]
 pub use remote_history::{RemoteHistoryOptions, execute_remote_cockpit};
 #[cfg(target_os = "linux")]
-pub use remote_review::{LegacyReviewOptions, RemoteReviewOptions, execute_legacy_review, execute_remote_review};
+pub use remote_review::{
+    LegacyReviewOptions, RemoteReviewOptions, execute_legacy_review, execute_remote_review,
+};
 pub use retention_cli::{RetentionOptions, execute_retention};
 pub use review_receipt::ReviewOutput;
 pub use span_jsonl_follow::{SpanJsonlFollowOptions, execute_span_jsonl_follow};
@@ -107,8 +109,9 @@ use agenturm_store::{
     SessionPosition, SessionQuery, Store, TraceReviewQuery,
 };
 use agenturm_ui::{
-    HistorySelection, NativeSessionContext, ProjectOrigin, RecordedSession, ReviewVersion,
-    SessionCatalog, SessionCursor, SessionView, WorkspaceRequest, WorkspaceResponse, WorkspaceView,
+    HistorySelection, McpSearchScope, NativeSessionContext, ProjectOrigin, RecordedSession,
+    ReviewVersion, SessionCatalog, SessionCursor, SessionView, WorkspaceRequest, WorkspaceResponse,
+    WorkspaceView,
 };
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -2201,6 +2204,13 @@ trait HistoryReader: ObservationStore {
         &self,
         query: &agenturm_store::StandaloneTraceQuery,
     ) -> Result<agenturm_kernel::ObservationPage, String>;
+    fn query_projected_history(
+        &self,
+        query: &ObservationQuery,
+        projection: &agenturm_kernel::retained_history::HistoryProjection,
+        turn: Option<&str>,
+        worker: Option<Option<&str>>,
+    ) -> Result<agenturm_kernel::ObservationPage, String>;
     fn query_mcp_traces(
         &self,
         query: &agenturm_store::McpTraceQuery,
@@ -2272,6 +2282,16 @@ impl HistoryReader for Store {
         query: &agenturm_store::StandaloneTraceQuery,
     ) -> Result<agenturm_kernel::ObservationPage, String> {
         Store::query_standalone_trace(self, query, None).map_err(|error| error.to_string())
+    }
+    fn query_projected_history(
+        &self,
+        query: &ObservationQuery,
+        projection: &agenturm_kernel::retained_history::HistoryProjection,
+        turn: Option<&str>,
+        worker: Option<Option<&str>>,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        Store::query_projected_history(self, query, projection, turn, worker, None)
+            .map_err(|error| error.to_string())
     }
     fn query_mcp_traces(
         &self,
@@ -2363,6 +2383,16 @@ impl HistoryReader for agenturm_storage_service::NativeStore {
         self.query_standalone_trace(query)
             .map_err(|error| error.to_string())
     }
+    fn query_projected_history(
+        &self,
+        query: &ObservationQuery,
+        projection: &agenturm_kernel::retained_history::HistoryProjection,
+        turn: Option<&str>,
+        worker: Option<Option<&str>>,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        self.query_projected_history(query, projection, turn, worker)
+            .map_err(|error| error.to_string())
+    }
     fn query_mcp_traces(
         &self,
         query: &agenturm_store::McpTraceQuery,
@@ -2422,6 +2452,18 @@ fn load_workspace_history(
 ) -> Result<agenturm_ui::HistoryPage, String> {
     let (source, session, pinned) = match &selection {
         HistorySelection::All(_) => (None, None, None),
+        HistorySelection::McpSearch {
+            scope, snapshot_id, ..
+        } => {
+            let (source, session) = match scope {
+                McpSearchScope::All => (None, None),
+                McpSearchScope::Session(row) => {
+                    (Some(row.harness_id.as_str()), Some(&row.session_id))
+                }
+                McpSearchScope::Turn(row) => (Some(row.harness_id.as_str()), Some(&row.session_id)),
+            };
+            (source, session, Some(*snapshot_id))
+        }
         HistorySelection::McpTraces {
             source_id,
             snapshot_id,
@@ -2446,6 +2488,40 @@ fn load_workspace_history(
         limit: INSPECT_PAGE_SIZE,
     };
     match selection {
+        HistorySelection::McpSearch {
+            scope,
+            query: search,
+            ..
+        } => {
+            let (turn, worker) = match &scope {
+                McpSearchScope::Turn(row) => {
+                    (Some(row.turn_id.as_str()), Some(row.worker_id.as_deref()))
+                }
+                _ => (None, None),
+            };
+            let retained = store.query_projected_history(
+                &query,
+                &agenturm_kernel::retained_history::HistoryProjection::Mcp {
+                    query: Some(search),
+                },
+                turn,
+                worker,
+            )?;
+            let continuation = retained.older_position();
+            let mut snapshot = Snapshot {
+                observations: retained.observations,
+                observations_truncated: retained.has_more,
+                history_snapshot_id: retained.snapshot_id,
+                ..Snapshot::default()
+            };
+            let ids = session_evidence::add_workspace_panes(&mut snapshot);
+            let mut page = inspector_activity::overview_page(snapshot);
+            page.features.continuation = continuation.map(Box::new);
+            page.operation_tables = ids.tables;
+            page.evidence_tables = ids.evidence;
+            page.initial_pane = Some(ids.mcp);
+            Ok(page)
+        }
         HistorySelection::McpTraces {
             source_id,
             event_id,

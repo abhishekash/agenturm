@@ -432,6 +432,24 @@ impl HistoryReader for RemoteStore {
         }
     }
 
+    fn query_projected_history(
+        &self,
+        query: &ObservationQuery,
+        projection: &agenturm_kernel::retained_history::HistoryProjection,
+        turn: Option<&str>,
+        worker: Option<Option<&str>>,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        let scope = agenturm_storage_service::ProjectedHistoryScope::from_filters(turn, worker)
+            .ok_or("A worker projection requires a turn")?;
+        self.history(
+            query,
+            NativeSelection::Projected {
+                projection: projection.clone(),
+                scope,
+            },
+        )
+    }
+
     fn query_mcp_traces(&self, query: &McpTraceQuery) -> Result<Option<ObservationPage>, String> {
         match self.request(ReaderHistoryRequest::McpTraces {
             query: query.clone(),

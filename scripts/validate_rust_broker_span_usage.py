@@ -151,7 +151,7 @@ def run_packaged(binaries):
                         }
                         fact = row["observation"]
                         kind = fact["kind"]
-                        identity = fact if kind == "trace_span" else fact["span"]
+                        identity = fact if kind in {"trace_span", "trace_span_summary"} else fact["span"]
                         assert identity["trace_id"] == TRACE
                         span = identity["span_id"]
                         assert (kind, span) not in seen

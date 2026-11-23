@@ -171,9 +171,10 @@ fn main() -> ExitCode {
         #[cfg(target_os = "linux")]
         Command::LegacyReview(options) => {
             if let Err(message) = agenturm_app::execute_legacy_review(&options) {
-                eprintln!("review failed: {message}"); return ExitCode::FAILURE;
+                eprintln!("review failed: {message}");
+                return ExitCode::FAILURE;
             }
-        },
+        }
         #[cfg(target_os = "linux")]
         Command::RemoteReview(options) => match agenturm_app::execute_remote_review(&options) {
             Ok(result) => println!("{result}"),
