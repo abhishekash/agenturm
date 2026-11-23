@@ -24,6 +24,13 @@ policy changes require maintenance authority. Cleanup retains checkpoints
 and replay receipts. Backups and original harness files have their own
 lifecycle.
 
+OTLP JSON, protobuf and span JSONL imports retain exact per-span input,
+output, total, cache read/write and reasoning token counters when reported.
+Missing counters remain unknown and explicit zero survives. Conflicting or
+invalid aliases are withheld independently. Each usage record binds its
+source, exact span, session and optional turn/worker. SDK Usage shows the
+individual records without adding overlapping wrapper spans.
+
 OTLP and span JSONL imports retain explicitly reported cost as integer
 nano-units and a currency. Zero is preserved; missing, invalid or conflicting
 amounts remain unknown. Usage presents individual source/span reports.
@@ -56,6 +63,12 @@ with local, broker and remote metadata history. Global `--db`, `--once`
 and `--new-window` select the cockpit. On Linux, new-window launch uses
 an existing tmux session or an available GNOME Terminal, Konsole or xterm,
 preserving the working directory and arguments without shell interpolation.
+
+Managed collection config v2 can opt into periodic capture with
+`"host":{"source_id":"host.workstation","interval_ms":5000}`. This works
+with native sources, follow discovery, or a Host-only configuration through
+local, broker and systemd-managed collectors. Existing configurations stay
+unchanged. Reader authority is checked before procfs is sampled.
 
 `host record` and `host history` retain and query explicit Linux source
 samples. The cockpit opens recorded samples, their process list and the
