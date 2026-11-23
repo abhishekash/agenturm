@@ -7,6 +7,7 @@ use agenturm_kernel::{
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read};
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::time::Instant;
@@ -159,6 +160,16 @@ fn process(directory: &File, pid: u32, uid: u32) -> Option<HostProcess> {
     })?;
     let first = read_proc(process.join("stat"))?;
     let start_ticks = parse_stat(&first)?.start_ticks;
+    let working_directory_name = match runtime {
+        HostRuntime::Codex
+        | HostRuntime::Pi
+        | HostRuntime::Claude
+        | HostRuntime::Kiro
+        | HostRuntime::OpenCode => std::fs::read_link(process.join("cwd"))
+            .ok()
+            .and_then(|path| working_directory_name(&path)),
+        _ => None,
+    };
     let status = read_proc(process.join("status"))?;
     if !owns_status(&status, uid) || proc_field(&status, "Name") != Some(name) {
         return None;
@@ -180,7 +191,23 @@ fn process(directory: &File, pid: u32, uid: u32) -> Option<HostProcess> {
         resident_bytes: bytes(&status, "VmRSS"),
         user_ticks: stat.user_ticks,
         system_ticks: stat.system_ticks,
+        working_directory_name,
     })
+}
+
+fn working_directory_name(target: &Path) -> Option<String> {
+    if !target.is_absolute() || target.as_os_str().as_bytes().ends_with(b" (deleted)") {
+        return None;
+    }
+    let name = target.file_name()?.to_str()?;
+    if !HostProcess::valid_working_directory_name(name) {
+        return None;
+    }
+    agenturm_store::bounded_text_preview(
+        name.to_owned(),
+        HostProcess::MAX_WORKING_DIRECTORY_NAME_BYTES,
+    )
+    .ok()
 }
 
 fn owns_status(text: &str, uid: u32) -> bool {
@@ -240,5 +267,31 @@ pub(super) fn recognized_runtime(name: &str) -> Option<HostRuntime> {
         "kiro-cli" | "kiro-cli-chat" => Some(Kiro),
         "opencode" => Some(OpenCode),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn process_label_keeps_only_a_safe_sampled_basename() {
+        assert_eq!(
+            working_directory_name(Path::new("/home/operator/作業 tree")),
+            Some("作業 tree".into())
+        );
+        for path in [
+            "relative/project",
+            "/",
+            "/root/project (deleted)",
+            "/root/a\nname",
+            "/root/a\u{202e}name",
+            "/root/ghp_private",
+        ] {
+            assert_eq!(working_directory_name(Path::new(path)), None);
+        }
+        let invalid_utf8 = Path::new(OsStr::from_bytes(b"/root/\xff"));
+        assert_eq!(working_directory_name(invalid_utf8), None);
     }
 }

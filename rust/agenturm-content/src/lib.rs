@@ -853,6 +853,7 @@ impl BoundSource {
                     serde_json::from_slice(header).map_err(|_| SOURCE_CHANGED)?;
                 if header.kind != "session_meta"
                     || !valid_id(&header.payload.id)
+                    || header.payload.thread_source.as_deref() == Some("guardian_review")
                     || header
                         .payload
                         .session_id
@@ -1232,6 +1233,7 @@ struct CodexHeader {
 struct CodexHeaderPayload {
     id: String,
     session_id: Option<String>,
+    thread_source: Option<String>,
     source: Option<serde_json::Value>,
 }
 
@@ -1658,3 +1660,80 @@ impl BoundSource {
 
 pub use reveal_fenced as reveal_user;
 pub use reveal_operation_fenced as reveal_operation;
+
+#[cfg(test)]
+mod codex_guardian_tests {
+    use super::*;
+    use std::fs::OpenOptions;
+    use std::sync::atomic::{AtomicUsize, Ordering};
+
+    #[test]
+    fn exact_open_inode_and_checkpoint_cannot_authorize_guardian_content() {
+        static NEXT_FILE: AtomicUsize = AtomicUsize::new(0);
+        for (payload, permitted) in [
+            (r#"{"id":"same-thread","source":"cli"}"#, true),
+            (
+                r#"{"id":"same-thread","thread_source":"guardian_review","source":"cli"}"#,
+                false,
+            ),
+            (
+                r#"{"id":"same-thread","source":{"subagent":{"other":"guardian"}}}"#,
+                false,
+            ),
+            (
+                r#"{"id":"same-thread","thread_source":"guardian_review","thread_source":"cli"}"#,
+                false,
+            ),
+        ] {
+            let header = format!("{{\"type\":\"session_meta\",\"payload\":{payload}}}\n");
+            let bytes =
+                format!("{header}{{\"type\":\"event_msg\",\"payload\":\"private fixture\"}}\n");
+            let path = std::env::temp_dir().join(format!(
+                "agenturm-guardian-proof-{}-{}.jsonl",
+                std::process::id(),
+                NEXT_FILE.fetch_add(1, Ordering::Relaxed),
+            ));
+            let mut writer = OpenOptions::new()
+                .write(true)
+                .create_new(true)
+                .open(&path)
+                .unwrap();
+            writer.write_all(bytes.as_bytes()).unwrap();
+            drop(writer);
+            let file = open_member(&path, Harness::Codex).unwrap();
+            let stamp = FileStamp::from_file(&file).unwrap();
+            let header_digest = hash(header.as_bytes());
+            let generation =
+                hash(format!("{}:{}:{header_digest}", stamp.device, stamp.inode).as_bytes());
+            let cursor = format!(
+                "v2:{}:{}:{}:{}:{header_digest}:{generation}:turn",
+                stamp.device,
+                stamp.inode,
+                bytes.len(),
+                hash(bytes.as_bytes())
+            );
+            let mut source = BoundSource {
+                file,
+                stamp,
+                scope: ContentGrantScope::new(
+                    ExtensionId::parse("harness.codex.fixture").unwrap(),
+                    ContentKind::CodexUserText,
+                    [1; 32],
+                ),
+                harness: Harness::Codex,
+                source_path: path.clone(),
+                operation_kind: None,
+                opencode_stamp: None,
+            };
+            let result = source.verified_prefix(&cursor);
+            std::fs::remove_file(path).unwrap();
+            if permitted {
+                assert!(
+                    matches!(result.unwrap().header, Header::Codex(session) if session == "same-thread")
+                );
+            } else {
+                assert!(matches!(result, Err(error) if error == SOURCE_CHANGED));
+            }
+        }
+    }
+}

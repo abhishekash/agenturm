@@ -42,6 +42,7 @@ const PROCESSES: EvidenceSpec = EvidenceSpec {
     columns: &[
         ("Process", 3),
         ("PID", 2),
+        ("Cwd", 5),
         ("State", 3),
         ("RAM", 3),
         ("CPU ticks", 3),
@@ -52,7 +53,7 @@ const PROCESSES: EvidenceSpec = EvidenceSpec {
 const PROCESS_HISTORY: EvidenceSpec = EvidenceSpec {
     title: "Process history · loaded samples",
     inspector: "Process inspector",
-    columns: &[("Sample", 3), ("RAM", 3), ("CPU ticks", 3)],
+    columns: &[("Sample", 3), ("Cwd", 5), ("RAM", 3), ("CPU ticks", 3)],
     empty: "No samples for this exact process.",
 };
 
@@ -156,6 +157,7 @@ impl HostLevel {
                                     cells: vec![
                                         process.runtime.label().into(),
                                         process.pid.to_string(),
+                                        cwd_name(process).into(),
                                         process
                                             .state
                                             .map_or("Unknown", |state| state.label())
@@ -180,6 +182,7 @@ impl HostLevel {
                             EvidenceRow {
                                 cells: vec![
                                     workspace::age(row.observed_at_unix_ns),
+                                    cwd_name(process).into(),
                                     memory(process.resident_bytes),
                                     total_ticks(process),
                                 ],
@@ -287,6 +290,10 @@ fn sample_details(sample: &HostSample) -> Vec<MetricRow> {
     ]
 }
 
+fn cwd_name(process: &HostProcess) -> &str {
+    process.working_directory_name.as_deref().unwrap_or("—")
+}
+
 fn process_details(process: &HostProcess, sample: &HostSample) -> Vec<MetricRow> {
     vec![
         detail(
@@ -297,6 +304,13 @@ fn process_details(process: &HostProcess, sample: &HostSample) -> Vec<MetricRow>
                 process.pid,
                 process.state.map_or("Unknown state", |state| state.label())
             ),
+        ),
+        detail(
+            "Working directory",
+            process
+                .working_directory_name
+                .as_deref()
+                .unwrap_or("Unavailable"),
         ),
         detail(
             "RSS",
@@ -357,6 +371,7 @@ fn memory(bytes: Option<u64>) -> String {
 mod tests {
     use super::*;
     use agenturm_kernel::{ExtensionId, HostRuntime, ObservationIdentity};
+    use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
     fn process_history_keeps_source_boot_and_start_identity() {
@@ -384,6 +399,7 @@ mod tests {
                     resident_bytes: None,
                     user_ticks: Some(0),
                     system_ticks: None,
+                    working_directory_name: (id == "selected").then(|| "fixture-project".into()),
                 }],
             }),
         };
@@ -406,10 +422,44 @@ mod tests {
             process: 0,
         }
         .present(&page);
+        let selected = &view.table.rows[0];
+        assert_eq!(selected.cells[1], "fixture-project");
         assert!(
-            view.table.rows[0].details[2]
-                .value
-                .contains("user 0 · system unknown ticks")
+            selected
+                .details
+                .iter()
+                .any(|row| row.label == "Working directory" && row.value == "fixture-project")
         );
+        assert!(
+            selected.details.iter().any(
+                |row| row.label == "CPU" && row.value.contains("user 0 · system unknown ticks")
+            )
+        );
+        assert_eq!(view.table.rows[1].cells[1], "—");
+        assert!(
+            view.table.rows[1]
+                .details
+                .iter()
+                .any(|row| row.label == "Working directory" && row.value == "Unavailable")
+        );
+        let processes = HostLevel::Processes(0).present(&page);
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for table in [&processes.table, &view.table] {
+                terminal
+                    .draw(|frame| table.draw(frame, frame.area(), 0))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let screen = buffer
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(
+                    screen.contains("Cwd") && screen.contains("fixture-project"),
+                    "{width}×{height}: {screen}"
+                );
+            }
+        }
     }
 }
