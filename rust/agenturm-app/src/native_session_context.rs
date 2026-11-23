@@ -91,7 +91,10 @@ pub(super) fn configured_sources(history: &Path) -> Option<SourceAuthority> {
             .flatten()
     });
     Some(SourceAuthority {
-        follow: config.follow.as_ref().map(|follow| follow.selection.clone()),
+        follow: config
+            .follow
+            .as_ref()
+            .map(|follow| follow.selection.clone()),
         sources: config
             .sources
             .into_iter()

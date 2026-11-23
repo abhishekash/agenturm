@@ -70,12 +70,47 @@ Python 0.2.8 remains the visual and interaction reference. [Rust 0.3.8 is publis
 
 - Integrated the Agents table and persistent inspector, Python Current colors, horizontal navigation, and selectable MCP/Operations tables with server filtering and expanded evidence. Handoff commit `2fa075f` was integrated as `06d450c`.
 - The initial handoff passed 79 app and 18 UI library tests, strict Clippy, and terminal checks at 120×32 and 60×18. These results apply to the handoff revision.
-- Meaningful task titles, the central Python keyboard mapping, and selectable Activity/Traces/Usage/Findings/Host evidence views are integrated. Copy and export operate on bounded loaded metadata only. The command-center first screen has replaced the initial split inspector, with status filters, project headings and full-width task selection.
+- Recorded task/activity labels, the central Python keyboard mapping, and selectable Activity/Traces/Usage/Findings/Host evidence views are integrated. Copy and export operate on bounded loaded metadata only. The command-center first screen has replaced the initial split inspector, with status filters, project headings and full-width task selection.
 - The joined UI passes 39 library tests, including populated/empty/loading/unavailable/cached-error layouts and complete compact help at 120×32, 80×24 and 60×18, exact selection restoration, and a selectable next-page action. The same runtime (`1df22a4`) subsequently passed the full offline workspace: 634 tests across 93 suites, zero failed or ignored, and strict all-target workspace Clippy.
 - Integrated Ctrl+F investigations over retained failures and explicitly granted source evidence, exact X Seen receipts with ambiguity selection, the authenticated legacy v internal-review filter, and z Readable/original captured prompt layouts. Current private display lifetime and redraw-before-acknowledgement remain enforced. Independent review reproduced a same-watermark database replacement issue in the new investigation path; the released implementation pins logical history identity and rechecks the local writer path before source proof. Positive and negative real terminal checks pass at 120×32 and 60×18.
-- Project grouping uses current exact local session-level task links and explicit operator-saved Git repository roots, with **Operator task workspace** provenance. Invalid, ambiguous, archived, worker/turn-only or mismatched-history candidates stay unavailable. Native producer project metadata remains absent; the UI never infers it from checkout directories, private prompts, edits or process cwd.
+- Project grouping uses current exact local session-level task links and explicit operator-saved Git repository roots, with **Operator task workspace** provenance. Invalid, ambiguous, archived, worker/turn-only or mismatched-history candidates stay unavailable. In 0.3.8, native producer project metadata remains absent; the UI never infers it from checkout directories, private prompts, edits or process cwd.
 - Pending UI parity: configured-but-idle MCP server inventory and per-call related-trace navigation; generic OTLP metric point/history/exemplar browsing and the seven-day usage chart; grouped/generated Findings with occurrence counts; per-process project labels; and native internal approval review capture. These remain open requirements rather than retired workflows. Local extracted-package acceptance passed: prior-release reopen, empty startup/rolling collection, exact inspectors, restart/replay, backup, offline installer, all six packaged terminal lanes, and seven distinct-UID KVM cases. Required SDK jobs passed on the same frozen runtime. Both native Linux bundle CI jobs passed in run `45120054721`, including ARM64 upgrade and service checks. All required Rust/SDK jobs passed in run `45120054720`; the Python matrix was still running. Both published archives and sidecars were verified after [tag qualification](https://github.com/abhishekash/agenturm/actions/runs/45121070134). See [0.3.8 acceptance](../validation/rust-038-ui-acceptance.md). The command-center initial layout is the user-selected replacement for the Python split view.
 - Comparative performance benchmarking remains deferred. Rust 0.3.8 is an opt-in release; the remaining parity and production acceptance requirements below continue to gate the default switch.
+
+### Live roster and native names — 0.3.9 candidate
+
+The later “do it” instruction authorized implementation of E1/E2/E3 from the
+[live-roster diagnosis](../validation/rust-live-roster-diagnosis.md). Parallel
+lanes implemented discovery, native context, and actual-session acceptance.
+
+- Follow discovery prioritizes exact same-user native transcript handles,
+  excludes confirmed guardian reviews before adapter admission, and rotates
+  queued sources within the current cap. Coverage distinguishes selected,
+  queued and partially scanned sources. Open handles do not invent a Working
+  state; explicit history inspection states that discovery is disabled.
+- Human names come from explicit operator titles or safe native Codex and Claude
+  metadata. Prompt-derived Codex title copies are suppressed. Provider and agent
+  context support the name; IDs remain stable keys available in details and
+  copy actions. Native recorded cwd supplies project headings with separate
+  provenance. Structural activity remains supporting metadata.
+- Metadata checks the exact history incarnation, retained checkpoint, native
+  inode and authenticated header/prefix. Collector-owned validated membership
+  survives rotation. A bounded configured-root lookup recovers exact retained
+  source members after restart; it does not cache names or scan ambient homes.
+- The verified Claude snapshot-prefixed opening is supported without changing
+  the shared cursor envelope. Full-prefix proof is required for its metadata.
+  Ordinary large Claude transcripts report partial native-title coverage above
+  the bounded scan budget. Header-only transcripts with no session facts do not
+  yet create roster rows. Discovery beyond its scan window remains partial.
+- All five Python palettes are integrated with preview/apply/cancel and saved
+  preferences. Semantic status styles, alternating rows and observed MCP-server
+  summaries share the same theme. The command-center first-screen structure is
+  preserved. This is not a claim that the remaining view parity below is done.
+- The joined pre-final candidate passed 647 workspace tests with no failures or
+  ignores and strict all-target workspace Clippy. Final archive, real concurrent
+  Codex, historical Claude, restart, narrow-screen and multi-user acceptance are
+  tracked in the [native-session record](../validation/rust-real-session-roster.md).
+  The 0.3.8 assets remain unchanged; 0.3.9 publication is pending final gates.
 
 ### First screen — Agenturm command center
 
