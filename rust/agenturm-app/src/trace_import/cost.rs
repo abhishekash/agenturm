@@ -1,7 +1,7 @@
 //! Selective projection of explicit producer-reported amounts.
 
 use super::{Attribute, AttributeValue};
-use agenturm_kernel::NANOUNITS_PER_CURRENCY_UNIT;
+use agenturm_kernel::{NANOUNITS_PER_CURRENCY_UNIT, parse_currency_nanounits as parse_decimal};
 
 pub(crate) const AMOUNT: &str = "agenturm.reported_cost.amount";
 pub(crate) const CURRENCY: &str = "agenturm.reported_cost.currency";
@@ -102,41 +102,6 @@ fn nanounits(value: &AttributeValue) -> Option<u64> {
         (serde_json::Value::Null, None, Some(decimal)) => parse_decimal(decimal.get()),
         _ => None,
     }
-}
-
-fn parse_decimal(value: &str) -> Option<u64> {
-    if value.is_empty() || value.len() > 48 {
-        return None;
-    }
-    let (mantissa, exponent) = match value.split_once(['e', 'E']) {
-        Some((mantissa, exponent)) => (mantissa, exponent.parse::<i32>().ok()?),
-        None => (value, 0),
-    };
-    if !(-64..=64).contains(&exponent) {
-        return None;
-    }
-    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
-    if whole.is_empty()
-        || !whole
-            .bytes()
-            .chain(fraction.bytes())
-            .all(|byte| byte.is_ascii_digit())
-    {
-        return None;
-    }
-    let digits = format!("{whole}{fraction}");
-    let significant = digits.trim_end_matches('0').trim_start_matches('0');
-    if significant.is_empty() {
-        return Some(0);
-    }
-    let trailing = digits.len() - digits.trim_end_matches('0').len();
-    let integer_scale = (NANOUNITS_PER_CURRENCY_UNIT.ilog10() as i32)
-        .checked_add(exponent)?
-        .checked_add(trailing as i32)?
-        .checked_sub(fraction.len() as i32)?;
-    let scale = 10u64.checked_pow(u32::try_from(integer_scale).ok()?)?;
-    let result = significant.parse::<u64>().ok()?.checked_mul(scale)?;
-    (result <= i64::MAX as u64).then_some(result)
 }
 
 #[cfg(test)]

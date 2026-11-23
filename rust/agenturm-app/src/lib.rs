@@ -2392,10 +2392,16 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                 ObservationKind::CreditUsage { nanocredits } => {
                     serde_json::json!({"kind":"credit_usage", "nanocredits":nanocredits})
                 }
-                ObservationKind::ReportedCost(cost) => serde_json::json!({
-                    "kind":"reported_cost", "currency":cost.currency,
-                    "nanounits":cost.nanounits.to_string(), "span":cost.span,
-                }),
+                ObservationKind::ReportedCost(cost) => {
+                    let mut evidence = serde_json::json!({
+                        "kind":"reported_cost", "currency":cost.currency,
+                        "nanounits":cost.nanounits.to_string(), "span":cost.span,
+                    });
+                    if let Some(origin) = cost.native_origin {
+                        evidence["native_origin"] = serde_json::json!(origin);
+                    }
+                    evidence
+                }
                 ObservationKind::HostSample(sample) => serde_json::json!({"kind":"host_sample", "sample":sample}),
                 ObservationKind::SpanTokenUsage(usage) => {
                     let mut evidence = serde_json::json!(usage);

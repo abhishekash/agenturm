@@ -133,7 +133,7 @@ fn project_record(record: ObservationRecord, source_id: &str) -> Result<Option<R
         }
         ObservationFact::ReportedCost(cost) => {
             if !cost.is_valid()
-                || !cost.matches_event(&record.event_id)
+                || !cost.matches_evidence(&record.event_id, identity.operation_id.as_deref())
                 || (cost.span.is_some() && !source_id.starts_with("otlp."))
             {
                 return Err(RuntimeError::new(

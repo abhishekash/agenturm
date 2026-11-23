@@ -244,7 +244,7 @@ fn version_two_catalog_runs_a_pinned_real_pi_process() {
         concat!(
             "{\"type\":\"session\",\"id\":\"catalog-session\"}\n",
             "{\"type\":\"message\",\"id\":\"user-1\",\"timestamp\":\"2026-11-20T11:59:59Z\",\"message\":{\"role\":\"user\",\"content\":\"private prompt must not reach the extension\"}}\n",
-            "{\"type\":\"message\",\"id\":\"assistant-1\",\"timestamp\":\"2026-11-20T12:00:00Z\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"error\",\"usage\":{\"input\":8,\"output\":3},\"content\":[{\"type\":\"toolCall\",\"id\":\"call-1\",\"name\":\"read\"}]}}\n"
+            "{\"type\":\"message\",\"id\":\"assistant-1\",\"timestamp\":\"2026-11-20T12:00:00Z\",\"message\":{\"role\":\"assistant\",\"stopReason\":\"error\",\"usage\":{\"input\":8,\"output\":3,\"cost\":{\"output\":7,\"total\":0.001230000000000001}},\"content\":[{\"type\":\"toolCall\",\"id\":\"call-1\",\"name\":\"read\"}]}}\n"
         ),
     )
     .expect("write Pi fixture");
@@ -290,10 +290,29 @@ fn version_two_catalog_runs_a_pinned_real_pi_process() {
         String::from_utf8_lossy(&output.stderr)
     );
     assert!(
-        String::from_utf8_lossy(&output.stdout).contains("harness.pi: committed 6 observation(s)")
+        String::from_utf8_lossy(&output.stdout).contains("harness.pi: committed 7 observation(s)")
     );
     let snapshot = execute_inspect(&database).expect("reopen catalog-backed history");
-    assert_eq!(snapshot.observations.len(), 6);
+    assert_eq!(snapshot.observations.len(), 7);
+    let cost = snapshot
+        .observations
+        .iter()
+        .find(|row| matches!(row.kind, agenturm_kernel::ObservationKind::ReportedCost(_)))
+        .expect("durable Pi assistant cost");
+    let agenturm_kernel::ObservationKind::ReportedCost(amount) = &cost.kind else {
+        unreachable!();
+    };
+    let origin = amount.native_origin.expect("native assistant provenance");
+    assert_eq!(origin.basis, agenturm_kernel::NativeCostBasis::Estimate);
+    assert!(origin.rounded);
+    assert_eq!((&*amount.currency, amount.nanounits), ("USD", 1_230_000));
+    assert_eq!(cost.identity.turn_id.as_deref(), Some("user-1"));
+    assert!(snapshot.observations.iter().any(|row| {
+        Some(row.event_id.as_str()) == cost.identity.operation_id.as_deref()
+            && row.revision == cost.revision
+            && row.identity.turn_id == cost.identity.turn_id
+            && matches!(&row.kind, agenturm_kernel::ObservationKind::Message { role } if role == "assistant")
+    }));
     assert!(snapshot.observations.iter().any(|observation| {
         observation.identity.session_id.as_deref() == Some("catalog-session")
             && observation.kind

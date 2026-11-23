@@ -114,10 +114,11 @@ fn verify_idle_correction(source: &Path, collect: &mut Command, query: &mut Comm
                 'msg_assistant', 'ses_schema_fixture', 'assistant', 10,
                 1794650400030, 1794650400030, ?1
             )",
-            [r#"{"finish":"stop"}"#],
+            [r#"{"finish":"stop","cost":0,"time":{"completed":1794650400030}}"#],
         )
         .unwrap();
     collect_lifecycle(collect, query, "running", "opencode_latest_assistant");
+    let initial_cost = collect_cost(query, "0");
 
     native
         .execute(
@@ -126,6 +127,12 @@ fn verify_idle_correction(source: &Path, collect: &mut Command, query: &mut Comm
                 1794650400040, 1794650400040, ?1
             )",
             [r#"{"outcome":"succeeded"}"#],
+        )
+        .unwrap();
+    native
+        .execute(
+            "UPDATE session_message SET data=?1, time_updated=time_updated+1 WHERE id='msg_assistant'",
+            [r#"{"finish":"stop","cost":0.0000123,"time":{"completed":1794650400030},"tokens":{"input":3}}"#],
         )
         .unwrap();
     let completed = collect_lifecycle(collect, query, "completed", "opencode_idle_succeeded");
@@ -141,6 +148,39 @@ fn verify_idle_correction(source: &Path, collect: &mut Command, query: &mut Comm
     assert!(corrected["revision"].as_u64().unwrap() > completed["revision"].as_u64().unwrap());
     assert_eq!(corrected["identity"]["session_id"], "ses_schema_fixture");
     assert!(corrected["identity"]["turn_id"].is_null());
+    let corrected_cost = collect_cost(query, "12300");
+    assert_eq!(corrected_cost["event_id"], initial_cost["event_id"]);
+    assert!(
+        corrected_cost["revision"].as_u64().unwrap() > initial_cost["revision"].as_u64().unwrap()
+    );
+}
+
+fn collect_cost(query: &mut Command, nanounits: &str) -> Value {
+    let read = run(query);
+    let page: Value = serde_json::from_str(&read).unwrap();
+    let rows = page["observations"].as_array().unwrap();
+    let cost = rows
+        .iter()
+        .rev()
+        .find(|row| row["observation"]["kind"] == "reported_cost")
+        .unwrap();
+    assert_eq!(
+        cost["observation"],
+        json!({
+            "kind":"reported_cost", "currency":"USD", "nanounits":nanounits, "span":null,
+            "native_origin":{"basis":"unknown","rounded":false}
+        })
+    );
+    assert_eq!(cost["identity"]["session_id"], "ses_schema_fixture");
+    assert!(
+        rows.iter()
+            .any(|row| row["event_id"] == cost["identity"]["operation_id"]
+                && row["revision"] == cost["revision"]
+                && row["identity"]["session_id"] == cost["identity"]["session_id"]
+                && row["identity"]["turn_id"] == cost["identity"]["turn_id"]
+                && row["observation"] == json!({"kind":"message", "role":"assistant"}))
+    );
+    cost.clone()
 }
 
 fn collect_lifecycle(

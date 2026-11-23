@@ -1,10 +1,13 @@
 //! The source DB is opened read-only. Each poll has one SQLite snapshot and
 //! pages complete rows; only coarse facts cross the process boundary.
 
-use agenturm_protocol::observation::{McpCall, McpMethod, mcp_tool_labels};
+use agenturm_protocol::observation::{
+    McpCall, McpMethod, NativeCostBasis, ReportedCost, mcp_tool_labels,
+};
 use agenturm_source_process::Result;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
-use serde_json::{Value, json};
+use serde::Deserialize;
+use serde_json::{Value, json, value::RawValue};
 use sha2::{Digest, Sha256};
 use std::collections::{BTreeMap, HashSet};
 use std::error::Error;
@@ -558,7 +561,12 @@ fn part_turn(
     verified_turn(db, cursor, session, seq)
 }
 
-fn message_facts(db: &Connection, cursor: &Cursor, row: SourceRow<'_>) -> Result<Vec<Value>> {
+fn message_facts(
+    db: &Connection,
+    cursor: &Cursor,
+    row: SourceRow<'_>,
+    native_costs: bool,
+) -> Result<Vec<Value>> {
     if row.session.is_empty()
         || row.session.len() > 256
         || row.id.is_empty()
@@ -584,6 +592,29 @@ fn message_facts(db: &Connection, cursor: &Cursor, row: SourceRow<'_>) -> Result
         "user" => vec![scope.record("message", json!({"role":"user"}))],
         "assistant" => {
             let mut facts = vec![scope.record("message", json!({"role":"assistant"}))];
+            if native_costs
+                && raw["time"]["completed"]
+                    .as_i64()
+                    .is_some_and(|ms| stamp(ms).is_ok())
+                && raw["cost"].is_number()
+                && let Some(cost) = assistant_cost(row.data)
+            {
+                let message_event = wire_id(
+                    scope.epoch,
+                    scope.table,
+                    scope.session,
+                    scope.row,
+                    "message",
+                );
+                facts.push(json!({
+                    "event_id": format!("{message_event}:cost"),
+                    "kind": "reported_cost",
+                    "revision": scope.revision,
+                    "time_ns": scope.time_ns,
+                    "identity": identity(scope.session, scope.turn, Some(&message_event)),
+                    "payload": cost,
+                }));
+            }
             if let Some(counters) = usage(&raw)? {
                 facts.push(scope.record("usage", counters));
             }
@@ -604,6 +635,17 @@ fn message_facts(db: &Connection, cursor: &Cursor, row: SourceRow<'_>) -> Result
         _ => vec![scope.diagnostic("unsupported_opencode_message")],
     };
     Ok(facts)
+}
+
+fn assistant_cost(raw: &str) -> Option<ReportedCost> {
+    #[derive(Deserialize)]
+    struct Assistant<'a> {
+        #[serde(borrow)]
+        cost: &'a RawValue,
+    }
+
+    let message: Assistant<'_> = serde_json::from_str(raw).ok()?;
+    ReportedCost::native_amount("USD", NativeCostBasis::Unknown, message.cost)
 }
 
 fn inline_tool_facts(
@@ -1099,6 +1141,27 @@ pub fn poll(
     max_records: usize,
     max_bytes: usize,
 ) -> Result<Value> {
+    poll_with_native_costs(path, source_id, raw_cursor, max_records, max_bytes, true)
+}
+
+pub fn poll_legacy(
+    path: &Path,
+    source_id: &str,
+    raw_cursor: &str,
+    max_records: usize,
+    max_bytes: usize,
+) -> Result<Value> {
+    poll_with_native_costs(path, source_id, raw_cursor, max_records, max_bytes, false)
+}
+
+fn poll_with_native_costs(
+    path: &Path,
+    source_id: &str,
+    raw_cursor: &str,
+    max_records: usize,
+    max_bytes: usize,
+    native_costs: bool,
+) -> Result<Value> {
     let previous = Cursor::parse(raw_cursor)?;
     let (epoch, signature) = match fingerprint(path) {
         Ok(value) => value,
@@ -1306,7 +1369,7 @@ pub fn poll(
                 data: &data,
             };
             if phase == 'm' {
-                let facts = message_facts(&db, &cursor, row)?;
+                let facts = message_facts(&db, &cursor, row, native_costs)?;
                 if kind == "user"
                     && let Some(fact) = facts.first()
                     && let Some(event) = fact["event_id"].as_str()
@@ -1523,6 +1586,7 @@ mod tests {
                 updated: 15,
                 data: r#"{"outcome":"failed"}"#,
             },
+            true,
         )
         .unwrap();
         assert_eq!(facts[0]["identity"]["turn_id"], turn);
@@ -1568,6 +1632,7 @@ mod tests {
                 updated: 15,
                 data: &content,
             },
+            true,
         )
         .unwrap();
         assert!(
@@ -1586,6 +1651,7 @@ mod tests {
                 updated: 18,
                 data: &content,
             },
+            true,
         )
         .unwrap();
         let turn = &later[0]["identity"]["turn_id"];
@@ -1619,6 +1685,7 @@ mod tests {
                 updated: 20,
                 data: r#"{"outcome":"unknown"}"#,
             },
+            true,
         )
         .unwrap();
         assert!(ambiguous.is_empty());

@@ -306,9 +306,9 @@ pub use agenturm_protocol::host::{
     is_host_source,
 };
 pub use agenturm_protocol::observation::{
-    FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, NANOUNITS_PER_CURRENCY_UNIT, RelationshipKind,
-    ReportedCost, SpanTokenUsage, TraceSpan, TraceSpanIdentity, TraceStatus,
-    is_github_pull_request, is_valid_mcp_metadata,
+    FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, NANOUNITS_PER_CURRENCY_UNIT, NativeCostBasis,
+    RelationshipKind, ReportedCost, SpanTokenUsage, TraceSpan, TraceSpanIdentity, TraceStatus,
+    is_github_pull_request, is_valid_mcp_metadata, parse_currency_nanounits,
 };
 
 pub fn is_mcp_operation(identity: &ObservationIdentity) -> bool {
@@ -1540,7 +1540,7 @@ fn validate_raw_observation_slice(
         if let ObservationKind::ReportedCost(cost) = &row.kind
             && (row.identity.scope != ObservationScope::Session
                 || !cost.is_valid()
-                || !cost.matches_event(&row.event_id))
+                || !cost.matches_evidence(&row.event_id, row.identity.operation_id.as_deref()))
         {
             return Err("reported cost metadata or event identity is invalid".into());
         }

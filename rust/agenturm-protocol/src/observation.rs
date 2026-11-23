@@ -326,6 +326,24 @@ pub struct ReportedCost {
     pub nanounits: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
     pub span: Option<TraceSpanIdentity>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub native_origin: Option<NativeCostOrigin>,
+}
+
+/// Provenance of an amount taken from a retained native assistant record.
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct NativeCostOrigin {
+    pub basis: NativeCostBasis,
+    pub rounded: bool,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(rename_all = "snake_case")]
+pub enum NativeCostBasis {
+    Estimate,
+    ProviderReported,
+    Unknown,
 }
 
 /// The producer's immutable OTLP trace and span IDs.
@@ -350,17 +368,142 @@ impl TraceSpanIdentity {
 }
 
 impl ReportedCost {
+    /// Native harnesses store JSON number amounts calculated or obtained by the
+    /// producer. Round the recorded decimal to the nearest nano-unit.
+    pub fn native_amount(
+        currency: &str,
+        basis: NativeCostBasis,
+        value: &serde_json::value::RawValue,
+    ) -> Option<Self> {
+        let (nanounits, rounded) = parse_currency_amount(value.get(), true)?;
+        let cost = Self {
+            currency: currency.into(),
+            nanounits,
+            span: None,
+            native_origin: Some(NativeCostOrigin { basis, rounded }),
+        };
+        cost.is_valid().then_some(cost)
+    }
+
     pub fn is_valid(&self) -> bool {
         self.currency.len() == 3
             && self.currency.bytes().all(|byte| byte.is_ascii_uppercase())
             && self.nanounits <= i64::MAX as u64
             && self.span.as_ref().is_none_or(TraceSpanIdentity::is_valid)
+            && self
+                .native_origin
+                .is_none_or(|origin| self.span.is_none() && (!origin.rounded || self.nanounits > 0))
     }
 
     pub fn matches_event(&self, event_id: &str) -> bool {
         self.span
             .as_ref()
             .is_none_or(|span| span.matches_event("otlp-cost:", event_id))
+    }
+
+    pub fn matches_evidence(&self, event_id: &str, operation_id: Option<&str>) -> bool {
+        self.matches_event(event_id)
+            && (self.native_origin.is_none()
+                || operation_id
+                    .is_some_and(|message| event_id.strip_suffix(":cost") == Some(message)))
+    }
+}
+
+/// Parses an exactly representable nonnegative decimal currency amount.
+pub fn parse_currency_nanounits(value: &str) -> Option<u64> {
+    parse_currency_amount(value, false).map(|(nanounits, _)| nanounits)
+}
+
+fn parse_currency_amount(value: &str, allow_rounding: bool) -> Option<(u64, bool)> {
+    if value.is_empty() || value.len() > 48 {
+        return None;
+    }
+    let (mantissa, exponent) = match value.split_once(['e', 'E']) {
+        Some((mantissa, exponent)) => (mantissa, exponent.parse::<i32>().ok()?),
+        None => (value, 0),
+    };
+    if !(-64..=64).contains(&exponent) {
+        return None;
+    }
+    let (whole, fraction) = mantissa.split_once('.').unwrap_or((mantissa, ""));
+    if whole.is_empty()
+        || !whole
+            .bytes()
+            .chain(fraction.bytes())
+            .all(|byte| byte.is_ascii_digit())
+    {
+        return None;
+    }
+    let digits = format!("{whole}{fraction}");
+    let significant = digits.trim_end_matches('0').trim_start_matches('0');
+    if significant.is_empty() {
+        return Some((0, false));
+    }
+    let trailing = digits.len() - digits.trim_end_matches('0').len();
+    let integer_scale = (NANOUNITS_PER_CURRENCY_UNIT.ilog10() as i32)
+        .checked_add(exponent)?
+        .checked_add(trailing as i32)?
+        .checked_sub(fraction.len() as i32)?;
+    if let Ok(exponent) = u32::try_from(integer_scale) {
+        let scale = 10u64.checked_pow(exponent)?;
+        let result = significant.parse::<u64>().ok()?.checked_mul(scale)?;
+        return (result <= i64::MAX as u64).then_some((result, false));
+    }
+    if !allow_rounding {
+        return None;
+    }
+    let integer_digits = significant.len().checked_sub((-integer_scale) as usize)?;
+    let (integer, fraction) = significant.split_at(integer_digits);
+    let whole = if integer.is_empty() {
+        0
+    } else {
+        integer.parse::<u64>().ok()?
+    };
+    if whole >= i64::MAX as u64 {
+        return None;
+    }
+    let rounded = whole + u64::from(fraction.as_bytes()[0] >= b'5');
+    (rounded > 0).then_some((rounded, true))
+}
+
+#[cfg(test)]
+mod reported_cost_tests {
+    use super::*;
+
+    #[test]
+    fn native_amount_distinguishes_explicit_zero_from_missing_precision() {
+        for (literal, expected) in [
+            ("0.0", Some((0, false))),
+            ("0.00123", Some((1_230_000, false))),
+            ("0.001230000000000001", Some((1_230_000, true))),
+            ("0.0000000005", Some((1, true))),
+            ("0.00000000049999999999999999", None),
+            ("0.0000000001", None),
+            ("9223372036.8547758069", Some((i64::MAX as u64, true))),
+            ("9223372036.8547758071", None),
+            ("1e-400", None),
+            ("1e400", None),
+            ("-0.00123", None),
+            ("null", None),
+            (r#""0""#, None),
+            (r#"{"amount":0}"#, None),
+        ] {
+            let raw = serde_json::from_str(literal).unwrap();
+            let output = ReportedCost::native_amount("USD", NativeCostBasis::Estimate, raw)
+                .map(|cost| (cost.nanounits, cost.native_origin.unwrap().rounded));
+            assert_eq!(output, expected, "{literal}");
+        }
+    }
+
+    #[test]
+    fn existing_span_cost_keeps_its_exact_serialized_shape() {
+        let previous = concat!(
+            r#"{"currency":"USD","nanounits":0,"span":{"trace_id":"11111111111111111111111111111111","#,
+            r#""span_id":"2222222222222222"}}"#,
+        );
+        let cost: ReportedCost = serde_json::from_str(previous).unwrap();
+        assert!(cost.native_origin.is_none());
+        assert_eq!(serde_json::to_string(&cost).unwrap(), previous);
     }
 }
 

@@ -196,6 +196,7 @@ dependencies = [
  "agenturm-protocol",
  "agenturm-source-process",
  "rusqlite",
+ "serde",
  "serde_json",
  "sha2",
 ]
@@ -206,6 +207,7 @@ version = "0.1.0"
 dependencies = [
  "agenturm-directory-source",
  "agenturm-jsonl-source",
+ "agenturm-protocol",
  "agenturm-source-process",
  "libc",
  "serde",

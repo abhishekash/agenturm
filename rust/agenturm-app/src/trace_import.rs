@@ -442,6 +442,7 @@ fn project_payloads(
                             trace_id: native.trace_id.clone(),
                             span_id: native.span_id.clone(),
                         }),
+                        native_origin: None,
                     }),
                 },
                 None,

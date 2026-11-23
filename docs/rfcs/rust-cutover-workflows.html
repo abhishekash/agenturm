@@ -153,6 +153,22 @@ session's Usage show the amount and currency beside the source evidence.
 Multiple spans can repeat a report, so Usage shows individual records and
 leaves totals open. Kiro credits use their native credit unit. Agenturm
 does not derive an amount from tokens, model prices, or credits.</p>
+<p>The native Pi and OpenCode adapters also retain terminal assistant-message
+cost reports in USD. Pi reads <code>message.usage.cost.total</code> with basis
+<code>estimate</code> unless Pi explicitly marks <code>totalFromProvider: true</code>. Those
+records carry basis <code>provider_reported</code>. OpenCode reads the completed
+assistant message's <code>cost</code> with basis <code>unknown</code>, since the stored amount can
+come from either endpoint accounting or OpenCode's rate estimate.
+<a href="https://github.com/earendil-works/pi/blob/main/packages/ai/README.md#quick-start">Pi cost contract</a> ·
+<a href="https://github.com/anomalyco/opencode/blob/v2.2.5/packages/schema/src/session-message.ts">OpenCode assistant schema</a> ·
+<a href="https://github.com/anomalyco/opencode/blob/v2.2.5/packages/core/src/session/usage.ts">OpenCode cost selection</a></p>
+<p>Native records expose <code>native_origin.basis</code>, <code>native_origin.rounded</code>,
+the retained revision and an operation ID that identifies the associated
+assistant event. Amounts round to the nearest nano-unit. Positive amounts
+that would round to zero are omitted, preserving the distinction from
+an explicit zero. Usage shows the individual reports in the selected
+history page. Forks can copy assistant histories and telemetry can repeat
+the same provider report, so a combined cost total remains unknown.</p>
 <h3>Import evaluation results</h3>
 <p>Import the spans first, then select their exact OTLP source for the outcome
 import and lookup. These commands also support <code>--broker-config</code> in place

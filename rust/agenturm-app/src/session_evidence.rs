@@ -485,7 +485,10 @@ fn operation_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow>
 }
 
 fn activity_row(row: &Observation, scope: ViewScope) -> MetricRow {
-    let (label, value) = describe_observation(&row.kind);
+    let (label, mut value) = describe_observation(&row.kind);
+    if matches!(&row.kind, ObservationKind::ReportedCost(cost) if cost.native_origin.is_some()) {
+        value.push_str(&format!(" · revision {}", row.revision));
+    }
     let mut value = with_time(row, with_operation(row, with_turn(row, value)));
     if let Some(worker) = row.identity.worker_id.as_deref() {
         value.push_str(&format!(" · worker {worker}"));
@@ -617,6 +620,20 @@ pub(super) fn describe_observation(kind: &ObservationKind) -> (&'static str, Str
         ),
         ObservationKind::ReportedCost(cost) => {
             let mut value = format_reported_cost(cost);
+            if let Some(origin) = cost.native_origin {
+                if origin.rounded {
+                    value.insert_str(0, "Approx. ");
+                }
+                let label = match origin.basis {
+                    agenturm_kernel::NativeCostBasis::Estimate => "Cost estimate",
+                    agenturm_kernel::NativeCostBasis::ProviderReported => "Provider-reported cost",
+                    agenturm_kernel::NativeCostBasis::Unknown => {
+                        value.push_str(" · billing basis unknown");
+                        "Reported cost"
+                    }
+                };
+                return (label, value);
+            }
             if let Some(span) = &cost.span {
                 value.push_str(&format!(" · span {}", span.span_id));
             }
@@ -999,6 +1016,7 @@ mod tests {
                 currency: "USD".into(),
                 nanounits: 0,
                 span: None,
+                native_origin: None,
             }),
             None,
         );
@@ -1008,6 +1026,7 @@ mod tests {
                 currency: "EUR".into(),
                 nanounits: 1_234_567_890,
                 span: None,
+                native_origin: None,
             }),
             None,
         );

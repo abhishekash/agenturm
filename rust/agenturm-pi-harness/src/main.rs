@@ -11,15 +11,18 @@ use serde_json::Value;
 
 struct PiFormat<const CONTENT: bool = false, const COMMAND: bool = false>;
 
+fn legacy_admission() -> bool {
+    std::env::var_os("AGENTURM_PLUGIN_LEGACY_ADMISSION").as_deref()
+        == Some(std::ffi::OsStr::new("1"))
+}
+
 impl<const CONTENT: bool, const COMMAND: bool> SourceFormat for PiFormat<CONTENT, COMMAND> {
     type Context = pi::Context;
     const PLUGIN_ID: &'static str = "example.rust-pi-harness";
     const GAP_EVENT_PREFIX: &'static str = "pi-gap";
 
     fn header_identity(path: &std::path::Path, raw: &[u8]) -> Result<Self::Context> {
-        let legacy = std::env::var_os("AGENTURM_PLUGIN_LEGACY_ADMISSION").as_deref()
-            == Some(std::ffi::OsStr::new("1"));
-        pi::header_context((!legacy).then_some(path), raw)
+        pi::header_context((!legacy_admission()).then_some(path), raw)
     }
 
     fn checkpoint(context: &Self::Context) -> String {
@@ -37,7 +40,11 @@ impl<const CONTENT: bool, const COMMAND: bool> SourceFormat for PiFormat<CONTENT
         origin: &str,
         offset: u64,
     ) -> Result<(Vec<Value>, Self::Context)> {
-        pi::translate_line(raw, context, origin, offset)
+        let (mut facts, next) = pi::translate_line(raw, context, origin, offset)?;
+        if legacy_admission() {
+            facts.retain(|row| row["kind"] != "reported_cost");
+        }
+        Ok((facts, next))
     }
 }
 

@@ -2269,7 +2269,10 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
         if let ObservationKind::ReportedCost(cost) = &observation.kind
             && (observation.identity.scope != StoredScope::Session
                 || !cost.is_valid()
-                || !cost.matches_event(&observation.event_id)
+                || !cost.matches_evidence(
+                    &observation.event_id,
+                    observation.identity.operation_id.as_deref(),
+                )
                 || (cost.span.is_some() && !batch.source_id.starts_with("otlp.")))
         {
             return Err(StoreError::Invalid(
@@ -2282,6 +2285,41 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
         {
             return Err(StoreError::Invalid(
                 "diagnostic code or severity is invalid",
+            ));
+        }
+    }
+    validate_native_cost_anchors(&batch.observations)
+}
+
+fn validate_native_cost_anchors(rows: &[StoredObservation]) -> Result<()> {
+    let mut cost_rows = rows.iter().filter(|row| {
+        matches!(&row.kind, ObservationKind::ReportedCost(cost) if cost.native_origin.is_some())
+    }).peekable();
+    if cost_rows.peek().is_none() {
+        return Ok(());
+    }
+    let messages: std::collections::BTreeMap<_, _> = rows
+        .iter()
+        .filter(|row| matches!(&row.kind, ObservationKind::Message { role } if role == "assistant"))
+        .map(|row| ((row.event_id.as_str(), row.revision), row))
+        .collect();
+    for row in cost_rows {
+        let valid = row
+            .identity
+            .operation_id
+            .as_deref()
+            .and_then(|id| messages.get(&(id, row.revision)))
+            .is_some_and(|anchor| {
+                anchor.observed_at_unix_ns == row.observed_at_unix_ns
+                    && anchor.identity.scope == row.identity.scope
+                    && anchor.identity.session_id == row.identity.session_id
+                    && anchor.identity.turn_id == row.identity.turn_id
+                    && anchor.identity.worker_id == row.identity.worker_id
+                    && anchor.identity.operation_id.is_none()
+            });
+        if !valid {
+            return Err(StoreError::Invalid(
+                "native cost has no exact assistant message",
             ));
         }
     }
@@ -2485,6 +2523,59 @@ mod tests {
     }
 
     #[test]
+    fn native_cost_requires_the_exact_assistant_in_its_admitted_batch() {
+        use agenturm_kernel::{NativeCostBasis, ReportedCost};
+        let db = TempDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        let mut message = event("assistant-message", "session-1", 10);
+        message.kind = ObservationKind::Message {
+            role: "assistant".into(),
+        };
+        message.identity.operation_id = None;
+        let mut cost = message.clone();
+        cost.event_id = "assistant-message:cost".into();
+        cost.identity.operation_id = Some(message.event_id.clone());
+        cost.kind = ObservationKind::ReportedCost(
+            ReportedCost::native_amount(
+                "USD",
+                NativeCostBasis::Estimate,
+                serde_json::from_str("0").unwrap(),
+            )
+            .unwrap(),
+        );
+        let mut sibling = message.clone();
+        sibling.identity.turn_id = Some("sibling-turn".into());
+        let mut another_revision = message.clone();
+        another_revision.revision += 1;
+        let mut user = message.clone();
+        user.kind = ObservationKind::Message {
+            role: "user".into(),
+        };
+        for (request, rows) in [
+            ("missing", vec![cost.clone()]),
+            ("wrong-turn", vec![cost.clone(), sibling]),
+            ("wrong-revision", vec![cost.clone(), another_revision]),
+            ("wrong-role", vec![cost.clone(), user]),
+        ] {
+            assert!(matches!(
+                store.commit_batch(&batch(request, rows)),
+                Err(StoreError::Invalid(
+                    "native cost has no exact assistant message"
+                ))
+            ));
+        }
+        let committed = batch("correctly-anchored", vec![cost, message]);
+        assert_eq!(
+            store.commit_batch(&committed).unwrap(),
+            CommitOutcome::Committed { inserted: 2 }
+        );
+        assert_eq!(
+            store.commit_batch(&committed).unwrap(),
+            CommitOutcome::Replay
+        );
+    }
+
+    #[test]
     fn mismatched_span_usage_scope_rejects_the_entire_batch() {
         use agenturm_kernel::{
             ObservationIdentity, ReportedCost, SpanTokenUsage, TraceSpan, TraceSpanIdentity,
@@ -2526,6 +2617,7 @@ mod tests {
                 currency: "USD".into(),
                 nanounits: 0,
                 span: Some(trace.clone()),
+                native_origin: None,
             }),
         );
         let mut usage = row(
