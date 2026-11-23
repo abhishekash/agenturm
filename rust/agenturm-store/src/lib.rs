@@ -21,6 +21,8 @@ mod linked_trace;
 pub mod metric_history;
 #[cfg(target_os = "linux")]
 mod native_codex_metadata;
+#[cfg(target_os = "linux")]
+pub mod native_outbox;
 mod private_text;
 mod retention;
 mod review_ledger;

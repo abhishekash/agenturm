@@ -8,6 +8,10 @@
 mod adapter_install;
 mod attention;
 #[cfg(target_os = "linux")]
+mod attention_native;
+#[cfg(target_os = "linux")]
+pub use attention_native::NativeOptions as NativeAttentionOptions;
+#[cfg(target_os = "linux")]
 mod broker_cli;
 mod cockpit_host;
 mod cockpit_startup;
