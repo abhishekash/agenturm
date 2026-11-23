@@ -98,14 +98,26 @@ pub fn execute_trace_run(options: &TraceRunOptions) -> Result<ExitCode, String> 
             .map_err(|error| format!("open trace history: {error}"))?,
     );
     let db = options.db.clone();
-    execute_with_commit(&options.invocation, None, move |source, rows| {
-        commit(&db, source, &rows).map(|_| ())
-    })
+    execute_with_maintenance(
+        &options.invocation,
+        None,
+        Some(options.db.clone()),
+        move |source, rows| commit(&db, source, &rows).map(|_| ()),
+    )
 }
 
 pub(super) fn execute_with_commit(
     invocation: &TraceInvocation,
     token: Option<ProducerToken>,
+    commit: impl FnMut(&ExtensionId, Vec<Observation>) -> Result<(), String> + Send + 'static,
+) -> Result<ExitCode, String> {
+    execute_with_maintenance(invocation, token, None, commit)
+}
+
+fn execute_with_maintenance(
+    invocation: &TraceInvocation,
+    token: Option<ProducerToken>,
+    maintenance_db: Option<PathBuf>,
     commit: impl FnMut(&ExtensionId, Vec<Observation>) -> Result<(), String> + Send + 'static,
 ) -> Result<ExitCode, String> {
     let mut signals = RunSignals::new()?;
@@ -115,7 +127,8 @@ pub(super) fn execute_with_commit(
         .as_nanos();
     let launch_session = format!("launch-{}-{launch_time}", std::process::id());
     let receiver =
-        TraceReceiver::bind_ephemeral(invocation.source.clone(), launch_session, token.clone())?;
+        TraceReceiver::bind_ephemeral(invocation.source.clone(), launch_session, token.clone())?
+            .with_local_maintenance(maintenance_db);
     let mut command = traced_command(invocation, receiver.address(), token.as_ref());
     let isolated = configure_process_group(&mut command);
     let receiver = ReceiverTask::start(receiver, commit)?;

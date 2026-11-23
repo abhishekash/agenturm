@@ -269,6 +269,95 @@ mod tests {
     }
 
     #[test]
+    fn automatic_retention_reads_are_separate_from_maintenance_authority() {
+        let fixture = Fixture::new();
+        let mut store = Store::open_collector(fixture.0.join("history.sqlite")).unwrap();
+        let allowed = BTreeSet::from([ExtensionId::parse("harness.pi").unwrap()]);
+        let policy = AutomaticRetentionPolicy {
+            max_age_ns: Some(1_000),
+        };
+        for role in [Role::Reader, Role::Collector, Role::GrantAdministrator] {
+            assert!(matches!(
+                dispatch(
+                    &mut store,
+                    &allowed,
+                    role,
+                    AdminRequest::SetRetentionPolicy { policy },
+                    None
+                ),
+                Err(AdminFailure::Unauthorized)
+            ));
+            assert!(matches!(
+                dispatch(
+                    &mut store,
+                    &allowed,
+                    role,
+                    AdminRequest::ApplyRetentionPolicy {},
+                    None
+                ),
+                Err(AdminFailure::Unauthorized)
+            ));
+        }
+        assert!(store.automatic_retention_status().unwrap().policy.is_none());
+        assert!(matches!(
+            dispatch(
+                &mut store,
+                &allowed,
+                Role::Maintenance,
+                AdminRequest::SetRetentionPolicy { policy },
+                None
+            ),
+            Ok(AdminReply::RetentionPolicy { .. })
+        ));
+        for role in [Role::Reader, Role::Collector, Role::Maintenance] {
+            assert!(matches!(dispatch(&mut store, &allowed, role,
+                AdminRequest::GetRetentionPolicy {}, None),
+                Ok(AdminReply::RetentionPolicy { status }) if status.policy == Some(policy) && status.cutoff_unix_ns == 0));
+        }
+        assert!(matches!(
+            dispatch(
+                &mut store,
+                &allowed,
+                Role::GrantAdministrator,
+                AdminRequest::GetRetentionPolicy {},
+                None
+            ),
+            Err(AdminFailure::Unauthorized)
+        ));
+        assert!(matches!(
+            dispatch(
+                &mut store,
+                &allowed,
+                Role::Maintenance,
+                AdminRequest::ApplyRetentionPolicy {},
+                None
+            ),
+            Ok(AdminReply::RetentionApplied { outcome: Some(_) })
+        ));
+        assert!(store.automatic_retention_status().unwrap().cutoff_unix_ns > 0);
+        dispatch(
+            &mut store,
+            &allowed,
+            Role::Maintenance,
+            AdminRequest::SetRetentionPolicy {
+                policy: AutomaticRetentionPolicy { max_age_ns: None },
+            },
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            dispatch(
+                &mut store,
+                &allowed,
+                Role::Maintenance,
+                AdminRequest::ApplyRetentionPolicy {},
+                None
+            ),
+            Ok(AdminReply::RetentionApplied { outcome: None })
+        ));
+    }
+
+    #[test]
     fn grant_checks_are_source_bound_and_mutations_require_grant_admin() {
         let fixture = Fixture::new();
         let mut store = Store::open_collector(fixture.0.join("history.sqlite")).unwrap();

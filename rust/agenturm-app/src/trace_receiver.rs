@@ -169,9 +169,12 @@ fn parse_settings(
 }
 
 pub fn execute_trace_receiver(options: &TraceReceiverOptions) -> Result<(), String> {
-    execute_with_commit(&options.settings, None, |source, rows| {
-        commit(&options.db, source, &rows).map(|_| ())
-    })
+    execute_with_maintenance(
+        &options.settings,
+        None,
+        Some(options.db.clone()),
+        |source, rows| commit(&options.db, source, &rows).map(|_| ()),
+    )
 }
 
 pub(super) fn execute_with_commit(
@@ -179,9 +182,19 @@ pub(super) fn execute_with_commit(
     token: Option<ProducerToken>,
     commit: impl FnMut(&ExtensionId, Vec<Observation>) -> Result<(), String>,
 ) -> Result<(), String> {
+    execute_with_maintenance(settings, token, None, commit)
+}
+
+fn execute_with_maintenance(
+    settings: &TraceReceiverSettings,
+    token: Option<ProducerToken>,
+    maintenance_db: Option<PathBuf>,
+    commit: impl FnMut(&ExtensionId, Vec<Observation>) -> Result<(), String>,
+) -> Result<(), String> {
     let stop = Arc::new(AtomicBool::new(false));
     let _signals = crate::WatchSignalRegistrations::new(Arc::clone(&stop))?;
-    let receiver = TraceReceiver::bind(settings.clone(), None, token)?;
+    let receiver =
+        TraceReceiver::bind(settings.clone(), None, token)?.with_local_maintenance(maintenance_db);
     println!(
         "Listening for OTLP traces at http://{}/v1/traces",
         receiver.address()
@@ -190,6 +203,7 @@ pub(super) fn execute_with_commit(
 }
 
 pub(super) struct TraceReceiver {
+    maintenance: Option<super::retention_cli::LocalRetentionMaintenance>,
     listener: TcpListener,
     address: SocketAddr,
     source: ExtensionId,
@@ -210,6 +224,7 @@ impl TraceReceiver {
             .map_err(|error| error.to_string())?;
         let address = listener.local_addr().map_err(|error| error.to_string())?;
         Ok(Self {
+            maintenance: None,
             listener,
             address,
             source: settings.source,
@@ -258,12 +273,20 @@ impl TraceReceiver {
         self.address
     }
 
+    pub(super) fn with_local_maintenance(mut self, db: Option<PathBuf>) -> Self {
+        self.maintenance = db.map(super::retention_cli::LocalRetentionMaintenance::new);
+        self
+    }
+
     pub(super) fn serve_with(
-        self,
+        mut self,
         stop: &AtomicBool,
         mut store: impl FnMut(&ExtensionId, Vec<Observation>) -> Result<(), String>,
     ) -> Result<(), String> {
         while !stop.load(Ordering::Relaxed) {
+            if let Some(maintenance) = self.maintenance.as_mut() {
+                maintenance.tick();
+            }
             match self.listener.accept() {
                 Ok((stream, peer)) if peer.ip().is_loopback() => handle(
                     stream,

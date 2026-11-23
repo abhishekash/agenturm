@@ -2,7 +2,51 @@
 
 use agenturm_store::{AutomaticRetentionPolicy, Store};
 use std::path::PathBuf;
-use std::time::Duration;
+use std::time::{Duration, Instant};
+
+pub(super) struct LocalRetentionMaintenance {
+    db: PathBuf,
+    next: Instant,
+}
+impl LocalRetentionMaintenance {
+    pub(super) fn new(db: PathBuf) -> Self {
+        Self {
+            db,
+            next: Instant::now(),
+        }
+    }
+    pub(super) fn tick(&mut self) {
+        if Instant::now() < self.next {
+            return;
+        }
+        self.next = Instant::now() + Duration::from_secs(60);
+        if !self.db.is_file() {
+            return;
+        }
+        if self.apply().is_err() {
+            eprintln!("Automatic retention could not run; retained history remains available");
+        }
+    }
+    fn apply(&self) -> Result<(), String> {
+        let reader = Store::open_read_only(&self.db).map_err(|_| "Cannot read retention policy")?;
+        if reader
+            .automatic_retention_status()
+            .map_err(|_| "Cannot read retention policy")?
+            .policy
+            .and_then(|policy| policy.max_age_ns)
+            .is_none()
+        {
+            return Ok(());
+        }
+        drop(reader);
+        let mut store =
+            Store::open_collector(&self.db).map_err(|_| "Cannot acquire retention writer")?;
+        store
+            .apply_current_automatic_retention()
+            .map(|_| ())
+            .map_err(|_| "Cannot apply retention policy".into())
+    }
+}
 
 pub(super) const USAGE: &str = "agenturm retention <status|set|disable|run> --db <path> [--max-age-days <positive-days>]\nFor broker history use agenturm broker retention with --broker-config in place of --db.";
 
@@ -31,7 +75,9 @@ pub(super) fn parse(args: &[String], broker: bool) -> Result<RetentionOptions, S
     }
     for [flag, value] in pairs {
         match flag.as_str() {
-            "--db" if !broker && db.is_none() && !value.is_empty() => db = Some(value.into()),
+            "--db" if !broker && db.is_none() && !value.is_empty() && !value.starts_with("--") => {
+                db = Some(value.into())
+            }
             "--max-age-days" if age.is_none() => age = Some(parse_age(value)?),
             _ => return Err(USAGE.into()),
         }

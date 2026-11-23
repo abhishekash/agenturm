@@ -123,6 +123,9 @@ pub(super) fn commit(
     }
     let mut store =
         Store::open_collector(db).map_err(|error| format!("open history failed: {error}"))?;
+    store
+        .apply_current_automatic_retention()
+        .map_err(|_| "Automatic retention could not run")?;
     commit_with_store(&mut store, source_id, observations)
 }
 
