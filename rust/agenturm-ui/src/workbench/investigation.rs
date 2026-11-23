@@ -1,7 +1,8 @@
 //! Keyboard editor and bounded evidence results for the investigation overlay.
 
 use super::WorkAnchor;
-use crate::{SURFACE, heading_style, label_style, panel, surface, visible_text};
+use crate::theme;
+use crate::{heading_style, label_style, panel, surface, visible_text};
 use agenturm_kernel::{ObservationPosition, ReadSnapshot};
 use crossterm::event::{KeyCode, KeyEvent};
 use ratatui::{
@@ -287,7 +288,7 @@ impl Investigation {
                 Line::from(scope),
                 Line::from(query),
             ])
-            .style(surface(SURFACE)),
+            .style(surface(theme::palette().surface)),
             header,
         );
         let items = self

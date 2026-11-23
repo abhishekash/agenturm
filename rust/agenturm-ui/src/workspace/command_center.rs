@@ -170,7 +170,12 @@ pub(super) fn draw(
     pending: bool,
     message: Option<&str>,
 ) {
-    let area = frame.area();
+    let full = frame.area();
+    let area = if full.width >= 80 {
+        full.inner(ratatui::layout::Margin::new(1, 0))
+    } else {
+        full
+    };
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         frame.render_widget(
             Paragraph::new("Terminal too small · widen the window"),
@@ -187,6 +192,14 @@ pub(super) fn draw(
         Constraint::Length(3),
     ])
     .areas(area);
+    let [identity, appearance] =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Length(17)]).areas(brand);
+    frame.render_widget(
+        Paragraph::new("F2 Themes")
+            .right_aligned()
+            .style(label_style()),
+        appearance,
+    );
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(" Agenturm command center", heading_style()),
@@ -195,9 +208,12 @@ pub(super) fn draw(
                 label_style(),
             ),
         ])),
-        brand,
+        identity,
     );
-    frame.render_widget(Paragraph::new(lines).style(surface(SURFACE)), filters);
+    frame.render_widget(
+        Paragraph::new(lines).style(surface(theme::palette().surface)),
+        filters,
+    );
     let navigation_text = if agents.editing || !agents.search.is_empty() {
         format!(
             " / {}{}",
@@ -218,7 +234,8 @@ pub(super) fn draw(
     );
     if agents.help {
         let help = format!(
-            "{}\n{} · H live Host · U Usage\nTab / Shift+Tab Status filter · / Search · a Reset\nCtrl+F Investigate retained evidence\nEnter Inspect · Esc Back · Ctrl+R / V Review · P Prompts\nX Mark request seen · v Capture availability\nG Group project/source/none · f Tree/flat · o Sort\n←/→ Collapse/expand · p Pause · Y To review\nAlt+↑/↓ Parent/child · Alt+→ Needs attention\n[ Newer · ] Show more · l Latest · R Refresh\nb Tasks · w Workflow · c Copy · x Export · q Quit",
+            "{}\n{} · H live Host · U Usage\nTab / Shift+Tab Status filter · / Search · a Reset\nCtrl+F Investigate retained evidence\nEnter Inspect · Esc Back · Ctrl+R / V Review · P Prompts\nX Mark request seen · v Capture availability\nF2 Themes · Ctrl+P Appearance
+G Group project/source/none · f Tree/flat · o Sort\n←/→ Collapse/expand · p Pause · Y To review\nAlt+↑/↓ Parent/child · Alt+→ Needs attention\n[ Newer · ] Show more · l Latest · R Refresh\nb Tasks · w Workflow · c Copy · x Export · q Quit",
             keymap::navigation_hints(&keymap::NAVIGATION[..5]),
             keymap::navigation_hints(&keymap::NAVIGATION[5..])
         );
@@ -309,11 +326,13 @@ pub(super) fn draw(
                         label_style(),
                     ),
                 ]),
-                Text::from(status(row)),
-                Text::from(age(row.updated_at_unix_ns)),
+                Text::styled(status(row), theme::status(status(row))),
+                Text::styled(age(row.updated_at_unix_ns), theme::muted()),
             ])
-            .height(2),
+            .height(2)
+            .style(theme::row(position)),
         );
+
     }
     let has_more = agents
         .catalog

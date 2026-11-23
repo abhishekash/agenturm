@@ -1604,6 +1604,7 @@ pub fn run_workspace(
         });
         let terminal_result = ratatui::run(|terminal| {
             let mut workspace = Workspace::new();
+            let mut appearance = theme::Picker::new();
             let mut dirty = true;
             loop {
                 if let Some(receiver) = &workspace.prompt_receiver
@@ -1677,7 +1678,12 @@ pub fn run_workspace(
                         workspace.message =
                             Some("Content authorization expired before display".into());
                     }
-                    terminal.draw(|frame| draw_workspace(frame, &mut workspace))?;
+                    terminal.draw(|frame| {
+                        draw_workspace(frame, &mut workspace);
+                        if workspace.prompt.is_none() {
+                            appearance.draw(frame);
+                        }
+                    })?;
                     workspace.acknowledge_redaction();
                     drop(gate);
                     dirty = false;
@@ -1687,13 +1693,22 @@ pub fn run_workspace(
                         Event::Key(key)
                             if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
                         {
+                            if workspace.prompt.is_none() && appearance.key(key) {
+                                dirty = true;
+                                continue;
+                            }
                             if workspace.key(&request, key) {
                                 // Keep the proof fence until a flushed non-private
                                 // frame replaces the modal, including q and Ctrl-C.
                                 if workspace.dismiss_prompt()
                                     || workspace.redact_then_acknowledge.is_some()
                                 {
-                                    terminal.draw(|frame| draw_workspace(frame, &mut workspace))?;
+                                    terminal.draw(|frame| {
+                                        draw_workspace(frame, &mut workspace);
+                                        if workspace.prompt.is_none() {
+                                            appearance.draw(frame);
+                                        }
+                                    })?;
                                     workspace.acknowledge_redaction();
                                 }
                                 break Ok(());
@@ -1732,7 +1747,10 @@ fn pending_evidence_titles(selection: &HistorySelection) -> Option<(&'static str
 }
 
 fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
-    frame.render_widget(Block::default().style(surface(CANVAS)), frame.area());
+    frame.render_widget(
+        Block::default().style(surface(theme::palette().canvas)),
+        frame.area(),
+    );
     if let Some(prompt) = &mut workspace.prompt {
         prompt.draw(frame);
         return;
@@ -1797,9 +1815,9 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
             hints.push(Line::from("↑↓ select · Enter evaluations · Esc back"));
             frame.render_stateful_widget(
                 List::new(items)
-                    .block(Block::bordered().title("Trace evaluations · loaded traces"))
+                    .block(panel("Trace evaluations · loaded traces"))
                     .highlight_symbol("› ")
-                    .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
+                    .highlight_style(selection_style()),
                 body,
                 selection,
             );
@@ -1820,11 +1838,11 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
                 .map(|entry| ListItem::new(visible_text(&entry.label)));
             frame.render_stateful_widget(
                 List::new(items)
-                    .block(Block::bordered().title(match kind {
+                    .block(panel(match kind {
                         OperationDetailKind::Mcp => "MCP operations",
                         OperationDetailKind::Edit => "File edits",
                     }))
-                    .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
+                    .highlight_style(selection_style()),
                 body,
                 selection,
             );
@@ -1849,7 +1867,7 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
                 help.push_str("\nCtrl+R Review · t Traces · m Inspector mode · P Prompts");
             }
             if view.page.ui.turn_available {
-                help.push_str("\nT Select a recorded turn");
+                help.push_str("\nT Select a recorded turn · F2 Themes");
             }
             let has_kind = |kind| {
                 view.page

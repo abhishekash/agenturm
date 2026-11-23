@@ -843,7 +843,7 @@ impl Workbench {
             frame.render_widget(Paragraph::new(" Workbench keys"), header);
             frame.render_widget(
                 Paragraph::new("Tasks · n new linked · N blank · e edit · c done\nl link selected session or turn · r links · Del delete\nG capture Git · g saved Git · h new handoff · o handoffs\nHandoffs · e edit · x export MD+HTML · Del delete · b tasks\nWorkflow · r seen · l locate · R refresh · p pause\nPrompts · Enter reveal · m activity details · Esc close\nHost history · Enter drill down · ] older · Esc back")
-                    .wrap(Wrap { trim: false }).block(Block::bordered()),
+                    .wrap(Wrap { trim: false }).block(panel("")),
                 body,
             );
             draw_footer(frame, footer, "F1 or Esc close help", pending, status);
@@ -859,7 +859,7 @@ impl Workbench {
             } else {
                 Paragraph::new(lines).wrap(Wrap { trim: false })
             };
-            frame.render_widget(paragraph.block(Block::bordered()), body);
+            frame.render_widget(paragraph.block(panel("")), body);
             draw_footer(
                 frame,
                 footer,
@@ -890,7 +890,7 @@ impl Workbench {
             frame.render_widget(
                 Paragraph::new(lines)
                     .wrap(Wrap { trim: false })
-                    .block(Block::bordered()),
+                    .block(panel("")),
                 body,
             );
             draw_footer(frame, footer, "b tasks · Esc back", pending, status);
@@ -1098,9 +1098,15 @@ impl Workbench {
             | WorkResult::Seen(_)
             | WorkResult::Status(_) => return,
         };
-        frame.render_widget(Paragraph::new(format!(" Agenturm / {title}")), header);
-        let [list, detail] =
-            Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(body);
+        frame.render_widget(
+            Paragraph::new(format!(" Agenturm / {title}")).style(heading_style()),
+            header,
+        );
+        let [list, detail] = if body.width >= 96 {
+            Layout::horizontal([Constraint::Percentage(52), Constraint::Percentage(48)]).areas(body)
+        } else {
+            Layout::vertical([Constraint::Percentage(55), Constraint::Percentage(45)]).areas(body)
+        };
         let options: Vec<String> = options;
         if options.is_empty() {
             let mut lines = vec![Line::from(empty)];
@@ -1111,18 +1117,19 @@ impl Workbench {
             frame.render_widget(
                 Paragraph::new(lines)
                     .wrap(Wrap { trim: false })
-                    .block(Block::bordered()),
+                    .block(panel("")),
                 body,
             );
         } else {
             let items = options
                 .into_iter()
-                .map(|text| ListItem::new(visible_text(&text)));
+                .enumerate()
+                .map(|(index, text)| ListItem::new(visible_text(&text)).style(theme::row(index)));
             frame.render_stateful_widget(
                 List::new(items)
-                    .block(Block::bordered())
+                    .block(panel(title))
                     .highlight_symbol("› ")
-                    .highlight_style(Style::default().add_modifier(Modifier::REVERSED)),
+                    .highlight_style(selection_style()),
                 list,
                 &mut self.cursor,
             );
@@ -1135,7 +1142,7 @@ impl Workbench {
             } else {
                 Paragraph::new(details).wrap(Wrap { trim: false })
             };
-            frame.render_widget(paragraph.block(Block::bordered().title("Details")), detail);
+            frame.render_widget(paragraph.block(panel("Details")), detail);
         }
         draw_footer(frame, footer, keys, pending, status);
     }
@@ -1164,7 +1171,7 @@ fn draw_footer(frame: &mut Frame, area: Rect, keys: &str, pending: bool, status:
         }
     });
     frame.render_widget(
-        Paragraph::new(vec![Line::from(keys), Line::from(status)]),
+        Paragraph::new(vec![Line::from(keys), Line::from(status)]).style(theme::footer()),
         area,
     );
 }
