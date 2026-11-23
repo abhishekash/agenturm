@@ -320,10 +320,13 @@ G Group project/source/none · f Tree/flat · o Sort\n←/→ Collapse/expand ·
         rows.push(
             Row::new(vec![
                 Text::from(vec![
-                    Line::styled(roster_cell(&text, task_width), heading_style()),
+                    Line::styled(
+                        roster_cell(&text, task_width),
+                        theme::foreground(theme::palette().text).add_modifier(Modifier::BOLD),
+                    ),
                     Line::styled(
                         roster_cell(&format!("{indent}  {supporting}"), task_width),
-                        label_style(),
+                        theme::muted(),
                     ),
                 ]),
                 Text::styled(status(row), theme::status(status(row))),
