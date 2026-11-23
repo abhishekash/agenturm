@@ -70,6 +70,7 @@ jobs:
             prior-rust-release/scripts/build-rust-linux-bundle.sh "$RUNNER_TEMP/agenturm-arm64-prior"
           CARGO_TARGET_DIR="$RUNNER_TEMP/agenturm-arm64-candidate-target" \
             scripts/build-rust-linux-bundle.sh "$RUNNER_TEMP/agenturm-arm64-candidate"
+          git rev-parse HEAD > "$RUNNER_TEMP/agenturm-arm64-candidate/source-commit.txt"
       - name: Qualify the arm64 archive and Linux user service
         shell: bash
         run: |
@@ -102,7 +103,7 @@ jobs:
 
   publish-arm64:
     name: Attach qualified arm64 release archive
-    if: github.ref_type == 'tag'
+    if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/rust-v')
     needs: [bundle, bundle-arm64]
     runs-on: ubuntu-24.04
     permissions:
@@ -123,9 +124,29 @@ jobs:
           asset="agenturm-${GITHUB_REF_NAME#rust-v}-linux-aarch64.tar.gz"
           [[ -f $asset && -f $asset.sha256 ]]
           sha256sum --check "$asset.sha256"
+          expected_commit=$(cat source-commit.txt)
+          [[ $expected_commit =~ ^[0-9a-f]{40}$ ]]
+          live_commit=$(gh api "repos/$GH_REPO/commits/refs/tags/$GITHUB_REF_NAME" --jq .sha)
+          if [[ $live_commit != "$expected_commit" ]]; then
+            echo 'Release tag moved after archive qualification' >&2
+            exit 1
+          fi
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" --verify-tag --draft --latest=false \
               --title "Agenturm Rust ${GITHUB_REF_NAME#rust-v}" \
               --notes 'Qualified Linux arm64 archive. Release publication awaits the release owner.'
           fi
-          gh release upload "$GITHUB_REF_NAME" "$asset" "$asset.sha256"
+          for file in "$asset" "$asset.sha256"; do
+            digest="sha256:$(sha256sum -- "$file" | cut -d ' ' -f 1)"
+            existing=$(gh release view "$GITHUB_REF_NAME" --json assets \
+              --jq ".assets[] | select(.name == \"$file\") | .digest")
+            if [[ -n $existing ]]; then
+              if [[ $existing != "$digest" ]]; then
+                echo "Existing release asset has different bytes: $file" >&2
+                exit 1
+              fi
+              echo "Verified existing release asset: $file"
+            else
+              gh release upload "$GITHUB_REF_NAME" "$file"
+            fi
+          done
