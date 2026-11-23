@@ -211,3 +211,5 @@ mod tests {
 pub mod native_review;
 
 pub mod telemetry_summary;
+
+pub mod native_attention;

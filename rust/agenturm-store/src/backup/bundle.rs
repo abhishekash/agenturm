@@ -783,7 +783,8 @@ mod tests {
         store
             .connection
             .execute_batch(
-                "DROP INDEX agenturm_metric_series_points;
+                "DROP TABLE agenturm_native_attention_events; DROP TABLE agenturm_native_attention_senders;
+                 DROP INDEX agenturm_metric_series_points;
                  DROP INDEX agenturm_usage_history_by_time;
                  DROP TABLE agenturm_content_grants;
                  DROP TABLE agenturm_content_cursor_proofs;

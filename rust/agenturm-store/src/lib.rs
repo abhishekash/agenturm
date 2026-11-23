@@ -23,6 +23,7 @@ pub mod metric_history;
 mod native_codex_metadata;
 #[cfg(target_os = "linux")]
 pub mod native_outbox;
+pub mod native_attention;
 mod private_text;
 mod retention;
 mod review_ledger;
@@ -91,7 +92,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 18;
+const SCHEMA_VERSION: i64 = 19;
 pub const MAX_HOST_HISTORY_PAGE: usize = 64;
 const MAX_BATCH_EVENTS: usize = 2_048;
 pub const MAX_OTLP_BATCH_SPANS: usize = 1_024;
@@ -109,7 +110,8 @@ const STORE_MARKER_V14: &str = "agenturm.observation-store.v14";
 const STORE_MARKER_V15: &str = "agenturm.observation-store.v15";
 const STORE_MARKER_V16: &str = "agenturm.observation-store.v16";
 const STORE_MARKER_V17: &str = "agenturm.observation-store.v17";
-const STORE_MARKER: &str = "agenturm.observation-store.v18";
+const STORE_MARKER_V18: &str = "agenturm.observation-store.v18";
+const STORE_MARKER: &str = "agenturm.observation-store.v19";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -588,6 +590,10 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         metric_history::validate_index(connection)?;
         usage_history::validate_index(connection)?;
     }
+    if version >= 19 {
+        expected.extend([("table".into(), "agenturm_native_attention_senders".into()), ("table".into(), "agenturm_native_attention_events".into()), ("index".into(), "agenturm_native_attention_by_request".into()), ("index".into(), "agenturm_native_attention_by_target".into())]);
+        native_attention::validate_schema(connection)?;
+    }
     expected.sort();
     if objects != expected {
         return Err(StoreError::UnrecognizedDatabase);
@@ -616,7 +622,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         15 => STORE_MARKER_V15,
         16 => STORE_MARKER_V16,
         17 => STORE_MARKER_V17,
-        18 => STORE_MARKER,
+        18 => STORE_MARKER_V18,
+        19 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -1096,6 +1103,7 @@ impl Store {
             eval_detail::create_schema(&transaction)?;
             metric_history::create_index(&transaction)?;
             usage_history::create_index(&transaction)?;
+            native_attention::create_schema(&transaction)?;
             initialize_history_identity(&transaction)?;
             transaction.commit()?;
         } else if schema_version == 2 {
@@ -1380,8 +1388,16 @@ impl Store {
             usage_history::create_index(&transaction)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
-                [STORE_MARKER],
+                [STORE_MARKER_V18],
             )?;
+            transaction.pragma_update(None, "user_version", 18)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 18)?;
+        }
+        if (2..19).contains(&schema_version) {
+            let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            native_attention::create_schema(&transaction)?;
+            transaction.execute("UPDATE agenturm_store_meta SET value=?1 WHERE key='format'", [STORE_MARKER])?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             transaction.commit()?;
             validate_marked_shape(&connection, SCHEMA_VERSION)?;
@@ -2744,7 +2760,8 @@ mod tests {
 
     fn downgrade_fixture_to_v14(connection: &Connection) {
         connection.execute_batch(
-            "DROP INDEX agenturm_metric_series_points;
+            "DROP TABLE agenturm_native_attention_events; DROP TABLE agenturm_native_attention_senders;
+             DROP INDEX agenturm_metric_series_points;
              DROP INDEX agenturm_usage_history_by_time;
              DROP TABLE agenturm_eval_details;
              DROP TABLE agenturm_eval_detail_admissions;
@@ -2828,7 +2845,8 @@ mod tests {
         let snapshot = store.query_observations(&query).unwrap().snapshot_id;
         let tx = store.connection.transaction().unwrap();
         tx.execute_batch(
-            "DROP INDEX agenturm_metric_series_points;
+            "DROP TABLE agenturm_native_attention_events; DROP TABLE agenturm_native_attention_senders;
+             DROP INDEX agenturm_metric_series_points;
              DROP INDEX agenturm_usage_history_by_time;
              DROP TABLE agenturm_eval_details; DROP TABLE agenturm_eval_detail_admissions;",
         )
@@ -2884,7 +2902,8 @@ mod tests {
         let query = ObservationQuery::latest(1);
         let snapshot = store.query_observations(&query).unwrap().snapshot_id;
         let identity = store.history_identity().unwrap();
-        store.connection.execute_batch("DROP INDEX agenturm_metric_series_points; DROP INDEX agenturm_usage_history_by_time;").unwrap();
+        store.connection.execute_batch("DROP TABLE agenturm_native_attention_events; DROP TABLE agenturm_native_attention_senders;
+             DROP INDEX agenturm_metric_series_points; DROP INDEX agenturm_usage_history_by_time;").unwrap();
         store
             .connection
             .execute(
@@ -2909,7 +2928,7 @@ mod tests {
             upgraded.query_observations(&query).unwrap().snapshot_id,
             snapshot
         );
-        validate_marked_shape(&upgraded.connection, 18).unwrap();
+        validate_marked_shape(&upgraded.connection, SCHEMA_VERSION).unwrap();
     }
 
     #[test]

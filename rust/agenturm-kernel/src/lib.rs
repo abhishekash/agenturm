@@ -2878,3 +2878,5 @@ pub mod retained_history;
 pub use agenturm_protocol::native_review;
 
 pub use agenturm_protocol::telemetry_summary;
+
+pub use agenturm_protocol::native_attention;

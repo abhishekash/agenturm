@@ -228,6 +228,7 @@ pub(super) fn prune_in(
         [cutoff],
     )?;
     crate::telemetry_payload::purge_before(transaction, cutoff)?;
+    crate::native_attention::prune_before(transaction, cutoff)?;
     let removed_observations = transaction.execute(
         "DELETE FROM agenturm_observations WHERE observed_at_unix_ns < ?1",
         [cutoff],

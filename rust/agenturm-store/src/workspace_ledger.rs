@@ -1393,6 +1393,11 @@ fn contains_event_in(
     revision: u32,
 ) -> Result<bool> {
     validate_request_key(anchor, event_id)?;
+    if crate::native_attention::is_attention_event_id(event_id) {
+        return crate::native_attention::contains_event_in(connection, anchor, event_id, revision, None)
+            .map_err(WorkspaceError::History);
+    }
+
     Ok(connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM agenturm_observations
             WHERE source_id = ?1 AND session_id = ?2 AND worker_id IS ?3 AND turn_id IS ?4
