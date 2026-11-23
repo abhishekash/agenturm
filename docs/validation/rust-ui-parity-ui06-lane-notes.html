@@ -1,0 +1,396 @@
+<!doctype html>
+<html lang="en">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<meta name="color-scheme" content="light dark">
+<title>UI-06 lane notes · Review, Workflow and saved work</title>
+<style>
+  :root {
+    color-scheme: light dark;
+    --canvas: #f7f6f2;
+    --surface: #ffffff;
+    --surface-alt: #f0eee7;
+    --text: #191a1d;
+    --muted: #5d616b;
+    --line: #d8d4ca;
+    --accent: #2457a7;
+    --accent-soft: #e6eefb;
+    --ok: #1d6b3a;
+    --warn: #8a5300;
+    --bad: #9b2c2c;
+    --code: #f2f1ec;
+    --shadow: 0 1px 2px rgba(20, 20, 20, .06), 0 8px 24px rgba(20, 20, 20, .05);
+  }
+  @media (prefers-color-scheme: dark) {
+    :root {
+      --canvas: #141519;
+      --surface: #1c1e24;
+      --surface-alt: #23262d;
+      --text: #eceef3;
+      --muted: #a8adb8;
+      --line: #343842;
+      --accent: #8cb6ff;
+      --accent-soft: #1e2b42;
+      --ok: #7fd39b;
+      --warn: #f0c36b;
+      --bad: #f19a9a;
+      --code: #17191f;
+      --shadow: 0 1px 2px rgba(0, 0, 0, .3), 0 8px 24px rgba(0, 0, 0, .2);
+    }
+  }
+  * { box-sizing: border-box; }
+  html { scroll-behavior: smooth; }
+  body {
+    margin: 0;
+    background: var(--canvas);
+    color: var(--text);
+    font: 1rem/1.55 system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
+  }
+  main {
+    max-width: 72rem;
+    margin: 0 auto;
+    padding: clamp(1rem, 3vw, 3rem) clamp(1rem, 3vw, 2rem) 4rem;
+  }
+  header.hero {
+    background: linear-gradient(135deg, var(--surface), var(--surface-alt));
+    border: 1px solid var(--line);
+    border-radius: .9rem;
+    padding: clamp(1.2rem, 4vw, 2.5rem);
+    box-shadow: var(--shadow);
+  }
+  .eyebrow {
+    margin: 0 0 .4rem;
+    color: var(--accent);
+    font-size: .78rem;
+    font-weight: 700;
+    letter-spacing: .09em;
+    text-transform: uppercase;
+  }
+  h1 { margin: 0 0 .6rem; font-size: clamp(1.55rem, 4vw, 2.5rem); line-height: 1.15; }
+  h2 { margin: 2.4rem 0 .7rem; font-size: clamp(1.2rem, 2.6vw, 1.55rem); line-height: 1.25; }
+  h3 { margin: 1.6rem 0 .45rem; font-size: 1.05rem; }
+  p, li { max-width: 78ch; }
+  a { color: var(--accent); text-underline-offset: .16em; }
+  .meta {
+    display: flex;
+    flex-wrap: wrap;
+    gap: .45rem 1.2rem;
+    margin-top: 1rem;
+    color: var(--muted);
+    font-size: .9rem;
+  }
+  .meta code { color: var(--text); }
+  .lede { font-size: 1.08rem; color: var(--muted); margin: .8rem 0 0; }
+  nav.toc {
+    margin: 1.4rem 0 0;
+    padding: .85rem 1rem;
+    border: 1px solid var(--line);
+    border-radius: .6rem;
+    background: var(--surface);
+  }
+  nav.toc strong { display: block; margin-bottom: .35rem; font-size: .82rem; letter-spacing: .05em; text-transform: uppercase; color: var(--muted); }
+  nav.toc ul { display: flex; flex-wrap: wrap; gap: .4rem 1.1rem; margin: 0; padding: 0; list-style: none; }
+  nav.toc a { font-size: .92rem; }
+  .cards {
+    display: grid;
+    grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr));
+    gap: .9rem;
+    margin: 1rem 0;
+  }
+  .card {
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: .7rem;
+    padding: 1rem 1.05rem;
+    box-shadow: var(--shadow);
+  }
+  .card h3 { margin-top: 0; }
+  .pill {
+    display: inline-block;
+    border-radius: 999px;
+    padding: .08rem .55rem;
+    font-size: .74rem;
+    font-weight: 700;
+    letter-spacing: .03em;
+    text-transform: uppercase;
+    background: var(--accent-soft);
+    color: var(--accent);
+    vertical-align: .1em;
+  }
+  .pill.ok { background: color-mix(in srgb, var(--ok) 16%, transparent); color: var(--ok); }
+  .pill.warn { background: color-mix(in srgb, var(--warn) 18%, transparent); color: var(--warn); }
+  .pill.bad { background: color-mix(in srgb, var(--bad) 16%, transparent); color: var(--bad); }
+  table {
+    width: 100%;
+    border-collapse: collapse;
+    margin: .8rem 0 1.2rem;
+    background: var(--surface);
+    border: 1px solid var(--line);
+    border-radius: .6rem;
+    overflow: hidden;
+    font-size: .93rem;
+  }
+  caption { caption-side: top; text-align: left; color: var(--muted); font-size: .86rem; padding-bottom: .35rem; }
+  th, td { padding: .55rem .65rem; border-bottom: 1px solid var(--line); vertical-align: top; text-align: left; }
+  th { background: var(--surface-alt); font-size: .8rem; letter-spacing: .03em; text-transform: uppercase; color: var(--muted); }
+  tr:last-child td { border-bottom: 0; }
+  code, pre {
+    font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace;
+    font-size: .9em;
+  }
+  :not(pre) > code {
+    background: var(--code);
+    border: 1px solid var(--line);
+    border-radius: .3rem;
+    padding: .06rem .3rem;
+    overflow-wrap: anywhere;
+  }
+  pre {
+    background: var(--code);
+    border: 1px solid var(--line);
+    border-radius: .6rem;
+    padding: .9rem 1rem;
+    overflow-x: auto;
+    line-height: 1.45;
+  }
+  .callout {
+    margin: 1rem 0;
+    padding: .8rem 1rem;
+    border-left: .25rem solid var(--accent);
+    border-radius: .25rem .55rem .55rem .25rem;
+    background: var(--accent-soft);
+  }
+  .callout.warn { border-left-color: var(--warn); background: color-mix(in srgb, var(--warn) 12%, var(--surface)); }
+  .callout p:first-child { margin-top: 0; }
+  .callout p:last-child { margin-bottom: 0; }
+  ul.checklist { padding-left: 1.25rem; }
+  ul.checklist li { margin: .35rem 0; }
+  .split { display: grid; grid-template-columns: repeat(auto-fit, minmax(18rem, 1fr)); gap: 1rem; }
+  .mono-list { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .88rem; line-height: 1.7; }
+  footer {
+    margin-top: 3rem;
+    padding-top: 1rem;
+    border-top: 1px solid var(--line);
+    color: var(--muted);
+    font-size: .88rem;
+  }
+  @media (max-width: 40rem) {
+    table, thead, tbody, th, td, tr { display: block; }
+    thead { position: absolute; width: 1px; height: 1px; overflow: hidden; clip: rect(0 0 0 0); }
+    tr { border-bottom: 1px solid var(--line); padding: .35rem 0; }
+    td { border: 0; padding: .28rem .75rem; }
+    td::before { content: attr(data-label); display: block; color: var(--muted); font-size: .72rem; letter-spacing: .04em; text-transform: uppercase; }
+    main { padding-left: .9rem; padding-right: .9rem; }
+  }
+  @media (prefers-reduced-motion: reduce) { html { scroll-behavior: auto; } }
+</style>
+</head>
+<body>
+<main>
+  <header class="hero">
+    <p class="eyebrow">Agenturm · UI-06 lane</p>
+    <h1>Review, Workflow and saved work</h1>
+    <p class="lede">Lane notes for the Rust cockpit parity work: what changed in the owned modules, what remains for the shared shell and FD2/CF7, and the exact hooks UI-02 must integrate.</p>
+    <div class="meta">
+      <span>23 November 2026</span>
+      <span>Python oracle <code>v0.2.8</code> · <code>2802d79</code></span>
+      <span>Branch <code>work/ui06-workflow</code></span>
+      <span>Worktree <code>/tmp/agenturm-ui06-workflow</code></span>
+    </div>
+    <nav class="toc" aria-label="Contents">
+      <strong>Contents</strong>
+      <ul>
+        <li><a href="#changed">What changed</a></li>
+        <li><a href="#verification">Verification</a></li>
+        <li><a href="#remains">What remains</a></li>
+        <li><a href="#hooks">Shared-shell hooks</a></li>
+        <li><a href="#seams">Pluggable seams</a></li>
+        <li><a href="#risks">Residual risks</a></li>
+      </ul>
+    </nav>
+  </header>
+
+  <section id="changed">
+    <h2>What changed</h2>
+    <div class="cards">
+      <article class="card">
+        <h3>Review receipt</h3>
+        <p>Checks, edits, errors, usage, context, excerpt index, exact scope and partial-page disclosure. Absent sections are labelled, never inferred.</p>
+        <p><span class="pill ok">tested</span> <span class="pill">metadata only</span></p>
+      </article>
+      <article class="card">
+        <h3>Workflow incidents</h3>
+        <p>Observed owner, recorded approval state, delivery attempt and policy revision; identity-aware stale notices; exact failed-attempt retry retained.</p>
+        <p><span class="pill ok">tested</span> <span class="pill">3 widths</span></p>
+      </article>
+      <article class="card">
+        <h3>Settings and resume</h3>
+        <p>Threshold drafts require explicit discard confirmation. Denied resume names the exact limitation instead of implying support.</p>
+        <p><span class="pill ok">tested</span></p>
+      </article>
+      <article class="card">
+        <h3>Tasks and handoff</h3>
+        <p>Page-local task search by authored text and exact run identity; export collision and current/superseded decision history covered.</p>
+        <p><span class="pill ok">tested</span> <span class="pill warn">shell hook</span></p>
+      </article>
+    </div>
+
+    <h3>Review</h3>
+    <ul>
+      <li><strong><code>review_receipt.rs</code></strong> now emits the tagged Review sections: scope, summary and next inspection step, latest request, agent update, recorded checks, modifying operations, errors, usage, context events, excerpt index, older-evidence cursor and raw observations.</li>
+      <li>Checks are counted passed/failed/unknown/unclassified. Missing sections say so explicitly, for example “No recognized validation records in the loaded evidence. This does not establish that no validation ran.”</li>
+      <li>Token and reported-cost totals are exact; partly reported token sets are marked partial. Captured prompt or provider payload text is never reconstructed by the receipt.</li>
+      <li>Excerpts carry a stable kind, label and <code>event revision n</code> source for <code>task draft --review-file</code> / save-as-task.</li>
+      <li>JSON gains <code>summary</code> and <code>excerpts</code>; the legacy no-format shape is unchanged. Copy and export keep the same loaded-page scope and disclose partial history.</li>
+      <li><strong><code>cockpit_workflows.rs</code></strong> adds a regression proving decision notes stay bound to the exact evidence version after a later admitted event advances the session receipt.</li>
+    </ul>
+
+    <h3>Workflow</h3>
+    <ul>
+      <li><strong><code>workflow_alerts.rs</code></strong>: incident detail begins with the observed owner (source · main session/worker · turn), a recorded approval-state line, and delivery attempt plus policy revision.</li>
+      <li>Refresh preserves the exact incident by <code>(id, scope, evidence)</code>. If it is gone, the nearest recorded incident is selected with a stale notice; a changed history incarnation says so instead of implying the old selection is current.</li>
+      <li><strong><code>workflow_settings.rs</code></strong>: first Escape arms “Esc again to discard · Ctrl+S save”; typing cancels the arm; only a second Escape leaves. Desktop/snooze commands remain immediate receipts. Desktop-only refresh keeps unsaved threshold drafts.</li>
+      <li><strong><code>workflow_resume.rs</code></strong>: <code>unavailable_reason()</code> distinguishes worker execution, unsafe/absent native identifier and unsupported provider. Commands remain fixed to <code>codex resume</code> / <code>claude --resume</code> with a safe, provider-matched main-session identifier.</li>
+      <li><strong><code>workflow_route.rs</code></strong>: local no-pane failures direct the operator to an explicit <code>--route-file</code> for receiver-host executions; remote failures never guess or select a pane. Invalid identifiers are separate from route failures.</li>
+    </ul>
+
+    <h3>Saved tasks, decisions and handoff</h3>
+    <ul>
+      <li><strong><code>task_cli.rs</code></strong>: <code>task list --search &lt;text&gt;</code> filters the loaded page by title, notes, workspace directory and exact linked source/session/worker/turn identity. It reports <code>"page_local": true</code> and treats empty text as no filter.</li>
+      <li><strong><code>handoff_export.rs</code></strong>: export collision preserves the first Markdown/HTML pair and fails with <code>AlreadyExists</code> without leaving staging files. Current/superseded decision history keeps <code>History</code> and <code>Supersedes n</code> labels.</li>
+      <li><strong><code>tests/task_cli.rs</code></strong> covers search by title, note and exact linked identity, empty results and the empty-search no-filter case.</li>
+      <li>Existing revision/CAS, decision supersession, brief, Git snapshot/diff, private handoff export and restore tests still pass.</li>
+    </ul>
+
+    <h3>Preferences and private display</h3>
+    <ul>
+      <li><strong><code>review_visibility.rs</code></strong>: the preference save now syncs the parent directory after the atomic rename. Tests reject non-canonical, oversized and symlinked files; saving replaces a symlink rather than writing through it. The preference remains off by default.</li>
+    </ul>
+
+    <h3>Exact file set</h3>
+    <pre class="mono-list">rust/agenturm-ui/src/workspace/review_visibility.rs
+rust/agenturm-ui/src/workbench/workflow_alerts.rs
+rust/agenturm-ui/src/workbench/workflow_resume.rs
+rust/agenturm-ui/src/workbench/workflow_settings.rs
+rust/agenturm-app/src/cockpit_workflows.rs
+rust/agenturm-app/src/handoff_export.rs
+rust/agenturm-app/src/review_receipt.rs
+rust/agenturm-app/src/task_cli.rs
+rust/agenturm-app/src/workflow_route.rs
+rust/agenturm-app/tests/task_cli.rs</pre>
+  </section>
+
+  <section id="verification">
+    <h2>Verification</h2>
+    <pre><code>export RUSTUP_HOME=/tmp/agenturm-rustup
+export CARGO_HOME=/tmp/agenturm-cargo
+export PATH=/tmp/agenturm-rustup/toolchains/1.100.0-x86_64-unknown-linux-gnu/bin:$PATH
+
+cargo build -p agenturm-ui -p agenturm-app --offline
+cargo test  -p agenturm-ui -p agenturm-app --offline</code></pre>
+    <table>
+      <caption>Final run in this worktree. Only results actually run are listed.</caption>
+      <thead><tr><th scope="col">Check</th><th scope="col">Result</th></tr></thead>
+      <tbody>
+        <tr><td data-label="Check"><code>cargo build -p agenturm-ui -p agenturm-app</code></td><td data-label="Result"><span class="pill ok">success</span></td></tr>
+        <tr><td data-label="Check"><code>agenturm-ui</code> library suite</td><td data-label="Result">79 passed, 0 failed</td></tr>
+        <tr><td data-label="Check"><code>agenturm-app</code> library suite</td><td data-label="Result">177 passed, 0 failed</td></tr>
+        <tr><td data-label="Check"><code>agenturm-app</code> integration suites</td><td data-label="Result">81 passed, 0 failed in the final run</td></tr>
+        <tr><td data-label="Check"><code>rustfmt --edition 2024 --check</code> on changed files</td><td data-label="Result"><span class="pill ok">clean</span></td></tr>
+      </tbody>
+      <tbody>
+        <tr><td data-label="Caveat">Unrelated flake</td><td data-label="Result">One <code>automatic_retention</code> case failed once with a broken pipe/reset during cache-lock contention; it passed standalone and in the final full run. No changed module is involved.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="remains">
+    <h2>What remains</h2>
+    <div class="callout warn">
+      <p>These are real gaps, not accepted differences. Each needs shell or app work this lane must not land in shared files.</p>
+    </div>
+    <table>
+      <thead><tr><th scope="col">Gap</th><th scope="col">Why it remains</th></tr></thead>
+      <tbody>
+        <tr><td data-label="Gap"><strong>Review screen actions</strong></td><td data-label="Why">Review still exposes panes, edit list, older evidence, <code>y</code> acknowledge, <code>n</code> decisions and <code>t</code> traces, but not Copy, Export, Save task, Excerpt, Draft, Git or Map workspace. The receipt/excerpt models now exist; dispatch and forms do not.</td></tr>
+        <tr><td data-label="Gap"><strong>Turn-scoped Review</strong></td><td data-label="Why"><code>Ctrl+R</code> opens session Review; <code>HistorySelection::Turn</code> has no Review section. Python can open exactly scoped turn checks/edits/errors.</td></tr>
+        <tr><td data-label="Gap"><strong>Save task from Review</strong></td><td data-label="Why"><code>task draft --review-file</code> and <code>approve-draft</code> accept a receipt, but the cockpit has no action that writes a bounded review draft or opens the task editor.</td></tr>
+        <tr><td data-label="Gap"><strong>Incident review acknowledgement</strong></td><td data-label="Why"><code>Seen</code> persists per pending request. Completion/failure incidents have no persisted reviewed acknowledgement independent of delivery retry.</td></tr>
+        <tr><td data-label="Gap"><strong>Task search in the cockpit</strong></td><td data-label="Why">The CLI supports <code>--search</code>; the shared task list has no search field, clear action, page-local disclosure or command carrying a query.</td></tr>
+        <tr><td data-label="Gap"><strong>Decisions, Brief and version selector</strong></td><td data-label="Why">The app CLI supports brief, decide, decisions and supersession; the cockpit only edits task title/note and has no version chooser or dirty-editor confirmation.</td></tr>
+        <tr><td data-label="Gap"><strong>Handoff preview</strong></td><td data-label="Why">The cockpit exports a saved handoff but has no preview/copy of <code>task handoff</code> formats or a destination form that stays open on collision. The export layer already returns <code>AlreadyExists</code>.</td></tr>
+        <tr><td data-label="Gap"><strong>Provider edit/MCP detail</strong></td><td data-label="Why">Review edit reveal remains the whole-session Codex browser and otherwise says “Edit preview is unavailable from this reader”. Remaining provider proofs/detail belong to FD2 with valid grants.</td></tr>
+        <tr><td data-label="Gap"><strong>Cross-host discovery</strong></td><td data-label="Why">Routing is explicit only. There is no route browser or hidden discovery; the remote cockpit must be reopened with the configured route file. This is intentional.</td></tr>
+        <tr><td data-label="Gap"><strong>Receiver acceptance</strong></td><td data-label="Why">The Python receiver Review path and CF7/paired terminal acceptance are separate gates. This lane claims unit/integration evidence only.</td></tr>
+      </tbody>
+    </table>
+  </section>
+
+  <section id="hooks">
+    <h2>Exact shared-shell hooks for UI-02</h2>
+    <p>These keys follow the tagged Python guide. UI-02 owns the final keymap and must publish them through the same action inventory used by dispatch, footer hints and scrollable <code>F1</code> help.</p>
+    <table>
+      <thead><tr><th scope="col">Context</th><th scope="col">Key</th><th scope="col">Required hook</th></tr></thead>
+      <tbody>
+        <tr><td data-label="Context">Review</td><td data-label="Key"><code>[</code> / <code>]</code> / <code>l</code></td><td data-label="Hook">Keep newer/older/latest; label “Earlier” on <code>]</code>. Preserve snapshot, page cursor, selected edit and scroll.</td></tr>
+        <tr><td data-label="Context">Review</td><td data-label="Key"><code>c</code></td><td data-label="Hook">Copy the exact review receipt (text/markdown) without an export directory.</td></tr>
+        <tr><td data-label="Context">Review</td><td data-label="Key"><code>x</code></td><td data-label="Hook">Open the export form with format and destination; show exact success path or <code>AlreadyExists</code> failure.</td></tr>
+        <tr><td data-label="Context">Review</td><td data-label="Key"><code>Tab</code> / <code>Shift+Tab</code></td><td data-label="Hook">Reach Earlier, Refresh, Copy, Export, Save task, Excerpt, Back; Enter/Space activate.</td></tr>
+        <tr><td data-label="Context">Review</td><td data-label="Key"><code>R</code></td><td data-label="Hook">Re-read the same exact scope/snapshot; discard late responses for a closed or changed review.</td></tr>
+        <tr><td data-label="Context">Review</td><td data-label="Key"><code>y</code></td><td data-label="Hook">Existing mark-reviewed; acknowledge only this evidence version and keep the selected edit.</td></tr>
+        <tr><td data-label="Context">Review</td><td data-label="Key"><code>n</code></td><td data-label="Hook">Existing review decisions; return to the same version and selection.</td></tr>
+        <tr><td data-label="Context">Review</td><td data-label="Key"><code>s</code> / form</td><td data-label="Hook">Save task: write a bounded review draft and open the editor, or invoke <code>task draft --review-file</code> through a new command.</td></tr>
+        <tr><td data-label="Context">Review</td><td data-label="Key"><code>Esc</code></td><td data-label="Hook">One layer at a time: excerpt/chooser → edit list → Review → inspector/roster, preserving exact version and selection.</td></tr>
+        <tr><td data-label="Context">Workflow</td><td data-label="Key"><code>w</code></td><td data-label="Hook">Inbox focus on the queue; Up/Down work immediately.</td></tr>
+        <tr><td data-label="Context">Workflow</td><td data-label="Key"><code>Tab</code></td><td data-label="Hook">Incidents; preserve selected alert by <code>(id, scope, evidence)</code>. The alert model already renders stale notices.</td></tr>
+        <tr><td data-label="Context">Workflow</td><td data-label="Key"><code>r</code> / <code>s</code></td><td data-label="Hook">Seen for the exact pending request; keep cursor and recorded approval state.</td></tr>
+        <tr><td data-label="Context">Workflow</td><td data-label="Key"><code>l</code></td><td data-label="Hook">Locate; show route guidance verbatim and never move selection on denial.</td></tr>
+        <tr><td data-label="Context">Workflow</td><td data-label="Key"><code>c</code></td><td data-label="Hook">Copy the reviewed resume command; preview returns to the same row.</td></tr>
+        <tr><td data-label="Context">Workflow</td><td data-label="Key"><code>T</code></td><td data-label="Hook">Retry only the exact failed/unavailable delivery attempt and authority.</td></tr>
+        <tr><td data-label="Context">Workflow</td><td data-label="Key"><code>S</code></td><td data-label="Hook">Settings; Escape now arms a discard confirmation when threshold drafts are dirty.</td></tr>
+        <tr><td data-label="Context">Tasks</td><td data-label="Key"><code>/</code></td><td data-label="Hook">Task search using page-local <code>task list --search</code>; empty clears; disclose page-local coverage and preserve selected task id.</td></tr>
+        <tr><td data-label="Context">Tasks</td><td data-label="Key"><code>v</code> / <code>Enter</code></td><td data-label="Hook">Decisions/version chooser; add or supersede with expected revision; dirty editor requires explicit discard.</td></tr>
+        <tr><td data-label="Context">Handoff</td><td data-label="Key"><code>x</code></td><td data-label="Hook">Preview/copy/export with format and destination; keep the panel open on collision and name the existing path behavior.</td></tr>
+        <tr><td data-label="Context">Copy/export</td><td data-label="Key"><code>Ctrl+C</code></td><td data-label="Hook">Copy selection only; <code>x</code> exports loaded/selected scope. Keep text fields literal and chooser-first Escape.</td></tr>
+      </tbody>
+    </table>
+
+    <h3>Dispatch additions</h3>
+    <ol>
+      <li>Add Review Copy/Export/Save-task/Excerpt/Draft/Git/Map commands to <code>WorkCommand</code> (or reuse <code>ExportView</code> with a review document) and route them from <code>Workspace::key</code>. The app owns receipt rendering and the task draft/decision CLI paths.</li>
+      <li>Add a turn-scoped Review selection (or make <code>SessionView::Review</code> carry an optional exact turn/worker) and open it from the inspector and turn picker. Preserve the exact session/turn on return.</li>
+      <li>Add a task-search field and Decisions/Brief sub-screen in <code>workbench.rs</code>, with command variants carrying page cursor, query and expected revision. Keep query and page-local limits visible.</li>
+      <li>Extend Workflow help/footer for the new settings discard behavior and observed owner / approval state / delivery attempt detail.</li>
+      <li>Add palette entries for Review, Workflow, Incidents, Saved tasks, Task search and “To review”. Keep <code>F2</code> themes; <code>Ctrl+P</code> must restore the originating control and drafts.</li>
+      <li>Surface receipt <code>summary</code>, <code>excerpts</code> and partial-page labels in Review and the export form so Copy/Export never imply complete history or verified correctness.</li>
+    </ol>
+  </section>
+
+  <section id="seams">
+    <h2>Pluggable-seam implications</h2>
+    <ul class="checklist">
+      <li>The review receipt is a provider-neutral projection of retained observations. It classifies checks, edits, errors and usage without switching on a provider ID.</li>
+      <li>Provider edit and MCP payload detail stay behind <code>RevealReviewEdit</code> / <code>RevealOperation</code>, FD2 proofs and valid grants. Missing detail is labelled unavailable; no provider-specific UI branch was added.</li>
+      <li>Workflow routing is explicit configuration only: local route, remote route file, unique-pane proof and “Seen only acknowledges locally” wording are preserved. No hidden discovery, pane guessing or provider-hardcoded attach path was introduced.</li>
+      <li>Cross-host attach guidance lives in <code>workflow_route</code> and is transport-neutral. Configured route words are the operator’s own authenticated transport.</li>
+      <li>Task search and handoff export operate on operator-authored metadata and exact recorded identities, not captured body text.</li>
+    </ul>
+  </section>
+
+  <section id="risks">
+    <h2>Residual risks</h2>
+    <ul>
+      <li>Final acceptance still requires the installed Rust candidate paired with the tagged Python build at 120×32, 80×24 and 60×18, including real terminal keys and receiver cases. This lane’s evidence is unit/integration and component rendering only.</li>
+      <li>The Review screen remains shared-shell-owned. The receipt and incident models are ready, but visible parity of Copy/Export/Save task/Excerpt cannot be claimed until UI-02 lands dispatch and forms.</li>
+      <li>Incident acknowledgement persistence is a ledger feature, not a UI flag. Do not add a local-only “reviewed” badge that disappears on restart.</li>
+      <li>The untested paired matrix remains large: theme/compact rendering, connected/denied/stale receiver states and actual terminal-restoration behavior are UI-07/UI-Q evidence.</li>
+    </ul>
+  </section>
+
+  <footer>
+    <p>UI-06 lane · Review, Workflow and saved work · branch <code>work/ui06-workflow</code>. Shared shell files were intentionally not modified; integration hooks are listed above.</p>
+  </footer>
+</main>
+</body>
+</html>

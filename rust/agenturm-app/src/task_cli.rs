@@ -19,7 +19,7 @@ const DEFAULT_LIMIT: usize = 100;
 const MAX_TEXT_INPUT: u64 = 4 * 1024;
 const MAX_BRIEF_INPUT: u64 = 128 * 1024;
 pub(super) const USAGE: &str = concat!(
-    "usage: agenturm task list --db <history> [--all] [--limit <1..200>] [--before <id>]\n",
+    "usage: agenturm task list --db <history> [--all] [--search <text>] [--limit <1..200>] [--before <id>]\n",
     "       agenturm task add --db <history> --title <title> [--notes <text>|--notes-file <path>] [--workspace <directory>]\n",
     "       agenturm task show <task-id> --db <history>\n",
     "       agenturm task <complete|reopen> <task-id> --db <history> [--expected-revision <n>]\n",
@@ -59,6 +59,7 @@ enum TaskAction {
         limit: usize,
         before: Option<u64>,
         all: bool,
+        search: Option<String>,
     },
     Add {
         title: String,
@@ -242,6 +243,11 @@ pub(super) fn parse(args: &[String]) -> Result<TaskOptions, String> {
                     limit,
                     before,
                     all: flags.remove("--all").is_some(),
+                    search: flags
+                        .remove("--search")
+                        .map(str::trim)
+                        .filter(|search| !search.is_empty())
+                        .map(str::to_owned),
                 }
             } else {
                 TaskAction::Handoffs { limit, before }
@@ -601,11 +607,30 @@ pub(super) fn execute_ledger(
             ledger.backup_tasks_to(destination).map_err(string)?;
             json!({"format": "agenturm-rust-task-backup/1", "path": destination})
         }
-        TaskAction::List { limit, before, all } => {
+        TaskAction::List {
+            limit,
+            before,
+            all,
+            search,
+        } => {
             let page = ledger.list_tasks_including_archived(*limit, *before, *all)?;
+            let needle = search.as_deref().map(str::to_lowercase);
+            let items = page
+                .items
+                .into_iter()
+                .filter(|task| {
+                    needle
+                        .as_deref()
+                        .is_none_or(|needle| task_matches(task, needle))
+                })
+                .collect::<Vec<_>>();
             json!({
-                "items": page.items.iter().map(task_json).collect::<Vec<_>>(),
+                "items": items.iter().map(task_json).collect::<Vec<_>>(),
                 "next_before": page.next_before,
+                "search": search,
+                // The ledger filters one loaded page. Older matches beyond
+                // next_before are not claimed by this result.
+                "page_local": search.is_some(),
             })
         }
         TaskAction::Add {
@@ -864,6 +889,25 @@ pub(super) fn execute_ledger(
 }
 
 const MISSING_TASK: &str = "That task is no longer available";
+
+/// Case-insensitive search over operator-authored task text and the exact
+/// recorded identity of any linked run. Search never reads captured content.
+fn task_matches(task: &SavedTask, needle: &str) -> bool {
+    let mut fields = vec![
+        task.title.as_str(),
+        task.note.as_str(),
+        task.workspace_directory.as_deref().unwrap_or(""),
+    ];
+    if let Some(anchor) = &task.anchor {
+        fields.push(anchor.harness_id.as_str());
+        fields.push(anchor.session_id.as_str());
+        fields.push(anchor.worker_id.as_deref().unwrap_or(""));
+        fields.push(anchor.turn_id.as_deref().unwrap_or(""));
+    }
+    fields
+        .into_iter()
+        .any(|field| field.to_lowercase().contains(needle))
+}
 
 fn task(ledger: &WorkspaceLedger, id: u64) -> TaskResult<SavedTask> {
     Ok(ledger.task(id)?.ok_or(MISSING_TASK)?)
