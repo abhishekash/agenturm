@@ -1,6 +1,6 @@
 # Rust cutover workflow inventory
 
-Baseline is the Python `v0.2.8` tag and the published Rust 0.3.7 Linux bundle. Rust 0.3.8 UI changes below are a candidate pending integrated qualification. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.
+Baseline is the Python `v0.2.8` tag and the published Rust 0.3.8 Linux bundle. The UI changes below passed integrated runtime, terminal, private-content and native package qualification. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.
 
 The current implementation scope retains the remaining workflows. Remote
 receiver access, remaining eval views, automatic retention, recorded cost and
@@ -46,7 +46,7 @@ captured prompts, so the live roster leaves those fields outside its labels.
 
 ### Command-center first screen
 
-The Rust 0.3.8 candidate opens with a full-width task table, aligned status
+Rust 0.3.8 opens with a full-width task table, aligned status
 and updated columns, and project path headings with counts. `Tab` and
 `Shift+Tab` select All, Needs you, Working, Ready or Inactive; counts apply to
 the loaded evidence page and unknown states remain explicit. `G` cycles

@@ -1,6 +1,6 @@
 # Rust 0.3.8 UI acceptance
 
-Status: opt-in candidate, 23 November 2026. Runtime code is frozen at
+Status: [published opt-in release](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.8), 23 November 2026. Runtime code is frozen at
 `1df22a4`; later changes update documentation and acceptance fixtures only.
 The default Rust cutover remains gated. Comparative performance benchmarks
 are deferred.
@@ -21,7 +21,7 @@ workspace**. Invalid, conflicting, archived, worker/turn-only and foreign
 history candidates remain unavailable. Notes, diffs, prompts and process cwd
 are outside this projection.
 
-The candidate integrates Python keyboard navigation, selectable MCP and
+The release integrates Python keyboard navigation, selectable MCP and
 Operations tables, and recorded Activity, Traces, Usage, Findings and Host
 inspectors. `Ctrl+F` investigates retained failures or grant-verified source
 evidence. Search, More and source opening pin logical history identity and
@@ -64,17 +64,20 @@ empty `PATH`; the runtime and collector do not require Python or Rust.
 Terminal checks reconstruct actual cells instead of assuming complete words
 are contiguous in Ratatui's cursor and style deltas.
 
-## Candidate integrity
+## Published integrity
 
-The final archive is `agenturm-0.3.8-linux-x86_64.tar.gz`.
+Tag `rust-v0.3.8` resolves to `1c75980b587fd591a5cc0a87c74af4033cece5a0`. Both architectures passed [tag-specific qualification](https://github.com/abhishekash/agenturm/actions/runs/45121070134); all four published archive/sidecar digests match the qualified assets.
+
+The x86-64 archive is `agenturm-0.3.8-linux-x86_64.tar.gz`.
 
 - Archive SHA-256: `528d4c7057d280258788d44e684505b7c552bc5f4dc8f730c9a24d568fc0d657`.
+- ARM64 archive SHA-256: `95e37c0254f9bcd1650b1a7d9a630a40c180f61dc80f43035e934c732dd556cc`.
 - App SHA-256: `2bf3d1df191ba45ce9723f3daabd76caa106ebff3f411282352119c44e53b93f`.
 - All nine runtime executables match the first qualified runtime archive
   byte for byte; the final archive updates its bundled installation guide.
-- Native Linux x86-64 and ARM64 qualification passed in [run 45120054721](https://github.com/abhishekash/agenturm/actions/runs/45120054721), including the ARM64 prior-release upgrade and systemd user service. Publication is recorded separately.
+- Native Linux x86-64 and ARM64 qualification passed in [run 45120054721](https://github.com/abhishekash/agenturm/actions/runs/45120054721), including the ARM64 prior-release upgrade and systemd user service.
 
-CI run [45120054720](https://github.com/abhishekash/agenturm/actions/runs/45120054720)
+Main CI run [45120958615](https://github.com/abhishekash/agenturm/actions/runs/45120958615)
 passed Rust protocol/adapters, OTLP end-to-end, both Node versions, and all
 five required SDK jobs: automatic CLI capture, Pydantic AI, LangChain,
 OpenAI Agents and Google ADK. That revision uses the same frozen Rust runtime.
