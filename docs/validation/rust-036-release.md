@@ -50,11 +50,11 @@ The logs are retained under `/tmp` on the qualification host. The prior
 0.3.5 Linux x86-64 archive and its validation are recorded separately.
 [Rust 0.3.5 archive validation](rust-035-release.md)
 
-## CI and architecture checks in progress
+## Final main-branch CI
 
-| Gate | Evidence to record |
+| Gate | Result |
 | --- | --- |
-| Broader compatibility CI | Python-version jobs remain active in the broader run. Rust protocol, vendor jobs, Node and OTLP jobs have passed. [CI run 45105188826](https://github.com/abhishekash/agenturm/actions/runs/45105188826) |
+| Broader compatibility CI | The merged release source passed every job, including Python 3.11–3.14, Node 22/24, OTLP, the Rust protocol job and all five mandatory vendor SDK jobs. [CI run 45105925300](https://github.com/abhishekash/agenturm/actions/runs/45105925300) |
 
 ## Published artifacts
 
@@ -66,6 +66,17 @@ systemd user-service qualification, and attached its ARM64 archive and checksum.
 GitHub's published asset digests match the recorded archive hashes. The x86-64
 asset is the exact locally qualified archive; subsequent source edits changed
 only documentation and validation fixtures.
+
+## Subsequent selector finding
+
+A later review found a private telemetry evidence-binding gap in Rust
+0.3.5 and 0.3.6: a selector from one fresh history can match different text
+in another fresh history with the same span identities and numeric
+watermark. Both histories still require their own current grants; this is
+not a grant bypass. Do not carry private telemetry selectors between
+independent histories. The next candidate binds each selection to its
+logical history identity and rejects older selectors with refresh guidance.
+That fix has its own qualification; the original release assets are unchanged.
 
 ## Rust cutover scope
 
