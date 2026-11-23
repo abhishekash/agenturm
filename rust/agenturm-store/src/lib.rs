@@ -72,10 +72,11 @@ pub use telemetry_payload::{
     TelemetryPayload, TelemetryPayloadRecord, TelemetryPayloadSelection,
 };
 pub use workspace_ledger::{
-    ApprovedTaskDraft, MAX_WORKSPACE_GIT_DIFF_BYTES, MAX_WORKSPACE_PAGE_SIZE, SavedHandoff,
-    SavedTask, SavedTaskDecision, TaskBrief, TaskBriefUpdate, TaskDecisionInput, TaskDecisionKind,
-    TaskDraftApproval, TaskHandoff, TaskSourceProof, WorkspaceAnchor, WorkspaceError,
-    WorkspaceGitDiff, WorkspaceGitSnapshot, WorkspaceHistory, WorkspaceLedger, WorkspacePage,
+    ApprovedTaskDraft, DesktopAttentionRequest, MAX_WORKSPACE_GIT_DIFF_BYTES,
+    MAX_WORKSPACE_PAGE_SIZE, SavedHandoff, SavedTask, SavedTaskDecision, TaskBrief,
+    TaskBriefUpdate, TaskDecisionInput, TaskDecisionKind, TaskDraftApproval, TaskHandoff,
+    TaskSourceProof, WorkspaceAnchor, WorkspaceError, WorkspaceGitDiff, WorkspaceGitSnapshot,
+    WorkspaceHistory, WorkspaceLedger, WorkspacePage,
 };
 
 use agenturm_kernel::ReadSnapshot;
@@ -483,10 +484,9 @@ impl Display for StoreError {
             Self::SnapshotReplaced => f.write_str(
                 "history snapshot belongs to a restored or replaced history; start a new query",
             ),
-            Self::TraceScopeTooLarge { max_rows } => write!(
-                f,
-                "trace exceeds the {max_rows}-row retained scope limit"
-            ),
+            Self::TraceScopeTooLarge { max_rows } => {
+                write!(f, "trace exceeds the {max_rows}-row retained scope limit")
+            }
             Self::EventConflict { event_id } => {
                 write!(f, "event ID was reused with different content: {event_id}")
             }

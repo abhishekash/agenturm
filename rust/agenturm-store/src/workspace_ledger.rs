@@ -1,7 +1,9 @@
 //! Explicit, local cockpit tasks and cross-session handoffs.
 
 mod continuity;
+mod desktop_attention;
 pub use continuity::{ApprovedTaskDraft, TaskDraftApproval, TaskSourceProof};
+pub use desktop_attention::DesktopAttentionRequest;
 
 use crate::{MAX_EVENT_ID_BYTES, MAX_SESSION_KEY_BYTES, Store, StoreError, validate_identifier};
 use agenturm_kernel::{ExtensionId, ReadSnapshot};
