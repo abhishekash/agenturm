@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Rust development</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-harness-evidence-coverage.md">Markdown source ↗</a></nav><h1>Rust harness evidence coverage</h1>
+</style></head><body><main><nav><strong>Agenturm / Core feature development</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-harness-evidence-coverage.md">Markdown source ↗</a></nav><h1>Rust harness evidence coverage</h1>
 <p>This matrix describes the evidence each Rust adapter can emit and the checks
 that exercise it. The Linux bundle discovers Pi, Codex, Claude Code, Kiro, and OpenCode
 through separate Rust adapter executables. Source continuity diagnostics report specific gaps the adapter
@@ -221,4 +221,32 @@ turn beside later work and checks a scoped prompt and inline tool call.</p>
 for each supported harness, including missing evidence, subsequent turns, pane
 navigation and narrow terminals. The fixture paths above establish the listed
 adapter or durable behaviors.</p>
+<h2>Core development follow-up: neutral native presence</h2>
+<p>The current source extends existing Codex header discovery to supported Pi and
+Claude Code openings. A Pi exact session header, or supported Claude timestamped
+metadata/user stub with an exact native session identity, emits the existing
+neutral <code>session_discovered</code> fact when ordinary session facts are absent.
+A proved existing Pi relationship already supplies that neutral identity and
+is not duplicated. Unbound preludes, unsupported metadata and missing/invalid
+native timestamps do not produce a row. Native file mtime is not substituted.</p>
+<p>Verified header-only cursor backfill is idempotent and preserves the committed
+source bytes/offset. Legacy admission omits the new fact. This is presence
+evidence, not current liveness or Working state. Real lifecycle facts remain
+authoritative. Forty-one focused adapter checks and strict Clippy passed;
+actual collection/restart/concurrent roster acceptance remains delegated under
+CF1 in the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md">core feature test plan</a>.</p>
+<h2>Core development follow-up: explicit Claude worker spawning</h2>
+<p>The new <code>worker_spawn</code> fact retains the exact spawning parent session, optional
+worker, turn and operation, plus one bounded child worker ID. It is separate
+from distinct-session parent/fork edges. Claude requires an exact native
+Agent/Task declaration UUID and tool-use ID, matching user result with
+<code>sourceToolAssistantUUID</code>, same verified opening-turn owner/session/worker,
+completed status and structured <code>toolUseResult.agentId</code>. Asynchronous or
+ambiguous results, text and message ancestry do not create an edge. Older
+checkpoints lacking an opening owner wait for the next native user turn.</p>
+<p>Activity and session Overview expose declared-child details/counts on the
+loaded evidence page without inventing child-session rows, liveness or a
+recency-changing roster hierarchy. Focused decoder, contract, Store and
+presentation checks passed. Actual installed native witness and broad private
+scope/regression checks remain delegated under CF5 in the core test plan.</p>
 <footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

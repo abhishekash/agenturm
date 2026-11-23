@@ -63,9 +63,17 @@ pub(super) fn activity(evidence: &[&Observation]) -> EvidenceTable {
                     ObservationKind::Diagnostic { code, severity } => {
                         (severity.as_str(), code.as_str())
                     }
+                    ObservationKind::WorkerSpawn(spawn) => {
+                        ("declared", spawn.child_worker_id.as_str())
+                    }
                     _ => ("—", description.as_str()),
                 };
-                let mut details = vec![metric(kind, description.clone())];
+                let mut details = vec![match &row.kind {
+                    ObservationKind::WorkerSpawn(spawn) => {
+                        metric("Declared child worker", &spawn.child_worker_id)
+                    }
+                    _ => metric(kind, description.as_str()),
+                }];
                 details.extend(identity(row));
                 details.push(metric("Time", timestamp(row)));
                 EvidenceRow {
@@ -153,11 +161,17 @@ fn clock(row: &Observation) -> String {
 }
 
 fn identity(row: &Observation) -> impl Iterator<Item = MetricRow> + '_ {
+    let worker = row.identity.worker_id.as_deref();
+    let worker = if matches!(row.kind, ObservationKind::WorkerSpawn(_)) {
+        ("Parent worker", Some(worker.unwrap_or("Unreported")))
+    } else {
+        ("Worker", worker)
+    };
     [
         ("Source", Some(row.harness_id.as_str())),
         ("Session", row.identity.session_id.as_deref()),
         ("Turn", row.identity.turn_id.as_deref()),
-        ("Worker", row.identity.worker_id.as_deref()),
+        worker,
         ("Operation", row.identity.operation_id.as_deref()),
         ("Event", Some(row.event_id.as_str())),
     ]

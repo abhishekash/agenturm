@@ -42,6 +42,7 @@ enum Kind {
     Mcp,
     Check,
     Trace,
+    Log,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -91,6 +92,7 @@ pub(super) fn parse(args: &[String], broker: bool) -> Result<InvestigationOption
         Some("mcp") => Some(Kind::Mcp),
         Some("check") => Some(Kind::Check),
         Some("trace") => Some(Kind::Trace),
+        Some("log") => Some(Kind::Log),
         _ => return Err("Invalid failure candidate kind".into()),
     };
     let limit = options
@@ -192,6 +194,8 @@ impl FailureCandidate<'_> {
             (Kind::Mcp, _) => "MCP failed",
             (Kind::Check, _) => "Check failed",
             (Kind::Trace, _) => "Trace error",
+            (Kind::Log, "fatal") => "Fatal log",
+            (Kind::Log, _) => "Error log",
         }
     }
 
@@ -290,6 +294,18 @@ pub(super) fn scan(
             ObservationKind::TraceSpan(span) if span.status == TraceStatus::Error => {
                 (Kind::Trace, "error", None)
             }
+            ObservationKind::OtlpErrorLog(log) => (
+                Kind::Log,
+                if log.severity_number >= 21 {
+                    "fatal"
+                } else {
+                    "error"
+                },
+                None,
+            ),
+            ObservationKind::OtlpActivityLog(log) if log.reported_error => {
+                (Kind::Log, "error", None)
+            }
             _ => continue,
         };
         if search
@@ -351,6 +367,15 @@ pub(super) fn emit_page(
         if let ObservationKind::TraceSpan(span) = &row.kind {
             record["trace_id"] = json!(span.trace_id);
             record["span_id"] = json!(span.span_id);
+        }
+        if let ObservationKind::OtlpErrorLog(log) = &row.kind {
+            record["severity_number"] = json!(log.severity_number);
+            if let Some(trace_id) = &log.trace_id {
+                record["trace_id"] = json!(trace_id);
+            }
+            if let Some(span_id) = &log.span_id {
+                record["span_id"] = json!(span_id);
+            }
         }
         if let Some(reference) = item.encoded_reference(history_binding)? {
             record["source_reference"] = json!(reference);

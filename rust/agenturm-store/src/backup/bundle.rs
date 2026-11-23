@@ -785,6 +785,7 @@ mod tests {
             .execute_batch(
                 "DROP TABLE agenturm_native_attention_events; DROP TABLE agenturm_native_attention_senders;
                  DROP INDEX agenturm_metric_descriptions_by_series;
+                 ALTER TABLE agenturm_history_batches DROP COLUMN admitted_at_unix_ns;
                  DROP INDEX agenturm_metric_series_points;
                  DROP INDEX agenturm_usage_history_by_time;
                  DROP TABLE agenturm_content_grants;

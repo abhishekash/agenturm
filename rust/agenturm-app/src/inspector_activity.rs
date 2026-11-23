@@ -1,5 +1,7 @@
-use agenturm_kernel::{MetricRow, ObservationKind, Snapshot};
-use agenturm_ui::{HistoryPage, OperationDetailEntry, OperationDetailKind, RecordedTurn};
+use agenturm_kernel::{MetricRow, Observation, ObservationKind, ObservationQuery, Snapshot};
+use agenturm_ui::{
+    HistoryPage, OperationDetailEntry, OperationDetailKind, RecordedSession, RecordedTurn,
+};
 use std::collections::HashMap;
 
 pub(super) fn overview_page(snapshot: Snapshot) -> HistoryPage {
@@ -58,44 +60,109 @@ fn operation_details(snapshot: &Snapshot) -> Vec<OperationDetailEntry> {
         .observations
         .iter()
         .rev()
-        .filter_map(|row| {
-            if !row.event_id.starts_with("codex:") || row.identity.worker_id.is_some() {
-                return None;
-            }
-            let (kind, label) = match &row.kind {
-                ObservationKind::McpCall { server, tool, .. } => (
-                    OperationDetailKind::Mcp,
-                    format!(
-                        "{} · {}",
-                        tool.as_deref().unwrap_or("MCP call"),
-                        server.as_deref().unwrap_or("server unavailable")
-                    ),
-                ),
-                ObservationKind::FileEdit(_) => (
-                    OperationDetailKind::Edit,
-                    crate::session_evidence::describe_observation(&row.kind).1,
-                ),
-                _ => return None,
-            };
-            let session = row.identity.session_id.as_ref()?;
-            let turn = row.identity.turn_id.as_ref()?;
-            let operation = row.identity.operation_id.as_ref()?;
-            Some(OperationDetailEntry {
-                kind,
-                source_id: row.harness_id.as_str().to_owned(),
-                session_id: session.clone(),
-                turn_id: turn.clone(),
-                event_id: row.event_id.clone(),
-                revision: row.revision,
-                operation_id: operation.clone(),
-                label: format!(
-                    "{label} · {} · turn {}",
-                    operation.chars().take(8).collect::<String>(),
-                    turn.chars().take(8).collect::<String>()
-                ),
-            })
-        })
+        .filter_map(operation_detail)
         .collect()
+}
+
+fn operation_detail(row: &Observation) -> Option<OperationDetailEntry> {
+    if !row.event_id.starts_with("codex:") || row.identity.worker_id.is_some() {
+        return None;
+    }
+    let (kind, label) = match &row.kind {
+        ObservationKind::McpCall { server, tool, .. } => (
+            OperationDetailKind::Mcp,
+            format!(
+                "{} · {}",
+                tool.as_deref().unwrap_or("MCP call"),
+                server.as_deref().unwrap_or("server unavailable")
+            ),
+        ),
+        ObservationKind::FileEdit(_) => (
+            OperationDetailKind::Edit,
+            crate::session_evidence::describe_observation(&row.kind).1,
+        ),
+        _ => return None,
+    };
+    let session = row.identity.session_id.as_ref()?;
+    let turn = row.identity.turn_id.as_ref()?;
+    let operation = row.identity.operation_id.as_ref()?;
+    Some(OperationDetailEntry {
+        kind,
+        source_id: row.harness_id.as_str().to_owned(),
+        session_id: session.clone(),
+        turn_id: turn.clone(),
+        event_id: row.event_id.clone(),
+        revision: row.revision,
+        operation_id: operation.clone(),
+        label: format!(
+            "{label} · {} · turn {}",
+            operation.chars().take(8).collect::<String>(),
+            turn.chars().take(8).collect::<String>()
+        ),
+    })
+}
+
+pub(super) fn review_edits(
+    store: &impl crate::HistoryReader,
+    session: &RecordedSession,
+    mut query: ObservationQuery,
+) -> Result<HistoryPage, String> {
+    if session.history_identity.is_none()
+        || session.history_identity != store.workspace_history_identity()
+        || query.harness_id.as_deref() != Some(session.harness_id.as_str())
+        || query.session_id.as_deref() != Some(session.session_id.as_str())
+        || query.snapshot_id != Some(session.snapshot_id)
+        || query
+            .before
+            .as_ref()
+            .is_some_and(|cursor| cursor.harness_id != session.harness_id)
+    {
+        return Err("Review edits belong to a different history selection. Reopen Review.".into());
+    }
+
+    // Each read advances over a bounded raw range. Sparse edits may require
+    // another page, even when the preceding range contained no matching edits.
+    query.limit = 64;
+    let mut edits = Vec::new();
+    for _ in 0..4 {
+        let retained = store
+            .query_observations(&query)
+            .map_err(|error| format!("Read Review edits failed: {error}"))?;
+        if retained.snapshot_id != session.snapshot_id
+            || retained.observations.len() > query.limit
+            || retained.observations.iter().any(|row| {
+                row.harness_id.as_str() != session.harness_id
+                    || row.identity.session_id.as_deref() != Some(&session.session_id)
+            })
+        {
+            return Err("Review edits response did not match the selected session".into());
+        }
+        edits.extend(
+            retained
+                .observations
+                .iter()
+                .rev()
+                .filter(|row| matches!(row.kind, ObservationKind::FileEdit(_)))
+                .filter_map(operation_detail),
+        );
+        let next = retained.older_position();
+        if retained.has_more && (next.is_none() || next == query.before) {
+            return Err("Review edits response could not continue through retained history".into());
+        }
+        query.before = next;
+        if query.before.is_none() || edits.len() >= query.limit {
+            break;
+        }
+    }
+    let mut page = overview_page(Snapshot {
+        history_snapshot_id: session.snapshot_id,
+        observations_truncated: query.before.is_some(),
+        ..Snapshot::default()
+    });
+    page.features.continuation = query.before.map(Box::new);
+    page.features.review_edit_preview = store.allows_private_capture();
+    page.operation_details = edits;
+    Ok(page)
 }
 
 fn is_turn_end(state: &str) -> bool {
@@ -164,6 +231,117 @@ mod tests {
     };
     use agenturm_store::Store;
     use std::fs;
+
+    #[test]
+    fn review_edits_page_through_sparse_history_without_crossing_scope_or_version() {
+        let mut store = Store::open(":memory:").unwrap();
+        let source = ExtensionId::parse("harness.codex.review-fixture").unwrap();
+        let row = |timestamp, session: &str, turn: &str| Observation {
+            harness_id: source.clone(),
+            event_id: format!("activity-{timestamp}"),
+            revision: 0,
+            identity: ObservationIdentity {
+                turn_id: Some(turn.into()),
+                ..ObservationIdentity::session(session)
+            },
+            observed_at_unix_ns: timestamp,
+            kind: ObservationKind::Message {
+                role: "user".into(),
+            },
+        };
+        let edit = |timestamp, session: &str, turn: &str| {
+            let mut observation = row(timestamp, session, turn);
+            observation.event_id = format!("codex:edit-{timestamp}:edit");
+            observation.identity.operation_id = Some("reused-operation".into());
+            observation.kind = ObservationKind::FileEdit(agenturm_kernel::FileEdit {
+                added: 1,
+                updated: 0,
+                deleted: 0,
+                moved: 0,
+            });
+            observation
+        };
+        let mut worker = edit(3, "selected", "turn-b");
+        worker.identity.worker_id = Some("worker".into());
+        let mut rows = vec![
+            edit(1, "selected", "turn-a"),
+            edit(2, "selected", "turn-b"),
+            worker,
+            edit(4, "sibling", "turn-a"),
+        ];
+        rows.extend((5..=260).map(|tick| row(tick, "selected", "turn-c")));
+        store
+            .commit(source.as_str(), None, "initial", &rows)
+            .unwrap();
+        let snapshot = store
+            .query_observations(&ObservationQuery::latest(1))
+            .unwrap()
+            .snapshot_id;
+        let mut other_source = edit(262, "selected", "turn-a");
+        other_source.harness_id = ExtensionId::parse("harness.codex.sibling").unwrap();
+        store
+            .commit("harness.codex.sibling", None, "other", &[other_source])
+            .unwrap();
+        store
+            .commit(
+                source.as_str(),
+                Some("initial"),
+                "updated",
+                &[edit(261, "selected", "later")],
+            )
+            .unwrap();
+        let mut session = RecordedSession {
+            harness_id: source.as_str().into(),
+            session_id: "selected".into(),
+            task_title: None,
+            native_context: None,
+            project_path: None,
+            project_origin: None,
+            updated_at_unix_ns: 260,
+            snapshot_id: snapshot,
+            state: None,
+            reason: None,
+            turn_id: None,
+            parent_session_id: None,
+            relationship_kind: None,
+            review_version: agenturm_ui::ReviewVersion {
+                receipt_sequence: snapshot.watermark(),
+                retained_observations: 259,
+            },
+            reviewed: false,
+            history_identity: Some(store.history_identity().unwrap()),
+            pending_requests: Vec::new(),
+        };
+        let query = ObservationQuery {
+            harness_id: Some(source.as_str().into()),
+            session_id: Some(session.session_id.clone()),
+            snapshot_id: Some(snapshot),
+            ..ObservationQuery::latest(1)
+        };
+        let first = review_edits(&store, &session, query.clone()).unwrap();
+        assert!(first.operation_details.is_empty());
+        assert!(first.snapshot.observations_truncated);
+        let older = ObservationQuery {
+            before: first.features.continuation.map(|cursor| *cursor),
+            ..query.clone()
+        };
+        let selected = review_edits(&store, &session, older).unwrap();
+        assert!(!selected.snapshot.observations_truncated);
+        assert_eq!(selected.snapshot.history_snapshot_id, snapshot);
+        assert_eq!(
+            selected
+                .operation_details
+                .iter()
+                .map(|entry| (entry.turn_id.as_str(), entry.event_id.as_str()))
+                .collect::<Vec<_>>(),
+            [
+                ("turn-b", "codex:edit-2:edit"),
+                ("turn-a", "codex:edit-1:edit"),
+            ]
+        );
+        session.history_identity = Some("different-history".into());
+        assert!(review_edits(&store, &session, query).is_err());
+    }
 
     #[test]
     fn recorded_turn_activity_pins_history_and_excludes_other_sessions_and_turns() {

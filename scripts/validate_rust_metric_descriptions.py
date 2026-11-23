@@ -63,7 +63,7 @@ with tempfile.TemporaryDirectory(prefix='agenturm-metrics-http-proof-') as folde
                     "SELECT cursor FROM agenturm_source_state WHERE source_id=?", [source]
                 ).fetchone()
                 version, = store.execute("PRAGMA user_version").fetchone()
-                assert version == 21
+                assert version == 22
                 points = tuple(row for row in rows if json.loads(row[2])["kind"] == "metric_point")
                 descriptors = tuple(row for row in rows if json.loads(row[2])["kind"] == "metric_descriptor")
                 return points, descriptors, cursor

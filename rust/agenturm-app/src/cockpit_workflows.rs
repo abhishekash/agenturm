@@ -1,7 +1,6 @@
 use agenturm_kernel::{ExtensionId, Observation, ObservationKind, ObservationQuery, ReadSnapshot};
 use agenturm_store::{
-    ReviewKey, ReviewLedger, ReviewVersion as StoredReviewVersion, Store, WorkspaceAnchor,
-    WorkspaceLedger,
+    ReviewKey, ReviewVersion as StoredReviewVersion, Store, WorkspaceAnchor, WorkspaceLedger,
 };
 use agenturm_ui::{
     HandoffEntry, PromptEntry, RecordedSession, RequestEntry, RequestProof, ReviewNoteEntry,
@@ -25,7 +24,7 @@ fn review_notes(
         harness_id: ExtensionId::parse(&session.harness_id).map_err(|error| error.to_string())?,
         session_id: session.session_id.clone(),
     };
-    let ledger = ReviewLedger::open(db).map_err(|error| format!("Open reviews failed: {error}"))?;
+    let ledger = store.review_ledger(db, &session)?;
     if let Some(note) = note {
         let version = StoredReviewVersion {
             receipt_sequence: session.review_version.receipt_sequence,
@@ -56,6 +55,9 @@ pub(super) fn verify_review_snapshot(
     store: &impl super::HistoryReader,
     session: &RecordedSession,
 ) -> Result<(), String> {
+    if session.history_identity != store.workspace_history_identity() {
+        return Err("The selected Review belongs to a different history".into());
+    }
     let page = store
         .query_observations(&ObservationQuery {
             harness_id: Some(session.harness_id.clone()),
@@ -318,6 +320,7 @@ pub(super) fn is_prompt_command(command: &WorkCommand) -> bool {
         WorkCommand::Prompts(_)
             | WorkCommand::RevealPrompt(_, _)
             | WorkCommand::RevealOperation(_, _)
+            | WorkCommand::RevealReviewEdit(_, _)
             | WorkCommand::RevealTelemetry(_, _)
             | WorkCommand::RevealTelemetryLog(_, _)
             | WorkCommand::RevealEvalDetail(_, _)
@@ -404,6 +407,16 @@ pub(super) fn execute_prompt(
                     event_id: &operation.event_id,
                     revision: operation.revision,
                 },
+                &mut delivery,
+                writer,
+            )?;
+            Ok(WorkResult::Status(String::new()))
+        }
+        WorkCommand::RevealReviewEdit(edit, mut delivery) => {
+            super::content_preview::reveal_review_edit(
+                db,
+                &prompt_config(db)?,
+                &edit,
                 &mut delivery,
                 writer,
             )?;

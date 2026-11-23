@@ -49,7 +49,7 @@ impl InvestigationKind {
 
     fn hint(self) -> &'static str {
         match self {
-            Self::Failures => "Reported lifecycle, tool, MCP, check, and trace failures",
+            Self::Failures => "Reported lifecycle, tool, MCP, check, trace and log failures",
             Self::Instruction => "Literal instruction phrase",
             Self::Path => "Exact recorded path",
             Self::Command => "Literal command phrase",

@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Rust migration progress — 23 November 2026</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-tasks.md">Markdown source ↗</a></nav><h1>Rust-only execution tasks</h1>
+</style></head><body><main><nav><strong>Agenturm / Core feature development</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-tasks.md">Markdown source ↗</a></nav><h1>Rust-only execution tasks</h1>
 <p>Progress updated 23 November 2026 against merged native PR #379 (<code>52ec13b</code>), Findings PR #380 (<code>ef3d647</code>) and the joined Host/Metrics development baseline. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md">detailed remaining-work plan</a>: <strong>F = feature development, I = integration, Q = tests/qualification</strong>. The status column below supersedes old scheduling labels such as “Start now”; dependencies and original acceptance criteria remain for traceability.</p>
 <ul>
 <li><strong>Merged native baseline:</strong> 813 tests / 96 suites, strict Clippy, exact optimized archive install/upgrade and 12 separate-UID KVM cases passed.</li>
@@ -10,6 +10,48 @@
 <li><strong>Host/Metrics joined baseline:</strong> 833 tests / 96 suites, strict Clippy and all binaries; real metric HTTP and three-size terminal checks passed. The final Host refresh/context correction passed its 14 focused tests and the joined 833-test / 96-suite run with strict workspace Clippy/all binaries; the updated separate-UID Host KVM/three-size fixture also passed. Final optimized artifact qualification remains.</li>
 <li><strong>Full migration:</strong> incomplete. Do not add successive test totals or equate implemented code with final artifact acceptance. Default cutover and one-release-per-24-hours rules remain in force.</li>
 </ul>
+<h2>Core feature development and delegated testing</h2>
+<p>Current user direction: this implementation session owns feature development;
+a separate agent owns broad test execution. Follow the
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md">core feature test handoff</a>.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Feature lane</th>
+<th>Development status</th>
+<th>Testing responsibility</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CF1 Claude/Pi neutral native presence</td>
+<td>Implemented; timestamped and exact untimed Claude metadata supported, unknown-time admission retention in schema 22. Codex unchanged.</td>
+<td>Separate test agent: actual collection/replay/roster journeys.</td>
+</tr>
+<tr>
+<td>CF2 Whole-session paged Review edits</td>
+<td>Implemented; 17 focused checks/Clippy passed. Paged exact-session browser with original ReviewVersion and private proof.</td>
+<td>Separate test agent: terminal/private/broker and selection-return acceptance.</td>
+</tr>
+<tr>
+<td>CF3 Trusted adapter list/show/remove</td>
+<td>Implemented; four focused checks/Clippy passed. Exact-pin CAS removal preserves artifacts/history.</td>
+<td>Separate test agent: CLI/atomicity/security/collection regression.</td>
+</tr>
+<tr>
+<td>CF4 OTLP log failure investigation</td>
+<td>Implemented; one focused process regression passed. Metadata only, explicit log kind, scope/cursor binding retained.</td>
+<td>Separate test agent: broad failure inventory/remote/terminal privacy regression.</td>
+</tr>
+<tr>
+<td>CF5 Exact Claude worker spawning</td>
+<td>Implemented; exact structured declaration/result correlation, typed parent scope/child ID and declared-child evidence presentation.</td>
+<td>Separate test agent: native collection, persistence and exact parent/child acceptance.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Feature developers run focused checks needed for implementation. Q1–Q10 and
+release qualification remain delegated; no broad campaign is duplicated here.</p>
 <h2>Review of the existing plan</h2>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -71,7 +113,7 @@
 </tr>
 <tr>
 <td>A3</td>
-<td>Partial — exact worker/session and completion verified; attributable parent/check evidence open (F1).</td>
+<td>Worker/session/completion and CF5 exact completed worker-spawn attribution implemented; remaining check shapes and async evidence F1/Q8.</td>
 <td>Claude Code parentage and check outcomes</td>
 <td>Start now</td>
 <td>Verify whether native records identify the immediate parent and check exit. Persist only attributable facts and cover the worker-with-session-only case.</td>
@@ -162,7 +204,7 @@
 </tr>
 <tr>
 <td>B8</td>
-<td>Open feature — automatic decoder install/trust flow F3; pinned explicit catalog loading exists.</td>
+<td>Local trusted install/replace already implemented; CF3 list/show/pin-CAS removal in progress. Remote package discovery and new formats remain separate.</td>
 <td>Define and implement automatic decoder installation</td>
 <td>Start design now. Activation depends on the approved trust model.</td>
 <td>An independent supported decoder can be installed, selected and verified through the declared format and pin. Unsupported formats or changed artifacts fail closed. Keep untrusted activation behind its isolation gate.</td>

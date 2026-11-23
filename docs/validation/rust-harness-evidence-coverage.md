@@ -170,3 +170,37 @@ Step 3 still requires actual-record collection, reopen and interactive inspectio
 for each supported harness, including missing evidence, subsequent turns, pane
 navigation and narrow terminals. The fixture paths above establish the listed
 adapter or durable behaviors.
+
+## Core development follow-up: neutral native presence
+
+The current source extends existing Codex header discovery to supported Pi and
+Claude Code openings. A Pi exact session header, or supported Claude timestamped
+metadata/user stub with an exact native session identity, emits the existing
+neutral `session_discovered` fact when ordinary session facts are absent.
+A proved existing Pi relationship already supplies that neutral identity and
+is not duplicated. Unbound preludes, unsupported metadata and missing/invalid
+native timestamps do not produce a row. Native file mtime is not substituted.
+
+Verified header-only cursor backfill is idempotent and preserves the committed
+source bytes/offset. Legacy admission omits the new fact. This is presence
+evidence, not current liveness or Working state. Real lifecycle facts remain
+authoritative. Forty-one focused adapter checks and strict Clippy passed;
+actual collection/restart/concurrent roster acceptance remains delegated under
+CF1 in the [core feature test plan](rust-core-feature-test-plan.md).
+
+## Core development follow-up: explicit Claude worker spawning
+
+The new `worker_spawn` fact retains the exact spawning parent session, optional
+worker, turn and operation, plus one bounded child worker ID. It is separate
+from distinct-session parent/fork edges. Claude requires an exact native
+Agent/Task declaration UUID and tool-use ID, matching user result with
+`sourceToolAssistantUUID`, same verified opening-turn owner/session/worker,
+completed status and structured `toolUseResult.agentId`. Asynchronous or
+ambiguous results, text and message ancestry do not create an edge. Older
+checkpoints lacking an opening owner wait for the next native user turn.
+
+Activity and session Overview expose declared-child details/counts on the
+loaded evidence page without inventing child-session rows, liveness or a
+recency-changing roster hierarchy. Focused decoder, contract, Store and
+presentation checks passed. Actual installed native witness and broad private
+scope/regression checks remain delegated under CF5 in the core test plan.

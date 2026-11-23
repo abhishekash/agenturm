@@ -186,6 +186,7 @@ pub(super) fn add_session_panes(
     if snapshot.observations_truncated {
         overview.push(metric("History", "Earlier observations are available"));
     }
+    overview.extend(declared_worker_rows(&evidence));
 
     let activity = rows_or_empty(
         evidence
@@ -235,6 +236,49 @@ pub(super) fn add_session_panes(
         review: insert_pane(snapshot, "app.session-review", "Review", review),
         usage,
     }
+}
+
+fn declared_worker_rows(evidence: &[&Observation]) -> Vec<MetricRow> {
+    let declarations = evidence
+        .iter()
+        .filter_map(|row| {
+            let ObservationKind::WorkerSpawn(spawn) = &row.kind else {
+                return None;
+            };
+            Some((
+                spawn.child_worker_id.as_str(),
+                row.identity.worker_id.as_deref(),
+                row.identity.turn_id.as_deref()?,
+                row.identity.operation_id.as_deref()?,
+            ))
+        })
+        .collect::<BTreeSet<_>>();
+    if declarations.is_empty() {
+        return Vec::new();
+    }
+    let distinct_children = declarations
+        .iter()
+        .map(|(child, _, _, _)| *child)
+        .collect::<BTreeSet<_>>()
+        .len();
+    let mut rows = vec![metric(
+        "Declared child workers on page",
+        distinct_children.to_string(),
+    )];
+    rows.extend(
+        declarations
+            .into_iter()
+            .map(|(child, parent, turn, operation)| {
+                let parent = parent.unwrap_or("Unreported");
+                metric(
+                    "Declared child worker",
+                    format!(
+                        "{child} · parent worker {parent} · turn {turn} · operation {operation}"
+                    ),
+                )
+            }),
+    );
+    rows
 }
 
 pub(super) fn insert_pane(
@@ -962,6 +1006,10 @@ pub(super) fn describe_observation(kind: &ObservationKind) -> (&'static str, Str
                 relationship_kind.as_str()
             ),
         ),
+        ObservationKind::WorkerSpawn(spawn) => (
+            "Worker declared",
+            format!("Child worker {}", spawn.child_worker_id),
+        ),
         ObservationKind::Message { role } => ("Message role", role.clone()),
         ObservationKind::Diagnostic { code, severity } => {
             ("Diagnostic", format!("{code} · {severity}"))
@@ -1128,6 +1176,77 @@ mod tests {
 
     fn pane<'a>(snapshot: &'a Snapshot, name: &str) -> &'a PaneModel {
         &snapshot.panes[&ExtensionId::parse(format!("app.session-{name}")).unwrap()]
+    }
+
+    #[test]
+    fn declared_worker_links_keep_exact_parent_scope_and_page_coverage() {
+        let source = ExtensionId::parse("harness.claude.worker-fixture").unwrap();
+        let declaration = |time, child: &str, parent: Option<&str>, turn: &str, op: &str| {
+            let mut row = observation(
+                time,
+                ObservationKind::WorkerSpawn(agenturm_kernel::WorkerSpawn {
+                    child_worker_id: child.into(),
+                }),
+                Some(turn),
+            );
+            row.harness_id = source.clone();
+            row.identity.worker_id = parent.map(str::to_owned);
+            row.identity.operation_id = Some(op.into());
+            row
+        };
+        let mut other_session = declaration(5, "outside-session", None, "turn-a", "call-a");
+        other_session.identity.session_id = Some("session-b".into());
+        let mut other_source = declaration(6, "outside-source", None, "turn-a", "call-a");
+        other_source.harness_id = ExtensionId::parse("harness.claude.sibling").unwrap();
+        let mut snapshot = Snapshot {
+            observations: vec![
+                declaration(1, "child-a", Some("parent-a"), "turn-a", "call-a"),
+                declaration(2, "child-a", Some("parent-a"), "turn-a", "call-a"),
+                declaration(3, "child-a", Some("parent-b"), "turn-b", "call-b"),
+                declaration(4, "child-b", None, "turn-c", "call-c"),
+                other_session,
+                other_source,
+            ],
+            observations_truncated: true,
+            ..Snapshot::default()
+        };
+        let panes = add_session_panes(&mut snapshot, source.as_str(), "session-a");
+        let overview = &snapshot.panes[&panes.overview].rows;
+        assert!(overview.contains(&metric("Declared child workers on page", "2")));
+        assert!(overview.contains(&metric("History", "Earlier observations are available")));
+        let links = overview
+            .iter()
+            .filter(|row| row.label == "Declared child worker")
+            .map(|row| row.value.as_str())
+            .collect::<Vec<_>>();
+        assert_eq!(
+            links,
+            [
+                "child-a · parent worker parent-a · turn turn-a · operation call-a",
+                "child-a · parent worker parent-b · turn turn-b · operation call-b",
+                "child-b · parent worker Unreported · turn turn-c · operation call-c",
+            ]
+        );
+        let activity = &panes.evidence[&panes.activity].rows;
+        assert_eq!(activity.len(), 4);
+        assert_eq!(&activity[0].cells[2..], &["declared", "child-a"]);
+        for (label, value) in [
+            ("Declared child worker", "child-a"),
+            ("Source", source.as_str()),
+            ("Session", "session-a"),
+            ("Parent worker", "parent-a"),
+            ("Turn", "turn-a"),
+            ("Operation", "call-a"),
+            ("Event", "event-1"),
+            ("Revision", "0"),
+        ] {
+            assert!(activity[0].details.contains(&metric(label, value)));
+        }
+        assert!(
+            activity[3]
+                .details
+                .contains(&metric("Parent worker", "Unreported"))
+        );
     }
 
     #[test]

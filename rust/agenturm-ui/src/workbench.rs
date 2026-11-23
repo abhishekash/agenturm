@@ -91,6 +91,14 @@ pub struct OperationDetailEntry {
     pub label: String,
 }
 
+/// An edit selected from a retained, snapshot-pinned session Review.
+#[derive(Clone, Debug)]
+pub struct ReviewEditSelection {
+    pub operation: OperationDetailEntry,
+    pub snapshot_id: ReadSnapshot,
+    pub history_identity: String,
+}
+
 /// Exact metadata for a producer-captured span text request.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TelemetrySpanEntry {
@@ -397,6 +405,7 @@ pub enum WorkCommand {
     Prompts(WorkAnchor),
     RevealPrompt(Box<PromptEntry>, PromptDelivery),
     RevealOperation(OperationDetailEntry, PromptDelivery),
+    RevealReviewEdit(Box<ReviewEditSelection>, PromptDelivery),
     RevealTelemetry(Box<TelemetrySpanEntry>, PromptDelivery),
     RevealTelemetryLog(Box<TelemetryLogEntry>, PromptDelivery),
     RevealEvalDetail(Box<evaluation::EvaluationDetailEntry>, PromptDelivery),

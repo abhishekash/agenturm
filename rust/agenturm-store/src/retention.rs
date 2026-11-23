@@ -1,10 +1,56 @@
 //! Explicit observation retention. Receipts and source checkpoints outlive
 //! their observation rows so exact replay and restart remain deterministic.
 
-use crate::{Result, SCHEMA_VERSION, Store, StoreError};
+use crate::{
+    ObservationKind, Result, SCHEMA_VERSION, Store, StoreError, StoredObservation, StoredScope,
+};
 use agenturm_kernel::{ReadIncarnation, ReadSnapshot};
 use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
+use std::time::{SystemTime, UNIX_EPOCH};
+
+/// Keep this predicate aligned with `observation_age_time`. `request_id`
+/// identifies the batch that first admitted the observation revision.
+const PRUNABLE_OBSERVATION: &str = "observed_at_unix_ns < ?1 AND NOT EXISTS (
+    SELECT 1 FROM agenturm_history_batches AS batch
+    WHERE batch.request_id = agenturm_observations.request_id
+      AND batch.admitted_at_unix_ns >= ?1
+      AND agenturm_observations.observed_at_unix_ns = 0
+      AND agenturm_observations.revision = 0
+      AND agenturm_observations.scope = 'session'
+      AND agenturm_observations.turn_id IS NULL
+      AND agenturm_observations.operation_id IS NULL
+      AND json_extract(agenturm_observations.kind_json, '$.kind') = 'activity'
+      AND json_extract(agenturm_observations.kind_json, '$.category') = 'session_discovered'
+)";
+
+pub(super) fn batch_admission_time() -> i64 {
+    SystemTime::now()
+        .duration_since(UNIX_EPOCH)
+        .ok()
+        .and_then(|time| i64::try_from(time.as_nanos()).ok())
+        .unwrap_or(0)
+}
+
+pub(super) fn observation_age_time(
+    observation: &StoredObservation,
+    observed_at: i64,
+    admitted_at: i64,
+) -> i64 {
+    // Only neutral session discovery can age by admission time when its
+    // native timestamp is unknown. Its reported timestamp stays unchanged.
+    if observed_at == 0
+        && observation.revision == 0
+        && observation.identity.scope == StoredScope::Session
+        && observation.identity.turn_id.is_none()
+        && observation.identity.operation_id.is_none()
+        && matches!(&observation.kind, ObservationKind::Activity { category } if category == "session_discovered")
+    {
+        admitted_at
+    } else {
+        observed_at
+    }
+}
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -202,6 +248,7 @@ impl Store {
     }
 
     /// Atomically removes observations strictly older than the supplied cutoff.
+    /// Unknown-time neutral session discovery ages from its first admission.
     /// Equal cutoffs are idempotent and lowering the cutoff is an error.
     /// Later batches still advance their checkpoint when an observation falls
     /// below the cutoff. The store retains each expired event's source, ID,
@@ -252,15 +299,15 @@ pub(super) fn prune_in(
     let offset = snapshot_id(state.snapshot_offset, 1)?;
     let barrier = snapshot_id(receipt_head(transaction)?, offset)?;
     transaction.execute(
-        "INSERT INTO agenturm_retired_observations (source_id, event_id, revision, event_digest)
+        &format!("INSERT INTO agenturm_retired_observations (source_id, event_id, revision, event_digest)
          SELECT source_id, event_id, revision, event_digest FROM agenturm_observations
-         WHERE observed_at_unix_ns < ?1",
+         WHERE {PRUNABLE_OBSERVATION}"),
         [cutoff],
     )?;
     crate::telemetry_payload::purge_before(transaction, cutoff)?;
     crate::native_attention::prune_before(transaction, cutoff)?;
     let removed_observations = transaction.execute(
-        "DELETE FROM agenturm_observations WHERE observed_at_unix_ns < ?1",
+        &format!("DELETE FROM agenturm_observations WHERE {PRUNABLE_OBSERVATION}"),
         [cutoff],
     )?;
     if removed_observations > 0 {

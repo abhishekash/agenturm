@@ -6,6 +6,28 @@ Updated 23 November 2026. This is the detailed remaining-work plan for the
 completed code awaiting integration, and tests still needed for acceptance.
 The migration is **not complete**, and the default distribution has not switched.
 
+## Development and test ownership — current user direction
+
+This implementation session owns core feature development. A separate agent
+owns broad testing and release qualification. The
+[delegated core-feature test plan](../validation/rust-core-feature-test-plan.md)
+tracks CF1 Claude/Pi presence, CF2 paged session edit browsing, CF3 adapter
+list/show/pin-CAS removal and CF4 body-free OTLP log failure investigation.
+CF1/CF3/CF4 are implemented; CF2 source is integrated with focused checks,
+and the CF1 unknown-time admission/retention refinement is implemented in
+schema 22. The composed app lib/bin compile check passed. CF5 exact Claude
+worker-spawn evidence is also implemented. Typed broker receipt and local
+Review-ledger identity fixes accompany these features. Broad qualification
+remains delegated to the other test agent.
+Developers run focused compile/regression checks only. The test agent executes
+Q1–Q10 and the new acceptance matrix on the supplied integrated source head.
+
+Codex header discovery and trusted local adapter installation already exist;
+these lanes extend uncovered provider presence and lifecycle operations rather
+than replacing implemented features. C6/C7 local connector boundaries remain
+implemented within their documented profile. Broad tests are delegated, not
+removed from acceptance.
+
 ## 1. Current progress and evidence
 
 These results belong to different source revisions. A passing earlier bundle
@@ -18,7 +40,7 @@ workflow inventory and acceptance scope are not yet closed.
 | Native cockpit, telemetry, Workflow and protected evidence | [PR #379](https://github.com/abhishekash/agenturm/pull/379) merged as `52ec13be1a4caf8b11bec37638affeedf1f56dc3`. | Runtime source `42712dd` passed **813 tests across 96 suites**, strict workspace all-target Clippy and all-binary build. Its optimized x86-64 archive passed install, prior-release upgrade and **12 separate-UID Linux KVM cases**. Linux x86-64/ARM64 and selected SDK CI passed. | Requalify the final combined artifact after the subsequent Findings, Host and Metrics changes. |
 | Command-center E1–E5 | Native title/nickname/project provenance, concise fallbacks and newest-updated ordering are implemented in the merged native batch. | Twelve actual Codex transcript handles across two processes passed exact source/session/name/project and return checks at **120×32, 80×24 and 60×18**. Historical native Claude passed separately; rename/collision cases used disposable fixtures. | Final installed rerun and actual simultaneous Claude acceptance. Header-only native files still lack roster rows until session facts arrive; retained lifecycle does not establish OS process liveness. |
 | Explicit Python receiver Findings | Implemented in [PR #380](https://github.com/abhishekash/agenturm/pull/380), qualified head `ef3d647309e8cd81ac32ba0ecd3ea0ad14f2c2f0`; now merged as `39474ddabfca3bc448cf8f8a0b71fda42b9560f1`. | **819 tests across 96 suites**, strict Clippy and all binaries. Actual tagged Python 0.2.8 positive and adversarial Findings journeys passed on development and optimized apps; optimized Review regression passed. All applicable CI jobs are green, including Python 3.11–3.14, Node 22/24, OTLP, five selected SDK jobs and both Linux bundle jobs. Release-attachment job skipped as expected. | Merged; include it in final combined-package qualification. |
-| Metric descriptions and full-catalog search | Implemented in the joined source accompanying this plan. | Joined Host/Metrics baseline passed **833 tests across 96 suites**, strict Clippy and all binaries. Authenticated JSON/protobuf HTTP proved descriptor replay and unchanged old point records. Real terminal search found a series beyond the first 32 rows, displayed its description and preserved snapshot/selection at all three sizes. | Merge; qualify schema 21 upgrade and installed behavior on the final artifact. |
+| Metric descriptions and full-catalog search | Implemented in the joined source accompanying this plan. | Joined Host/Metrics baseline passed **833 tests across 96 suites**, strict Clippy and all binaries. Authenticated JSON/protobuf HTTP proved descriptor replay and unchanged old point records. Real terminal search found a series beyond the first 32 rows, displayed its description and preserved snapshot/selection at all three sizes. | Merged PR #381; test owner qualifies schema 21 and final installed behavior. |
 | Remote Host inventory and reported host metadata | Latest-per-authorized-source inventory, hostname/platform metadata and recorded-source labels implemented. Final chooser refresh/context correction is integrated in the joined source. | Baseline included in the 833-test run. Correction passed **14 focused App/UI tests**, joined **833 tests / 96 suites**, strict workspace Clippy and all binaries. Updated separate-UID Host KVM/three-size terminal fixture passed. | Final optimized installed-artifact regression. The corrected typed-POST error assertion passed in the updated KVM fixture. |
 | Full cutover and additional platforms | Gated. Rust 0.3.8 is the latest public opt-in Linux release. | Native Linux release and development evidence exists; no macOS qualification is claimed. | Close required feature and installed-journey gaps below. Production endpoint and actual Kiro transcript remain external inputs. |
 
@@ -46,18 +68,24 @@ invent check results, parent relationships, current liveness or cost totals.
   and recognized direct checks are covered. Complete check coverage and the
   remaining native turn shapes still require an explicit coverage inventory.
 - Claude Code: exact worker/session identity and completion are supported.
-  Same-session worker-parent relationships do not fit the existing
-  distinct-session relationship contract. Correlate explicit spawning calls
-  with child agent IDs before introducing an attributable worker edge.
+  Same-session worker-spawn evidence is now a separate typed fact (CF5),
+  correlated to exact native Agent/Task declaration and completed result, with
+  parent worker/turn/operation and a bounded child ID. Distinct-session
+  relationships remain a separate contract; async/ambiguous native shapes
+  remain unsupported pending positive evidence.
   Sampled Bash results lack a native exit field; output text alone must not
   become a passed/failed check.
 - OpenCode: idle-boundary attribution, parent/fork identities and direct checks
   with explicit exits are implemented. Preserve session-only scope and unknown
   outcomes where boundaries or exits are absent; qualify further native shapes
   rather than treating every missing field as a decoder bug.
-- Header-only native recordings: a discovered source with no admitted session
-  facts still has no retained roster row. Define and implement an evidence-backed
-  placeholder if the running-session roster must include it. Preserve exact
+- Header-only native recordings: Codex already admits neutral SessionDiscovered
+  from verified headers. Claude/Pi metadata-only presence needs the remaining
+  provider-specific support is implemented in the development branch (CF1),
+  including recognized timestamp-less Claude title/name metadata with explicit
+  unknown time 0. Implemented schema 22 admission-clock retention lets this
+  neutral identity survive managed retention without inventing source time.
+  Installed acceptance is delegated to the test owner. Preserve exact
   source identity and neutral status; an open file must not invent a Working
   lifecycle. This is an open behavior gap, not only an archive rerun.
 - Kiro: native-format process fixtures cover failure, delegation and fractional
@@ -109,10 +137,12 @@ default-off internal-review visibility; an internal review is not an approval.
 
 **Existing task:** B8. **Owner:** extension runtime.
 
-Pinned explicit catalog selection and independent capability loading exist.
-Automatic decoder installation remains separate work: define the supported
-package format, version/feature negotiation, artifact verification, selection,
-update/removal and failure behavior. Changed artifacts and unsupported formats
+Trusted local manifest installation, expected-pin verification, atomic catalog
+publication, explicit selection/replacement and independent capability loading
+already exist. CF3 now implements installed-adapter list/show and pin-CAS removal; four
+focused developer checks passed, with actual installed acceptance delegated. Remote
+automatic package discovery/download and new decoder formats remain separate;
+do not reimplement the existing supported local installer. Changed artifacts and unsupported formats
 must fail closed. Do not equate a checksum with an OS sandbox.
 
 **Done when:** an independent supported decoder installs through the declared
@@ -168,8 +198,8 @@ These are integration tasks, not a claim that the features are absent.
 | ID | Work and owner | Sequence | Completion condition |
 | --- | --- | --- | --- |
 | I1 | **Complete:** Findings PR #380; integration owner | Exact `ef3d647` head and green checks verified; admin squash merged. | Remote MERGED state verified; main commit `39474ddabfca3bc448cf8f8a0b71fda42b9560f1`. Final joined artifact tests remain separate. |
-| I2 | **Joined source complete:** Metrics and remote Host; integration owner | Final Host runtime/fixture corrections integrated with existing Findings and Metrics changes. | 833 tests / 96 suites, strict Clippy/all binaries, actual metric HTTP/three-size PTY and separate-UID Host KVM passed. Final optimized archive remains Q5. |
-| I3 | Source, schema and documentation; integration owner | Commit/push the coherent joined source, then qualify it. | Current plan, task board, paired journey record, schema/support notes and HTML companions name the same source/artifact. Current-head CI passes. Earlier artifact evidence remains labeled with its original revision. |
+| I2 | **Merged PR #381 (`18aa702`):** Metrics and remote Host; integration owner | Final Host runtime/fixture corrections integrated with existing Findings and Metrics changes. | 833 tests / 96 suites, strict Clippy/all binaries, actual metric HTTP/three-size PTY and separate-UID Host KVM passed. Final optimized archive remains Q5. |
+| I3 | Source/plans merged in PR #381; integration owner | Supply each subsequent feature head to the separate test agent. | Current plan, task board, paired journey record, schema/support notes and HTML companions name the same source/artifact. Current-head CI passes. Earlier artifact evidence remains labeled with its original revision. |
 
 The integrated Host correction was handed off at
 `/tmp/agenturm-host-mode-runtime.patch` and
@@ -199,7 +229,8 @@ qualification separately from this source check.
 
 - Repeat authenticated OTLP JSON/protobuf ingestion, descriptor-only admission,
   exact replay, revision handling and omission of unsafe description text.
-- Upgrade a supported prior schema to **21**. Preserve old point IDs, payloads,
+- Upgrade supported prior schemas through **21** metric metadata and **22**
+  original admission-clock retention, preserving both sets of invariants. Preserve old point IDs, payloads,
   digests, grants and receipts; description companions must not rewrite points.
 - Prove filtering occurs before pagination and source authorization before
   grouping/limits. Find an older series beyond the first 32 catalog rows.

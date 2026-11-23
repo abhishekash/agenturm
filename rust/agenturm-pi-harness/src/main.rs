@@ -26,12 +26,24 @@ impl<const CONTENT: bool, const COMMAND: bool> SourceFormat for PiFormat<CONTENT
     }
 
     fn checkpoint(context: &Self::Context) -> String {
-        context.turn_id.clone()
+        context.checkpoint()
     }
 
     fn restore(context: &mut Self::Context, checkpoint: &str) -> Result<()> {
-        context.turn_id = checkpoint.to_owned();
+        context.restore(checkpoint);
         Ok(())
+    }
+
+    fn resume_verified_header(
+        raw: &[u8],
+        context: &mut Self::Context,
+        origin: &str,
+    ) -> Result<Option<Value>> {
+        if legacy_admission() {
+            Ok(None)
+        } else {
+            pi::resume_verified_header(raw, context, origin)
+        }
     }
 
     fn translate_line(
@@ -40,9 +52,15 @@ impl<const CONTENT: bool, const COMMAND: bool> SourceFormat for PiFormat<CONTENT
         origin: &str,
         offset: u64,
     ) -> Result<(Vec<Value>, Self::Context)> {
-        let (mut facts, next) = pi::translate_line(raw, context, origin, offset)?;
+        let (mut facts, mut next) = pi::translate_line(raw, context, origin, offset)?;
         if legacy_admission() {
-            facts.retain(|row| row["kind"] != "reported_cost");
+            facts.retain(|row| {
+                !matches!(
+                    row["kind"].as_str(),
+                    Some("reported_cost" | "session_discovered")
+                )
+            });
+            next.omit_discovery();
         }
         Ok((facts, next))
     }
@@ -123,6 +141,85 @@ mod tests {
     impl Drop for Scratch {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
+        }
+    }
+
+    #[test]
+    fn session_header_presence_reopens_and_upgrades_a_header_only_cursor_once() {
+        use agenturm_jsonl_source::cursor_proof;
+
+        let scratch = Scratch::new();
+        let source = scratch.source();
+        let header = concat!(
+            r#"{"type":"session","id":"pi-header","sessionId":"pi-native","agentId":"worker","timestamp":"1970-01-01T00:00:01.000000007Z","cwd":"/private/root"}"#,
+            "\n"
+        );
+        fs::write(&source, header).unwrap();
+        let read = |cursor| poll(&source, "harness.pi.fixture", cursor, 5, max_frame_bytes());
+        let present = read("").unwrap();
+        let [record] = facts(&present) else {
+            panic!("one exact Pi presence record");
+        };
+        assert_eq!(record["kind"], "session_discovered");
+        assert_eq!(record["revision"], 0);
+        assert_eq!(record["time_ns"], "1000000007");
+        assert_eq!(
+            record["identity"],
+            json!({"session_id":"pi-native","worker_id":"worker"})
+        );
+        assert_eq!(record["payload"], json!({}));
+        assert!(!present.to_string().contains("/private/root"));
+        let committed = present["cursor"].as_str().unwrap();
+        assert_eq!(
+            read(committed).unwrap(),
+            batch("harness.pi.fixture", committed, &[])
+        );
+
+        let (prefix, _) = committed.split_once(":session-discovered:").unwrap();
+        let prior = format!("{prefix}:");
+        let upgraded = read(&prior).unwrap();
+        assert_eq!(upgraded, present);
+        let proof = cursor_proof(upgraded["cursor"].as_str().unwrap())
+            .unwrap()
+            .unwrap();
+        assert_eq!(proof.offset, header.len() as u64);
+        assert_eq!(
+            proof.digest,
+            format!("{:x}", Sha256::digest(header.as_bytes()))
+        );
+        assert_eq!(read(&prior).unwrap(), upgraded);
+
+        append(
+            &source,
+            r#"{"type":"message","id":"first-user","timestamp":"1970-01-01T00:00:01Z","message":{"role":"user"}}"#,
+        );
+        let later = read(committed).unwrap();
+        assert!(
+            facts(&later)
+                .iter()
+                .all(|record| record["kind"] != "session_discovered")
+        );
+        assert!(
+            facts(&later)
+                .iter()
+                .any(|record| record["kind"] == "lifecycle")
+        );
+    }
+
+    #[test]
+    fn pi_header_presence_requires_unambiguous_timestamp_and_identity() {
+        let scratch = Scratch::new();
+        let source = scratch.source();
+        for line in [
+            r#"{"type":"session","id":"pi-native"}"#,
+            r#"{"type":"session","id":"pi-native","timestamp":"not-a-time"}"#,
+            r#"{"type":"session","id":"pi-native","timestamp":"1970-01-01T00:00:00Z"}"#,
+            r#"{"type":"session","id":"pi-native","timestamp":"1970-01-01T00:00:01Z","timestamp":"1970-01-01T00:00:02Z"}"#,
+            r#"{"type":"session","id":"pi-native","sessionId":"worker","sessionId":"other","timestamp":"1970-01-01T00:00:01Z"}"#,
+        ] {
+            fs::write(&source, format!("{line}\n")).unwrap();
+            let output = poll(&source, "harness.pi.fixture", "", 5, max_frame_bytes()).unwrap();
+            assert!(facts(&output).is_empty(), "{line}");
         }
     }
 

@@ -392,13 +392,13 @@ fn poll_inner<F: SourceFormat>(
             || prior.offset > metadata.len()
             || prior.header_digest != header_digest
     });
+    let mut verified_prefix = None;
     if !changed && let Some(prior) = &previous {
-        changed = format!(
-            "{:x}",
-            prefix_hasher(&mut file, prior.offset)
-                .map_err(classify_read)?
-                .finalize()
-        ) != prior.digest;
+        let prefix = prefix_hasher(&mut file, prior.offset).map_err(classify_read)?;
+        changed = format!("{:x}", prefix.clone().finalize()) != prior.digest;
+        if !changed {
+            verified_prefix = Some(prefix);
+        }
     }
     let mut records = Vec::new();
     let mut event_ids = HashSet::new();
@@ -422,7 +422,14 @@ fn poll_inner<F: SourceFormat>(
     } else {
         previous.as_ref().map_or(0, |cursor| cursor.offset)
     };
-    let mut prefix = prefix_hasher(&mut file, offset).map_err(classify_read)?;
+    // Continue from the prefix already verified against the durable cursor.
+    // Re-reading it here could adopt an in-place rewrite after verification
+    // while still using the original header context for a one-shot upgrade.
+    let mut prefix = if let Some(prefix) = verified_prefix {
+        prefix
+    } else {
+        prefix_hasher(&mut file, offset).map_err(classify_read)?
+    };
     let upgraded_header = if let Some(prior) = &previous
         && !changed
         && offset == header.len() as u64
@@ -457,7 +464,15 @@ fn poll_inner<F: SourceFormat>(
     }
     let mut position = offset;
     while !upgrading_header && records.len() < max_records && position - offset < MAX_SCAN {
-        let Some(line) = read_line(&mut file, position).map_err(classify_read)? else {
+        // Parse the exact header used to establish identity and generation.
+        // A second read here could silently substitute changed header bytes;
+        // the final prefix proof instead detects any rewrite or truncation.
+        let line = if position == 0 {
+            Some(header.clone())
+        } else {
+            read_line(&mut file, position).map_err(classify_read)?
+        };
+        let Some(line) = line else {
             break;
         };
         if line.len() as u64 > MAX_SCAN - (position - offset) {
@@ -631,6 +646,109 @@ mod tests {
             .unwrap()
             .set_times(fs::FileTimes::new().set_modified(UNIX_EPOCH + Duration::from_secs(seconds)))
             .unwrap();
+    }
+
+    #[test]
+    fn header_upgrade_rejects_an_in_place_rewrite_after_prefix_verification() {
+        struct RewriteOnRestore;
+        impl SourceFormat for RewriteOnRestore {
+            type Context = (PathBuf, bool);
+            const PLUGIN_ID: &'static str = "fixture.header-upgrade";
+            const GAP_EVENT_PREFIX: &'static str = "fixture-gap";
+
+            fn header_identity(path: &Path, _raw: &[u8]) -> Result<Self::Context> {
+                Ok((path.to_owned(), false))
+            }
+            fn checkpoint(context: &Self::Context) -> String {
+                if context.1 {
+                    "upgraded".into()
+                } else {
+                    String::new()
+                }
+            }
+            fn restore(context: &mut Self::Context, _checkpoint: &str) -> Result<()> {
+                // This callback follows verification of the original durable
+                // prefix and precedes the header-only discovery upgrade.
+                fs::write(&context.0, b"{\"row\":2}\n")?;
+                Ok(())
+            }
+            fn resume_verified_header(
+                _raw: &[u8],
+                context: &mut Self::Context,
+                _origin: &str,
+            ) -> Result<Option<Value>> {
+                context.1 = true;
+                Ok(Some(json!({
+                    "event_id":"fixture:header", "revision":0, "time_ns":"0",
+                    "identity":{"session_id":"fixture"},
+                    "kind":"session_discovered", "payload":{}
+                })))
+            }
+            fn translate_line(
+                _raw: &[u8],
+                context: &Self::Context,
+                _origin: &str,
+                _offset: u64,
+            ) -> Result<(Vec<Value>, Self::Context)> {
+                Ok((Vec::new(), context.clone()))
+            }
+        }
+        let (root, file) = fixture_file();
+        let initial = read(&file, "");
+        let cursor = initial["cursor"].as_str().unwrap();
+        let result =
+            poll::<RewriteOnRestore>(&file, "fixture-source", cursor, 16, max_frame_bytes());
+        assert!(result.is_err());
+        assert_eq!(
+            result.unwrap_err().to_string(),
+            "source changed during poll"
+        );
+        fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn initial_or_replaced_header_cannot_change_between_identity_and_translation() {
+        struct RewriteHeader;
+        impl SourceFormat for RewriteHeader {
+            type Context = ();
+            const PLUGIN_ID: &'static str = "fixture.header-read";
+            const GAP_EVENT_PREFIX: &'static str = "fixture-gap";
+            fn header_identity(path: &Path, _raw: &[u8]) -> Result<()> {
+                fs::write(path, b"{\"row\":2}\n")?;
+                Ok(())
+            }
+            fn checkpoint(context: &()) -> String {
+                EmptyFormat::checkpoint(context)
+            }
+            fn restore(context: &mut (), checkpoint: &str) -> Result<()> {
+                EmptyFormat::restore(context, checkpoint)
+            }
+            fn translate_line(
+                raw: &[u8],
+                context: &(),
+                origin: &str,
+                offset: u64,
+            ) -> Result<(Vec<Value>, ())> {
+                EmptyFormat::translate_line(raw, context, origin, offset)
+            }
+        }
+        for replaced in [false, true] {
+            let (root, file) = fixture_file();
+            let initial = read(&file, "");
+            let prior = if replaced {
+                fs::write(&file, b"{\"row\":3}\n").unwrap();
+                initial["cursor"].as_str().unwrap()
+            } else {
+                ""
+            };
+            let result =
+                poll::<RewriteHeader>(&file, "fixture-source", prior, 16, max_frame_bytes());
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "source changed during poll"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]

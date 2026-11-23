@@ -7,6 +7,23 @@ Progress updated 23 November 2026 against merged native PR #379 (`52ec13b`), Fin
 - **Host/Metrics joined baseline:** 833 tests / 96 suites, strict Clippy and all binaries; real metric HTTP and three-size terminal checks passed. The final Host refresh/context correction passed its 14 focused tests and the joined 833-test / 96-suite run with strict workspace Clippy/all binaries; the updated separate-UID Host KVM/three-size fixture also passed. Final optimized artifact qualification remains.
 - **Full migration:** incomplete. Do not add successive test totals or equate implemented code with final artifact acceptance. Default cutover and one-release-per-24-hours rules remain in force.
 
+## Core feature development and delegated testing
+
+Current user direction: this implementation session owns feature development;
+a separate agent owns broad test execution. Follow the
+[core feature test handoff](../validation/rust-core-feature-test-plan.md).
+
+| Feature lane | Development status | Testing responsibility |
+| --- | --- | --- |
+| CF1 Claude/Pi neutral native presence | Implemented; timestamped and exact untimed Claude metadata supported, unknown-time admission retention in schema 22. Codex unchanged. | Separate test agent: actual collection/replay/roster journeys. |
+| CF2 Whole-session paged Review edits | Implemented; 17 focused checks/Clippy passed. Paged exact-session browser with original ReviewVersion and private proof. | Separate test agent: terminal/private/broker and selection-return acceptance. |
+| CF3 Trusted adapter list/show/remove | Implemented; four focused checks/Clippy passed. Exact-pin CAS removal preserves artifacts/history. | Separate test agent: CLI/atomicity/security/collection regression. |
+| CF4 OTLP log failure investigation | Implemented; one focused process regression passed. Metadata only, explicit log kind, scope/cursor binding retained. | Separate test agent: broad failure inventory/remote/terminal privacy regression. |
+| CF5 Exact Claude worker spawning | Implemented; exact structured declaration/result correlation, typed parent scope/child ID and declared-child evidence presentation. | Separate test agent: native collection, persistence and exact parent/child acceptance. |
+
+Feature developers run focused checks needed for implementation. Q1–Q10 and
+release qualification remain delegated; no broad campaign is duplicated here.
+
 ## Review of the existing plan
 
 | Plan area | Scheduling decision |
@@ -27,7 +44,7 @@ Each ID retains its original acceptance requirement. Assign only unfinished work
 | --- | --- | --- | --- | --- |
 | A1 | Partial — native fork/checks verified; same-session worker relationships open (F1/Q8). | Pi worker relationships and check outcomes | Start now | Native records establish which parent IDs and explicit check outcomes are available. Supported cases survive collect and reopen. Missing evidence stays unknown. |
 | A2 | Partial — structured lifecycle/delegation/direct checks verified; remaining shapes and full check coverage open (F1/Q8). | Codex lifecycle and check gaps | Start now | Previously uncovered native turn or check shapes have positive and ambiguous examples. A later turn or successful PR creation cannot overwrite the recorded ending of an earlier turn. |
-| A3 | Partial — exact worker/session and completion verified; attributable parent/check evidence open (F1). | Claude Code parentage and check outcomes | Start now | Verify whether native records identify the immediate parent and check exit. Persist only attributable facts and cover the worker-with-session-only case. |
+| A3 | Worker/session/completion and CF5 exact completed worker-spawn attribution implemented; remaining check shapes and async evidence F1/Q8. | Claude Code parentage and check outcomes | Start now | Verify whether native records identify the immediate parent and check exit. Persist only attributable facts and cover the worker-with-session-only case. |
 | A4 | External input — native-format fixtures pass; real Kiro transcript unavailable (Q8). | Kiro actual-session qualification | Start now. Actual run needs a Kiro host with a native transcript. | The installed bundle discovers a real session, commits it, restarts and displays its recorded turn and activity. Record which relationship, credit and check shapes were present. Keep fixture-only cases identified. |
 | A5 | Implemented supported shapes — native idle boundaries/relationships/direct checks verified; final installed coverage Q8. | OpenCode turn boundaries and activity | Start now | A native SQLite sample demonstrates attribution after an explicit idle boundary. Missing boundaries, missing exits and ambiguous outcomes retain their documented scope after reopen. |
 | A6 | Partially qualified — provider checks exist; final installed per-provider acceptance remains (Q8). | Verify the installed cockpit per harness | After the corresponding A1–A5 task, independently per provider | Exercise selection, recorded reason, missing evidence, later activity, view switching and terminal restoration at 60×18. Update that provider's matrix row with the actual and fixture evidence. |
@@ -43,7 +60,7 @@ Each ID retains its original acceptance requirement. Assign only unfinished work
 | B5 | Selected jobs green — five SDK jobs passed on ef3d647; broader producer inventory F2 and final-head Q7. | Implement required SDK instrumentation | B1 selects SDKs. Parallel per SDK. | Each selected SDK can emit a real trace through the documented launch path and reopen a span linked to the correct source and session. |
 | B6 | Selected commands implemented — remaining workflow inventory F2 and installed Q5/Q6. | Close remaining required CLI workflows | B1. Parallel per independent command. | Each retained workflow has a Rust entry point and an installed end-to-end scenario. Record accepted retirements and any unresolved user-facing differences. |
 | B7 | Implemented/verified native baseline — packaged final combined artifact rerun Q5. | Qualify default cockpit capability loading | Start now | Launch the packaged bare cockpit with an explicitly enabled independent capability. Observe its pane and metric, then verify disabled and mismatched-pin cases. |
-| B8 | Open feature — automatic decoder install/trust flow F3; pinned explicit catalog loading exists. | Define and implement automatic decoder installation | Start design now. Activation depends on the approved trust model. | An independent supported decoder can be installed, selected and verified through the declared format and pin. Unsupported formats or changed artifacts fail closed. Keep untrusted activation behind its isolation gate. |
+| B8 | Local trusted install/replace already implemented; CF3 list/show/pin-CAS removal in progress. Remote package discovery and new formats remain separate. | Define and implement automatic decoder installation | Start design now. Activation depends on the approved trust model. | An independent supported decoder can be installed, selected and verified through the declared format and pin. Unsupported formats or changed artifacts fail closed. Keep untrusted activation behind its isolation gate. |
 
 ### C. Storage authority and connector isolation
 

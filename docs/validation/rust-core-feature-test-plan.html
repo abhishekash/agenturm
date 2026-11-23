@@ -1,0 +1,413 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Core Feature Test Plan</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / Delegated core feature tests</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md">Markdown source ↗</a></nav><h1>Core feature development: delegated test plan</h1>
+<p>Updated 23 November 2026. The user assigned this implementation session to
+<strong>core feature development</strong> and a separate agent to test execution. This plan
+is the handoff contract. It supplements Q1–Q10 in the
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md">remaining-work plan</a>.</p>
+<h2>Ownership and execution</h2>
+<ul>
+<li><strong>Feature developers:</strong> implement the feature slices below; run only focused
+compile/parser/state checks that protect the changed behavior; provide source
+head, exact patch scope, focused result and known limitations.</li>
+<li><strong>Test execution agent:</strong> own joined workspace/Clippy, actual native collection,
+broad terminal/privacy journeys, schema 21-to-22 receipt-clock upgrade, SDK matrix and artifact/KVM
+qualification. Record executable hashes and results in this plan or linked
+validation records. Return defects with exact scope and reproduction.</li>
+<li><strong>Integration owner:</strong> combine reviewed changes, publish the exact source head
+for testing and fix returned defects. Do not duplicate the test agent's
+campaigns or call an implemented feature release-qualified prematurely.</li>
+</ul>
+<p>The base is merged <code>18aa7026be1041b93a0b8517874f5b518da44777</code> (PR #381).
+Its existing 833-test and development terminal/KVM results are historical
+baselines, not results for the new feature slices. Every new row starts
+<strong>not run</strong> until the test agent records evidence against the integrated head.</p>
+<h2>Feature handoff board</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Developer scope</th>
+<th>Implementation worktree</th>
+<th>Test owner/status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>CF1</td>
+<td>Exact native Claude/Pi presence before ordinary activity; existing SessionDiscovered contract. Codex already implements header discovery.</td>
+<td><code>/tmp/agenturm-native-presence</code></td>
+<td>Separate test agent; not run on new source.</td>
+</tr>
+<tr>
+<td>CF2</td>
+<td>Whole-session paged Review edit browser pinned to selected history, source/session, ReviewVersion and snapshot; reuse existing private edit proof.</td>
+<td><code>/tmp/agenturm-review-session-edits</code></td>
+<td>Separate test agent; not run on new source.</td>
+</tr>
+<tr>
+<td>CF3</td>
+<td>Trusted installed-adapter list/show/remove with pin-checked removal and atomic catalog publication. Install already exists.</td>
+<td><code>/tmp/agenturm-adapter-lifecycle</code></td>
+<td>Separate test agent; not run on new source.</td>
+</tr>
+<tr>
+<td>CF4</td>
+<td>Body-free OTLP error/fatal logs in failure investigation, including explicit <code>--kind log</code>; existing Findings private log view unchanged.</td>
+<td><code>/tmp/agenturm-core-development</code></td>
+<td>Separate test agent; not run on new source.</td>
+</tr>
+<tr>
+<td>CF5</td>
+<td>Implemented: exact native Claude worker-spawn facts and declared-child metadata in session evidence.</td>
+<td><code>/tmp/agenturm-native-presence</code> + <code>/tmp/agenturm-review-session-edits</code></td>
+<td>Separate test agent; execute on the supplied integrated source head.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Worktree paths identify current ownership, not release artifacts. The developer
+must supply the final integrated commit before the test owner freezes a binary.
+Do not build different sources concurrently into one Cargo target directory.</p>
+<h2>CF1 — native session presence</h2>
+<p><strong>Developer handoff:</strong> Claude/Pi implementation integrated in the development
+branch. Forty-one focused adapter tests and scoped strict Clippy passed. The composed app lib/bin compile check passed with all four slices and schema
+22. A focused prefix-race regression and unknown-time Claude checks passed;
+25 focused Store upgrade/retention/backup checks passed. These are developer
+checks, not a final artifact qualification. These checks do not close the delegated rows below.</p>
+<p><strong>Expected product behavior.</strong> Supported exact native identity can register a
+session before ordinary activity. Pi uses its native timestamp; recognized
+Claude title/name metadata without a timestamp uses explicit unknown time 0,
+never file mtime or a fabricated producer timestamp. Discovery
+is neutral recorded evidence; it must not create Working, completed, approval
+or current process-liveness claims. Existing native name/project provenance and
+newest-updated selection rules continue to apply.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Required observation</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Pi exact session header without messages</td>
+<td>One neutral presence fact; correct source/session/native timestamp; roster after commit/reopen.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Claude supported timestamped metadata without activity</td>
+<td>One neutral presence fact for exact native session; native names remain separately verified.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Claude snapshot prelude without bound identity</td>
+<td>No invented session, identity or execution state.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Missing timestamp on exact Claude title/name metadata</td>
+<td>Neutral retained presence with time 0 and Updated Unknown; no execution/liveness or recency claim.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Invalid/null/conflicting timestamp, duplicate/conflicting identity, untimed user stub</td>
+<td>Unsupported input remains absent or diagnosed; no wall/mtime fallback.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Managed retention with unknown-time presence</td>
+<td>Native time remains 0; schema 22 ages only the exact neutral record by its original batch admission clock; it survives a current default cutoff and expires when that admission age passes the cutoff.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Replay/re-admission/restore with admission aging</td>
+<td>Neither exact retry nor same event in a new batch refreshes age; restore preserves admission clock, event digest and unknown native time. Old batches remain default-unknown admission time.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Other zero-time records</td>
+<td>Existing diagnostic/activity retirement remains unchanged; no general retention exemption.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Header plus normal facts or relationship</td>
+<td>No duplicate session registration/count; ordinary lifecycle remains authoritative.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Poll replay/restart/old cursor</td>
+<td>Stable event identity and idempotent admission; only verified original header can backfill.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>In-place source rewrite during header backfill</td>
+<td>Reject mixed prefix/header proof and preserve prior cursor; repeat existing Codex as well as new Claude/Pi paths.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Guardian/internal-review exclusion and legacy decoder mode</td>
+<td>Existing exclusions and legacy wire compatibility retained.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Actual simultaneous Codex and Claude/Pi sessions</td>
+<td>Account for selected, queued and absent sources; distinguish actual native witnesses from disposable fixture cases.</td>
+<td>Not run</td>
+</tr>
+</tbody>
+</table></div>
+<p>Exercise cold collection, empty history, reopen, later user/tool/lifecycle
+activity and renamed metadata. At 120×32, 80×24 and 60×18 verify human names,
+neutral fallback status, recency ordering, selected source/session stability and
+correct inspector return. Codex header discovery is a regression, not new work.</p>
+<h2>CF2 — complete session edit browsing</h2>
+<p><strong>Developer handoff:</strong> implementation integrated. Seventeen focused App/UI
+checks and scoped Clippy passed. Independent source review confirmed history,
+snapshot, source/turn/worker and current private-grant fences. The composed app
+lib/bin compiles with the other core features. No broad terminal campaign ran
+in this implementation session.</p>
+<p><strong>Expected product behavior.</strong> Review can find an older supported Codex edit
+behind unrelated activity rather than being limited to its loaded overview.
+The existing per-turn edit picker and exact <code>codex.edit_detail</code> preview continue
+to work. Seventeen focused App/UI checks and scoped Clippy passed on the lane
+source; final composed source compile and delegated acceptance are separate. A metadata selector is not private-content authority.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Required observation</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Earlier edit beyond initial examined range</td>
+<td>Explicit examined/partial coverage, continuation and eventual exact result. Empty matching page can still be partial.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Multiple turns/operations with same labels</td>
+<td>Correct source/session/turn/worker/event/revision retained; no sibling edit substitution.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Paging while new writes arrive</td>
+<td>Same read snapshot, no shifted/duplicated traversal; stable selection and return.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Review decisions and overlays</td>
+<td>Enter/escape through browser/private preview returns to original Review and unchanged decision version.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Local edit reveal</td>
+<td>Exact retained-at-snapshot membership, current grant and original source proof required.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Broker edit reveal</td>
+<td>Existing verified-edit broker authority retained; no fingerprint/private body exposed as metadata.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Revoked grant, changed source/history, prune/restore</td>
+<td>Deny or redact; no stale body publication or silent move to newer evidence.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Unsupported worker/provider/edit shape</td>
+<td>Clear bounded unavailable/coverage result; no invented proof.</td>
+<td>Not run</td>
+</tr>
+</tbody>
+</table></div>
+<p>Run actual keyboard journeys at all three terminal sizes. Check query-key
+ownership, loading/error/empty states, long paths, terminal restoration and
+private output lifetime/ACK fences. Private body stays out of copy/export,
+ordinary metadata, diagnostics and saved decision content unless separately
+explicitly authorized by the existing workflow.</p>
+<h2>CF3 — installed adapter lifecycle</h2>
+<p><strong>Developer handoff:</strong> implementation integrated in the development branch.
+Four focused management/installation tests and strict app lib/bin Clippy passed.
+Independent source review found no publication/pin-CAS compatibility blocker.
+The actual packaged command and live collector journeys remain delegated below.</p>
+<p><strong>Expected commands.</strong> <code>adapter list --root DIR [--json]</code>,
+<code>adapter show --root DIR --plugin-id ID [--json]</code>, and
+<code>adapter remove --root DIR --plugin-id ID --sha256 CURRENT [--json]</code>.
+The existing trusted local install/replace flow remains compatible.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Required observation</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>List/show populated valid private root</td>
+<td>Exact catalog identities/pins and deterministic machine-readable output; no executable starts.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Absent root or entry; invalid flags/ID</td>
+<td>Useful error and exit status; reads never create directories/catalogs.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Correct removal pin</td>
+<td>Only selected entry unregisters atomically; unrelated entry fields remain unchanged.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Stale pin during replacement</td>
+<td>Compare-and-swap fails under lock; newly installed pin remains registered.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Last entry removal</td>
+<td>Valid empty versioned catalog, with defined list/show/collector behavior.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Failure before catalog publication or held lock</td>
+<td>Original catalog remains usable; no partial publication.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Symlink/ownership/mode/path substitution</td>
+<td>Reuse existing private-root/path/pin validation; no traversal or unsafe read/write.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Artifact/history/grant preservation</td>
+<td>Removal retains artifacts and all unrelated history/content approvals; no garbage collection or service mutation.</td>
+<td>Not run</td>
+</tr>
+</tbody>
+</table></div>
+<p>After install, remove, list and reinstall, explicitly select the supported
+adapter in collection and prove changed/missing pins fail closed. This is
+trusted local lifecycle management, not a remote downloader or sandbox claim.</p>
+<h2>CF4 — OTLP log failure investigation</h2>
+<p><strong>Developer handoff:</strong> implementation complete in the accompanying source.
+One focused process regression passed, exercising ordinary error/fatal logs,
+explicit activity-error flags, source/session separation, no body/source
+reference output, kind filters and cursor/query binding. This is a development
+check only; the delegated acceptance rows below remain not run.</p>
+<p><strong>Expected product behavior.</strong> <code>investigate failures</code> and its cockpit overlay
+include retained ordinary OTLP error/fatal log metadata and activity logs that
+explicitly report an error. <code>--kind log</code> selects only these log candidates.
+Public rows carry closed labels and exact recorded metadata, never log bodies.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Required observation</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Ordinary ERROR/FATAL severity with/without trace</td>
+<td>Correct closed error/fatal result and optional exact trace/span IDs; source-only records remain discoverable.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Activity log reported_error true/false</td>
+<td>Only explicitly reported errors match; normal usage/cost/activity logs remain absent.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Source/session/turn/worker filters</td>
+<td>Exact scope retained; source-only log not attributed to a selected session without evidence.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td><code>--kind log</code>, another kind, changed cursor filter</td>
+<td>Typed kind filtering and query/snapshot-bound cursor denial; no cross-query continuation.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Empty page followed by older error log</td>
+<td>Examined/matched counts and continuation remain honest; no false exhausted scope.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Authenticated/broker allowlist and restart</td>
+<td>No hidden-source metadata; durable results after reopen.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Captured text, unsafe severity label or secret body</td>
+<td>Ordinary output/JSON/copy/export has no body or producer-supplied severity label; no new private source authority.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Shared UI/CLI behavior</td>
+<td>Body-free label, exact occurrence and prior selection return; existing failed command source route unchanged.</td>
+<td>Not run</td>
+</tr>
+</tbody>
+</table></div>
+<p>Do not merge evaluation outcome inventory into this test's claim. Evaluation
+revisions are a separate current-outcome contract and need their own design if
+later added to unified failure investigation.</p>
+<h2>CF5 — exact Claude worker-spawn evidence</h2>
+<p>This feature is integrated with CF1–CF4 in the accompanying development source.
+Developer checks passed for three Claude decoder cases, the Runtime contract,
+two Store round-trip/projection cases and the scoped presentation case; scoped
+Clippy passed on the native/kernel lane. These are not installed qualification. The contract is a closed
+<code>worker_spawn { child_worker_id }</code> fact; record identity names the exact
+spawning parent source/session/optional worker/turn/operation. A child-worker
+declaration does not claim a separate session or live process.</p>
+<p>Native proof must correlate assistant Agent/Task declaration UUID and tool-use
+ID to one non-error user result with exact <code>sourceToolAssistantUUID</code>, same
+session/worker/turn and structured completed status/agentId. Only five actual
+historical completed records were verified initially. Async statuses, text,
+message ancestry and directory placement are not positive proof.</p>
+<p>Delegate: correct parent/child through commit/reopen; duplicate/replay;
+sibling worker and same-session different turn; conflicting/reused tool-use ID;
+wrong declaring assistant UUID; malformed/self child; non-completed/error/
+multiple results; bounded checkpoint overflow and old cursor continuation;
+exact declared-child Activity/inspector details and page coverage. Verify no
+prompt/tool-body copy and no roster recency/hierarchy changes. All delegated scenarios
+remain <strong>not run</strong> until the test owner records actual results on the frozen head.</p>
+<h2>Related Review identity fixes — delegated regression</h2>
+<p>Typed broker Review receipts now pin the authenticated history identity for
+<code>--format</code> and directory export as well as linked traces. In the existing
+separate-UID fixture, export one exact turn as JSON, verify its identity,
+snapshot and user occurrence, then draft a task from the file. Restore into a
+new incarnation and reapprove the prompt: old receipt must reject without
+excerpt bytes; a fresh receipt must draft. Repeat directory export and confirm
+unformatted plain Review retains its existing output contract. <strong>Not run.</strong></p>
+<p>Local Review marks and decision notes now open their ledger against the selected
+logical history and snapshot/incarnation. Replace the database path between
+selection and mutation, including equal numeric receipt counts: deny before
+creating a sidecar or saving a note against the replacement. Repeat after a
+same-path incarnation change. Existing broker workspace-marker behavior remains
+separate. Two focused Store regressions passed; actual UI/restore regression is
+<strong>not run</strong> and belongs to the test owner.</p>
+<h2>Joined and release checks delegated unchanged</h2>
+<p>After the integrated head is supplied, execute relevant Q1–Q10 from the
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md">remaining-work plan</a>: joined Rust
+checks, actual producer/SDK interoperability, Linux x86-64/ARM64, current exact
+artifact install/upgrade/recovery, paired Python-quality UI journeys and
+separate-UID privacy/authority checks. Real Kiro, production endpoints and
+native macOS retain their external dependencies; do not fabricate a pass.</p>
+<p>No public release/default switch is requested by this development handoff.
+The one-release-per-rolling-24-hours rule and unsupported-profile limits remain.</p>
+<h2>Results and defect handoff template</h2>
+<p>For each execution record: feature/test ID; source commit; executable/archive
+SHA-256; OS/architecture; native producer/version or fixture; terminal size;
+expected and actual result; PASS/FAIL/BLOCKED; exact log/artifact path. Do not
+combine results from different source heads into one qualified candidate.</p>
+<p>For each defect return: minimal reproduction, exact owner/source/session scope,
+last expected state, failed invariant, and affected feature paths. Developers
+fix that defect and return the new source head. The test owner decides the
+necessary regression breadth; developers do not restart the entire campaign.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

@@ -350,8 +350,9 @@ impl Store {
             params![event_id, collector.as_str(), encode_digest(digest)],
         )?;
         transaction.execute(
-            "INSERT INTO agenturm_history_batches(sequence,request_id) VALUES(?1,?2)",
-            params![sequence, event_id],
+            "INSERT INTO agenturm_history_batches(sequence,request_id,admitted_at_unix_ns)
+             VALUES(?1,?2,?3)",
+            params![sequence, event_id, timestamp],
         )?;
         transaction.execute(
             "INSERT INTO agenturm_native_attention_senders(collector_id,sender_id,scope_digest,last_sequence)

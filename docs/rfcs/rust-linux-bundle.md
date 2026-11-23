@@ -90,6 +90,22 @@ subject to the completed batch's qualification and any later publication.
 Implementation, PR merges and candidate qualification continue between releases.
 See the [qualification record](../validation/rust-real-session-roster.md).
 
+## Current core development source
+
+The current source adds neutral Claude/Pi session presence, paged whole-session
+Review edits, trusted adapter list/show/remove and OTLP log failure inventory.
+Schema 22 records a separate original batch admission clock for exact neutral
+session-discovery facts whose native time is unknown (0). Updated stays Unknown;
+retention uses admission age without rewriting native times, event digests or
+receipts. Exact replay does not refresh age. A writer upgrades supported prior
+histories; read-only schema 21 remains supported. Older executables that do not
+support 22 refuse it, so retain a pre-upgrade backup.
+
+These are development-source changes, not a public artifact qualification.
+The [core feature test plan](../validation/rust-core-feature-test-plan.md)
+assigns broad installed/upgrade/privacy/terminal checks to the separate test
+agent. No release/default switch is created by implementation merges.
+
 ## Current Host and metric metadata follow-up
 
 The joined source records validated metric descriptions as separate schema 21
@@ -97,7 +113,7 @@ companions, preserving existing point payloads/IDs/receipts/grants. Catalog
 search applies before pagination and pins query/source/snapshot. Existing point
 cursors remain stable; older source-scoped catalog cursors need a fresh page.
 A writer performs supported schema upgrades; read-only access does not. Older
-executables refuse unsupported schema 21, so keep the pre-upgrade backup.
+executables refuse unsupported current schema, so keep the pre-upgrade backup.
 
 Remote `H` reads the latest authorized recorded sample per source. It does not
 sample the viewer host. Multiple streams open a recorded-source chooser;
