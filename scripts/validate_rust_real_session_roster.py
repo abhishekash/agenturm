@@ -316,7 +316,11 @@ def load_expected(args):
 
 def bind_expected(rows, excluded, entries):
     forbidden = {row["resolved"] for row in excluded}
-    require(not any(path.resolve() in forbidden for _, _, _, path in entries), "Discovery selected a guardian review")
+    for _, header, source, path in entries:
+        if path.resolve() in forbidden:
+            require(header is not None and header.kind == "review"
+                    and re.fullmatch(r"review\.codex\.[0-9a-f]{64}", source) is not None,
+                    "A guardian review was admitted through an ordinary session source")
     by_path = {path.resolve(): (provider, header, source) for provider, header, source, path in entries}
     for row in rows:
         selected = by_path.get(row["resolved"])
@@ -344,7 +348,7 @@ def wait_for_admission(app, env, work, db, cockpit, rows, excluded, timeout):
         require(not (admitted & forbidden), "A guardian review created a durable session")
         missing = expected - admitted
         if not missing:
-            return len(retained)
+            return sum(not row["harness_id"].startswith("review.codex.") for row in retained)
         time.sleep(.2)
     ids = ", ".join(sorted(session for _, session in missing))
     raise ValidationError(f"Admitted {len(expected) - len(missing)} of {len(expected)} expected sessions; missing {ids}")
@@ -465,7 +469,7 @@ def select_human_row(cockpit, row, max_matches):
                 # 21 cells, plus one outer margin on wide layouts.
                 end = len(selected) - (10 if cockpit.width >= 80 else 9) - 1
                 actual_status = selected[end - 11:end].strip()
-                return (status is None or status == actual_status) and (agent is None or agent in context)
+                return (status is None or status == actual_status) and (agent is None or agent in selected or agent in context)
 
             cockpit.until(expected_selection, f"current native status and context for {session}")
             cockpit.key(b"\r")
@@ -632,10 +636,10 @@ def mutation(args, app, env, work):
                               "payload": {"type": "task_complete", "turn_id": original_turn}}), file=stream)
         independent = {first["source"]: "completed", second["source"]: "running"}
         retained(cockpit, independent)
-        rows = [{**first, "title": "Name unavailable", "status": "Ready"},
-                {**second, "title": "Name unavailable", "status": "Working"}]
+        rows = [{**first, "title": "Alpha", "status": "Ready"},
+                {**second, "title": "Beta", "status": "Working"}]
         cockpit.key(b"a")
-        cockpit.markers("both source states in the command center", "Name unavailable", "Alpha", "Beta", "Working 1", "Ready 1")
+        cockpit.markers("both source states in the command center", "Alpha", "Beta", "Working 1", "Ready 1")
         verify_roster(cockpit, rows, [], work / "mutation-narrow")
     with Cockpit(app, env, work, 80, 24) as cockpit:
         retained(cockpit, independent)

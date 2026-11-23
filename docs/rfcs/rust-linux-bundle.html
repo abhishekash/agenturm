@@ -92,10 +92,12 @@ sidecar for the version being installed.</p>
 <p>The 0.3.8 tag run passed archive qualification and the offline installer check on
 both native Linux architectures. The published assets match the digests above.
 <a href="https://github.com/abhishekash/agenturm/actions/runs/45121070134">Native tag qualification</a></p>
-<h3>Qualified 0.3.9 candidate</h3>
-<p>The candidate has passed local Linux x86-64 qualification and native x86-64 and
-ARM64 CI. It is not a published release. Build it from the current source, or
-use the matching checksum-verified CI candidate archive, then install locally:</p>
+<h3>Rust 0.3.9 development candidate</h3>
+<p>The earlier 0.3.9 source passed local Linux x86-64 qualification and native
+x86-64/ARM64 CI. The final migration changes are undergoing their own archive
+qualification in PR #379; those earlier checks do not certify this new source.
+This is not a published release. Build the source you intend to test, or use
+its matching checksum-verified CI archive, then install locally:</p>
 <pre><code class="language-sh">bash scripts/build-rust-linux-bundle.sh ./dist
 archive=&quot;./dist/agenturm-0.3.9-linux-$(uname -m).tar.gz&quot;
 agenturm=$(bash scripts/install-rust.sh install --version 0.3.9 \
@@ -200,6 +202,26 @@ opens a byte-verified payload where an MCP approval is active. Use
 <code>content grant --kind codex.mcp_payload</code> with the history path, source
 configuration and source ID to establish it. Use
 <code>content revoke --kind codex.mcp_payload</code> to remove that approval.</p>
+<p>In MCP, <code>/</code> searches retained calls before pagination at the selected history
+snapshot. It matches server, tool, method and result, treating <code>%</code> and <code>_</code>
+literally. <code>f</code> chooses a server on the loaded page, and <code>i</code> switches between
+calls and configured inventory. Enter on an eligible call opens its exact
+linked traces; Escape restores the same call. A configured server is not a
+claim that it is currently connected.</p>
+<p>In Metrics, <code>/</code> filters the loaded instrument page by name, service, kind,
+unit, scope or source; the filter continues across pages. Choose a series to
+browse points and exact retained exemplars. Usage displays seven UTC days,
+keeps currencies separate, and distinguishes explicit zero from unreported
+counters. Its coverage labels distinguish native reports, representative
+traces and activity logs.</p>
+<p>In Findings, <code>/</code> filters loaded groups and occurrences. Enter opens a group,
+then an exact occurrence. Where an exact retained failed Codex command has a
+source route, <code>s</code> requests its protected evidence under the current grant;
+unsupported bodies stay unavailable. Source text never enters loaded-view
+copy or export. In live Host (<code>H</code>), <code>/</code> filters same-user runtime, PID and
+working-directory basename. Enter opens process details and <code>R</code> refreshes
+while retaining boot/PID/start identity. <code>5</code> opens recorded Host history.
+Escape first clears an active filter, then returns to the prior view.</p>
 <p>From Agents or a session or turn detail, press <code>b</code> to open saved tasks.
 Use <code>n</code> to create a task linked to the selection, <code>r</code> to see its linked
 runs, and <code>h</code> to create a handoff using the current selection. Open the
@@ -211,7 +233,11 @@ copy of the loaded metadata and <code>x</code> exports that metadata to a new pr
 Markdown/HTML/JSON directory. Private modal bodies stay outside these exports.</p>
 <p>From Agents, press <code>w</code> to see recorded requests. Use <code>s</code> to mark an item
 seen and <code>l</code> to focus the matching tmux pane when Agenturm verifies the
-route. Respond in the harness terminal.</p>
+route. <code>c</code> verifies the selected exact pending main-session request and previews
+and copies <code>codex resume …</code> or <code>claude --resume …</code> for supported sources.
+It never launches the command; Escape restores the request selection. Respond
+in the harness terminal. Integrated desktop threshold, snooze and retry
+settings remain an open parity requirement.</p>
 <p>In Review, press <code>n</code> for saved decision notes. In the decision list, press
 <code>e</code> to write a note against the selected evidence version and Ctrl+S to save it.
 Review shows recorded Codex edit counts. Press <code>e</code> from Review or turn
@@ -256,6 +282,26 @@ Use <code>--format text</code>, <code>--format markdown</code>, or <code>--forma
 stdout output. Omitting <code>--format</code> preserves the history query JSON on
 stdout. Review receipts contain retained observation metadata. Use the
 content-grant commands separately to inspect protected bodies.</p>
+<h3>Read an explicit Python 0.2.8 receiver</h3>
+<p>An already-running authenticated Python receiver is selected explicitly;
+Agenturm's Rust client does not launch Python. Use a literal loopback endpoint
+and the receiver's token file. Review rechecks the exact receiver, scope and
+capture policy around bounded evidence reads and before output:</p>
+<pre><code class="language-sh">&quot;$agenturm&quot; review --receiver-protocol python-v0.2.8 \
+  --endpoint &quot;$endpoint&quot; --token-file &quot;$token_file&quot; --service &quot;$service&quot; \
+  --session-id &quot;$session&quot; --trace-id &quot;$trace&quot; --pages 5 --format json \
+  -o ./captured-review.json
+&quot;$agenturm&quot; investigate command 'cargo test' --failed \
+  --receiver-protocol python-v0.2.8 --endpoint &quot;$endpoint&quot; \
+  --token-file &quot;$token_file&quot; --service &quot;$service&quot; --pages 5 --format json
+</code></pre>
+<p>Use <code>--turn-of-trace</code> instead of <code>--trace-id</code> to select the recorded whole turn.
+Review exports use new private destinations and include Markdown and HTML.
+Investigation cursors are opaque; keep the query, receiver and scope unchanged
+when continuing a page. Source references identify one exact occurrence and
+are revalidated on reveal. Capture can be metadata-only, in which case private
+text is unavailable. The integrated private receiver Review modal remains
+separate pending work.</p>
 <h2>Edit tasks from the CLI</h2>
 <p>Set <code>db</code> to an existing Rust history database and get a task's ID and
 revision from <code>task list</code> or <code>task show</code>. Pass <code>--expected-revision</code> when
@@ -373,6 +419,19 @@ loopback addresses to the proxy exclusions. Configure scope on the
 producer as described above. The launcher is for existing instrumentation
 and SDKs that honor these settings.
 <a href="https://opentelemetry.io/docs/specs/otel/protocol/exporter/">OpenTelemetry exporter configuration</a></p>
+<h3>Follow a span JSONL file or instrument Python</h3>
+<pre><code class="language-sh">&quot;$agenturm&quot; watch-jsonl --file ./spans.jsonl --db &quot;$db&quot; \
+  --source-id otlp.local --session-id &quot;$session&quot; --interval-ms 1000
+&quot;$agenturm&quot; run --db &quot;$db&quot; --source-id otlp.local \
+  --instrument python --service my-app -- python app.py
+</code></pre>
+<p>The follower checkpoints complete lines and committed prefixes; restart resumes
+without publishing the same batch twice. Rotation and truncation begin a new
+verified generation. Python instrumentation requires a compatible Agenturm SDK
+and its selected integrations already installed in that interpreter. The Rust
+launcher installs no dependencies and starts no Python receiver. Captured text
+requires explicit <code>--capture-content</code> and the corresponding payload scope;
+metadata is the default.</p>
 <h2>Use the workspace from scripts</h2>
 <p><code>agenturm task --help</code> lists the native task and handoff commands. They use
 the same task records as the cockpit. Run <code>agenturm attention status --db &lt;path&gt;</code> for one pending-request snapshot or <code>agenturm attention watch --db &lt;path&gt;</code> for changes.</p>
