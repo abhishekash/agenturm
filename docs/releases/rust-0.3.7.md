@@ -70,7 +70,7 @@ protocol remains the default.
 
 [Python receiver setup and coverage](../rfcs/rust-cutover-workflows.md#attach-to-an-existing-python-028-receiver)
 
-## Opt-in installer source candidate
+## Opt-in installer
 
 The checked-out `scripts/install-rust.sh` installs the complete versioned Linux
 bundle as `agenturm-rust`. It verifies the archive checksum and layout before
@@ -80,7 +80,20 @@ command retains its current behavior. Both native Linux bundle jobs run the
 offline installer verifier before uploading their artifacts. A hosted
 bootstrap, signed release manifests, and registry packages remain future work.
 
-[Installer proposal and usage](../rfcs/rust-distribution-installation.md)
+[Installer usage](../rfcs/rust-distribution-installation.md)
+
+## Published Linux bundles
+
+Rust 0.3.7 was published from `31faa9fc32224f57bba326d1a93e31cc96a316a3`.
+Both archives have published checksum files. The release API digests and
+checksum files agree with the archive hashes below.
+
+| Architecture | Archive SHA-256 |
+| --- | --- |
+| Linux x86-64 | `936ad6f90e49bea8acdaf44b2fdc08e11c50df50987d7a5aa53ac8e65bef1791` |
+| Linux ARM64 (`aarch64`) | `56d1dcddc934e9c590c1247063ec78c35532201a04361a5de4c2aee5f40dda28` |
+
+[Release archives and checksums](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.7)
 
 ## Qualification and remaining gates
 
@@ -91,15 +104,14 @@ archives. Source-built Linux guests checked private selection isolation,
 complete evaluation inventories, and tagged Python receiver navigation at
 60×18 and 120×32.
 
-The exact Linux x86-64 archive has SHA-256
-936ad6f90e49bea8acdaf44b2fdc08e11c50df50987d7a5aa53ac8e65bef1791.
-It passed managed install, restart, backup, upgrade and uninstall, all six
-retained keyboard journeys, 24 producer/client cases and eight cached SDK
-and private-capture cases without skips. Separate-principal packaged guests
+The published x86-64 archive passed managed install, restart, backup, upgrade
+and uninstall, all six retained keyboard journeys, 24 producer/client cases,
+and eight cached SDK and private-capture cases without skips. Separate-principal packaged guests
 passed the selector, evaluation, legacy receiver, HTTP, Host and disclosure
-checks. Both native Linux candidate jobs passed the offline installer flow;
-all five mandatory vendor jobs passed 16 selected SDK cases. The tag build
-qualifies and attaches the ARM64 archive and checksum separately.
+checks. Both native Linux jobs passed the tagged bundle and offline installer
+checks. The tag workflow attached the qualified ARM64 archive and checksum.
+All five mandatory vendor jobs passed 16 selected SDK cases with skips
+disabled. [Tagged bundle qualification](https://github.com/abhishekash/agenturm/actions/runs/45110581824)
 
 The standalone Rust installation remains opt-in.
 The default distribution cutover still depends on real Kiro transcript

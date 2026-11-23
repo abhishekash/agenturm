@@ -1,23 +1,27 @@
 # Agenturm Rust 0.3.7 release validation
 
-This record covers source checks and qualification of the exact Linux x86-64
-release archive. The frozen runtime source is
-`2c63bb43971b1c21a60a9ecfc83f6d30b7b35275`. The bundle CI and packaged fixtures
-use `634b850ade6b233f674a5e9ca138c2837a26c10d`, which adds documentation and
-qualification changes to that runtime.
+This record covers source checks, the exact Linux x86-64 archive, and the
+published Linux ARM64 bundle. The frozen runtime source is
+`2c63bb43971b1c21a60a9ecfc83f6d30b7b35275`. The pull request bundle CI and
+packaged fixtures used `634b850ade6b233f674a5e9ca138c2837a26c10d`, which adds
+documentation and qualification changes to that runtime. The release tag
+points to merged commit `31faa9fc32224f57bba326d1a93e31cc96a316a3`.
 
-## Candidate identity
+## Published artifact identity
 
 | Artifact | SHA-256 |
 | --- | --- |
 | `agenturm-0.3.7-linux-x86_64.tar.gz` | `936ad6f90e49bea8acdaf44b2fdc08e11c50df50987d7a5aa53ac8e65bef1791` |
-| `bin/agenturm` | `05bf22885d4753734f26a7b55af01caa42da577fea5ebbd338c560e041468ef3` |
-| `bin/agenturm-storage-service` | `5cf1c2589302ecc965b7e7e4d0a3e507f93eed5957a5577290c79d06f9e55155` |
+| `agenturm-0.3.7-linux-aarch64.tar.gz` | `56d1dcddc934e9c590c1247063ec78c35532201a04361a5de4c2aee5f40dda28` |
+| x86-64 `bin/agenturm` | `05bf22885d4753734f26a7b55af01caa42da577fea5ebbd338c560e041468ef3` |
+| x86-64 `bin/agenturm-storage-service` | `5cf1c2589302ecc965b7e7e4d0a3e507f93eed5957a5577290c79d06f9e55155` |
 
-The qualification host verified the archive checksum and compared the
+The qualification host verified the x86-64 archive checksum and compared the
 extracted binaries with their archive members. The guest rechecked those
-hashes before running the fixtures. `agenturm-037-exact-vault-prepare.log`,
-`agenturm-037-exact-vault-kvm.log`
+hashes before running the fixtures. GitHub's published asset digests and the
+published checksum files match both archive digests. The published x86-64
+asset is the exact locally qualified archive. `agenturm-037-exact-vault-prepare.log`,
+`agenturm-037-exact-vault-kvm.log`. [Published Rust 0.3.7 release](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.7)
 
 ## Retained workflows
 
@@ -43,7 +47,7 @@ fresh history in another history with the same source, span, session and
 numeric watermark. A synthetic reproduction opened different text. Each
 history required its own current grant.
 
-The candidate fix in `c1d2a28` checks the issuing history identity and
+The 0.3.7 fix in `c1d2a28` checks the issuing history identity and
 snapshot inside the existing grant fence. A restored branch needs a fresh
 snapshot and approval.
 Older selection files without `history_identity` fail with refresh guidance.
@@ -75,7 +79,7 @@ test. `agenturm-037-telemetry-history-cli.log`,
 
 | Check | Result | Qualification host log |
 | --- | --- | --- |
-| Published 0.3.5 → candidate 0.3.7 schema upgrade | The 0.3.7 reader preserved the schema 16 database bytes and numeric cursor. The writer upgraded to schema 17, recorded the evaluation correction and its detail receipt, and preserved the original cursor page. The 0.3.5 binary refused the upgraded history. | `agenturm-037-exact-vault-prepare.log` |
+| Published 0.3.5 → 0.3.7 schema upgrade | The 0.3.7 reader preserved the schema 16 database bytes and numeric cursor. The writer upgraded to schema 17, recorded the evaluation correction and its detail receipt, and preserved the original cursor page. The 0.3.5 binary refused the upgraded history. | `agenturm-037-exact-vault-prepare.log` |
 | Native HTTP history and live progress | The authenticated gateway respected reader scope and pinned history. Offline restore and receipt regrowth rejected stale reads on the same socket and port. Progress was readable before the first span, with separate bearers, history binding, exact scope, sparse pagination, native worker linkage and immutable replay. Explicit zero and unknown remained distinct. | `agenturm-037-exact-native-http-kvm.log` |
 | Evaluation and Host cockpit | The guest checked evaluation revision history, scoped summary, live allowlist removal, broker and remote keyboard return, and private detail with distinct roles. Escape, `q` and Ctrl-C cleared private text and restored the terminal. Recorded Host views checked exact sample and process return at 120×32 and 60×18, opt-in GET and POST, and restored watermark fencing. The successful run used a fixture permission correction. | `agenturm-037-packaged-cockpit-guest.ofjbfw4G/guest.log` |
 | Managed installation | Foreground collection, restart, backup, prior history and cursor reopen, and systemd user installation, restart, inspector access and uninstall preserved history. | `agenturm-037-final-managed-bundle.log` |
@@ -90,16 +94,18 @@ The source and fixture logs are retained under `/tmp` on the qualification host.
 Both native Linux bundle jobs passed at `634b850`, including the offline
 installer checks on x86-64 and ARM64. [Native bundle CI run 45109270284](https://github.com/abhishekash/agenturm/actions/runs/45109270284)
 
-The Rust protocol job and all five mandatory vendor jobs passed. These jobs
-cover OpenAI, Anthropic, LangChain, LangGraph, OpenAI Agents, Pydantic AI and
-Google ADK. [Rust protocol and vendor CI run 45109270165](https://github.com/abhishekash/agenturm/actions/runs/45109270165)
+The pull request Rust protocol job and all five mandatory vendor jobs passed.
+The vendor jobs ran 16 selected cases with skips disabled across OpenAI,
+Anthropic, LangChain, LangGraph, OpenAI Agents, Pydantic AI and Google ADK.
+[Rust protocol and vendor CI run 45109270165](https://github.com/abhishekash/agenturm/actions/runs/45109270165)
 
-## Pending final gates
+The tagged bundle workflow passed on native x86-64 and ARM64, including
+the offline installer. The native ARM64 job qualified the archive, verified
+a prior-bundle upgrade, and exercised the user service. The attachment job
+published the ARM64 archive and its checksum. [Tagged bundle run 45110581824](https://github.com/abhishekash/agenturm/actions/runs/45110581824) · [Attachment job 137482811086](https://github.com/abhishekash/agenturm/actions/runs/45110581824/job/137482811086)
 
-| Gate | Status |
-| --- | --- |
-| Broader compatibility CI | Pending the remaining Python 3.11–3.14 compatibility jobs. [CI run 45109270165](https://github.com/abhishekash/agenturm/actions/runs/45109270165) |
-| Release attachment | Pending the tag build and publication of the qualified release assets, including the final ARM64 archive digest. |
+The merged main-branch CI run was still in progress at publication.
+[Main-branch CI run 45110429996](https://github.com/abhishekash/agenturm/actions/runs/45110429996)
 
 ## Rust cutover scope
 

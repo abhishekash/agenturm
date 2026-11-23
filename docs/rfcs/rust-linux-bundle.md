@@ -2,7 +2,7 @@
 
 The bundle contains the Agenturm CLI and inspector, the process host, the
 Codex, Pi, Claude Code, Kiro, and OpenCode adapters and their
-SHA-256-pinned catalog, plus the trusted connector driver. The runtime
+SHA-256-pinned catalog, the trusted connector driver, and the storage service. The runtime
 requires a compatible Linux system and does not require Python or Rust.
 The managed collector uses a running systemd user manager. Foreground
 collection is available on Linux systems without a user manager.
@@ -16,11 +16,15 @@ collection is available on Linux systems without a user manager.
 
 ## Build and install
 
-The source checkout includes an opt-in verified installer candidate:
+The recommended published bundle is Rust 0.3.7 on both Linux architectures.
+Use the opt-in source installer from a checkout.
 
 ~~~sh
-bash scripts/install-rust.sh install --version 0.3.6
+agenturm=$(bash scripts/install-rust.sh install --version 0.3.7)
+"$agenturm" --version
 ~~~
+
+[Published Rust 0.3.7 bundles](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.7)
 
 It installs the complete versioned bundle and an agenturm-rust launcher,
 preserving the existing agenturm command and leaving services and history
@@ -34,11 +38,11 @@ From a source checkout on Linux with the pinned Rust toolchain and a native C
 build toolchain, run `scripts/build-rust-linux-bundle.sh ./dist`. The script
 builds for the local Linux architecture and emits a tarball and checksum.
 
-From the directory containing the archive and its checksum, set the version
-and use the archive name for your architecture.
+From the directory containing the published archive and its checksum, use
+the matching asset for your architecture. This example uses x86-64.
 
 ```sh
-archive="agenturm-VERSION-linux-x86_64.tar.gz"
+archive="agenturm-0.3.7-linux-x86_64.tar.gz"
 sha256sum -c "$archive.sha256"
 mkdir -p "$HOME/.local/opt"
 tar -xzf "$archive" -C "$HOME/.local/opt"
@@ -46,8 +50,18 @@ agenturm="$HOME/.local/opt/${archive%.tar.gz}/bin/agenturm"
 "$agenturm" --version
 ```
 
-Use the archive and directory names produced by the build for your version and
-architecture. Keep the catalog and binaries in the extracted directory.
+Use `agenturm-0.3.7-linux-aarch64.tar.gz` and its sidecar on ARM64. Keep the
+catalog and binaries in the extracted directory. The published Linux archives
+have these SHA-256 digests.
+
+| Platform | SHA-256 |
+| --- | --- |
+| Linux x86-64 | `936ad6f90e49bea8acdaf44b2fdc08e11c50df50987d7a5aa53ac8e65bef1791` |
+| Linux ARM64 / aarch64 | `56d1dcddc934e9c590c1247063ec78c35532201a04361a5de4c2aee5f40dda28` |
+
+The tag run passed archive qualification and the offline installer check on
+both native Linux architectures. The published assets match the digests above.
+[Native tag qualification](https://github.com/abhishekash/agenturm/actions/runs/45110581824)
 
 ## Open the cockpit
 
@@ -463,6 +477,7 @@ the separate `v<version>` tag family.
 
 ```sh
 scripts/verify-rust-linux-bundle.sh "./dist/$archive"
+scripts/verify-rust-installer.sh "./dist/$archive"
 ```
 
 The verifier extracts the checksum-verified archive into a fresh state
@@ -472,6 +487,11 @@ activity in a PTY, and reopens a backup. A narrow-PTY run starts the cockpit
 with empty state, adds fixtures while it is open, refreshes the roster, and
 verifies the next collector can reopen the history after quit. Qualification
 uses Bash, jq, GNU coreutils, GNU tar, and util-linux `script`.
+
+Both native jobs also run the offline installer verifier before uploading the
+archive. It checks the companion executables and catalog pins, same-version
+replay, and uninstall with both normal and version-local SQLite history
+preserved. This uses the built archive and its sidecar on the native runner.
 
 On a dedicated Ubuntu 24.04 x86-64 account with a running systemd user
 manager and no Agenturm collector unit, pass `--systemd-user` to verify

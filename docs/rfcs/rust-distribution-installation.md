@@ -1,9 +1,11 @@
 # Rust distribution and installation
 
-Use the qualified GitHub release bundle with a verified, explicitly opt-in
-installer. Install its command as **agenturm-rust** while the default Rust
-cutover remains gated. This keeps the complete app, process host, five
-adapters, connector driver, storage service and pinned catalog together.
+Use the published Rust 0.3.7 bundle on Linux x86-64 or ARM64. The opt-in
+installer keeps the app, process host, five adapters, connector driver,
+storage service and pinned catalog together under **agenturm-rust**. The
+default Rust cutover remains gated.
+
+[Published Rust 0.3.7 release](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.7)
 
 The implementation is a local source candidate in
 [scripts/install-rust.sh](../../scripts/install-rust.sh). It does not publish
@@ -26,12 +28,12 @@ controls registry publication.
 documents archive URLs and binary-path metadata. These are possible later
 distribution mechanisms; this change does not enable either publication path.
 
-## Install from the checked-out candidate
+## Install with the checked-out source installer
 
-On qualified Linux x86-64 or ARM64, with Bash, curl, GNU tar and coreutils:
+Use Bash, curl, GNU tar and coreutils on qualified Linux x86-64 or ARM64.
 
 ~~~sh
-bash scripts/install-rust.sh install --version 0.3.6
+bash scripts/install-rust.sh install --version 0.3.7
 agenturm-rust --version
 agenturm-rust
 ~~~
@@ -43,7 +45,7 @@ editing the shell profile. The default managed layout is:
 ~~~text
 ~/.local/bin/agenturm-rust
   -> ~/.local/share/agenturm-rust/dist/releases/
-       agenturm-0.3.6-linux-ARCH/bin/agenturm
+       agenturm-0.3.7-linux-ARCH/bin/agenturm
 ~~~
 
 XDG_DATA_HOME selects the data base. --prefix and --bin-dir accept absolute
@@ -58,34 +60,34 @@ claims merely because the executable can start on them.
 Preview without downloading or changing files:
 
 ~~~sh
-bash scripts/install-rust.sh install --version 0.3.6 --dry-run
+bash scripts/install-rust.sh install --version 0.3.7 --dry-run
 ~~~
 
 For an already downloaded archive, the offline path uses the same checks:
 
 ~~~sh
-bash scripts/install-rust.sh install --version 0.3.6 \
-  --archive ./agenturm-0.3.6-linux-x86_64.tar.gz \
-  --checksum ./agenturm-0.3.6-linux-x86_64.tar.gz.sha256 \
-  --sha256 5a325704855774dbdaa333daba48dcbe9935a178aacb94c57f72086c3f27a693
+bash scripts/install-rust.sh install --version 0.3.7 \
+  --archive ./agenturm-0.3.7-linux-x86_64.tar.gz \
+  --checksum ./agenturm-0.3.7-linux-x86_64.tar.gz.sha256 \
+  --sha256 936ad6f90e49bea8acdaf44b2fdc08e11c50df50987d7a5aa53ac8e65bef1791
 ~~~
 
 Use the aarch64 asset and its matching digest on ARM64.
 
-| Qualified 0.3.6 archive | SHA-256 |
+| Published 0.3.7 archive | SHA-256 |
 | --- | --- |
-| Linux x86-64 | 5a325704855774dbdaa333daba48dcbe9935a178aacb94c57f72086c3f27a693 |
-| Linux ARM64 / aarch64 | 74e1c6e20ac6427bf2c7c57268643254676bd2c17e3651f617da594c1dcae71b |
+| Linux x86-64 | 936ad6f90e49bea8acdaf44b2fdc08e11c50df50987d7a5aa53ac8e65bef1791 |
+| Linux ARM64 / aarch64 | 56d1dcddc934e9c590c1247063ec78c35532201a04361a5de4c2aee5f40dda28 |
 
-[Published release](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.6)
-and [archive qualification](../validation/rust-036-release.md).
+[Release assets and sidecars](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.7) ·
+[Archive qualification](../validation/rust-037-release.md)
 
 ## Update and recover
 
 Updates are deliberate and versioned:
 
 ~~~sh
-bash scripts/install-rust.sh update --version VERSION
+bash scripts/install-rust.sh update --version 0.3.7
 ~~~
 
 There is no latest alias, automatic update, or lookup of GitHub's global
@@ -105,7 +107,7 @@ state="$HOME/.local/state/agenturm-rust"
 agenturm-rust service uninstall
 agenturm-rust backup --db "$state/history.sqlite" \
   --bundle "$HOME/agenturm-before-upgrade"
-bash scripts/install-rust.sh update --version VERSION
+bash scripts/install-rust.sh update --version 0.3.7
 agenturm-rust service install --config "$state/sources.json" \
   --db "$state/history.sqlite"
 agenturm-rust service status
@@ -116,9 +118,9 @@ new backup directory. A foreground cockpit must also be closed before its
 history is backed up for an upgrade.
 
 Selecting a retained executable version does not downgrade a database.
-Rust 0.3.6 writes schema 17, which 0.3.5 refuses. A rollback needs the
-pre-upgrade backup and its matching executable; preserve the upgraded
-history rather than overwriting it. Restored private evidence needs new
+Rust 0.3.6 and 0.3.7 use schema 17, which 0.3.5 refuses. Keep the
+pre-upgrade backup and its matching executable for rollback. Preserve the
+upgraded history in its existing location. Restored private evidence needs new
 approvals and selections. See the
 [bundle upgrade guide](rust-linux-bundle.md).
 
@@ -131,6 +133,7 @@ agenturm-rust service uninstall
 bash scripts/install-rust.sh uninstall
 ~~~
 
+Use the same custom `--prefix` and `--bin-dir` values as the installation.
 The installer refuses uninstall while its known collector unit is still
 configured. It removes only the matching agenturm-rust launcher and known
 managed program files. History, configuration and source transcripts are
@@ -179,11 +182,13 @@ before deleting an altered installation. An exact 0.3.5 → 0.3.6 installation
 also preserved a schema-16 history byte-for-byte through update and read-only
 query. Uninstall retained both the external history and an additional history
 file placed inside a release directory.
-The [native bundle CI](https://github.com/abhishekash/agenturm/actions/runs/45109270284)
-also passed the offline installer against the built 0.3.7 archive on both
-Linux x86-64 and ARM64. Each job verified all companion executables and
-catalog pins, same-version replay, the unchanged default command, and
-uninstall with both normal and version-local SQLite history preserved.
+The Rust 0.3.7 tag run passed native bundle qualification and the offline
+installer check on both Linux x86-64 and ARM64. Each job verified all
+companion executables and catalog pins, same-version replay, the existing
+`agenturm` command, and uninstall with both normal and version-local SQLite
+history preserved. The published assets match the verified SHA-256 digests
+listed above.
+[Native tag qualification](https://github.com/abhishekash/agenturm/actions/runs/45110581824)
 
 A hosted one-command bootstrap is a proposed next distribution step after
 the installer review and qualification. It should fetch this script at an
