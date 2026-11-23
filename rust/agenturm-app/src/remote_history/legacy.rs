@@ -54,8 +54,14 @@ impl LegacyReceiver {
     pub(crate) fn connect(options: &RemoteHistoryOptions) -> Result<Self, String> {
         let token = ProducerToken::from_python_receiver_file(options.token_file())?;
         let deadline = Instant::now() + MAX_READ_TIME;
-        let (identity, health) =
-            get::<Health>(options.endpoint(), &token, "/api/health", None, deadline)?;
+        let (identity, health) = get::<Health>(
+            options.endpoint(),
+            &token,
+            "/api/health",
+            None,
+            deadline,
+            MAX_REPLY,
+        )?;
         health.require_identity(&identity)?;
         Ok(Self {
             endpoint: options.endpoint(),
@@ -71,6 +77,7 @@ impl LegacyReceiver {
             path,
             Some(&self.identity),
             deadline,
+            MAX_REPLY,
         )?;
         Ok(value)
     }
@@ -81,6 +88,23 @@ impl LegacyReceiver {
         deadline: Instant,
     ) -> Result<T, String> {
         self.get(path, deadline).map_err(String::from)
+    }
+
+    pub(super) fn get_for_review<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        deadline: Instant,
+    ) -> Result<T, String> {
+        const REVIEW_REPLY_LIMIT: usize = 2 * 1024 * 1024;
+        let (_, value) = get(
+            self.endpoint,
+            &self.token,
+            path,
+            Some(&self.identity),
+            deadline,
+            REVIEW_REPLY_LIMIT,
+        )?;
+        Ok(value)
     }
 
     pub(crate) fn native_identity(&self) -> &str {
@@ -250,6 +274,7 @@ fn get<T: DeserializeOwned>(
     path: &str,
     expected: Option<&str>,
     deadline: Instant,
+    max_reply: usize,
 ) -> Result<(String, T), ReadError> {
     let budget = deadline
         .checked_duration_since(Instant::now())
@@ -263,7 +288,7 @@ fn get<T: DeserializeOwned>(
     );
     http::write(&stream, deadline, &head, &[]).map_err(wire_error)?;
     let mut reader = BufReader::new(&stream);
-    let head = http::read_python_head(&mut reader, deadline, MAX_REPLY).map_err(wire_error)?;
+    let head = http::read_python_head(&mut reader, deadline, max_reply).map_err(wire_error)?;
     let status = head.start.split_whitespace().collect::<Vec<_>>();
     match status.as_slice() {
         ["HTTP/1.0" | "HTTP/1.1", "200", ..] => {}
