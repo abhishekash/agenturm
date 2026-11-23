@@ -10,7 +10,7 @@ pub(super) const MAX_REPLY: usize = 4 * 1024 * 1024;
 pub(super) const IO_BUDGET: Duration = Duration::from_secs(5);
 const MAX_HEAD: usize = 8 * 1024;
 
-pub(super) struct Head {
+pub(crate) struct Head {
     pub start: String,
     pub length: usize,
     pub host: Option<String>,
@@ -19,7 +19,7 @@ pub(super) struct Head {
     pub receiver_id: Option<String>,
 }
 
-pub(super) fn read_head(
+pub(crate) fn read_head(
     reader: &mut BufReader<&TcpStream>,
     deadline: Instant,
     max_body: usize,
@@ -128,7 +128,7 @@ fn read_head_for(
     })
 }
 
-pub(super) fn read_body(
+pub(crate) fn read_body(
     reader: &mut BufReader<&TcpStream>,
     deadline: Instant,
     length: usize,
@@ -148,7 +148,7 @@ pub(super) fn read_body(
     Ok(bytes)
 }
 
-pub(super) fn write(
+pub(crate) fn write(
     stream: &TcpStream,
     deadline: Instant,
     head: &str,

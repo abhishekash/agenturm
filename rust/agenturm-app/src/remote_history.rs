@@ -2,7 +2,7 @@
 
 mod api;
 mod client;
-mod http;
+pub(crate) mod http;
 pub(crate) mod legacy;
 
 pub(crate) use client::RemoteStore;

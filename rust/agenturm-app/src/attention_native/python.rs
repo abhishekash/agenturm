@@ -105,7 +105,11 @@ pub(super) fn send(
     queued: &QueuedEvent,
 ) -> Result<(), String> {
     let event = &queued.event;
-    verify(receiver, binding, &event.trace_id, &event.turn_id)?;
+    let trace = event
+        .trace_id
+        .as_deref()
+        .ok_or("Python native event has no retained trace")?;
+    verify(receiver, binding, trace, &event.turn_id)?;
     let body = log_body(binding, queued)?;
     receiver.post_native(&body, Instant::now() + PROOF_BUDGET)
 }
@@ -120,9 +124,11 @@ fn log_body(binding: &Binding, queued: &QueuedEvent) -> Result<Vec<u8>, String> 
         EventKind::TurnCompleted => "completed",
         EventKind::TurnInterrupted => "interrupted",
     };
-    let stamp = match event.source_time_unix_ns {
-        0 => queued.received_at_unix_ns,
-        source => source,
+    let source_time = event.source_time_unix_ns.unwrap_or(0);
+    let stamp = if source_time == 0 {
+        queued.received_at_unix_ns
+    } else {
+        source_time
     };
     // v1 fingerprints ASCII identifiers using the exact JSON tuple bytes.
     let pair = serde_json::to_vec(&(&binding.sender_id, &event.event_id))
@@ -166,7 +172,7 @@ fn log_body(binding: &Binding, queued: &QueuedEvent) -> Result<Vec<u8>, String> 
         ),
         (
             "observatory.native.time_basis",
-            if event.source_time_unix_ns == 0 {
+            if source_time == 0 {
                 "bridge-receipt"
             } else {
                 "source"
@@ -180,10 +186,7 @@ fn log_body(binding: &Binding, queued: &QueuedEvent) -> Result<Vec<u8>, String> 
     for (key, value) in [
         ("observatory.native.schema", 1),
         ("observatory.native.sequence", queued.sequence),
-        (
-            "observatory.native.source_time_ns",
-            event.source_time_unix_ns,
-        ),
+        ("observatory.native.source_time_ns", source_time),
     ] {
         attributes.push(json!({"key":key,"value":{"intValue":value.to_string()}}));
     }

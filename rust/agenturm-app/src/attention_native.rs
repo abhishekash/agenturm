@@ -1,10 +1,14 @@
-//! Explicit workflow bridge for Agenturm's Python v0.2.8 native receiver.
+//! Explicit and durable metadata-only native attention delivery.
 
 mod model;
 mod python;
+mod receiver;
 
-use agenturm_store::native_outbox::NativeOutbox;
+use agenturm_store::native_outbox::{Event, NativeOutbox, QueuedEvent};
 use model::{Adapter, Binding, SourceClock};
+use receiver::{PROTOCOL as RUST_PROTOCOL, RustBinding, RustReceiver};
+use serde::{Deserialize, Serialize};
+use sha2::{Digest, Sha256};
 use std::{
     collections::BTreeMap,
     fs::{self, File, OpenOptions},
@@ -21,14 +25,19 @@ const USAGE: &str = concat!(
     "--session-id <id> --trace-id <id> [--turn-id <id>] [--parent-agent-id <id>] ",
     "[--adapter <generic-v1|codex-notify-v1>] [--native-turn-id <id>] ",
     "[--follow-recorded-turns] [--receiver-clock]\n",
+    "       agenturm attention native bind --receiver-protocol rust-v1 ",
+    "--endpoint <reader-url> --token-file <reader-token> --collector-endpoint <collector-url> ",
+    "--collector-token-file <capture-token> --collector-source <otlp.id> --output <path> ",
+    "--source-id <native-source> --session-id <id> --turn-id <id> [--worker-id <id>]\n",
     "       agenturm attention native <send|hook|retry> --binding <path> ",
-    "--token-file <path> [--state <private-db>] [<event-json>]\n",
+    "--token-file <path> [--collector-token-file <path>] [--state <private-db>] [<event-json>]\n",
 );
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct NativeOptions {
     action: Action,
     token_file: PathBuf,
+    collector_token_file: Option<PathBuf>,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -61,7 +70,93 @@ impl std::fmt::Debug for Action {
 #[derive(Clone, Eq, PartialEq)]
 struct BindArgs {
     output: PathBuf,
-    binding: Binding,
+    binding: SavedBinding,
+}
+
+#[derive(Clone, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(untagged)]
+enum SavedBinding {
+    Python(Binding),
+    Rust(RustBinding),
+}
+
+impl SavedBinding {
+    fn sender(&self) -> &str {
+        match self {
+            Self::Python(binding) => &binding.sender_id,
+            Self::Rust(binding) => &binding.sender_id,
+        }
+    }
+
+    fn validate(&self, collector_token_file: Option<&Path>) -> Result<(), String> {
+        match self {
+            Self::Python(binding) if collector_token_file.is_none() => binding.validate(),
+            Self::Rust(binding) if collector_token_file.is_some() => binding.validate(),
+            _ => Err("Collector token is required only for a Rust native receiver".into()),
+        }
+    }
+
+    fn event(&self, bytes: &[u8]) -> Result<Event, String> {
+        match self {
+            Self::Python(binding) => binding.event(bytes),
+            Self::Rust(binding) => binding.event(bytes),
+        }
+    }
+
+    fn fingerprint(&self) -> Result<[u8; 32], String> {
+        let bytes =
+            serde_json::to_vec(self).map_err(|_| "Cannot encode native binding metadata")?;
+        Ok(Sha256::digest(bytes).into())
+    }
+}
+
+enum ConnectedReceiver {
+    Python(crate::remote_history::legacy::LegacyReceiver),
+    Rust(RustReceiver),
+}
+
+impl ConnectedReceiver {
+    fn open(
+        binding: &SavedBinding,
+        reader_token: &Path,
+        collector_token: Option<&Path>,
+    ) -> Result<Self, String> {
+        match binding {
+            SavedBinding::Python(binding) => {
+                python::connect(binding, reader_token).map(Self::Python)
+            }
+            SavedBinding::Rust(binding) => RustReceiver::connect(
+                binding,
+                reader_token,
+                collector_token.ok_or("Rust native delivery requires a collector token file")?,
+            )
+            .map(Self::Rust),
+        }
+    }
+
+    fn verify(&self, binding: &SavedBinding, event: &Event) -> Result<(), String> {
+        match (self, binding) {
+            (Self::Python(peer), SavedBinding::Python(binding)) => {
+                let trace = event
+                    .trace_id
+                    .as_deref()
+                    .ok_or("Python native event has no retained trace")?;
+                python::verify(peer, binding, trace, &event.turn_id)
+            }
+            (Self::Rust(peer), SavedBinding::Rust(binding)) => peer.verify(binding),
+            _ => Err("Native receiver protocol changed".into()),
+        }
+    }
+
+    fn send(&self, binding: &SavedBinding, event: &QueuedEvent) -> Result<(), String> {
+        match (self, binding) {
+            (Self::Python(peer), SavedBinding::Python(binding)) => {
+                python::send(peer, binding, event)
+            }
+            (Self::Rust(peer), SavedBinding::Rust(binding)) => peer.send(binding, event),
+            _ => Err("Native receiver protocol changed".into()),
+        }
+    }
 }
 
 pub(super) fn parse(args: &[String]) -> Result<NativeOptions, String> {
@@ -102,6 +197,7 @@ pub(super) fn parse(args: &[String]) -> Result<NativeOptions, String> {
     }
 
     let token_file = flags.remove("--token-file").ok_or(USAGE)?.into();
+    let collector_token_file = flags.remove("--collector-token-file").map(PathBuf::from);
     let action = if let Some(mode) = mode {
         Action::Delivery {
             mode,
@@ -110,60 +206,84 @@ pub(super) fn parse(args: &[String]) -> Result<NativeOptions, String> {
             payload,
         }
     } else {
-        if flags.remove("--receiver-protocol").as_deref()
-            != Some(crate::remote_history::legacy::PROTOCOL)
-        {
-            return Err(USAGE.into());
-        }
         let output = flags.remove("--output").ok_or(USAGE)?.into();
-        let adapter = match flags.remove("--adapter").as_deref() {
-            None | Some("generic-v1") => Adapter::GenericV1,
-            Some("codex-notify-v1") => Adapter::CodexNotifyV1,
+        let binding = match flags.remove("--receiver-protocol").as_deref() {
+            Some(crate::remote_history::legacy::PROTOCOL) if collector_token_file.is_none() => {
+                SavedBinding::Python(parse_python_binding(&mut flags)?)
+            }
+            Some(RUST_PROTOCOL) if collector_token_file.is_some() => {
+                SavedBinding::Rust(RustBinding::parse(&mut flags)?)
+            }
             _ => return Err(USAGE.into()),
-        };
-        let binding = Binding {
-            schema: model::BINDING_SCHEMA.into(),
-            sender_id: String::new(),
-            endpoint: flags.remove("--endpoint").ok_or(USAGE)?,
-            adapter,
-            native_turn_id: flags.remove("--native-turn-id").unwrap_or_default(),
-            source_clock: if flags.remove("--receiver-clock").is_some() {
-                SourceClock::Receiver
-            } else {
-                SourceClock::Unknown
-            },
-            follow_recorded_turns: flags.remove("--follow-recorded-turns").is_some(),
-            receiver_id: flags.remove("--receiver-id").ok_or(USAGE)?,
-            service: flags.remove("--service").ok_or(USAGE)?,
-            agent_id: flags.remove("--agent-id").ok_or(USAGE)?,
-            session_id: flags.remove("--session-id").ok_or(USAGE)?,
-            trace_id: flags.remove("--trace-id").ok_or(USAGE)?,
-            turn_id: flags.remove("--turn-id").unwrap_or_default(),
-            source_id: flags.remove("--source-id").ok_or(USAGE)?,
-            parent_agent_id: flags.remove("--parent-agent-id").unwrap_or_default(),
         };
         Action::Bind(Box::new(BindArgs { output, binding }))
     };
     if !flags.is_empty() {
         return Err(USAGE.into());
     }
-    Ok(NativeOptions { action, token_file })
+    Ok(NativeOptions {
+        action,
+        token_file,
+        collector_token_file,
+    })
+}
+
+fn parse_python_binding(flags: &mut BTreeMap<&str, String>) -> Result<Binding, String> {
+    let adapter = match flags.remove("--adapter").as_deref() {
+        None | Some("generic-v1") => Adapter::GenericV1,
+        Some("codex-notify-v1") => Adapter::CodexNotifyV1,
+        _ => return Err(USAGE.into()),
+    };
+    let binding = Binding {
+        schema: model::BINDING_SCHEMA.into(),
+        sender_id: String::new(),
+        endpoint: flags.remove("--endpoint").ok_or(USAGE)?,
+        adapter,
+        native_turn_id: flags.remove("--native-turn-id").unwrap_or_default(),
+        source_clock: if flags.remove("--receiver-clock").is_some() {
+            SourceClock::Receiver
+        } else {
+            SourceClock::Unknown
+        },
+        follow_recorded_turns: flags.remove("--follow-recorded-turns").is_some(),
+        receiver_id: flags.remove("--receiver-id").ok_or(USAGE)?,
+        service: flags.remove("--service").ok_or(USAGE)?,
+        agent_id: flags.remove("--agent-id").ok_or(USAGE)?,
+        session_id: flags.remove("--session-id").ok_or(USAGE)?,
+        trace_id: flags.remove("--trace-id").ok_or(USAGE)?,
+        turn_id: flags.remove("--turn-id").unwrap_or_default(),
+        source_id: flags.remove("--source-id").ok_or(USAGE)?,
+        parent_agent_id: flags.remove("--parent-agent-id").unwrap_or_default(),
+    };
+    Ok(binding)
 }
 
 pub(super) fn execute(options: &NativeOptions) -> Result<(), String> {
     match &options.action {
         Action::Bind(args) => {
             let mut binding = args.binding.clone();
-            binding.sender_id = model::sender_id()?;
-            let receiver = python::connect(&binding, &options.token_file)?;
-            python::verify(&receiver, &binding, &binding.trace_id, &binding.turn_id)?;
+            match &mut binding {
+                SavedBinding::Python(binding) => {
+                    binding.sender_id = model::sender_id()?;
+                    let receiver = python::connect(binding, &options.token_file)?;
+                    python::verify(&receiver, binding, &binding.trace_id, &binding.turn_id)?;
+                }
+                SavedBinding::Rust(binding) => {
+                    binding.sender_id = model::sender_id()?;
+                    RustReceiver::bind(
+                        binding,
+                        &options.token_file,
+                        options.collector_token_file.as_deref().ok_or(USAGE)?,
+                    )?;
+                }
+            }
             let mut bytes =
                 serde_json::to_vec_pretty(&binding).map_err(|_| "Cannot encode native binding")?;
             bytes.push(b'\n');
             if bytes.len() > MAX_BYTES {
                 return Err("Native binding exceeds the 8 KiB limit".into());
             }
-            write_binding(&args.output, &binding.sender_id, &bytes)
+            write_binding(&args.output, binding.sender(), &bytes)
         }
         Action::Delivery {
             mode,
@@ -177,6 +297,7 @@ pub(super) fn execute(options: &NativeOptions) -> Result<(), String> {
                 state.as_deref(),
                 payload.as_deref(),
                 &options.token_file,
+                options.collector_token_file.as_deref(),
             );
             if *mode == InputMode::Hook {
                 if let Err(error) = result {
@@ -196,33 +317,35 @@ fn deliver(
     state: Option<&Path>,
     payload: Option<&str>,
     token_file: &Path,
+    collector_token_file: Option<&Path>,
 ) -> Result<(), String> {
-    let binding: Binding = read_binding(binding_path)?;
-    binding.validate()?;
+    let binding = read_binding(binding_path)?;
+    binding.validate(collector_token_file)?;
     let fingerprint = binding.fingerprint()?;
     let state = match state {
         Some(state) => state.to_owned(),
         None => default_outbox_path()?,
     };
     let mut outbox = NativeOutbox::open(&state, owner_uid())?;
+    let connect = || ConnectedReceiver::open(&binding, token_file, collector_token_file);
     let mut receiver = None;
     if mode != InputMode::Retry {
         let event = match payload {
             Some(payload) => binding.event(payload.as_bytes())?,
             None => binding.event(&read_bounded(io::stdin().lock())?)?,
         };
-        let peer = python::connect(&binding, token_file)?;
-        python::verify(&peer, &binding, &event.trace_id, &event.turn_id)?;
+        let peer = connect()?;
+        peer.verify(&binding, &event)?;
         // Queue only proven metadata, before any delivery can be attempted.
-        outbox.enqueue(&binding.sender_id, &fingerprint, event)?;
+        outbox.enqueue(binding.sender(), &fingerprint, event)?;
         receiver = Some(peer);
     }
-    outbox.flush(&binding.sender_id, &fingerprint, |queued| {
+    outbox.flush(binding.sender(), &fingerprint, |queued| {
         let receiver = match receiver.as_ref() {
             Some(receiver) => receiver,
-            None => receiver.insert(python::connect(&binding, token_file)?),
+            None => receiver.insert(connect()?),
         };
-        python::send(receiver, &binding, queued)
+        receiver.send(&binding, queued)
     })?;
     Ok(())
 }
@@ -244,7 +367,7 @@ fn read_bounded(input: impl Read) -> Result<Vec<u8>, String> {
     Ok(bytes)
 }
 
-fn read_binding(path: &Path) -> Result<Binding, String> {
+fn read_binding(path: &Path) -> Result<SavedBinding, String> {
     const ERROR: &str = "Native binding must be an owner-only regular file";
     let file = OpenOptions::new()
         .read(true)

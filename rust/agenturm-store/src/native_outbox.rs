@@ -26,33 +26,7 @@ const BINDING_CHANGED: &str = "Native sender binding changed; use a new explicit
 
 type Result<T> = std::result::Result<T, String>;
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
-#[serde(rename_all = "snake_case")]
-pub enum EventKind {
-    ApprovalRequested,
-    ReplyRequested,
-    RequestResolved,
-    TurnStarted,
-    TurnCompleted,
-    TurnInterrupted,
-}
-
-impl EventKind {
-    pub const fn is_request(self) -> bool {
-        matches!(self, Self::ApprovalRequested | Self::ReplyRequested)
-    }
-
-    pub const fn as_str(self) -> &'static str {
-        match self {
-            Self::ApprovalRequested => "approval_requested",
-            Self::ReplyRequested => "reply_requested",
-            Self::RequestResolved => "request_resolved",
-            Self::TurnStarted => "turn_started",
-            Self::TurnCompleted => "turn_completed",
-            Self::TurnInterrupted => "turn_interrupted",
-        }
-    }
-}
+pub use agenturm_kernel::native_attention::NativeAttentionKind as EventKind;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -61,10 +35,11 @@ pub struct Event {
     /// Absent only for Codex's transport-ordered completion notification.
     pub sequence: Option<u64>,
     pub kind: EventKind,
-    pub trace_id: String,
+    /// Python bindings name the retained trace. Native Rust bindings use an exact turn.
+    pub trace_id: Option<String>,
     pub turn_id: String,
     pub request_id: Option<String>,
-    pub source_time_unix_ns: u64,
+    pub source_time_unix_ns: Option<u64>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -281,6 +256,7 @@ fn update_request(tx: &Transaction<'_>, sender: &str, event: &Event) -> Result<O
     let Some(request) = event.request_id.as_deref() else {
         return Ok(None);
     };
+    let trace_id = event.trace_id.as_deref().unwrap_or("");
     let query =
         "SELECT kind,trace_id,turn_id,resolved FROM requests WHERE sender_id=?1 AND request_id=?2";
     let prior: Option<(String, String, String, bool)> = sql(tx
@@ -301,7 +277,7 @@ fn update_request(tx: &Transaction<'_>, sender: &str, event: &Event) -> Result<O
                 sender,
                 request,
                 event.kind.as_str(),
-                event.trace_id,
+                trace_id,
                 event.turn_id
             ],
         ))?;
@@ -310,7 +286,7 @@ fn update_request(tx: &Transaction<'_>, sender: &str, event: &Event) -> Result<O
     let Some((kind, trace, turn, false)) = prior else {
         return Err("No matching unresolved native request".into());
     };
-    if trace != event.trace_id || turn != event.turn_id {
+    if trace != trace_id || turn != event.turn_id {
         return Err("Native resolution does not match the recorded request scope".into());
     }
     let kind = match kind.as_str() {
@@ -332,25 +308,50 @@ fn fingerprint(event: &Event) -> Result<[u8; 32]> {
 
 fn validate_event(sender: &str, event: &Event) -> Result<()> {
     let request_required = event.kind.is_request() || event.kind == EventKind::RequestResolved;
+    let valid_event_id = |value: &str| {
+        if event.trace_id.is_some() {
+            valid_identifier(value)
+        } else {
+            valid_native_id(value, 200)
+        }
+    };
     let valid = valid_identifier(sender)
-        && valid_identifier(&event.event_id)
-        && hex_id(&event.trace_id, 32)
-        && (event.turn_id.is_empty() || hex_id(&event.turn_id, 32))
+        && valid_event_id(&event.event_id)
+        && valid_scope(event)
+        && (match event.request_id.as_deref() {
+            Some(id) => request_required && valid_event_id(id),
+            None => !request_required,
+        })
         && event
-            .request_id
-            .as_ref()
-            .is_some_and(|id| valid_identifier(id))
-            == request_required
-        && (request_required || event.request_id.is_none())
-        && event.source_time_unix_ns <= i64::MAX as u64
-        && event
-            .sequence
-            .map_or(event.kind == EventKind::TurnCompleted, |sequence| {
-                (1..=i64::MAX as u64).contains(&sequence)
-            });
+            .source_time_unix_ns
+            .is_none_or(|time| time <= i64::MAX as u64)
+        && event.sequence.map_or(
+            event.trace_id.is_some() && event.kind == EventKind::TurnCompleted,
+            |sequence| (1..=i64::MAX as u64).contains(&sequence),
+        );
     valid
         .then_some(())
         .ok_or_else(|| "Invalid native lifecycle event".into())
+}
+
+fn valid_scope(event: &Event) -> bool {
+    match event.trace_id.as_deref() {
+        Some(trace) => {
+            hex_id(trace, 32) && (event.turn_id.is_empty() || hex_id(&event.turn_id, 32))
+        }
+        None => valid_native_id(&event.turn_id, 512),
+    }
+}
+
+fn valid_native_id(value: &str, max: usize) -> bool {
+    value.len() <= max
+        && value
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        && value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte))
 }
 
 pub fn valid_identifier(value: &str) -> bool {
@@ -398,11 +399,11 @@ mod tests {
             event_id: format!("event-{sequence}"),
             sequence: Some(sequence),
             kind,
-            trace_id: "a".repeat(32),
+            trace_id: Some("a".repeat(32)),
             turn_id: "b".repeat(32),
             request_id: (kind.is_request() || kind == EventKind::RequestResolved)
                 .then(|| "request".into()),
-            source_time_unix_ns: 0,
+            source_time_unix_ns: Some(0),
         }
     }
 
@@ -460,7 +461,7 @@ mod tests {
             delivered[1].request_kind,
             Some(EventKind::ApprovalRequested)
         );
-        assert_eq!(delivered[0].event.source_time_unix_ns, 0);
+        assert_eq!(delivered[0].event.source_time_unix_ns, Some(0));
         assert!(delivered[0].received_at_unix_ns > 0);
         assert_eq!(
             outbox.flush("sender", &binding, |_| panic!("confirmed event replayed")),
@@ -509,6 +510,30 @@ mod tests {
                 .enqueue("codex", &binding, sample(EventKind::TurnStarted, 1))
                 .is_err()
         );
+    }
+
+    #[test]
+    fn an_exact_native_turn_needs_no_synthetic_trace_id() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("outbox.sqlite");
+        let owner = fs::metadata(&scratch.0).unwrap().uid();
+        let mut outbox = NativeOutbox::open(&path, owner).unwrap();
+        let binding = [6; 32];
+        let mut event = sample(EventKind::ReplyRequested, 1);
+        event.turn_id = "turn/native-1".into();
+        event.trace_id = None;
+        assert!(outbox.enqueue("sender", &binding, event.clone()).unwrap());
+        assert_eq!(
+            outbox.flush("sender", &binding, |queued| {
+                assert_eq!(queued.event, event);
+                Ok(())
+            }),
+            Ok(1)
+        );
+        let mut resolution = sample(EventKind::RequestResolved, 2);
+        resolution.trace_id = None;
+        resolution.turn_id = event.turn_id;
+        assert!(outbox.enqueue("sender", &binding, resolution).unwrap());
     }
 
     #[test]

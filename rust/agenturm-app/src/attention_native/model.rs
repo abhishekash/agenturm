@@ -82,12 +82,6 @@ impl Binding {
         Ok(())
     }
 
-    pub(super) fn fingerprint(&self) -> Result<[u8; 32], String> {
-        let bytes =
-            serde_json::to_vec(self).map_err(|_| "Cannot encode native binding metadata")?;
-        Ok(Sha256::digest(bytes).into())
-    }
-
     pub(super) fn event(&self, bytes: &[u8]) -> Result<Event, String> {
         if bytes.len() > MAX_BYTES {
             return Err("Native input exceeds the 8 KiB limit".into());
@@ -118,10 +112,10 @@ impl Binding {
             event_id: value.event_id,
             sequence: Some(value.sequence),
             kind: value.kind,
-            trace_id: value.trace_id,
+            trace_id: Some(value.trace_id),
             turn_id: value.turn_id,
             request_id: value.request_id.filter(|id| !id.is_empty()),
-            source_time_unix_ns: value.time_unix_nano.unwrap_or(0),
+            source_time_unix_ns: Some(value.time_unix_nano.unwrap_or(0)),
         })
     }
 
@@ -148,10 +142,10 @@ impl Binding {
             event_id,
             sequence,
             kind: EventKind::TurnCompleted,
-            trace_id,
+            trace_id: Some(trace_id),
             turn_id,
             request_id: None,
-            source_time_unix_ns: 0,
+            source_time_unix_ns: Some(0),
         })
     }
 }

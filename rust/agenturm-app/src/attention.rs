@@ -15,7 +15,7 @@ const USAGE: &str = concat!(
     "usage: agenturm attention status --db <path>\n",
     "       agenturm attention watch --db <path> [--once | --max-polls <1..10000>] ",
     "[--interval-ms <100..60000>]\n",
-    "       agenturm attention native <bind|send|hook|retry> (explicit Python v0.2.8 receiver)\n",
+    "       agenturm attention native <bind|send|hook|retry> (explicit receiver binding)\n",
     "       agenturm attention <status|watch> --endpoint http://<loopback-IP:port> ",
     "--token-file <path> [--receiver-protocol python-v0.2.8] [watch options]\n",
 );

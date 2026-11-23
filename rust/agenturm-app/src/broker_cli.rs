@@ -463,12 +463,21 @@ pub fn execute(options: &BrokerOptions) -> Result<ExitCode, BrokerExecutionError
         }
         BrokerCommand::ServeTraces(options) => {
             let commit = trace_commit(
-                store,
+                store.clone(),
                 &options.settings.source,
                 options.settings.payload_binding.clone(),
             )?;
             let token = trace_receiver::ProducerToken::from_file(&options.token_file)?;
-            trace_receiver::execute_with_commit(&options.settings, Some(token), commit)?;
+            trace_receiver::execute_with_commit(
+                &options.settings,
+                Some(token),
+                commit,
+                |source, capture| {
+                    store
+                        .admit_native_attention(source, capture)
+                        .map_err(|error| error.to_string())
+                },
+            )?;
             return Ok(ExitCode::SUCCESS);
         }
         BrokerCommand::Run(invocation) => {
