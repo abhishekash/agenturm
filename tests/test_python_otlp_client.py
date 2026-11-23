@@ -54,6 +54,7 @@ def integration(file_name, stubs):
     path = Path(__file__).resolve().parents[1] / "observatory/integrations" / file_name
     spec = importlib.util.spec_from_file_location(f"isolated_{path.stem}", path)
     module = importlib.util.module_from_spec(spec)
+    module.__package__ = "observatory.integrations"
     with patch.dict("sys.modules", modules):
         spec.loader.exec_module(module)
     return module
@@ -352,6 +353,24 @@ class PythonOtlpClientTests(unittest.TestCase):
         self.assertEqual([row["spanId"] for row in self.sent_spans()], [parent["span_id"], child["span_id"]])
         self.assertEqual(len(self.requests), 2)
         self.assertIn("HTTP 503", str(client.last_error))
+
+    def test_automatic_sdk_copy_requires_vetted_message_shape_and_preserves_cost(self):
+        sdk = integration("otlp.py", {
+            "opentelemetry.sdk.trace.export": {
+                "SpanExporter": type("SpanExporter", (), {}),
+                "SpanExportResult": SimpleNamespace(SUCCESS=0, FAILURE=1),
+            },
+        })
+        span = SimpleNamespace(
+            get_span_context=lambda: SimpleNamespace(trace_id=1, span_id=2), parent=None,
+            start_time=1, end_time=2, status=SimpleNamespace(status_code=SimpleNamespace(name="OK")),
+            instrumentation_scope=SimpleNamespace(name="unrecognized.instrumentation"),
+            attributes={"agenturm.payload.input": MARKER, "input.value": MARKER, "llm.cost_usd": 0},
+        )
+        for capture in (False, True):
+            attributes = sdk._span_metadata(span, capture)["attributes"]
+            self.assertEqual(attributes, {"agenturm.reported_cost.amount": "0", "agenturm.reported_cost.currency": "USD"})
+            self.assertNotIn(MARKER, str(attributes))
 
     def test_vendor_callback_ids_preserve_existing_ancestry(self):
         client = Client(

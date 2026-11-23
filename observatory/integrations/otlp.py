@@ -7,6 +7,7 @@ import re
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
 from .otel_payload import join_text, structured_message_text
+from ..otlp_transport import _reported_cost_attributes
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -59,7 +60,11 @@ def _span_metadata(span, capture_content=False):
         "start_unix_nano": span.start_time,
         "end_unix_nano": span.end_time,
         "status": span.status.status_code.name,
-        "attributes": {**(span.attributes or {}), **(_captured_text(span) if capture_content else {})},
+        "attributes": {
+            **{field["key"]: field["value"]["stringValue"]
+               for field in _reported_cost_attributes(span.attributes)},
+            **(_captured_text(span) if capture_content else {}),
+        },
     }
 
 
