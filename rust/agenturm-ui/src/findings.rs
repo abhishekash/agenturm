@@ -1,5 +1,6 @@
 //! Page-local findings and exact retained occurrence browsing.
 
+use super::pane_filter::{self, Filter, FilterKey};
 use super::{
     MIN_HEIGHT, MIN_WIDTH, heading_style, label_style, panel, selection_style, theme, visible_text,
     wrap_display_width,
@@ -51,6 +52,8 @@ pub(super) struct Browser {
     page: FindingsPage,
     level: Level,
     group: TableState,
+    visible: Vec<usize>,
+    filter: Filter,
     occurrence: TableState,
     scroll: usize,
     scroll_limit: usize,
@@ -61,6 +64,8 @@ impl Browser {
     pub(super) fn new(page: FindingsPage) -> Self {
         let selection = (!page.groups.is_empty()).then_some(0);
         Self {
+            visible: (0..page.groups.len()).collect(),
+            filter: Filter::default(),
             page,
             level: Level::Groups,
             group: TableState::default().with_selected(selection),
@@ -72,10 +77,69 @@ impl Browser {
     }
 
     fn group(&self) -> Option<&FindingGroup> {
-        self.page.groups.get(self.group.selected()?)
+        self.page
+            .groups
+            .get(*self.visible.get(self.group.selected()?)?)
+    }
+
+    pub(super) fn editing_filter(&self) -> bool {
+        self.filter.editing()
+    }
+
+    pub(super) fn filter(&self) -> Filter {
+        self.filter.committed()
+    }
+
+    pub(super) fn set_filter(&mut self, filter: Filter) {
+        self.filter = filter;
+        self.apply_filter();
+    }
+
+    fn apply_filter(&mut self) {
+        let previous = self
+            .group
+            .selected()
+            .and_then(|index| self.visible.get(index).copied());
+        self.visible = self
+            .page
+            .groups
+            .iter()
+            .enumerate()
+            .filter_map(|(index, group)| {
+                let fields = [
+                    group.kind,
+                    group.signal.as_str(),
+                    group.severity.as_str(),
+                    group.source_id.as_str(),
+                ];
+                let matches = self.filter.matches(fields)
+                    || group.occurrences.iter().any(|row| {
+                        self.filter.matches(
+                            fields
+                                .into_iter()
+                                .chain(row.identity.session_id.as_deref())
+                                .chain(row.identity.turn_id.as_deref())
+                                .chain(row.identity.worker_id.as_deref()),
+                        )
+                    });
+                matches.then_some(index)
+            })
+            .collect();
+        self.group =
+            TableState::default().with_selected(pane_filter::selection(&self.visible, previous));
     }
 
     pub(super) fn key(&mut self, code: KeyCode) -> bool {
+        if matches!(self.level, Level::Groups) {
+            match self.filter.key(code) {
+                FilterKey::Changed => {
+                    self.apply_filter();
+                    return true;
+                }
+                FilterKey::Handled => return true,
+                FilterKey::Ignored => {}
+            }
+        }
         if code == KeyCode::Enter {
             match self.level {
                 Level::Groups
@@ -104,7 +168,7 @@ impl Browser {
         }
         let page = self.page_height;
         match self.level {
-            Level::Groups => move_cursor(&mut self.group, code, self.page.groups.len(), page),
+            Level::Groups => move_cursor(&mut self.group, code, self.visible.len(), page),
             Level::Occurrences => {
                 let count = self.group().map_or(0, |group| group.occurrences.len());
                 move_cursor(&mut self.occurrence, code, count, page)
@@ -120,8 +184,11 @@ impl Browser {
     }
 
     pub(super) fn hints(&self) -> &'static str {
+        if let Some(keys) = self.filter.keys() {
+            return keys;
+        }
         match self.level {
-            Level::Groups => "↑↓ select · Enter occurrences · [ ] history · Esc back",
+            Level::Groups => "/ search · ↑↓ select · Enter occurrences · [ ] pages",
             Level::Occurrences => "↑↓ select · Enter exact evidence · Esc findings",
             Level::Detail => "↑↓ scroll · PgUp/PgDn · Esc occurrences",
         }
@@ -152,6 +219,16 @@ impl Browser {
             .style(label_style()),
             summary,
         );
+        let body = if matches!(self.level, Level::Groups)
+            && let Some(label) = self.filter.label()
+        {
+            let [query, rest] =
+                Layout::vertical([Constraint::Length(1), Constraint::Min(3)]).areas(body);
+            frame.render_widget(Paragraph::new(label).style(label_style()), query);
+            rest
+        } else {
+            body
+        };
         self.page_height = usize::from(body.height.saturating_sub(3)).max(1);
         match self.level {
             Level::Groups => self.draw_groups(frame, body),
@@ -161,11 +238,13 @@ impl Browser {
     }
 
     fn draw_groups(&mut self, frame: &mut Frame, area: Rect) {
-        if self.page.groups.is_empty() {
-            frame.render_widget(
-                Paragraph::new("No findings on this page.").block(panel(" Findings ")),
-                area,
-            );
+        if self.visible.is_empty() {
+            let empty = if self.page.groups.is_empty() {
+                "No findings on this page."
+            } else {
+                "No matching findings on this page."
+            };
+            frame.render_widget(Paragraph::new(empty).block(panel(" Findings ")), area);
             return;
         }
         let [list, info] = if area.width >= 96 {
@@ -173,7 +252,8 @@ impl Browser {
         } else {
             Layout::vertical([Constraint::Min(4), Constraint::Length(3)]).areas(area)
         };
-        let rows = self.page.groups.iter().enumerate().map(|(index, group)| {
+        let rows = self.visible.iter().enumerate().map(|(index, group)| {
+            let group = &self.page.groups[*group];
             Row::new(vec![
                 Cell::from(visible_text(&group.severity)).style(theme::status(&group.severity)),
                 Cell::from(group.kind),
@@ -212,10 +292,12 @@ impl Browser {
     }
 
     fn draw_occurrences(&mut self, frame: &mut Frame, area: Rect) {
-        let Some(group_index) = self.group.selected() else {
-            return;
-        };
-        let Some(group) = self.page.groups.get(group_index) else {
+        let Some(group) = self
+            .group
+            .selected()
+            .and_then(|index| self.visible.get(index))
+            .and_then(|index| self.page.groups.get(*index))
+        else {
             return;
         };
         let [list, identity] =
@@ -479,6 +561,22 @@ mod tests {
             assert!(render(&mut browser).contains("fixture-event-b"));
             assert!(browser.key(KeyCode::Esc));
             assert_eq!(browser.group.selected(), Some(0));
+            for key in std::iter::once(KeyCode::Char('/'))
+                .chain("worker-a worker-b".chars().map(KeyCode::Char))
+                .chain([KeyCode::Enter])
+            {
+                assert!(browser.key(key));
+            }
+            assert!(render(&mut browser).contains("No matching findings on this page."));
+            for key in [KeyCode::Esc, KeyCode::Char('/')]
+                .into_iter()
+                .chain("ERROR worker-b".chars().map(KeyCode::Char))
+                .chain([KeyCode::Enter])
+            {
+                assert!(browser.key(key));
+            }
+            assert!(render(&mut browser).contains("Recorded fixture"));
+            assert!(browser.key(KeyCode::Esc));
             assert!(!browser.key(KeyCode::Esc));
         }
     }

@@ -210,6 +210,7 @@ pub enum WorkCommand {
     },
     Evaluations(Box<evaluation::EvaluationRead>),
     HostHistory(Option<agenturm_kernel::ObservationPosition>),
+    HostNow,
     ReviewNotes(RecordedSession),
     SaveReviewNote {
         session: RecordedSession,
@@ -269,10 +270,17 @@ pub struct ReviewNoteEntry {
     pub note: String,
 }
 
+/// A current same-user Host snapshot supplied by the application.
+pub struct CurrentHostSample {
+    pub captured_at_unix_ns: u64,
+    pub sample: agenturm_kernel::HostSample,
+}
+
 pub enum WorkResult {
     Investigation(Box<investigation::InvestigationPage>),
     Evaluations(Box<evaluation::EvaluationPage>),
     HostHistory(agenturm_kernel::ObservationPage),
+    HostNow(Option<Box<CurrentHostSample>>),
     ReviewNotes {
         session: RecordedSession,
         items: Vec<ReviewNoteEntry>,
@@ -358,6 +366,9 @@ pub(super) struct Workbench {
     help: bool,
     review_note_scroll: u16,
     host_level: host::HostLevel,
+    host_filter: crate::pane_filter::Filter,
+    host_inspection: Option<crate::evidence_view::Inspection>,
+    host_inspection_bounds: (usize, usize),
     evaluation_return: Option<EvaluationReturn>,
 }
 
@@ -371,6 +382,9 @@ impl Workbench {
             help: false,
             review_note_scroll: 0,
             host_level: host::HostLevel::default(),
+            host_filter: crate::pane_filter::Filter::default(),
+            host_inspection: None,
+            host_inspection_bounds: (1, 0),
             evaluation_return: None,
         };
         work.reset_cursor();
@@ -379,6 +393,7 @@ impl Workbench {
 
     pub(super) fn apply(&mut self, data: WorkResult) {
         let previous = self.selected_task().map(|item| item.id);
+        let selected_process = self.current_process_identity();
         let selected_request = match &self.data {
             WorkResult::Workflow { items, .. } => self
                 .cursor
@@ -404,7 +419,20 @@ impl Workbench {
             _ => self.evaluation_return = None,
         }
         self.host_level = host::HostLevel::default();
+        self.host_inspection = None;
         self.reset_cursor();
+        if let (Some((boot_id, pid, start_ticks)), WorkResult::HostNow(Some(capture))) =
+            (selected_process, &self.data)
+            && capture.sample.boot_id == boot_id
+            && let Some(index) = host::current_indices(&capture.sample, &self.host_filter)
+                .iter()
+                .position(|&index| {
+                    let process = &capture.sample.processes[index];
+                    process.pid == pid && process.start_ticks == start_ticks
+                })
+        {
+            self.cursor.select(Some(index));
+        }
         if let (Some(id), WorkResult::Tasks { items, .. }) = (previous, &self.data)
             && let Some(index) = items.iter().position(|item| item.id == id)
         {
@@ -453,7 +481,10 @@ impl Workbench {
     fn len(&self) -> usize {
         match &self.data {
             WorkResult::Evaluations(page) => page.rows.len(),
-            WorkResult::HostHistory(page) => self.host_level.len(page),
+            WorkResult::HostHistory(page) => self.host_level.len(page, &self.host_filter),
+            WorkResult::HostNow(capture) => capture.as_ref().map_or(0, |capture| {
+                host::current_indices(&capture.sample, &self.host_filter).len()
+            }),
             WorkResult::ReviewNotes { items, .. } => items.len(),
             WorkResult::Tasks { items, .. } => items.len(),
             WorkResult::Handoffs { items, .. } => items.len(),
@@ -475,6 +506,52 @@ impl Workbench {
         }
     }
 
+    fn current_process_identity(&self) -> Option<(String, u32, u64)> {
+        let WorkResult::HostNow(Some(capture)) = &self.data else {
+            return None;
+        };
+        let visible = host::current_indices(&capture.sample, &self.host_filter);
+        let index = *visible.get(self.cursor.selected()?)?;
+        let process = &capture.sample.processes[index];
+        Some((
+            capture.sample.boot_id.clone(),
+            process.pid,
+            process.start_ticks,
+        ))
+    }
+
+    pub(super) fn host_filter_key(&mut self, key: KeyCode) -> bool {
+        use crate::pane_filter::{self, FilterKey};
+
+        if self.help || self.editing() || self.host_inspection.is_some() {
+            return false;
+        }
+        match &self.data {
+            WorkResult::HostHistory(page) => {
+                self.host_level
+                    .filter_key(page, &mut self.host_filter, &mut self.cursor, key)
+            }
+            WorkResult::HostNow(Some(capture)) => {
+                let previous = self.cursor.selected().and_then(|row| {
+                    host::current_indices(&capture.sample, &self.host_filter)
+                        .get(row)
+                        .copied()
+                });
+                match self.host_filter.key(key) {
+                    FilterKey::Ignored => false,
+                    FilterKey::Handled => true,
+                    FilterKey::Changed => {
+                        let visible = host::current_indices(&capture.sample, &self.host_filter);
+                        self.cursor = ListState::default()
+                            .with_selected(pane_filter::selection(&visible, previous));
+                        true
+                    }
+                }
+            }
+            _ => false,
+        }
+    }
+
     pub(super) fn key(&mut self, key: event::KeyEvent) -> WorkInput {
         if key.code == KeyCode::F(1) || (self.help && key.code == KeyCode::Esc) {
             self.help = !self.help;
@@ -491,13 +568,38 @@ impl Workbench {
             return WorkInput::None;
         }
         let selected = self.cursor.selected().unwrap_or_default();
+        if let WorkResult::HostNow(capture) = &self.data {
+            if let Some(inspection) = &mut self.host_inspection {
+                if key.code == KeyCode::Esc {
+                    self.host_inspection = None;
+                } else {
+                    let (page, limit) = self.host_inspection_bounds;
+                    inspection.key(key.code, page, limit);
+                }
+                return WorkInput::None;
+            }
+            match key.code {
+                KeyCode::Esc => return WorkInput::Close,
+                KeyCode::Char('R') => return WorkInput::Command(WorkCommand::HostNow),
+                KeyCode::Enter if capture.is_some() => {
+                    self.host_inspection =
+                        host::current_present(capture.as_deref(), &self.host_filter)
+                            .table
+                            .open_inspection(selected);
+                    return WorkInput::None;
+                }
+                _ => {}
+            }
+        }
         if let WorkResult::HostHistory(page) = &self.data
             && !matches!(
                 key.code,
                 KeyCode::Down | KeyCode::Up | KeyCode::Char('j' | 'k')
             )
         {
-            return self.host_level.action(page, &mut self.cursor, key.code);
+            return self
+                .host_level
+                .action(page, &mut self.cursor, &self.host_filter, key.code);
         }
         match key.code {
             KeyCode::Esc if self.evaluation_return.is_some() => {
@@ -897,8 +999,49 @@ impl Workbench {
             return;
         }
         let selected = self.cursor.selected().unwrap_or_default();
+        if let WorkResult::HostNow(capture) = &self.data {
+            let view = host::current_present(capture.as_deref(), &self.host_filter);
+            let body = if self.host_inspection.is_none()
+                && let Some(label) = self.host_filter.label()
+            {
+                let [query, rest] =
+                    Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(body);
+                frame.render_widget(Paragraph::new(label).style(label_style()), query);
+                rest
+            } else {
+                body
+            };
+            frame.render_widget(
+                Paragraph::new(format!(" Agenturm / {}", view.table.spec.title))
+                    .style(heading_style()),
+                header,
+            );
+            let keys = if let Some(inspection) = &mut self.host_inspection {
+                let page = usize::from(body.height.saturating_sub(2)).max(1);
+                let limit = view.table.inspection_limit(selected, body.width, page);
+                self.host_inspection_bounds = (page, limit);
+                inspection.clamp(limit);
+                view.table.draw_expanded(frame, body, selected, inspection);
+                "↑↓ scroll · PgUp/PgDn · Esc processes"
+            } else {
+                view.table.draw(frame, body, selected);
+                view.keys
+            };
+            draw_footer(frame, footer, keys, pending, status);
+            return;
+        }
         if let WorkResult::HostHistory(page) = &self.data {
-            let view = self.host_level.present(page);
+            let view = self.host_level.present(page, &self.host_filter);
+            let body = if matches!(self.host_level, host::HostLevel::Processes(_))
+                && let Some(label) = self.host_filter.label()
+            {
+                let [query, rest] =
+                    Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(body);
+                frame.render_widget(Paragraph::new(label).style(label_style()), query);
+                rest
+            } else {
+                body
+            };
             frame.render_widget(
                 Paragraph::new(format!(" Agenturm / {}", view.table.spec.title))
                     .style(heading_style()),
@@ -1094,6 +1237,7 @@ impl Workbench {
                 "No spans in the loaded trace page",
             ),
             WorkResult::HostHistory(_)
+            | WorkResult::HostNow(_)
             | WorkResult::Investigation(_)
             | WorkResult::Seen(_)
             | WorkResult::Status(_) => return,

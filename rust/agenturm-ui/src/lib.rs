@@ -13,6 +13,7 @@ mod live_receiver;
 mod loaded_view;
 pub mod metric_history;
 mod operation_table;
+mod pane_filter;
 mod theme;
 pub mod usage_chart;
 mod workbench;
@@ -33,15 +34,15 @@ pub use workbench::investigation::{
 };
 
 pub use workbench::{
-    HandoffEntry, OperationDetailEntry, OperationDetailKind, PromptDelivery, PromptEntry,
-    RequestEntry, RequestProof, ReviewNoteEntry, TaskEntry, TelemetrySpanEntry, WorkAnchor,
-    WorkCommand, WorkResult,
+    CurrentHostSample, HandoffEntry, OperationDetailEntry, OperationDetailKind, PromptDelivery,
+    PromptEntry, RequestEntry, RequestProof, ReviewNoteEntry, TaskEntry, TelemetrySpanEntry,
+    WorkAnchor, WorkCommand, WorkResult,
 };
 
 pub use workspace::{
-    HistorySelection, NativeSessionContext, ProjectOrigin, RecordedSession, ReviewVersion,
-    SessionCatalog, SessionCursor, SessionView, WorkspaceRequest, WorkspaceResponse, WorkspaceView,
-    run_workspace,
+    HistorySelection, McpSearchScope, NativeSessionContext, ProjectOrigin, RecordedSession,
+    ReviewVersion, SessionCatalog, SessionCursor, SessionView, WorkspaceRequest, WorkspaceResponse,
+    WorkspaceView, run_workspace,
 };
 
 use agenturm_kernel::ReadSnapshot;
@@ -446,6 +447,17 @@ impl PageView {
             evaluation_picker: None,
         }
     }
+    fn inherit_filters(&mut self, previous: &Self) {
+        self.operation_table
+            .inherit_filters(&previous.operation_table);
+        if let (Some((id, next)), Some((previous_id, prior))) =
+            (&mut self.findings, &previous.findings)
+            && id == previous_id
+        {
+            next.set_filter(prior.filter());
+        }
+    }
+
     fn active_findings(&mut self) -> Option<&mut findings::Browser> {
         let selected = self.ui.panes.get(self.ui.selected)?.id.as_ref()?;
         self.findings
@@ -798,6 +810,9 @@ fn draw_view_bar(frame: &mut Frame, model: &UiModel, area: Rect) {
             Style::default()
         };
         let tab = Span::styled(format!(" {} ", pane.title), style);
+        if index > model.selected && used + tab.width() > usize::from(area.width) {
+            break;
+        }
         used += tab.width();
         tabs.push(tab);
         while index <= model.selected && used > usize::from(area.width) && tabs.len() > 1 {

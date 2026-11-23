@@ -40,6 +40,26 @@ impl Workspace {
                 HistorySelection::Session(session, _) => {
                     format!("{} / {}", session.harness_id, session.session_id)
                 }
+                HistorySelection::McpSearch {
+                    scope, snapshot_id, ..
+                } => {
+                    let owner = scope.anchor().map_or_else(
+                        || "All authorized sources".into(),
+                        |row| {
+                            let mut owner = format!("{} / {}", row.source, row.session);
+                            if let Some(turn) = row.turn {
+                                owner.push_str(" / turn ");
+                                owner.push_str(&turn);
+                            }
+                            if let Some(worker) = row.worker {
+                                owner.push_str(" / worker ");
+                                owner.push_str(&worker);
+                            }
+                            owner
+                        },
+                    );
+                    format!("{owner} / retained MCP search / snapshot {snapshot_id}")
+                }
                 HistorySelection::McpTraces {
                     source_id,
                     event_id,

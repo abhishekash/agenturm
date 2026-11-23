@@ -90,12 +90,39 @@ pub enum HistorySelection {
     All(WorkspaceView),
     Session(RecordedSession, SessionView),
     Turn(RecordedTurn),
+    McpSearch {
+        scope: McpSearchScope,
+        query: String,
+        snapshot_id: ReadSnapshot,
+    },
     McpTraces {
         source_id: ExtensionId,
         event_id: String,
         revision: u32,
         snapshot_id: ReadSnapshot,
     },
+}
+
+#[derive(Clone, Debug)]
+pub enum McpSearchScope {
+    All,
+    Session(Box<RecordedSession>),
+    Turn(Box<RecordedTurn>),
+}
+
+impl McpSearchScope {
+    fn anchor(&self) -> Option<WorkAnchor> {
+        match self {
+            Self::All => None,
+            Self::Session(row) => Some(WorkAnchor::from(row.as_ref())),
+            Self::Turn(row) => Some(WorkAnchor {
+                source: row.harness_id.clone(),
+                session: row.session_id.clone(),
+                worker: row.worker_id.clone(),
+                turn: Some(row.turn_id.clone()),
+            }),
+        }
+    }
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -574,6 +601,9 @@ impl HistoryView {
         if matches!(selection, HistorySelection::All(WorkspaceView::Metrics)) {
             page.ui.select_metrics();
         }
+        if let HistorySelection::McpSearch { query, .. } = &selection {
+            page.operation_table.show_retained_search(query);
+        }
         Self {
             selection,
             page,
@@ -725,7 +755,15 @@ impl Workspace {
                 self.browsing_older = true;
             }
             (Change::Open(selection), Ok(WorkspaceResponse::History(page))) => {
-                self.history.push(HistoryView::new(selection, page));
+                let mut next = HistoryView::new(selection, page);
+                if matches!(next.selection, HistorySelection::McpSearch { .. })
+                    && let Some(previous) = self.history.last()
+                {
+                    next.page
+                        .operation_table
+                        .inherit_server_filters(&previous.page.operation_table);
+                }
+                self.history.push(next);
             }
             (Change::Navigate(selection), Ok(WorkspaceResponse::History(page))) => {
                 self.history.clear();
@@ -763,6 +801,7 @@ impl Workspace {
                             next.ui.select_title(title);
                         }
                     }
+                    next.inherit_filters(&view.page);
                     if matches!(change, Change::OlderHistory) {
                         push_cached(&mut view.newer, std::mem::replace(&mut view.page, next));
                     } else {
@@ -962,16 +1001,96 @@ impl Workspace {
         }
     }
 
+    fn metadata_filter_key(
+        &mut self,
+        sender: &mpsc::Sender<WorkspaceRequest>,
+        key: KeyCode,
+    ) -> bool {
+        if self.prompt.is_some()
+            || self.investigation.is_some()
+            || self.view_io.form.is_some()
+            || self.pending.is_some()
+        {
+            return false;
+        }
+        if let Some(work) = &mut self.work {
+            return work.host_filter_key(key);
+        }
+        let Some(view) = self.history.last_mut() else {
+            return false;
+        };
+        if view.page.ui.help
+            || view.page.turn_picker.is_some()
+            || view.page.operation_picker.is_some()
+            || view.page.evaluation_picker.is_some()
+        {
+            return false;
+        }
+        if let Some(analytics::HistoryAnalytics::Metrics(browser)) = view.active_analytics_mut()
+            && (key == KeyCode::Char('/') || browser.editing_filter())
+        {
+            return browser.filter_key(key, false);
+        }
+        if let Some(browser) = view.page.active_findings()
+            && (key == KeyCode::Char('/') || browser.editing_filter())
+        {
+            return browser.key(key);
+        }
+        if let Some(table) = view.page.operation_table.active(&view.page.ui)
+            && (key == KeyCode::Char('/') || table.editing_filter())
+        {
+            let scope = match &view.selection {
+                HistorySelection::All(_) => Some(McpSearchScope::All),
+                HistorySelection::Session(row, _) => {
+                    Some(McpSearchScope::Session(Box::new(row.clone())))
+                }
+                HistorySelection::Turn(row) => Some(McpSearchScope::Turn(Box::new(row.clone()))),
+                HistorySelection::McpSearch { scope, .. } => Some(scope.clone()),
+                HistorySelection::McpTraces { .. } => None,
+            };
+            let Some(scope) = scope else {
+                return table.key(key);
+            };
+            match table.search_key(key) {
+                operation_table::SearchInput::Unhandled => return false,
+                operation_table::SearchInput::Handled => return true,
+                operation_table::SearchInput::Submit(query) => {
+                    let snapshot_id = view.page.snapshot_id;
+                    if query.is_empty() {
+                        if matches!(view.selection, HistorySelection::McpSearch { .. }) {
+                            self.history.pop();
+                            self.message = None;
+                        }
+                    } else {
+                        self.open(
+                            sender,
+                            HistorySelection::McpSearch {
+                                scope,
+                                query,
+                                snapshot_id,
+                            },
+                        );
+                    }
+                    return true;
+                }
+            }
+        }
+        false
+    }
+
     fn key(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, key: event::KeyEvent) -> bool {
         if keymap::interrupt(key) {
             return true;
+        }
+        let code = keymap::plain(key).unwrap_or(KeyCode::Null);
+        if self.metadata_filter_key(sender, code) {
+            return false;
         }
         if self.investigation.is_none()
             && let Some(quit) = self.view_io_key(sender, key)
         {
             return quit;
         }
-        let code = keymap::plain(key).unwrap_or(KeyCode::Null);
         if let Some(prompt) = &mut self.prompt {
             match code {
                 KeyCode::Esc => {
@@ -1386,6 +1505,7 @@ impl Workspace {
                         worker: turn.worker_id.clone(),
                         turn: Some(turn.turn_id.clone()),
                     }),
+                    HistorySelection::McpSearch { scope, .. } => scope.anchor(),
                     HistorySelection::All(_) | HistorySelection::McpTraces { .. } => None,
                 };
                 let command = if code == KeyCode::Char('b') {
@@ -1446,7 +1566,8 @@ impl Workspace {
                 }
             }
             keymap::NEWER if self.pending.is_none() && !view.page.ui.help => {
-                if let Some(newer) = view.newer.pop_back() {
+                if let Some(mut newer) = view.newer.pop_back() {
+                    newer.inherit_filters(&view.page);
                     view.page = newer;
                 }
             }
@@ -1480,6 +1601,7 @@ impl Workspace {
                     return;
                 }
                 let owner = match &view.selection {
+                    HistorySelection::McpSearch { scope, .. } => scope.anchor(),
                     HistorySelection::All(_) | HistorySelection::McpTraces { .. } => None,
                     HistorySelection::Session(row, _) => Some(WorkAnchor::from(row)),
                     HistorySelection::Turn(row) => Some(WorkAnchor {
@@ -1633,9 +1755,13 @@ impl Workspace {
                     );
                 }
             }
-            KeyCode::Char('g' | 'H' | 'U' | '8') => {
+            KeyCode::Char('H') => self.request(
+                sender,
+                WorkspaceRequest::Work(WorkCommand::HostNow),
+                Change::Work(None),
+            ),
+            KeyCode::Char('g' | 'U' | '8') => {
                 let view = match key {
-                    KeyCode::Char('H') => WorkspaceView::Host,
                     KeyCode::Char('U') => WorkspaceView::Usage,
                     KeyCode::Char('8') => WorkspaceView::Traces,
                     _ => WorkspaceView::Overview,
@@ -2121,6 +2247,8 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
                 error
             } else if workspace.pending.is_some() {
                 "Loading history…"
+            } else if draw_findings {
+                "Esc back · [ ] history pages"
             } else if view.page.ui.evidence_inspection.is_some() {
                 ""
             } else if evaluation_details(view) && telemetry_details(view) {
@@ -2489,6 +2617,37 @@ mod tests {
         assert!(
             matches!(requests.try_recv(), Ok(WorkspaceRequest::History { selection: HistorySelection::McpTraces { event_id, revision: 13, .. }, .. }) if event_id == "event-1")
         );
+        workspace.finish(Ok(WorkspaceResponse::History(empty_history_page())));
+        assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('/')));
+        for ch in "query type".chars() {
+            assert!(!press(&mut workspace, &sender, KeyCode::Char(ch)));
+        }
+        assert!(requests.try_recv().is_err());
+        assert!(!press(&mut workspace, &sender, KeyCode::Enter));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::History {
+                selection: HistorySelection::McpSearch {
+                    scope: McpSearchScope::All,
+                    query,
+                    snapshot_id,
+                },
+                before: None,
+                ..
+            }) if query == "query type" && snapshot_id == snapshot
+        ));
+        workspace.finish(Ok(WorkspaceResponse::History(empty_history_page())));
+        assert_eq!(workspace.history.len(), 2);
+        assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('t')));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::History {
+                selection: HistorySelection::McpTraces { event_id, revision: 13, .. },
+                ..
+            }) if event_id == "event-1"
+        ));
     }
 
     #[test]
