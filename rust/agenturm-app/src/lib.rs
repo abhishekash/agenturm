@@ -482,6 +482,10 @@ pub struct ReviewSelection {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ReviewAnchor {
+    StandaloneTrace {
+        trace_id: String,
+        worker_id: Option<String>,
+    },
     Turn {
         turn_id: String,
         worker_id: Option<String>,
@@ -1517,6 +1521,7 @@ fn parse_query_options(args: &[String], review: bool) -> Result<Command, String>
     let mut turn_id = None;
     let mut worker_id = None;
     let mut trace_id = None;
+    let mut standalone_trace_id = None;
     let mut trace_source_id = None;
     let mut linked_traces = false;
     let mut format = None;
@@ -1548,6 +1553,7 @@ fn parse_query_options(args: &[String], review: bool) -> Result<Command, String>
             "--session-id" => &mut session_id,
             "--turn-id" if review => &mut turn_id,
             "--worker-id" if review => &mut worker_id,
+            "--trace-id" if review => &mut standalone_trace_id,
             "--turn-of-trace" if review => &mut trace_id,
             "--trace-source-id" if review => &mut trace_source_id,
             "--format" if review => &mut format,
@@ -1602,6 +1608,12 @@ fn parse_query_options(args: &[String], review: bool) -> Result<Command, String>
     if limit == 0 || limit > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
         return Err(usage());
     }
+    if standalone_trace_id.is_some() {
+        if harness_id.is_some() || linked_traces {
+            return Err(usage());
+        }
+        harness_id = trace_source_id.clone();
+    }
     let query = HistoryQueryOptions {
         db: PathBuf::from(db.ok_or_else(usage)?),
         harness_id,
@@ -1611,9 +1623,13 @@ fn parse_query_options(args: &[String], review: bool) -> Result<Command, String>
         limit,
     };
     if review {
-        let anchor = match (turn_id, trace_id, trace_source_id) {
-            (Some(turn_id), None, None) => ReviewAnchor::Turn { turn_id, worker_id },
-            (None, Some(trace_id), Some(trace_source_id)) => ReviewAnchor::Trace {
+        let anchor = match (turn_id, trace_id, trace_source_id, standalone_trace_id) {
+            (None, None, Some(_), Some(trace_id)) => ReviewAnchor::StandaloneTrace {
+                trace_id: trace_id.to_ascii_lowercase(),
+                worker_id,
+            },
+            (Some(turn_id), None, None, None) => ReviewAnchor::Turn { turn_id, worker_id },
+            (None, Some(trace_id), Some(trace_source_id), None) => ReviewAnchor::Trace {
                 trace_id: trace_id.to_ascii_lowercase(),
                 trace_source_id,
                 expected_worker_id: worker_id,
@@ -2171,6 +2187,10 @@ trait HistoryReader: ObservationStore {
     fn session_title_store(&self) -> Option<&Store> {
         None
     }
+    fn query_standalone_trace(
+        &self,
+        query: &agenturm_store::StandaloneTraceQuery,
+    ) -> Result<agenturm_kernel::ObservationPage, String>;
     fn query_mcp_traces(
         &self,
         query: &agenturm_store::McpTraceQuery,
@@ -2230,6 +2250,12 @@ impl HistoryReader for Store {
         marker: &std::path::Path,
     ) -> Result<agenturm_store::WorkspaceLedger, String> {
         agenturm_store::WorkspaceLedger::open(marker).map_err(|error| error.to_string())
+    }
+    fn query_standalone_trace(
+        &self,
+        query: &agenturm_store::StandaloneTraceQuery,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        Store::query_standalone_trace(self, query, None).map_err(|error| error.to_string())
     }
     fn query_mcp_traces(
         &self,
@@ -2305,6 +2331,13 @@ impl HistoryReader for agenturm_storage_service::NativeStore {
         marker: &std::path::Path,
     ) -> Result<agenturm_store::WorkspaceLedger, String> {
         agenturm_store::WorkspaceLedger::open_with_history(marker, self.clone())
+            .map_err(|error| error.to_string())
+    }
+    fn query_standalone_trace(
+        &self,
+        query: &agenturm_store::StandaloneTraceQuery,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        self.query_standalone_trace(query)
             .map_err(|error| error.to_string())
     }
     fn query_mcp_traces(
@@ -2649,7 +2682,23 @@ fn review_from_store(
         .as_deref()
         .ok_or("Review requires a session ID")?;
     let query = options.observation_query();
-    let (turn_id, worker_id, page) = match &selection.anchor {
+    let (turn_id, worker_id, trace_id, page) = match &selection.anchor {
+        ReviewAnchor::StandaloneTrace {
+            trace_id,
+            worker_id,
+        } => {
+            let page = store.query_standalone_trace(&agenturm_store::StandaloneTraceQuery {
+                source_id: ExtensionId::parse(harness_id).map_err(|error| error.to_string())?,
+                session_id: session_id.into(),
+                trace_id: trace_id.clone(),
+                worker_id: worker_id.clone(),
+                snapshot_id: query.snapshot_id,
+                before: query.before.clone(),
+                limit: query.limit,
+            })?;
+            (None, worker_id.clone(), Some(trace_id.clone()), page)
+        }
+
         ReviewAnchor::Turn { turn_id, worker_id } => {
             let page = if selection.linked_traces {
                 store.query_linked_turn_traces(&query, turn_id, worker_id.as_deref())
@@ -2657,7 +2706,7 @@ fn review_from_store(
                 store.query_worker_turn_observations(&query, turn_id, worker_id.as_deref())
             }
             .map_err(|error| format!("query store failed: {error}"))?;
-            (turn_id.clone(), worker_id.clone(), page)
+            (Some(turn_id.clone()), worker_id.clone(), None, page)
         }
         ReviewAnchor::Trace {
             trace_id,
@@ -2673,13 +2722,19 @@ fn review_from_store(
                     linked_traces: selection.linked_traces,
                 })?
                 .ok_or("Trace has no unique explicit turn for the selected native scope at this snapshot")?;
-            (resolved.turn_id, resolved.worker_id, resolved.page)
+            (
+                Some(resolved.turn_id),
+                resolved.worker_id,
+                None,
+                resolved.page,
+            )
         }
     };
     let scope = review_receipt::ReviewScope {
         harness_id,
         session_id,
-        turn_id: &turn_id,
+        turn_id: turn_id.as_deref(),
+        trace_id: trace_id.as_deref(),
         worker_id: worker_id.as_deref(),
     };
     let snapshot = page.snapshot_id;
@@ -3934,6 +3989,7 @@ pub fn render(command: Command) -> String {
             "       agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]\n",
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
             "       agenturm review --db <path> --harness-id <id> --session-id <id> (--turn-id <id> | --turn-of-trace <trace-id> --trace-source-id <id>) [--worker-id <id>] [--linked-traces] [--format text|json|markdown|html] [--output <new-directory>] [query paging options]\n",
+            "       agenturm review --db <path> --trace-id <id> --trace-source-id otlp.<id> --session-id <id> [--worker-id <id>] [Review paging/output options]\n",
             "       agenturm review --endpoint http://<loopback-IP:port> --token-file <path> [exact Review scope/paging/output options]\n",
             "       agenturm investigate <instruction|path|command|source> <query> [options]\n",
             "       agenturm investigate failures [--source-id <id>] [--session-id <id>] [options]\n",

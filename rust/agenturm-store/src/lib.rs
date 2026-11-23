@@ -52,7 +52,8 @@ pub use eval_outcome::{
 };
 use linked_trace::TraceLink;
 pub use linked_trace::{
-    McpTraceQuery, ResolvedTraceReview, ResolvedTraceTurn, TraceReviewQuery, TraceTurnQuery,
+    McpTraceQuery, ResolvedTraceReview, ResolvedTraceTurn, StandaloneTraceQuery, TraceReviewQuery,
+    TraceTurnQuery,
 };
 #[cfg(target_os = "linux")]
 pub use native_codex_metadata::{CodexThreadMetadata, read_codex_thread_metadata};
