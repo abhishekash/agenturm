@@ -182,6 +182,7 @@ pub enum ObservationKind {
         parent_session_id: String,
     },
     WorkerSpawn(agenturm_kernel::WorkerSpawn),
+    WorkerLaunch(agenturm_kernel::WorkerLaunch),
     Message {
         role: String,
     },
@@ -393,6 +394,9 @@ impl ObservationBatch {
                     },
                     KernelObservationKind::WorkerSpawn(spawn) => {
                         ObservationKind::WorkerSpawn(spawn.clone())
+                    }
+                    KernelObservationKind::WorkerLaunch(launch) => {
+                        ObservationKind::WorkerLaunch(launch.clone())
                     }
                     KernelObservationKind::Message { role } => {
                         ObservationKind::Message { role: role.clone() }
@@ -2095,7 +2099,7 @@ impl Store {
                        OR instr(lower(json_extract(observation.kind_json,'$.result')),lower(?17))>0))
                    WHEN 'usage' THEN json_extract(observation.kind_json,'$.kind') IN (
                        'usage','credit_usage','reported_cost','span_token_usage')
-                   WHEN 'relationships' THEN json_extract(observation.kind_json,'$.kind') IN ('relationship','worker_spawn')
+                   WHEN 'relationships' THEN json_extract(observation.kind_json,'$.kind') IN ('relationship','worker_spawn','worker_launch')
                    WHEN 'workflow_alerts' THEN ({workflow_filter})
                    ELSE ?16 IS NULL
                END
@@ -2268,6 +2272,9 @@ impl Store {
                     },
                     ObservationKind::WorkerSpawn(spawn) => {
                         KernelObservationKind::WorkerSpawn(spawn)
+                    }
+                    ObservationKind::WorkerLaunch(launch) => {
+                        KernelObservationKind::WorkerLaunch(launch)
                     }
                     ObservationKind::Message { role } => KernelObservationKind::Message { role },
                     ObservationKind::CreditUsage { nanocredits } => {
@@ -2697,6 +2704,16 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
         {
             return Err(StoreError::Invalid(
                 "worker spawn ID or parent operation identity is invalid",
+            ));
+        }
+        if let ObservationKind::WorkerLaunch(launch) = &observation.kind
+            && (observation.identity.scope != StoredScope::Session
+                || observation.identity.turn_id.is_none()
+                || observation.identity.operation_id.is_none()
+                || !launch.is_valid_for(observation.identity.worker_id.as_deref()))
+        {
+            return Err(StoreError::Invalid(
+                "worker launch ID or parent operation identity is invalid",
             ));
         }
         if let ObservationKind::Message { role } = &observation.kind

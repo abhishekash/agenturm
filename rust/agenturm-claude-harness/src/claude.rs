@@ -948,19 +948,30 @@ pub(crate) fn translate_line(
             && next.worker_spawns.is_tracking()
             && row["toolUseResult"].is_object()
             && blocks.len() == 1
-            && let Some((operation, spawn)) =
+            && let Some((operation, outcome)) =
                 next.worker_spawns
                     .take_result(raw, &next.session_id, &next.worker_id)
         {
-            let detail = fact(
-                format!("{base}:worker-spawn"),
-                revision,
-                "worker_spawn",
-                &time_ns,
-                &next,
-                Some(&operation),
-                json!(spawn),
-            );
+            let detail = match outcome {
+                worker_spawns::WorkerOutcome::Spawned(spawn) => fact(
+                    format!("{base}:worker-spawn"),
+                    revision,
+                    "worker_spawn",
+                    &time_ns,
+                    &next,
+                    Some(&operation),
+                    json!(spawn),
+                ),
+                worker_spawns::WorkerOutcome::Launched(launch) => fact(
+                    format!("{base}:worker-launch"),
+                    revision,
+                    "worker_launch",
+                    &time_ns,
+                    &next,
+                    Some(&operation),
+                    json!(launch),
+                ),
+            };
             append_bounded_details(&mut facts, vec![detail])?;
         }
         if next.worker_spawns.has_turn_owner() {
@@ -978,6 +989,7 @@ mod tests {
     const NATIVE_WORKER_PROMPT: &[u8] = br#"{"type":"user","sessionId":"session","agentId":"parent","uuid":"turn","timestamp":"2026-10-24T12:00:00Z","message":{"role":"user","content":"private prompt"}}"#;
     const NATIVE_WORKER_DECLARATION: &[u8] = br#"{"type":"assistant","sessionId":"session","agentId":"parent","uuid":"declaration","timestamp":"2026-10-24T12:00:01Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Agent","id":"toolu_agent1","input":{"prompt":"private launch"}}]}}"#;
     const NATIVE_WORKER_RESULT: &str = r#"{"type":"user","sessionId":"session","agentId":"parent","uuid":"completion","sourceToolAssistantUUID":"declaration","timestamp":"2026-10-24T12:00:02Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_agent1","content":"private result"}]},"toolUseResult":{"status":"completed","agentId":"child","content":"private evidence"}}"#;
+    const NATIVE_WORKER_ASYNC_RESULT: &str = r#"{"type":"user","sessionId":"session","agentId":"parent","uuid":"launch","sourceToolAssistantUUID":"declaration","timestamp":"2026-10-24T12:00:02Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_agent1","content":"private result"}]},"toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"child","description":"side quest","resolvedModel":"claude-sonnet","prompt":"private prompt","outputFile":"/tmp/claude/child-output","canReadOutputFile":true,"canContinueAgent":true}}"#;
 
     fn worker_prompt() -> Context {
         let header = header_identity(NATIVE_WORKER_PROMPT).unwrap();
@@ -1025,6 +1037,54 @@ mod tests {
         let repeated =
             translate_line(NATIVE_WORKER_RESULT.as_bytes(), &resumed, "fixture", 30).unwrap();
         assert!(!has_spawn(&repeated.0));
+    }
+
+    #[test]
+    fn worker_launch_uses_exact_native_declaration_and_async_result() {
+        let prompt = worker_prompt();
+        let (_, context) =
+            translate_line(NATIVE_WORKER_DECLARATION, &prompt, "fixture", 10).unwrap();
+        let (facts, _) = translate_line(
+            NATIVE_WORKER_ASYNC_RESULT.as_bytes(),
+            &context,
+            "fixture",
+            20,
+        )
+        .unwrap();
+        assert!(!has_spawn(&facts));
+        let launch = facts
+            .iter()
+            .find(|row| row["kind"] == "worker_launch")
+            .unwrap();
+        assert!(
+            launch["event_id"]
+                .as_str()
+                .unwrap()
+                .ends_with(":worker-launch")
+        );
+        assert_eq!(
+            launch["identity"],
+            json!({
+                "session_id":"session","worker_id":"parent","turn_id":digest("turn"),
+                "operation_id":digest("toolu_agent1"),
+            })
+        );
+        assert_eq!(launch["payload"], json!({"child_worker_id":"child"}));
+        assert!(!launch.to_string().contains("private"));
+        for (from, to) in [
+            (r#""isAsync":true"#, r#""isAsync":false"#),
+            (r#""isAsync":true,"#, ""),
+            (r#""status":"async_launched""#, r#""status":"queued""#),
+            (r#""agentId":"child","#, ""),
+        ] {
+            let raw = NATIVE_WORKER_ASYNC_RESULT.replace(from, to);
+            assert_ne!(raw, NATIVE_WORKER_ASYNC_RESULT);
+            let (_, fresh) =
+                translate_line(NATIVE_WORKER_DECLARATION, &prompt, "fixture", 11).unwrap();
+            let (facts, _) = translate_line(raw.as_bytes(), &fresh, "fixture", 20).unwrap();
+            assert!(!has_spawn(&facts));
+            assert!(!facts.iter().any(|row| row["kind"] == "worker_launch"));
+        }
     }
 
     #[test]

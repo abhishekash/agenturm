@@ -55,6 +55,7 @@ baselines, not results for the new feature slices. Every new row starts
 | CF6 | Implemented: combined deduplicated usage/cost totals that exclude and count reports overlapping at exact `(target source, session)` identity; unattributed telemetry contributes with a disclosed boundary. | Development branch `feature/combined-usage-dedup` | Separate test agent; not run on new source. |
 | CF7 | Implemented: cross-host terminal routing through an explicit operator-authored attach-time route file; fixed read-only tmux and `/proc` probes resolve one exact remote pane or report unavailable. | Development branch (see PR) | Separate test agent; not run on new source. |
 | CF8 | Implemented: Claude private edit detail through the harness-generic operation contract — adapter `file_edit` summaries, schema-23 grants with a v22 upgrade path, bounded credential-screened reveal under a Claude fingerprint domain, cross-kind grant denial. | Development branch (see PR) | Separate test agent; not run on new source. |
+| CF9 | Implemented: Claude async launch attribution — a `worker_launch { child_worker_id }` fact from the real `isAsync`/`async_launched` record shape, with no completion claim and the checkpoint wire format unchanged. | Development branch (see PR) | Separate test agent; not run on new source. |
 
 Worktree paths identify current ownership, not release artifacts. The developer
 must supply the final integrated commit before the test owner freezes a binary.
@@ -307,6 +308,39 @@ Codex/Pi/Kiro content test. Workspace strict Clippy and fmt clean.
 | Terminal reveal at all three sizes | 120×32, 80×24 and 60×18 render the bounded edit payload with selection preserved. | Not run |
 
 All CF8 scenarios are **not run** until the test owner records actual results
+on the frozen integrated head.
+
+## CF9 — Claude async launch attribution
+
+Implemented with the FD1 Claude-async slice, licensed by the
+[native evidence record](rust-fd1-native-evidence.md). A `worker_launch` fact
+correlates an assistant `Agent` tool_use declaration to its structured
+`toolUseResult {isAsync: true, status: "async_launched", agentId}` through the
+same declaration tracking, first-consumer-wins consumption and turn-ownership
+fences as the completed-spawn proof. It claims a child identity and a
+launched state only — no completion, no resolution, no liveness. The
+checkpoint wire format is unchanged; evidence presentation says "launched"
+without completion wording, and the "Declared child workers on page" count
+still counts completed spawns only — a disclosed difference, not a silent
+semantic change.
+
+**Developer handoff:** worker_spawns unit tests with the real record shape
+(launch + declaration consumption; completed path unchanged; deny cases for
+`isAsync` false/missing, other statuses, missing/invalid agentId, errors and
+wrong assistant), a line-level adapter test (launch fact emitted, no spawn
+fact, no private-text leak), store round-trip and admission tests with the
+deny-unknown-fields case, and a presentation test asserting no completion
+wording — all green on the rebased head with workspace strict Clippy and fmt.
+
+| Scenario | Required observation | Status |
+| --- | --- | --- |
+| Real async launch in an actual Claude transcript | One launch fact with the exact child agentId and parent operation; no completion wording anywhere. | Not run |
+| Declaration consumption and ambiguity | A later result for the same declaration never double-claims; duplicates and errors stay withheld. | Not run |
+| Checkpoint continuity | The declaration checkpoint format round-trips unchanged across restart; older cursors stay readable. | Not run |
+| Relationships projection and roster | Launches appear in the relationships projection without claiming completed parentage or roster recency. | Not run |
+| Declared-child count disclosure | The "Declared child workers on page" count stays spawn-only and the launched rows are visibly separate. | Not run |
+
+All CF9 scenarios are **not run** until the test owner records actual results
 on the frozen integrated head.
 
 ## Related Review identity fixes — delegated regression

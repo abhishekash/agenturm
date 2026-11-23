@@ -99,6 +99,12 @@ baselines, not results for the new feature slices. Every new row starts
 <td>Development branch (see PR)</td>
 <td>Separate test agent; not run on new source.</td>
 </tr>
+<tr>
+<td>CF9</td>
+<td>Implemented: Claude async launch attribution — a <code>worker_launch { child_worker_id }</code> fact from the real <code>isAsync</code>/<code>async_launched</code> record shape, with no completion claim and the checkpoint wire format unchanged.</td>
+<td>Development branch (see PR)</td>
+<td>Separate test agent; not run on new source.</td>
+</tr>
 </tbody>
 </table></div>
 <p>Worktree paths identify current ownership, not release artifacts. The developer
@@ -506,6 +512,37 @@ Codex/Pi/Kiro content test. Workspace strict Clippy and fmt clean.</p>
 </tbody>
 </table>
 <p>All CF8 scenarios are <strong>not run</strong> until the test owner records actual results
+on the frozen integrated head.</p>
+<h2>CF9 — Claude async launch attribution</h2>
+<p>Implemented with the FD1 Claude-async slice, licensed by the
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-fd1-native-evidence.md">native evidence record</a>. A <code>worker_launch</code> fact
+correlates an assistant <code>Agent</code> tool_use declaration to its structured
+<code>toolUseResult {isAsync: true, status: "async_launched", agentId}</code> through the
+same declaration tracking, first-consumer-wins consumption and turn-ownership
+fences as the completed-spawn proof. It claims a child identity and a
+launched state only — no completion, no resolution, no liveness. The
+checkpoint wire format is unchanged; evidence presentation says "launched"
+without completion wording, and the "Declared child workers on page" count
+still counts completed spawns only — a disclosed difference, not a silent
+semantic change.</p>
+<p><strong>Developer handoff:</strong> worker_spawns unit tests with the real record shape
+(launch + declaration consumption; completed path unchanged; deny cases for
+<code>isAsync</code> false/missing, other statuses, missing/invalid agentId, errors and
+wrong assistant), a line-level adapter test (launch fact emitted, no spawn
+fact, no private-text leak), store round-trip and admission tests with the
+deny-unknown-fields case, and a presentation test asserting no completion
+wording — all green on the rebased head with workspace strict Clippy and fmt.</p>
+<table>
+<thead><tr><th>Scenario</th><th>Required observation</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>Real async launch in an actual Claude transcript</td><td>One launch fact with the exact child agentId and parent operation; no completion wording anywhere.</td><td>Not run</td></tr>
+<tr><td>Declaration consumption and ambiguity</td><td>A later result for the same declaration never double-claims; duplicates and errors stay withheld.</td><td>Not run</td></tr>
+<tr><td>Checkpoint continuity</td><td>The declaration checkpoint format round-trips unchanged across restart; older cursors stay readable.</td><td>Not run</td></tr>
+<tr><td>Relationships projection and roster</td><td>Launches appear in the relationships projection without claiming completed parentage or roster recency.</td><td>Not run</td></tr>
+<tr><td>Declared-child count disclosure</td><td>The "Declared child workers on page" count stays spawn-only and the launched rows are visibly separate.</td><td>Not run</td></tr>
+</tbody>
+</table>
+<p>All CF9 scenarios are <strong>not run</strong> until the test owner records actual results
 on the frozen integrated head.</p>
 <h2>Related Review identity fixes — delegated regression</h2>
 <p>Typed broker Review receipts now pin the authenticated history identity for

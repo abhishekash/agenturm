@@ -576,6 +576,7 @@ fn kind_name(kind: &ObservationKind) -> &'static str {
         ObservationKind::PullRequestRaised { .. } => "pull-request-raised",
         ObservationKind::Relationship { .. } => "relationship",
         ObservationKind::WorkerSpawn(_) => "worker-spawn",
+        ObservationKind::WorkerLaunch(_) => "worker-launch",
         ObservationKind::Message { .. } => "message",
         ObservationKind::Diagnostic { .. } => "diagnostic",
         ObservationKind::Usage { .. } => "usage",
