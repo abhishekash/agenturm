@@ -7,6 +7,7 @@ use crate::trace_import::{
 use agenturm_kernel::ObservationStore;
 use agenturm_kernel::{ExtensionId, Observation, ObservationKind};
 use serde::{Deserialize, Deserializer};
+use serde_json::value::RawValue;
 use std::collections::{BTreeMap, BTreeSet};
 use std::io::{self, Read};
 use std::path::PathBuf;
@@ -61,7 +62,7 @@ pub fn execute_span_jsonl_import(options: &SpanJsonlImportOptions) -> Result<Str
     let observations = prepare(options)?;
     let inserted = trace_import::commit(&options.db, &options.source_id, &observations)
         .map_err(|_| COMMIT_ERROR)?;
-    Ok(report(inserted, observations.len()))
+    Ok(report(inserted, &observations))
 }
 
 #[cfg(target_os = "linux")]
@@ -72,11 +73,19 @@ pub(super) fn execute_with_store(
     let observations = prepare(options)?;
     let inserted = trace_import::commit_with_store(store, &options.source_id, &observations)
         .map_err(|_| COMMIT_ERROR)?;
-    Ok(report(inserted, observations.len()))
+    Ok(report(inserted, &observations))
 }
 
-fn report(inserted: usize, projected: usize) -> String {
-    format!("Imported {inserted} spans. Projected {projected} structural spans.\n")
+fn report(inserted: usize, observations: &[Observation]) -> String {
+    let costs = trace_import::cost_count(observations);
+    let projected = observations.len() - costs;
+    if costs == 0 {
+        format!("Imported {inserted} spans. Projected {projected} structural spans.\n")
+    } else {
+        format!(
+            "Imported {inserted} observations from {projected} spans and {costs} reported cost records.\n"
+        )
+    }
 }
 
 fn prepare(options: &SpanJsonlImportOptions) -> Result<Vec<Observation>, String> {
@@ -173,8 +182,10 @@ struct JsonlSpan {
 
 impl JsonlSpan {
     fn into_otlp(self, session: Option<&str>) -> OtlpSpan {
+        use trace_import::cost::*;
+
         let scope = self.attributes.unwrap_or_default();
-        let attributes = [
+        let mut attributes: Vec<_> = [
             ("session.id", scope.session_id),
             ("session.id", scope.conversation_id),
             ("session.id", scope.agent_session_id),
@@ -192,6 +203,20 @@ impl JsonlSpan {
         .into_iter()
         .filter_map(|(key, value)| Some(Attribute::text(key, value?)))
         .collect();
+        attributes.extend(
+            [
+                (AMOUNT, scope.amount),
+                (CURRENCY, scope.currency),
+                (GEN_AI_AMOUNT, scope.gen_ai_amount),
+                (GEN_AI_CURRENCY, scope.gen_ai_currency),
+                (LLM_AMOUNT, scope.llm_amount),
+                (LLM_CURRENCY, scope.llm_currency),
+                (USD_AMOUNT, scope.usd_amount),
+                (KNOWN, scope.known),
+            ]
+            .into_iter()
+            .filter_map(|(key, value)| value.map(|value| Attribute::raw_literal(key, value))),
+        );
         OtlpSpan {
             trace_id: self.trace_id,
             span_id: self.span_id,
@@ -277,6 +302,61 @@ struct JsonlAttributes {
         deserialize_with = "string_identity"
     )]
     worker_id: Option<String>,
+    #[serde(
+        rename = "agenturm.reported_cost.amount",
+        default,
+        deserialize_with = "present_cost_attribute"
+    )]
+    amount: Option<Box<RawValue>>,
+    #[serde(
+        rename = "agenturm.reported_cost.currency",
+        default,
+        deserialize_with = "present_cost_attribute"
+    )]
+    currency: Option<Box<RawValue>>,
+    #[serde(
+        rename = "gen_ai.usage.cost",
+        default,
+        deserialize_with = "present_cost_attribute"
+    )]
+    gen_ai_amount: Option<Box<RawValue>>,
+    #[serde(
+        rename = "gen_ai.usage.cost.currency",
+        default,
+        deserialize_with = "present_cost_attribute"
+    )]
+    gen_ai_currency: Option<Box<RawValue>>,
+    #[serde(
+        rename = "llm.cost.total",
+        default,
+        deserialize_with = "present_cost_attribute"
+    )]
+    llm_amount: Option<Box<RawValue>>,
+    #[serde(
+        rename = "llm.cost.currency",
+        default,
+        deserialize_with = "present_cost_attribute"
+    )]
+    llm_currency: Option<Box<RawValue>>,
+    #[serde(
+        rename = "llm.cost_usd",
+        default,
+        deserialize_with = "present_cost_attribute"
+    )]
+    usd_amount: Option<Box<RawValue>>,
+    #[serde(
+        rename = "llm.cost_known",
+        default,
+        deserialize_with = "present_cost_attribute"
+    )]
+    known: Option<Box<RawValue>>,
+}
+
+fn present_cost_attribute<'de, D>(value: D) -> Result<Option<Box<RawValue>>, D::Error>
+where
+    D: Deserializer<'de>,
+{
+    Box::<RawValue>::deserialize(value).map(Some)
 }
 
 fn string_identity<'de, D>(value: D) -> Result<Option<String>, D::Error>

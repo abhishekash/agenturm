@@ -275,6 +275,7 @@ pub enum ObservationKind {
     CreditUsage {
         nanocredits: u64,
     },
+    ReportedCost(ReportedCost),
 }
 
 /// Returns whether a source lifecycle state can be admitted and stored.
@@ -299,8 +300,9 @@ pub fn is_anchored_pull_request(
 }
 
 pub use agenturm_protocol::observation::{
-    FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, RelationshipKind, TraceSpan, TraceStatus,
-    is_github_pull_request, is_valid_mcp_metadata,
+    CostSpan, FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, NANOUNITS_PER_CURRENCY_UNIT,
+    RelationshipKind, ReportedCost, TraceSpan, TraceStatus, is_github_pull_request,
+    is_valid_mcp_metadata,
 };
 
 pub fn is_mcp_operation(identity: &ObservationIdentity) -> bool {
@@ -350,8 +352,20 @@ pub fn is_trace_turn_link_valid(
 
 /// Formats native credits without introducing floating-point rounding.
 pub fn format_credits(nanocredits: u64) -> String {
-    let whole = nanocredits / NANOCREDITS_PER_CREDIT;
-    let fraction = nanocredits % NANOCREDITS_PER_CREDIT;
+    format_nano_quantity(nanocredits, NANOCREDITS_PER_CREDIT)
+}
+
+pub fn format_reported_cost(cost: &ReportedCost) -> String {
+    format!(
+        "{} {}",
+        format_nano_quantity(cost.nanounits, NANOUNITS_PER_CURRENCY_UNIT),
+        cost.currency
+    )
+}
+
+fn format_nano_quantity(value: u64, units: u64) -> String {
+    let whole = value / units;
+    let fraction = value % units;
     if fraction == 0 {
         return whole.to_string();
     }
@@ -1471,6 +1485,13 @@ fn validate_raw_observation_slice(
             && *nanocredits > i64::MAX as u64
         {
             return Err("credit usage exceeds supported range".into());
+        }
+        if let ObservationKind::ReportedCost(cost) = &row.kind
+            && (row.identity.scope != ObservationScope::Session
+                || !cost.is_valid()
+                || !cost.matches_event(&row.event_id))
+        {
+            return Err("reported cost metadata or event identity is invalid".into());
         }
         if let ObservationKind::Diagnostic { code, severity } = &row.kind
             && (!is_safe_diagnostic_code(code)

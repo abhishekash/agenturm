@@ -1,13 +1,15 @@
 //! Explicit, bounded import of structural OTLP trace evidence.
 
+pub(super) mod cost;
 mod proto;
 
 use agenturm_kernel::{
-    ExtensionId, Observation, ObservationIdentity, ObservationKind, ObservationStore, TraceSpan,
-    TraceStatus,
+    CostSpan, ExtensionId, Observation, ObservationIdentity, ObservationKind, ObservationStore,
+    ReportedCost, TraceSpan, TraceStatus,
 };
 use agenturm_store::Store;
 use serde::Deserialize;
+use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -67,7 +69,7 @@ pub(super) fn parse_source_id(value: &str) -> Result<ExtensionId, String> {
 pub fn execute_trace_import(options: &TraceImportOptions) -> Result<String, String> {
     let (observations, unscoped) = prepare_export(options)?;
     let inserted = commit(&options.db, &options.source_id, &observations)?;
-    Ok(report(inserted, unscoped))
+    Ok(report(inserted, unscoped, &observations))
 }
 
 #[cfg(target_os = "linux")]
@@ -77,11 +79,26 @@ pub(super) fn execute_with_store(
 ) -> Result<String, String> {
     let (observations, unscoped) = prepare_export(options)?;
     let inserted = commit_with_store(store, &options.source_id, &observations)?;
-    Ok(report(inserted, unscoped))
+    Ok(report(inserted, unscoped, &observations))
 }
 
-fn report(inserted: usize, unscoped: usize) -> String {
-    format!("Imported {inserted} spans. Skipped {unscoped} without session identity.\n")
+fn report(inserted: usize, unscoped: usize, observations: &[Observation]) -> String {
+    let reported = cost_count(observations);
+    if reported == 0 {
+        format!("Imported {inserted} spans. Skipped {unscoped} without session identity.\n")
+    } else {
+        let spans = observations.len() - reported;
+        format!(
+            "Imported {inserted} observations from {spans} spans and {reported} reported cost records. Skipped {unscoped} without session identity.\n"
+        )
+    }
+}
+
+pub(super) fn cost_count(observations: &[Observation]) -> usize {
+    observations
+        .iter()
+        .filter(|row| matches!(row.kind, ObservationKind::ReportedCost(_)))
+        .count()
 }
 
 fn prepare_export(options: &TraceImportOptions) -> Result<(Vec<Observation>, usize), String> {
@@ -170,16 +187,24 @@ pub(super) fn admission_cursor(
 fn import_cursor(observations: &[Observation]) -> Result<String, String> {
     let mut hasher = Sha256::new();
     for row in observations {
-        let ObservationKind::TraceSpan(span) = &row.kind else {
-            return Err("invalid trace import observation".into());
-        };
-        let session_id = row.identity.session_id.as_deref();
-        let legacy = (session_id, row.observed_at_unix_ns, span);
-        let serial = match row.identity.turn_id.as_deref() {
-            Some(turn_id) => {
-                serde_json::to_vec(&(legacy, turn_id, row.identity.worker_id.as_deref()))
+        let serial = match &row.kind {
+            ObservationKind::TraceSpan(span) => {
+                let session_id = row.identity.session_id.as_deref();
+                let legacy = (session_id, row.observed_at_unix_ns, span);
+                match row.identity.turn_id.as_deref() {
+                    Some(turn_id) => {
+                        serde_json::to_vec(&(legacy, turn_id, row.identity.worker_id.as_deref()))
+                    }
+                    None => serde_json::to_vec(&legacy),
+                }
             }
-            None => serde_json::to_vec(&legacy),
+            ObservationKind::ReportedCost(cost) => serde_json::to_vec(&(
+                "reported_cost",
+                &row.identity,
+                row.observed_at_unix_ns,
+                cost,
+            )),
+            _ => return Err("invalid trace import observation".into()),
         }
         .map_err(|_| "cannot encode trace import metadata".to_owned())?;
         hasher.update(serial);
@@ -254,6 +279,7 @@ pub(super) fn project(
         if index >= MAX_EXPORT_SPANS {
             return Err("OTLP export exceeds 1024 spans".into());
         }
+        let reported = cost::reported_amount(&span.attributes);
         let scope = trace_scope(span.attributes)?;
         if scope.turn_id.is_some()
             && (scope.target_source_id.is_none() || scope.session_id.is_none())
@@ -300,26 +326,64 @@ pub(super) fn project(
         let mut identity = ObservationIdentity::session(session_id);
         identity.turn_id = scope.turn_id;
         identity.worker_id = scope.worker_id;
-        let observation = Observation {
-            harness_id: source_id.clone(),
-            event_id: event_id.clone(),
-            revision: 0,
-            identity,
-            observed_at_unix_ns: ended_at,
-            kind: ObservationKind::TraceSpan(native),
-        };
-        match observations.entry(event_id) {
-            std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(observation);
-            }
-            std::collections::btree_map::Entry::Occupied(entry) => {
-                if entry.get() != &observation {
-                    return Err("OTLP export contains a conflicting span identity".into());
-                }
+        if let Some((currency, nanounits)) = reported {
+            let cost_event = format!("otlp-cost:{}:{}", native.trace_id, native.span_id);
+            insert_projected(
+                &mut observations,
+                Observation {
+                    harness_id: source_id.clone(),
+                    event_id: cost_event,
+                    revision: 0,
+                    identity: identity.clone(),
+                    observed_at_unix_ns: ended_at,
+                    kind: ObservationKind::ReportedCost(ReportedCost {
+                        currency,
+                        nanounits,
+                        span: Some(CostSpan {
+                            trace_id: native.trace_id.clone(),
+                            span_id: native.span_id.clone(),
+                        }),
+                    }),
+                },
+            )?;
+        }
+        insert_projected(
+            &mut observations,
+            Observation {
+                harness_id: source_id.clone(),
+                event_id,
+                revision: 0,
+                identity,
+                observed_at_unix_ns: ended_at,
+                kind: ObservationKind::TraceSpan(native),
+            },
+        )?;
+    }
+    Ok((observations.into_values().collect(), unscoped))
+}
+
+fn insert_projected(
+    observations: &mut BTreeMap<String, Observation>,
+    observation: Observation,
+) -> Result<(), String> {
+    match observations.entry(observation.event_id.clone()) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert(observation);
+        }
+        std::collections::btree_map::Entry::Occupied(entry) => {
+            if entry.get() != &observation {
+                return Err(
+                    if matches!(observation.kind, ObservationKind::ReportedCost(_)) {
+                        "OTLP export contains a conflicting reported cost"
+                    } else {
+                        "OTLP export contains a conflicting span identity"
+                    }
+                    .into(),
+                );
             }
         }
     }
-    Ok((observations.into_values().collect(), unscoped))
+    Ok(())
 }
 
 #[derive(Default)]
@@ -358,7 +422,7 @@ fn trace_scope(attributes: Vec<Attribute>) -> Result<TraceScope, String> {
         };
         let value = attribute
             .value
-            .and_then(|value| value.string_value)
+            .and_then(|value| value.string_value.as_str().map(str::to_owned))
             .filter(|value| valid(value))
             .ok_or(error)?;
         if slot.as_ref().is_some_and(|prior| prior != &value) {
@@ -454,16 +518,36 @@ impl Attribute {
         Self {
             key: key.into(),
             value: Some(AttributeValue {
-                string_value: Some(value),
+                string_value: value.into(),
+                ..AttributeValue::default()
             }),
+        }
+    }
+
+    pub(super) fn raw_literal(key: &str, value: Box<RawValue>) -> Self {
+        let mut scalar = AttributeValue::default();
+        match value.get().as_bytes()[0] {
+            b'"' => scalar.string_value = serde_json::from_str(value.get()).unwrap_or_default(),
+            b't' | b'f' => scalar.bool_value = (value.get() == "true").into(),
+            b'-' | b'0'..=b'9' => scalar.double_value = Some(value),
+            _ => {}
+        }
+        Self {
+            key: key.into(),
+            value: Some(scalar),
         }
     }
 }
 
-#[derive(Deserialize)]
+#[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AttributeValue {
-    string_value: Option<String>,
+    #[serde(default)]
+    string_value: serde_json::Value,
+    int_value: Option<Box<RawValue>>,
+    double_value: Option<Box<RawValue>>,
+    #[serde(default)]
+    bool_value: serde_json::Value,
 }
 
 #[cfg(test)]

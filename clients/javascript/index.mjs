@@ -10,6 +10,64 @@ const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
 const MAX_OTLP_SPANS = 1024;
 const MAX_OTLP_REPLY_BYTES = 4096;
 const OTLP_STATUS = { UNSET: 0, OK: 1, ERROR: 2 };
+const COST_AMOUNT = 'agenturm.reported_cost.amount';
+const COST_CURRENCY = 'agenturm.reported_cost.currency';
+const COST_FIELDS = [
+  [COST_AMOUNT, COST_CURRENCY],
+  ['gen_ai.usage.cost', 'gen_ai.usage.cost.currency'],
+  ['llm.cost.total', 'llm.cost.currency'],
+];
+const USD_COST = 'llm.cost_usd';
+const NANOUNITS = 1_000_000_000n;
+
+function costNanounits(value) {
+  if ((typeof value !== 'string' && typeof value !== 'number') || Object.is(value, -0)) return undefined;
+  const text = String(value);
+  if (text.length > 48) return undefined;
+  const decimal = /^([0-9]+)(?:\.([0-9]*))?(?:[eE]([+-]?[0-9]+))?$/.exec(text);
+  if (!decimal || decimal[0] !== text) return undefined;
+  const [, whole, fraction = '', exponent = '0'] = decimal;
+  const power = Number(exponent);
+  if (!Number.isInteger(power) || Math.abs(power) > 64) return undefined;
+  const digits = whole + fraction;
+  const noTrailing = digits.replace(/0+$/, '');
+  const significant = noTrailing.replace(/^0+/, '');
+  if (!significant) return 0n;
+  const shift = 9 + power + digits.length - noTrailing.length - fraction.length;
+  if (!Number.isInteger(shift) || shift < 0 || shift > 19 - significant.length) return undefined;
+  const amount = BigInt(significant) * 10n ** BigInt(shift);
+  return amount <= 9_223_372_036_854_775_807n ? amount : undefined;
+}
+
+function reportedCostAttributes(attributes) {
+  if (Object.hasOwn(attributes, 'llm.cost_known') && attributes['llm.cost_known'] !== true) return [];
+  const amounts = new Set();
+  const currencies = new Set();
+  if (Object.hasOwn(attributes, USD_COST)) {
+    amounts.add(costNanounits(attributes[USD_COST]));
+    currencies.add('USD');
+  }
+  for (const [amountField, currencyField] of COST_FIELDS) {
+    const hasCurrency = Object.hasOwn(attributes, currencyField);
+    if (Object.hasOwn(attributes, amountField)) {
+      if (!hasCurrency) return [];
+      amounts.add(costNanounits(attributes[amountField]));
+    }
+    if (!hasCurrency) continue;
+    const unit = attributes[currencyField];
+    if (typeof unit !== 'string' || unit.length !== 3 || !/^[A-Z]{3}$/.test(unit)) return [];
+    currencies.add(unit);
+  }
+  if (amounts.size !== 1 || amounts.has(undefined) || currencies.size !== 1) return [];
+  const [amount] = amounts;
+  const [currency] = currencies;
+  const fraction = String(amount % NANOUNITS).padStart(9, '0').replace(/0+$/, '');
+  const whole = String(amount / NANOUNITS);
+  return [
+    { key: COST_AMOUNT, value: { stringValue: fraction ? `${whole}.${fraction}` : whole } },
+    { key: COST_CURRENCY, value: { stringValue: currency } },
+  ];
+}
 
 function otlpTraceEndpoint(raw) {
   const endpoint = String(raw);
@@ -437,7 +495,7 @@ class Span {
       startTimeUnixNano: this.start_unix_nano,
       endTimeUnixNano: this.end_unix_nano,
       status: { code: OTLP_STATUS[this.status] },
-      attributes,
+      attributes: [...attributes, ...reportedCostAttributes(this.attributes)],
     };
   }
 }

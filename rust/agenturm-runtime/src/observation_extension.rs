@@ -571,6 +571,7 @@ fn kind_name(kind: &ObservationKind) -> &'static str {
         ObservationKind::Diagnostic { .. } => "diagnostic",
         ObservationKind::Usage { .. } => "usage",
         ObservationKind::CreditUsage { .. } => "credit-usage",
+        ObservationKind::ReportedCost(_) => "reported-cost",
     }
 }
 

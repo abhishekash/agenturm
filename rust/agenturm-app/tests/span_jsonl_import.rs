@@ -251,6 +251,113 @@ fn a_conflict_with_retained_evidence_rolls_back_new_spans_and_the_checkpoint() {
     assert_eq!(check(run(&db, &["query", "--harness-id", SOURCE])), before);
 }
 
+#[test]
+fn reported_cost_admits_explicit_zero_and_currency_without_changing_span_replay() {
+    let scratch = Scratch::new();
+    let db = scratch.0.join("history.sqlite");
+    let file = scratch.0.join("spans.jsonl");
+    let mut root = span(ROOT, None, "OK");
+    let mut child = span(CHILD, Some(ROOT), "ERROR");
+    write_jsonl(&file, &[root.clone(), child.clone()]);
+    assert!(check(import_file(&db, &file, &[])).contains("Imported 2 spans"));
+    let before = check(run(&db, &["query", "--harness-id", SOURCE]));
+    let baseline: Value = serde_json::from_str(&before).unwrap();
+
+    root["attributes"]["llm.cost_usd"] = json!(0);
+    child["attributes"]["agenturm.reported_cost.amount"] = json!("0.000000123");
+    child["attributes"]["agenturm.reported_cost.currency"] = json!("EUR");
+    let invalid: Vec<_> = [
+        json!({"session.id":SESSION, "llm.cost.total":10}),
+        json!({"session.id":SESSION, "llm.cost.total":10, "gen_ai.usage.cost.currency":"EUR"}),
+        json!({"session.id":SESSION, "llm.cost_usd":0, "llm.cost_known":false}),
+        json!({"session.id":SESSION, "llm.cost_usd":0, "llm.cost_known":null}),
+        json!({"session.id":SESSION, "llm.cost_usd":1, "llm.cost.currency":"EUR"}),
+        json!({"session.id":SESSION, "llm.cost_usd":"1e-11"}),
+        json!({"session.id":SESSION, "llm.cost_usd":PRIVATE}),
+    ]
+    .into_iter()
+    .enumerate()
+    .map(|(i, attributes)| {
+        let mut row = span(&format!("{:016x}", i + 10), Some(ROOT), "OK");
+        row["attributes"] = attributes;
+        row
+    })
+    .collect();
+    let batch: Vec<_> = [root.clone(), child.clone()]
+        .into_iter()
+        .chain(invalid)
+        .collect();
+    write_jsonl(&file, &batch);
+    assert_eq!(
+        check(import_file(&db, &file, &[])),
+        "Imported 9 observations from 9 spans and 2 reported cost records.\n"
+    );
+    let queried = check(run(&db, &["query", "--harness-id", SOURCE]));
+    assert!(!queried.contains(PRIVATE));
+    let page: Value = serde_json::from_str(&queried).unwrap();
+    let rows = page["observations"].as_array().unwrap();
+    assert_eq!(rows.len(), 11);
+    for first in baseline["observations"].as_array().unwrap() {
+        assert!(rows.contains(first));
+    }
+    let costs: Vec<_> = rows
+        .iter()
+        .filter(|row| row["observation"]["kind"] == "reported_cost")
+        .collect();
+    assert_eq!(costs.len(), 2);
+    for (span_id, currency, nanounits) in [(ROOT, "USD", "0"), (CHILD, "EUR", "123")] {
+        let cost = costs
+            .iter()
+            .find(|row| row["observation"]["span"]["span_id"] == span_id)
+            .unwrap();
+        assert_eq!(
+            cost["observation"],
+            json!({
+                "kind":"reported_cost", "currency":currency, "nanounits":nanounits,
+                "span":{"trace_id":TRACE,"span_id":span_id},
+            })
+        );
+        assert_eq!(cost["identity"]["session_id"], SESSION);
+        assert_eq!(cost["identity"]["turn_id"], TURN);
+        assert_eq!(cost["identity"]["worker_id"], WORKER);
+    }
+    assert!(check(import_file(&db, &file, &[])).contains("Imported 0 observations"));
+
+    let otlp = scratch.0.join("spans.json");
+    let mut native = otlp_span(CHILD, Some(ROOT), 2);
+    native["attributes"].as_array_mut().unwrap().extend([
+        json!({"key":"gen_ai.usage.cost","value":{"doubleValue":0.000000123}}),
+        json!({"key":"gen_ai.usage.cost.currency","value":{"stringValue":"EUR"}}),
+    ]);
+    std::fs::write(
+        &otlp,
+        json!({"resourceSpans":[{"scopeSpans":[{"spans":[native]}]}]}).to_string(),
+    )
+    .unwrap();
+    assert!(
+        check(run(
+            &db,
+            &[
+                "import-traces",
+                "--file",
+                otlp.to_str().unwrap(),
+                "--source-id",
+                SOURCE
+            ]
+        ))
+        .contains("Imported 0 observations")
+    );
+
+    child["attributes"]["agenturm.reported_cost.amount"] = json!("0.000000124");
+    write_jsonl(&file, &[child]);
+    assert!(failure(import_file(&db, &file, &[])).contains("Cannot commit span JSONL"));
+    let backup = scratch.0.join("backup.sqlite");
+    check(run(&db, &["backup", "--output", backup.to_str().unwrap()]));
+    let backup_query = check(run(&backup, &["query", "--harness-id", SOURCE]));
+    let backup_page: Value = serde_json::from_str(&backup_query).unwrap();
+    assert_eq!(backup_page["observations"], page["observations"]);
+}
+
 fn span(id: &str, parent: Option<&str>, status: &str) -> Value {
     json!({
         "trace_id": TRACE, "span_id": id, "parent_span_id": parent,

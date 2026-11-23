@@ -9,6 +9,7 @@ import os
 import re
 import socket
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
 from urllib.parse import unquote, urlsplit
 
@@ -22,6 +23,69 @@ _SESSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,511}")
 _EXECUTION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}")
 _HARNESS = re.compile(r"[a-z][a-z0-9._/-]{0,95}")
 _BEARER = re.compile(r"Bearer [0-9a-f]{64}")
+_COST_AMOUNT = "agenturm.reported_cost.amount"
+_COST_CURRENCY = "agenturm.reported_cost.currency"
+_COST_FIELDS = (
+    (_COST_AMOUNT, _COST_CURRENCY),
+    ("gen_ai.usage.cost", "gen_ai.usage.cost.currency"),
+    ("llm.cost.total", "llm.cost.currency"),
+)
+_USD_COST = "llm.cost_usd"
+_COST_DECIMAL = re.compile(r"([0-9]+)(?:\.([0-9]*))?(?:[eE]([+-]?[0-9]+))?")
+_CURRENCY = re.compile(r"[A-Z]{3}")
+_NANOUNITS = 10**9
+
+
+def _cost_nanounits(value):
+    if type(value) not in (int, float, str) or (type(value) is int and value.bit_length() > 64):
+        return None
+    text = str(value)
+    match = _COST_DECIMAL.fullmatch(text) if len(text) <= 48 else None
+    if match is None:
+        return None
+    whole, fraction, exponent = match.groups()
+    exponent = int(exponent or 0)
+    if not -64 <= exponent <= 64:
+        return None
+    fraction = fraction or ""
+    digits = whole + fraction
+    significant = digits.strip("0")
+    if not significant:
+        return 0
+    shift = 9 + exponent + len(digits) - len(digits.rstrip("0")) - len(fraction)
+    if not 0 <= shift <= 19 - len(significant):
+        return None
+    result = int(significant) * 10**shift
+    return result if result < 1 << 63 else None
+
+
+def _reported_cost_attributes(attributes):
+    if not isinstance(attributes, Mapping):
+        return []
+    if "llm.cost_known" in attributes and attributes["llm.cost_known"] is not True:
+        return []
+    amounts, currencies = set(), set()
+    if _USD_COST in attributes:
+        amounts.add(_cost_nanounits(attributes[_USD_COST]))
+        currencies.add("USD")
+    for amount_field, currency_field in _COST_FIELDS:
+        if amount_field in attributes:
+            if currency_field not in attributes:
+                return []
+            amounts.add(_cost_nanounits(attributes[amount_field]))
+        if currency_field in attributes:
+            value = attributes[currency_field]
+            if not isinstance(value, str) or not _CURRENCY.fullmatch(value):
+                return []
+            currencies.add(value)
+    if len(amounts) != 1 or None in amounts or len(currencies) != 1:
+        return []
+    amount = amounts.pop()
+    text = f"{amount // _NANOUNITS}.{amount % _NANOUNITS:09d}".rstrip("0").rstrip(".")
+    return [
+        {"key": _COST_AMOUNT, "value": {"stringValue": text}},
+        {"key": _COST_CURRENCY, "value": {"stringValue": currencies.pop()}},
+    ]
 
 
 @dataclass(frozen=True)
@@ -134,7 +198,7 @@ def _project(span, attributes):
         "startTimeUnixNano": str(start),
         "endTimeUnixNano": str(end),
         "status": {"code": status},
-        "attributes": attributes,
+        "attributes": [*attributes, *_reported_cost_attributes(span.get("attributes"))],
     }
     if span.get("parent_span_id") is not None:
         parent = _span_id(span["parent_span_id"], 16)

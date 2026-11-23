@@ -148,29 +148,47 @@ fn decode_attribute(input: &[u8]) -> Result<Option<Attribute>, &'static str> {
     let Some(key) = key.and_then(|bytes| std::str::from_utf8(bytes).ok()) else {
         return Ok(None);
     };
-    if !matches!(
-        key,
-        "session.id" | "gen_ai.conversation.id" | "agenturm.source.id" | TURN_KEY | WORKER_KEY
-    ) {
+    let cost_key = super::cost::is_cost_key(key);
+    if !cost_key
+        && !matches!(
+            key,
+            "session.id" | "gen_ai.conversation.id" | "agenturm.source.id" | TURN_KEY | WORKER_KEY
+        )
+    {
         return Ok(None);
     }
-    let mut string_value = None;
+    let mut scalar = AttributeValue::default();
     if let Some(value) = value {
         for field in fields(value) {
             let (number, field) = field?;
             if (1..=7).contains(&number) {
-                string_value = match (number, field) {
+                scalar = AttributeValue::default();
+                match (number, field) {
                     (1, Field::Bytes(data)) if data.len() <= 512 => {
-                        Some(std::str::from_utf8(data).map_err(|_| MALFORMED)?.to_owned())
+                        if let Ok(text) = std::str::from_utf8(data) {
+                            scalar.string_value = text.into();
+                        } else if !cost_key {
+                            return Err(MALFORMED);
+                        }
                     }
-                    _ => None,
-                };
+                    (2, Field::Varint(value @ 0..=1)) if cost_key => {
+                        scalar.bool_value = (value != 0).into()
+                    }
+                    (3, Field::Varint(value)) if cost_key => {
+                        scalar.int_value = serde_json::value::to_raw_value(&(value as i64)).ok();
+                    }
+                    (4, Field::Fixed64(value)) if cost_key => {
+                        scalar.double_value =
+                            serde_json::value::to_raw_value(&f64::from_bits(value)).ok();
+                    }
+                    _ => {}
+                }
             }
         }
     }
     Ok(Some(Attribute {
         key: key.to_owned(),
-        value: Some(AttributeValue { string_value }),
+        value: Some(scalar),
     }))
 }
 
@@ -218,6 +236,52 @@ mod tests {
         encode_varint(&mut result, fields.len());
         result.extend_from_slice(fields);
         result
+    }
+
+    #[test]
+    fn selective_cost_attributes_preserve_protobuf_currency_and_precision() {
+        let mut span = message(1, &[3; 16]);
+        span.extend(message(2, &[4; 8]));
+        span.push(7 << 3 | 1);
+        span.extend(10_u64.to_le_bytes());
+        span.push(8 << 3 | 1);
+        span.extend(20_u64.to_le_bytes());
+
+        let attribute = |key: &str, scalar: &[u8]| {
+            let mut field = message(1, key.as_bytes());
+            field.extend(message(2, scalar));
+            message(9, &field)
+        };
+        span.extend(attribute("session.id", &message(1, b"native-session")));
+        span.extend(attribute("gen_ai.usage.cost.currency", &message(1, b"EUR")));
+        let mut amount = vec![4 << 3 | 1];
+        amount.extend(0.000000123_f64.to_bits().to_le_bytes());
+        span.extend(attribute("gen_ai.usage.cost", &amount));
+        span.extend(attribute("prompt", &message(1, b"private prompt")));
+        let id = agenturm_kernel::ExtensionId::parse("otlp.fixture").unwrap();
+        let project = |span: &[u8]| {
+            let export = message(1, &message(2, &message(2, span)));
+            super::super::decode_protobuf(&export, &id, None).unwrap().0
+        };
+        let rows = project(&span);
+        assert_eq!(rows.len(), 2);
+        let cost = rows
+            .iter()
+            .find_map(|row| match &row.kind {
+                agenturm_kernel::ObservationKind::ReportedCost(cost) => Some(cost),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(cost.currency, "EUR");
+        assert_eq!(cost.nanounits, 123);
+        assert_eq!(cost.span.as_ref().unwrap().span_id, "04".repeat(8));
+        assert!(
+            !serde_json::to_string(&rows)
+                .unwrap()
+                .contains("private prompt")
+        );
+        span.extend(attribute("llm.cost_known", &[2 << 3, 0]));
+        assert_eq!(project(&span).len(), 1);
     }
 
     #[test]

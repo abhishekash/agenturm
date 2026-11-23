@@ -128,6 +128,7 @@ impl<'de> Deserialize<'de> for ObservationRecord {
         enum FactKind {
             Usage,
             CreditUsage,
+            ReportedCost,
             Tool,
             FileEdit,
             McpCall,
@@ -146,6 +147,9 @@ impl<'de> Deserialize<'de> for ObservationRecord {
             FactKind::Usage => serde_json::from_str(payload).map(ObservationFact::Usage),
             FactKind::CreditUsage => {
                 serde_json::from_str(payload).map(ObservationFact::CreditUsage)
+            }
+            FactKind::ReportedCost => {
+                serde_json::from_str(payload).map(ObservationFact::ReportedCost)
             }
             FactKind::Tool => serde_json::from_str(payload).map(ObservationFact::Tool),
             FactKind::FileEdit => serde_json::from_str(payload).map(ObservationFact::FileEdit),
@@ -203,6 +207,7 @@ impl SessionIdentity {
 pub enum ObservationFact {
     Usage(Usage),
     CreditUsage(CreditUsage),
+    ReportedCost(ReportedCost),
     Tool(Tool),
     FileEdit(FileEdit),
     McpCall(McpCall),
@@ -261,6 +266,45 @@ pub struct CreditUsage {
 }
 
 pub const NANOCREDITS_PER_CREDIT: u64 = 1_000_000_000;
+pub const NANOUNITS_PER_CURRENCY_UNIT: u64 = 1_000_000_000;
+
+/// A monetary amount supplied by a producer, with its original currency.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ReportedCost {
+    pub currency: String,
+    pub nanounits: u64,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub span: Option<CostSpan>,
+}
+
+/// The producer's immutable OTLP span identity for a reported amount.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct CostSpan {
+    pub trace_id: String,
+    pub span_id: String,
+}
+
+impl ReportedCost {
+    pub fn is_valid(&self) -> bool {
+        self.currency.len() == 3
+            && self.currency.bytes().all(|byte| byte.is_ascii_uppercase())
+            && self.nanounits <= i64::MAX as u64
+            && self.span.as_ref().is_none_or(|span| {
+                valid_otlp_id(&span.trace_id, 16) && valid_otlp_id(&span.span_id, 8)
+            })
+    }
+
+    pub fn matches_event(&self, event_id: &str) -> bool {
+        self.span.as_ref().is_none_or(|span| {
+            event_id
+                .strip_prefix("otlp-cost:")
+                .and_then(|ids| ids.split_once(':'))
+                == Some((span.trace_id.as_str(), span.span_id.as_str()))
+        })
+    }
+}
 
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -350,22 +394,23 @@ pub struct TraceSpan {
 
 impl TraceSpan {
     pub fn is_valid(&self, ended_at_unix_ns: u64) -> bool {
-        fn id(value: &str, bytes: usize) -> bool {
-            value.len() == bytes * 2
-                && value
-                    .bytes()
-                    .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-                && value.bytes().any(|byte| byte != b'0')
-        }
-        id(&self.trace_id, 16)
-            && id(&self.span_id, 8)
+        valid_otlp_id(&self.trace_id, 16)
+            && valid_otlp_id(&self.span_id, 8)
             && self
                 .parent_span_id
                 .as_deref()
-                .is_none_or(|parent| id(parent, 8) && parent != self.span_id)
+                .is_none_or(|parent| valid_otlp_id(parent, 8) && parent != self.span_id)
             && (1..=ended_at_unix_ns).contains(&self.started_at_unix_ns)
             && ended_at_unix_ns <= i64::MAX as u64
     }
+}
+
+fn valid_otlp_id(value: &str, bytes: usize) -> bool {
+    value.len() == bytes * 2
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        && value.bytes().any(|byte| byte != b'0')
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]

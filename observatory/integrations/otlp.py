@@ -19,6 +19,7 @@ def _span_metadata(span):
         "start_unix_nano": span.start_time,
         "end_unix_nano": span.end_time,
         "status": span.status.status_code.name,
+        "attributes": span.attributes,
     }
 
 

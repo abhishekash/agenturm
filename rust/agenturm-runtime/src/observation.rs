@@ -115,6 +115,17 @@ fn project_record(record: ObservationRecord, source_id: &str) -> Result<Option<R
                 nanocredits: usage.nanocredits,
             }
         }
+        ObservationFact::ReportedCost(cost) => {
+            if !cost.is_valid()
+                || !cost.matches_event(&record.event_id)
+                || (cost.span.is_some() && !source_id.starts_with("otlp."))
+            {
+                return Err(RuntimeError::new(
+                    "source reported cost metadata or event identity is invalid",
+                ));
+            }
+            ObservationKind::ReportedCost(cost)
+        }
         ObservationFact::Tool(tool) => {
             if !matches!(tool.category.as_str(), "shell" | "file" | "mcp" | "other")
                 || !matches!(

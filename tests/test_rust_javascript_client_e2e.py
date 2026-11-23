@@ -157,11 +157,14 @@ await client.trace({
   identities.trace = run.trace_id;
   await run.span('synthetic private span', async parent => {
     identities.parent = parent.span_id;
+    parent.setAttribute('gen_ai.usage.cost', 'synthetic private invalid amount');
+    parent.setAttribute('gen_ai.usage.cost.currency', 'EUR');
     await run.span('child', child => {
       identities.child = child.span_id;
       child.setAttribute('agenturm.source.id', 'harness.unverified');
       child.setAttribute('agenturm.turn.id', 'unverified-turn');
       child.setAttribute('agenturm.worker.id', 'unverified-worker');
+      child.setAttribute('llm.cost_usd', '0.000000001');
       child.setStatus('OK');
     });
   });
@@ -181,6 +184,12 @@ process.exitCode = 23;
         self.assertEqual(result.returncode, 23, result.stderr)
         identities = json.loads(result.stdout)
         rows = self.observations("otlp.node")
+        costs = [row["observation"] for row in rows if row["observation"]["kind"] == "reported_cost"]
+        self.assertEqual(costs, [{
+            "kind": "reported_cost", "currency": "USD", "nanounits": "1",
+            "span": {"trace_id": identities["trace"], "span_id": identities["child"]},
+        }])
+        rows = [row for row in rows if row["observation"]["kind"] == "trace_span"]
         self.assertEqual(len(rows), 3)
         for row in rows:
             self.assertEqual(row["identity"]["session_id"], "node-session")

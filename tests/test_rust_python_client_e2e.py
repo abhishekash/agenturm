@@ -68,8 +68,12 @@ async def produce():
                             session_id="python-session", harness_id="harness.pi",
                             turn_id="python-turn", worker_id="python-worker") as run:
         async with run.span("synthetic private parent") as parent:
+            parent.set_attribute("llm.cost_usd", 10)
+            parent.set_attribute("llm.cost_known", False)
             async with run.span("synthetic private child") as child:
                 child.set_attribute("session.id", "synthetic private alternate session")
+                child.set_attribute("agenturm.reported_cost.amount", 0)
+                child.set_attribute("agenturm.reported_cost.currency", "EUR")
                 child.add_event("synthetic private event")
                 child.set_status("ERROR")
     print(json.dumps({"root": run.root.span_id, "parent": parent.span_id,
@@ -81,6 +85,15 @@ raise SystemExit(23)
 """)
         ids = self.launch("otlp.python", 23)
         rows = self.observations("otlp.python")
+        costs = [row for row in rows if row["observation"]["kind"] == "reported_cost"]
+        rows = [row for row in rows if row["observation"]["kind"] == "trace_span"]
+        self.assertEqual(len(costs), 1)
+        self.assertEqual(costs[0]["observation"], {
+            "kind": "reported_cost", "currency": "EUR", "nanounits": "0",
+            "span": {"trace_id": ids["trace"], "span_id": ids["child"]},
+        })
+        self.assertEqual(costs[0]["identity"]["turn_id"], "python-turn")
+        self.assertEqual(costs[0]["identity"]["worker_id"], "python-worker")
         self.assertEqual(len(rows), 3)
         for row in rows:
             identity = row["identity"]
@@ -197,6 +210,7 @@ with tracer.start_as_current_span("synthetic private root") as root:
     root.set_attribute("session.id", "synthetic private session")
     with tracer.start_as_current_span("synthetic private tool") as child:
         child.add_event("synthetic private event", {"payload": "synthetic private output"})
+        child.set_attribute("llm.cost_usd", 0.000000123)
         child.set_status(trace.StatusCode.OK)
 print(json.dumps({"trace": f"{root.get_span_context().trace_id:032x}",
                   "parent": f"{root.get_span_context().span_id:016x}",
@@ -250,6 +264,12 @@ with patch.dict(sys.modules, packages), patch(
 """)
         ids = self.launch("otlp.python-auto", 24)
         rows = self.observations("otlp.python-auto")
+        cost = [row["observation"] for row in rows if row["observation"]["kind"] == "reported_cost"]
+        self.assertEqual(cost, [{
+            "kind": "reported_cost", "currency": "USD", "nanounits": "123",
+            "span": {"trace_id": ids["trace"], "span_id": ids["child"]},
+        }])
+        rows = [row for row in rows if row["observation"]["kind"] == "trace_span"]
         self.assertEqual(len(rows), 2)
         self.assertEqual({row["identity"]["session_id"] for row in rows}, {"auto-session"})
         self.assertEqual({row["observation"]["target_source_id"] for row in rows}, {"harness.pi"})

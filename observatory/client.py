@@ -253,13 +253,14 @@ class Run:
     def _flush(self):
         metadata = (
             {"trace_id": self.trace_id, "span_id": span.span_id, "parent_span_id": span.parent_span_id,
-             "start_unix_nano": span.start_ns, "end_unix_nano": span.end_ns, "status": span.status}
+             "start_unix_nano": span.start_ns, "end_unix_nano": span.end_ns, "status": span.status,
+             "attributes": span.attributes}
             for span in self.spans
         )
         if self._otlp_scope is not None:
             return self.client._post_otlp_spans(metadata, self._otlp_scope)
         return self.client._post_spans([
-            {**row, "name": span.name, "attributes": span.attributes, "events": span.events,
+            {**row, "name": span.name, "events": span.events,
              "resource_attributes": self.client.resource_attributes}
             for row, span in zip(metadata, self.spans)
         ])

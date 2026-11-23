@@ -138,6 +138,7 @@ pub enum ObservationKind {
     CreditUsage {
         nanocredits: u64,
     },
+    ReportedCost(agenturm_kernel::ReportedCost),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -308,6 +309,9 @@ impl ObservationBatch {
                         ObservationKind::CreditUsage {
                             nanocredits: *nanocredits,
                         }
+                    }
+                    KernelObservationKind::ReportedCost(cost) => {
+                        ObservationKind::ReportedCost(cost.clone())
                     }
                     KernelObservationKind::Diagnostic { code, severity } => {
                         ObservationKind::Diagnostic {
@@ -1797,6 +1801,9 @@ impl Store {
                     ObservationKind::CreditUsage { nanocredits } => {
                         KernelObservationKind::CreditUsage { nanocredits }
                     }
+                    ObservationKind::ReportedCost(cost) => {
+                        KernelObservationKind::ReportedCost(cost)
+                    }
                     ObservationKind::Diagnostic { code, severity } => {
                         KernelObservationKind::Diagnostic { code, severity }
                     }
@@ -2090,6 +2097,16 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
             && *nanocredits > i64::MAX as u64
         {
             return Err(StoreError::Invalid("credit usage exceeds supported range"));
+        }
+        if let ObservationKind::ReportedCost(cost) = &observation.kind
+            && (observation.identity.scope != StoredScope::Session
+                || !cost.is_valid()
+                || !cost.matches_event(&observation.event_id)
+                || (cost.span.is_some() && !batch.source_id.starts_with("otlp.")))
+        {
+            return Err(StoreError::Invalid(
+                "reported cost metadata or event identity is invalid",
+            ));
         }
         if let ObservationKind::Diagnostic { code, severity } = &observation.kind
             && (!agenturm_kernel::is_safe_diagnostic_code(code)

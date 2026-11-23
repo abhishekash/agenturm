@@ -42,7 +42,27 @@ Rows carry `trace_id`, `span_id`, optional `parent_span_id`, `start_unix_nano` a
 
 A span needs an exact session ID from its `attributes` or the explicit `--session-id` argument. Span-level session aliases must agree, including `session.id`, `gen_ai.conversation.id`, and the legacy session, conversation and thread aliases. The argument fills missing session IDs and must match any IDs carried by the file. A native turn link requires `agenturm.source.id` and `agenturm.turn.id`. A worker link adds `agenturm.worker.id`.
 
-Imports retain trace structure, timing, status and exact scope. Import discards span names, payloads, events, links, token usage, cost, and eval results. Those legacy fields and workflows have separate cutover coverage. Exact structural replays deduplicate across JSONL and OTLP JSON under the same source ID. Conflicting retained identities reject the entire import.
+Imports retain trace structure, timing, status, exact scope and explicitly reported cost. Import discards span names, payloads, events, links, token usage and eval results. Those legacy fields and workflows have separate cutover coverage. Exact structural replays deduplicate across JSONL and OTLP JSON under the same source ID. Conflicting retained identities reject the entire import.
+
+### Reported cost
+
+OTLP and native JSONL spans can carry `agenturm.reported_cost.amount` and
+`agenturm.reported_cost.currency`. The Rust-compatible Python and Node
+producers, including the Python OpenTelemetry metadata exporter, forward
+these fields as bounded scalars. The amount accepts a decimal string or
+number. The currency is a three-letter uppercase code. The receiver also
+accepts `llm.cost_usd`, `llm.cost.total` with `llm.cost.currency`, and
+`gen_ai.usage.cost` with `gen_ai.usage.cost.currency`.
+
+Amounts use integer nano-units, with nine decimal places. Explicit zero
+is a cost record. Missing or invalid amounts, conflicting values, or an
+explicit `llm.cost_known` value other than true leave the span without a
+cost record. Query exposes each record's source, exact span, currency and
+decimal-string `nanounits`. Workspace Usage and the originating OTLP
+session's Usage show the amount and currency beside the source evidence.
+Multiple spans can repeat a report, so Usage shows individual records and
+leaves totals open. Kiro credits use their native credit unit. Agenturm
+does not derive an amount from tokens, model prices, or credits.
 
 ### Import evaluation results
 
@@ -117,7 +137,7 @@ client's checkout.
 | OpenAI, Anthropic, LangChain and LangGraph | Python 0.2.8 instruments OpenAI and Anthropic calls and LangChain automatically, with explicit callbacks also available for LangChain and LangGraph. Inventory producer-side exporters and test selected integrations against Rust before claiming equivalent coverage. Python Agenturm bootstrap remains a product decision. SDK integration maintainer and release owner. |
 | OpenAI Agents SDK, Pydantic AI, Google ADK, Node.js | Python 0.2.8 supplies an Agents SDK adapter and exercises vendor OTLP exporters and a Node.js client. Test native OTLP producers independently. Decide which producer-side integrations stay required and which old Agenturm client ingestion routes to retire. SDK integration maintainer and release owner. |
 | Prompt and MCP payloads | Preserve the recorded operation and current scope when opening content. Unavailable, revoked and over-limit evidence needs a visible outcome. B2 and B4 own the prompt and MCP detail gaps. |
-| Usage, cost and host history | Preserve presence and units for input, output and cache fields. Show cost only when recorded. Rust currently has token counts, Kiro credits and current same-user Linux host data. Producer-reported cost, historical host metrics and process drilldown remain open. Telemetry maintainer implements the retained fields after the release owner sets scope. |
+| Usage, cost and host history | Rust shows recorded token counts, Kiro credits, individually reported OTLP costs and current same-user Linux host data. Aggregate cost views, historical host metrics and process drilldown remain open. |
 
 The vendor fixture matrix records the actual SDK paths and pending checks. [Rust OTLP vendor producer qualification](../validation/rust-vendor-sdk-producers.md)
 

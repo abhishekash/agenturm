@@ -2296,6 +2296,10 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                 ObservationKind::CreditUsage { nanocredits } => {
                     serde_json::json!({"kind":"credit_usage", "nanocredits":nanocredits})
                 }
+                ObservationKind::ReportedCost(cost) => serde_json::json!({
+                    "kind":"reported_cost", "currency":cost.currency,
+                    "nanounits":cost.nanounits.to_string(), "span":cost.span,
+                }),
                 ObservationKind::Diagnostic { code, severity } => {
                     serde_json::json!({"kind":"diagnostic", "code":code, "severity":severity})
                 }
