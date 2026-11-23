@@ -28,6 +28,7 @@ mod remote_history;
 mod retention_cli;
 mod review_receipt;
 mod session_evidence;
+mod session_projects;
 mod session_titles;
 mod span_jsonl_import;
 mod summary_cli;
@@ -90,8 +91,8 @@ use agenturm_store::{
     SessionPosition, SessionQuery, Store, TraceReviewQuery,
 };
 use agenturm_ui::{
-    HistorySelection, RecordedSession, ReviewVersion, SessionCatalog, SessionCursor, SessionView,
-    WorkspaceRequest, WorkspaceResponse, WorkspaceView,
+    HistorySelection, ProjectOrigin, RecordedSession, ReviewVersion, SessionCatalog, SessionCursor,
+    SessionView, WorkspaceRequest, WorkspaceResponse, WorkspaceView,
 };
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1910,6 +1911,7 @@ fn load_session_catalog(
         .query_sessions(&query)
         .map_err(|error| format!("Read sessions failed: {error}"))?;
     let mut titles = session_titles::load(store, db, &page);
+    let mut projects = session_projects::load(store.session_title_store(), db, &page);
     let keys = page
         .sessions
         .iter()
@@ -1956,13 +1958,15 @@ fn load_session_catalog(
             let (state, reason, turn_id) = session.lifecycle.map_or((None, None, None), |life| {
                 (Some(life.state), life.reason_code, life.turn_id)
             });
+            let session_key = (session.harness_id.clone(), session.session_id.clone());
+            let project_path = projects.remove(&session_key).map(String::into_boxed_str);
             RecordedSession {
                 harness_id: session.harness_id.as_str().to_owned(),
-                project_path: None,
-                project_origin: None,
-                task_title: titles
-                    .remove(&(session.harness_id.clone(), session.session_id.clone()))
-                    .map(String::into_boxed_str),
+                project_origin: project_path
+                    .as_ref()
+                    .map(|_| ProjectOrigin::OperatorTaskWorkspace),
+                project_path,
+                task_title: titles.remove(&session_key).map(String::into_boxed_str),
                 pending_requests: pending
                     .remove(&(
                         session.harness_id.as_str().to_owned(),

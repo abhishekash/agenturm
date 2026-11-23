@@ -4,7 +4,7 @@ mod continuity;
 pub use continuity::{ApprovedTaskDraft, TaskDraftApproval, TaskSourceProof};
 
 use crate::{MAX_EVENT_ID_BYTES, MAX_SESSION_KEY_BYTES, Store, StoreError, validate_identifier};
-use agenturm_kernel::ExtensionId;
+use agenturm_kernel::{ExtensionId, ReadSnapshot};
 use rusqlite::{
     Connection, OpenFlags, OptionalExtension, Row, TransactionBehavior, params, types::Type,
 };
@@ -14,7 +14,7 @@ use std::collections::BTreeSet;
 use std::fmt;
 use std::fs::{self, OpenOptions};
 use std::io;
-use std::path::{Path, PathBuf};
+use std::path::{Component, Path, PathBuf};
 use std::time::{Duration, SystemTime, UNIX_EPOCH};
 
 const APPLICATION_ID: i64 = 0x4157_5350;
@@ -22,6 +22,7 @@ const SCHEMA_VERSION: i64 = 5;
 pub const MAX_WORKSPACE_GIT_DIFF_BYTES: usize = 64 * 1024;
 pub const MAX_WORKSPACE_PAGE_SIZE: usize = 200;
 const MAX_TITLE_BYTES: usize = 256;
+const MAX_ROSTER_PROJECT_PATH_BYTES: usize = 512;
 const MAX_NOTE_BYTES: usize = 4 * 1024;
 const MAX_DECISION_VERSIONS: usize = 128;
 const MAX_DECISION_BYTES: usize = 480 * 1024;
@@ -521,25 +522,100 @@ impl WorkspaceLedger {
             return Ok(Vec::new());
         }
         if let Some(expected) = local_history.filter(|_| !page.items.is_empty()) {
-            let current = Store::open_read_only(&self.history).map_err(WorkspaceError::History)?;
-            if expected
-                .history_identity()
-                .map_err(WorkspaceError::History)?
-                != current
-                    .history_identity()
-                    .map_err(WorkspaceError::History)?
-                || expected
-                    .read_incarnation()
-                    .map_err(WorkspaceError::History)?
-                    != current
-                        .read_incarnation()
-                        .map_err(WorkspaceError::History)?
-            {
-                return Err(WorkspaceError::HistoryChanged);
-            }
-            self.verify_history()?;
+            self.verify_local_history(expected, None)?;
         }
         Ok(page.items)
+    }
+
+    /// Project candidates from current operator-saved Git snapshots in this
+    /// local history. Each nullable root is for an explicit session-level task
+    /// link. An invalid candidate stays distinguishable from an absent capture
+    /// so it cannot hide a conflict when the caller merges links.
+    pub fn session_task_project_roots(
+        &self,
+        local_history: &Store,
+        snapshot: ReadSnapshot,
+    ) -> Result<Vec<(WorkspaceAnchor, Option<String>)>> {
+        let page = self.list(
+            |version| match version {
+                3..=SCHEMA_VERSION => {
+                    "SELECT t.id, l.source_id, l.session_id, g.repository_root
+                    FROM agenturm_saved_tasks AS t JOIN agenturm_task_links AS l ON l.task_id=t.id
+                    JOIN agenturm_task_git_snapshots AS g ON g.task_id=t.id
+                    WHERE t.history_binding = ?1 AND t.id <= ?2 AND t.archived = 0
+                        AND l.worker_key = '' AND l.turn_key = '' ORDER BY t.id DESC, l.id DESC LIMIT ?3"
+                }
+                2 => {
+                    "SELECT t.id, l.source_id, l.session_id, g.repository_root
+                    FROM agenturm_saved_tasks AS t JOIN agenturm_task_links AS l ON l.task_id=t.id
+                    JOIN agenturm_task_git_snapshots AS g ON g.task_id=t.id
+                    WHERE t.history_binding = ?1 AND t.id <= ?2
+                        AND l.worker_key = '' AND l.turn_key = '' ORDER BY t.id DESC, l.id DESC LIMIT ?3"
+                }
+                _ => {
+                    "SELECT id, source_id, session_id, NULL FROM agenturm_saved_tasks
+                    WHERE history_binding = ?1 AND id <= ?2 AND 0 LIMIT ?3"
+                }
+            },
+            MAX_WORKSPACE_PAGE_SIZE,
+            None,
+            |row, _| {
+                let source: String = row.get(1)?;
+                let harness_id = ExtensionId::parse(source).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(1, Type::Text, Box::new(error))
+                })?;
+                let root = row.get_ref(3)?.as_str().ok().filter(|root| {
+                    let path = Path::new(root);
+                    root.len() <= MAX_ROSTER_PROJECT_PATH_BYTES
+                        && path.is_absolute()
+                        && display_safe(root, false)
+                        && !path.components().any(|part| part == Component::ParentDir)
+                });
+                Ok((
+                    WorkspaceAnchor {
+                        harness_id,
+                        session_id: row.get(2)?,
+                        worker_id: None,
+                        turn_id: None,
+                    },
+                    root.map(str::to_owned),
+                ))
+            },
+        )?;
+        if page.next_before.is_some() {
+            // Another link outside the bound could disagree with any root.
+            return Ok(Vec::new());
+        }
+        if !page.items.is_empty() {
+            self.verify_local_history(local_history, Some(snapshot))?;
+        }
+        Ok(page.items)
+    }
+
+    fn verify_local_history(&self, expected: &Store, snapshot: Option<ReadSnapshot>) -> Result<()> {
+        let current = Store::open_read_only(&self.history).map_err(WorkspaceError::History)?;
+        let transaction = current.connection.unchecked_transaction()?;
+        if expected
+            .history_identity()
+            .map_err(WorkspaceError::History)?
+            != current
+                .history_identity()
+                .map_err(WorkspaceError::History)?
+            || expected
+                .read_incarnation()
+                .map_err(WorkspaceError::History)?
+                != current
+                    .read_incarnation()
+                    .map_err(WorkspaceError::History)?
+        {
+            return Err(WorkspaceError::HistoryChanged);
+        }
+        if let Some(snapshot) = snapshot {
+            crate::retention::resolve_read_snapshot(&transaction, Some(snapshot))
+                .map_err(WorkspaceError::History)?;
+        }
+        self.verify_history()?;
+        Ok(())
     }
 
     pub fn list_tasks_including_archived(
@@ -1923,6 +1999,128 @@ mod tests {
         );
         assert!(matches!(
             ledger.session_task_titles(Some(&other)),
+            Err(WorkspaceError::HistoryChanged)
+        ));
+    }
+
+    #[test]
+    fn roster_projects_require_current_exact_active_session_captures() {
+        let scratch = Scratch::new();
+        let path = scratch.0.join("history.sqlite");
+        let mut store = Store::open_collector(&path).unwrap();
+        let worker = anchor("harness.codex");
+        let session = WorkspaceAnchor {
+            worker_id: None,
+            turn_id: None,
+            ..worker.clone()
+        };
+        let sibling = WorkspaceAnchor {
+            worker_id: None,
+            turn_id: None,
+            ..anchor("harness.pi")
+        };
+        let turn_only = WorkspaceAnchor {
+            worker_id: None,
+            ..anchor("harness.claude")
+        };
+        seed(&mut store, &worker, &[0]);
+        seed(&mut store, &sibling, &[0]);
+        seed(&mut store, &turn_only, &[0]);
+        let snapshot = store.observation_page(1).unwrap().snapshot_id;
+        let ledger = WorkspaceLedger::open(&path).unwrap();
+        assert!(
+            ledger
+                .session_task_project_roots(&store, snapshot)
+                .unwrap()
+                .is_empty()
+        );
+
+        let save = |anchor, root: &str| {
+            let task = ledger
+                .create_task(anchor, "Operator task", "private note")
+                .unwrap();
+            assert!(
+                ledger
+                    .save_task_workspace_snapshot(
+                        task.id,
+                        &WorkspaceGitSnapshot {
+                            repository_root: root.into(),
+                            branch: None,
+                            head_commit: None,
+                            staged_changes: 0,
+                            unstaged_changes: 0,
+                            untracked_files: 0,
+                            captured_at_unix_ns: 1,
+                        }
+                    )
+                    .unwrap()
+            );
+            task.id
+        };
+        save(Some(&session), "/work/codex");
+        save(Some(&sibling), "/work/pi");
+        save(Some(&worker), "/workers/hidden");
+        save(Some(&turn_only), "/turns/hidden");
+        save(None, "/unlinked/hidden");
+        let archived = save(Some(&session), "/archived/hidden");
+        assert!(
+            ledger
+                .set_task_archived(archived, true, None)
+                .unwrap()
+                .is_some()
+        );
+
+        assert_eq!(
+            ledger.session_task_project_roots(&store, snapshot).unwrap(),
+            [
+                (sibling.clone(), Some("/work/pi".into())),
+                (session.clone(), Some("/work/codex".into()))
+            ]
+        );
+
+        let long = format!("/{}", "x".repeat(MAX_ROSTER_PROJECT_PATH_BYTES));
+        save(Some(&session), &long);
+        let corrupt = save(Some(&sibling), "/previously-valid");
+        Connection::open(&ledger.path)
+            .unwrap()
+            .execute(
+                "UPDATE agenturm_task_git_snapshots SET repository_root = ?2 WHERE task_id = ?1",
+                params![corrupt, "relative/prohibited"],
+            )
+            .unwrap();
+        let rows = ledger.session_task_project_roots(&store, snapshot).unwrap();
+        assert_eq!(
+            &rows[..2],
+            &[(sibling.clone(), None), (session.clone(), None)]
+        );
+        assert_eq!(rows.len(), 4);
+        assert!(
+            ledger
+                .session_task_project_roots(
+                    &store,
+                    ReadSnapshot::new(snapshot.watermark() + 1, snapshot.incarnation())
+                )
+                .is_err()
+        );
+
+        let alternate_incarnation = "0123456789abcdef0123456789abcdef".parse().unwrap();
+        assert!(matches!(
+            ledger.session_task_project_roots(
+                &store,
+                ReadSnapshot::new(snapshot.watermark(), Some(alternate_incarnation))
+            ),
+            Err(WorkspaceError::History(StoreError::SnapshotReplaced))
+        ));
+
+        let other = scratch.0.join("other.sqlite");
+        let mut other = Store::open_collector(&other).unwrap();
+        seed(&mut other, &worker, &[0]);
+        seed(&mut other, &sibling, &[0]);
+        seed(&mut other, &turn_only, &[0]);
+        let matching_number = other.observation_page(1).unwrap().snapshot_id;
+        assert_eq!(snapshot, matching_number);
+        assert!(matches!(
+            ledger.session_task_project_roots(&other, matching_number),
             Err(WorkspaceError::HistoryChanged)
         ));
     }
