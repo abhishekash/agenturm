@@ -90,7 +90,12 @@ fn receipt_preserves_the_exact_scope_and_private_destinations() {
         serde_json::from_slice::<Value>(&output.stdout).unwrap()
     };
     let legacy = read_json(review(&[]));
-    assert_eq!(legacy.as_object().unwrap().len(), 3);
+    assert_eq!(legacy.as_object().unwrap().len(), 4);
+    assert!(
+        legacy["history_identity"]
+            .as_str()
+            .is_some_and(|identity| !identity.is_empty())
+    );
     let directory = destination.to_str().unwrap();
     let receipt = read_json(review(&["--format", "json", "--output", directory]));
     for key in ["observations", "has_more", "next_before"] {
@@ -100,10 +105,12 @@ fn receipt_preserves_the_exact_scope_and_private_destinations() {
     assert_eq!(
         receipt["scope"],
         json!({
+            "source_id":"harness.codex",
             "harness_id":"harness.codex",
             "session_id":"session",
             "turn_id":"turn",
             "worker_id":null,
+            "worker_scope":"workerless",
         })
     );
     assert_eq!(

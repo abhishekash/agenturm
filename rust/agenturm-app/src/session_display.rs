@@ -7,12 +7,13 @@ pub(super) fn add_context(snapshot: &mut Snapshot, pane: &ExtensionId, session: 
         return;
     };
     let mut rows = vec![MetricRow {
-        label: "Task name".into(),
-        value: session
-            .task_title
-            .as_deref()
-            .unwrap_or("Name unavailable")
-            .into(),
+        label: if session.task_title.is_some() {
+            "Task name"
+        } else {
+            "Session name"
+        }
+        .into(),
+        value: session.display_name().into_owned(),
     }];
     if let Some(context) = &session.native_context {
         for (label, value) in [

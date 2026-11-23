@@ -1,27 +1,19 @@
 //! Source-aware, bounded metadata GET routes over the dedicated reader.
 
+use agenturm_kernel::retained_history::HistoryProjection;
 use agenturm_kernel::{
-    ExtensionId, ObservationKind, ObservationPosition, ObservationQuery, ReadSnapshot,
-    is_host_source,
+    ExtensionId, ObservationPosition, ObservationQuery, ReadSnapshot, is_host_source,
 };
 use agenturm_storage_service::native_read::ReadFailure;
-use agenturm_storage_service::{NativeSelection, ReaderHistoryReply, ReaderHistoryRequest};
+use agenturm_storage_service::{
+    NativeSelection, ProjectedHistoryScope, ReaderHistoryReply, ReaderHistoryRequest,
+};
 use agenturm_store::{
     EvalInventoryQuery, MAX_EVAL_INVENTORY_SOURCES, MAX_HOST_HISTORY_PAGE, SessionPosition,
     SessionQuery,
 };
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
-
-#[derive(Clone, Copy, Debug, Eq, PartialEq)]
-pub(super) enum View {
-    Activity,
-    Traces,
-    Progress,
-    Mcp,
-    Usage,
-    Relationships,
-}
 
 pub(super) enum Request {
     Health,
@@ -30,8 +22,7 @@ pub(super) enum Request {
     HostHistory(ObservationQuery),
     History {
         query: ObservationQuery,
-        view: View,
-        trace_id: Option<String>,
+        projection: HistoryProjection,
     },
 }
 
@@ -64,18 +55,23 @@ impl Request {
             return Ok(Self::EvalInventory(query));
         }
         let host_history = path == "/api/host";
-        let view = match path {
+        let projection = match path {
             "/api/sessions" | "/api/host" => None,
-            "/api/activity" => Some(View::Activity),
-            "/api/traces" => Some(View::Traces),
-            "/api/mcp" => Some(View::Mcp),
-            "/api/metrics" => Some(View::Usage),
-            "/api/hierarchy" => Some(View::Relationships),
-            _ if path.starts_with("/api/traces/") && path.ends_with("/spans") => Some(View::Traces),
-            _ if path.starts_with("/api/traces/") && path.ends_with("/progress") => {
-                Some(View::Progress)
+            "/api/activity" => Some(HistoryProjection::Activity),
+            "/api/traces" => Some(HistoryProjection::Traces { trace_id: None }),
+            "/api/mcp" => {
+                let query = fields.remove("q");
+                if query
+                    .as_deref()
+                    .is_some_and(|query| !HistoryProjection::valid_mcp_query(query))
+                {
+                    return Err("400 Bad Request");
+                }
+                Some(HistoryProjection::Mcp { query })
             }
-            _ => return Err("404 Not Found"),
+            "/api/metrics" => Some(HistoryProjection::Usage),
+            "/api/hierarchy" => Some(HistoryProjection::Relationships),
+            _ => Some(trace_projection(path)?),
         };
         let limit = fields
             .remove("limit")
@@ -106,7 +102,7 @@ impl Request {
             })
             .transpose()?;
         let before = fields.remove("cursor");
-        if view.is_none() && !host_history {
+        if projection.is_none() && !host_history {
             let before = before
                 .map(|value| {
                     serde_json::from_str::<SessionPosition>(&value).map_err(|_| "400 Bad Request")
@@ -170,29 +166,19 @@ impl Request {
             }
             return Ok(Self::HostHistory(query));
         }
-        let trace_id = if let Some(id) = path.strip_prefix("/api/traces/").and_then(|path| {
-            path.strip_suffix("/spans")
-                .or_else(|| path.strip_suffix("/progress"))
-        }) {
-            if id.len() != 32
-                || !id.bytes().all(|ch| ch.is_ascii_hexdigit())
-                || id.bytes().all(|ch| ch == b'0')
-                || !query
-                    .harness_id
-                    .as_deref()
-                    .is_some_and(|source| source.starts_with("otlp."))
-            {
-                return Err("400 Bad Request");
-            }
-            Some(id.to_ascii_lowercase())
-        } else {
-            None
-        };
-        Ok(Self::History {
-            query,
-            view: view.expect("history view"),
-            trace_id,
-        })
+        let projection = projection.expect("history projection");
+        if matches!(
+            &projection,
+            HistoryProjection::Traces { trace_id: Some(_) }
+                | HistoryProjection::Progress { trace_id: Some(_) }
+        ) && !query
+            .harness_id
+            .as_deref()
+            .is_some_and(|source| source.starts_with("otlp."))
+        {
+            return Err("400 Bad Request");
+        }
+        Ok(Self::History { query, projection })
     }
 
     pub fn is_health(&self) -> bool {
@@ -264,14 +250,13 @@ impl Request {
                 json!({ "snapshot_id":page.snapshot_id, "samples":page.observations,
                     "coverage":"bounded recorded Host page", "has_more":page.has_more, "next_cursor":next })
             }
-            Self::History {
-                query,
-                view,
-                trace_id,
-            } => {
-                let ReaderHistoryReply::History(mut page) = read(ReaderHistoryRequest::History {
+            Self::History { query, projection } => {
+                let ReaderHistoryReply::History(page) = read(ReaderHistoryRequest::History {
                     query,
-                    selection: NativeSelection::Observations,
+                    selection: NativeSelection::Projected {
+                        projection,
+                        scope: ProjectedHistoryScope::All,
+                    },
                 })?
                 else {
                     return Err(ReadFailure::Unavailable);
@@ -283,28 +268,6 @@ impl Request {
                     .map(serde_json::to_string)
                     .transpose()
                     .map_err(|_| ReadFailure::Unavailable)?;
-                page.observations.retain(|row| match (&row.kind, view) {
-                    (ObservationKind::HostSample(_), _) => false,
-                    (_, View::Activity) => true,
-                    (ObservationKind::TraceSpan(span), View::Traces) => {
-                        trace_id.as_ref().is_none_or(|id| id == &span.trace_id)
-                    }
-                    (ObservationKind::TraceProgress(_), View::Traces) if trace_id.is_none() => true,
-                    (ObservationKind::TraceProgress(progress), View::Progress) => {
-                        trace_id.as_ref().is_none_or(|id| id == &progress.trace_id)
-                    }
-                    (ObservationKind::TraceProgress(_), View::Traces) => trace_id.is_none(),
-                    (ObservationKind::McpCall { .. }, View::Mcp) => true,
-                    (
-                        ObservationKind::Usage { .. }
-                        | ObservationKind::CreditUsage { .. }
-                        | ObservationKind::ReportedCost(_)
-                        | ObservationKind::SpanTokenUsage(_),
-                        View::Usage,
-                    ) => true,
-                    (ObservationKind::Relationship { .. }, View::Relationships) => true,
-                    _ => false,
-                });
                 json!({ "snapshot_id":page.snapshot_id, "observations":page.observations, "inspected":inspected,
                     "coverage":"bounded metadata page", "has_more":page.has_more, "next_cursor":next })
             }
@@ -314,6 +277,29 @@ impl Request {
         body["history_identity"] = json!(binding);
         Ok(body)
     }
+}
+
+fn trace_projection(path: &str) -> Result<HistoryProjection, &'static str> {
+    let path = path.strip_prefix("/api/traces/").ok_or("404 Not Found")?;
+    let (id, spans) = if let Some(id) = path.strip_suffix("/spans") {
+        (id, true)
+    } else if let Some(id) = path.strip_suffix("/progress") {
+        (id, false)
+    } else {
+        return Err("404 Not Found");
+    };
+    if id.len() != 32
+        || !id.bytes().all(|byte| byte.is_ascii_hexdigit())
+        || id.bytes().all(|byte| byte == b'0')
+    {
+        return Err("400 Bad Request");
+    }
+    let trace_id = Some(id.to_ascii_lowercase());
+    Ok(if spans {
+        HistoryProjection::Traces { trace_id }
+    } else {
+        HistoryProjection::Progress { trace_id }
+    })
 }
 
 fn exact_integers(value: &mut Value) {
@@ -501,7 +487,7 @@ mod tests {
         assert!(output["outcomes"][0].get("detail_selection").is_none());
     }
     use agenturm_kernel::{
-        Observation, ObservationIdentity, ObservationPage, TraceSpan, TraceStatus,
+        McpMethod, Observation, ObservationIdentity, ObservationKind, ObservationPage,
     };
 
     #[test]
@@ -512,6 +498,9 @@ mod tests {
             "/api/activity?limit=257",
             "/api/activity?source_id=otlp.a&source_id=otlp.b",
             "/api/activity?sql=select",
+            "/api/activity?q=not-mcp",
+            "/api/mcp?q=%20",
+            "/api/mcp?q=%C2%85",
             "/api/activity?cursor=%",
             "/api/activity?session_id=%00",
             "/api/activity?session_id=%ff",
@@ -550,7 +539,7 @@ mod tests {
     }
 
     #[test]
-    fn filtered_pages_keep_the_last_inspected_position() {
+    fn mcp_search_sends_literal_projection_and_uses_the_last_matching_position() {
         let id = ExtensionId::parse("otlp.a").unwrap();
         let row = Observation {
             harness_id: id,
@@ -558,14 +547,13 @@ mod tests {
             revision: 0,
             identity: ObservationIdentity::session("same"),
             observed_at_unix_ns: 10,
-            kind: ObservationKind::TraceSpan(TraceSpan {
-                trace_id: "11".repeat(16),
-                span_id: "22".repeat(8),
-                parent_span_id: None,
-                target_source_id: None,
-                started_at_unix_ns: 9,
-                status: TraceStatus::Ok,
-            }),
+            kind: ObservationKind::McpCall {
+                server: Some("test_server".into()),
+                tool: None,
+                method: McpMethod::ToolsCall,
+                duration_ns: None,
+                result: "succeeded".into(),
+            },
         };
         let page = ObservationPage {
             observations: vec![row],
@@ -573,18 +561,33 @@ mod tests {
             has_more: true,
         };
         let cursor = page.older_position();
-        let output = Request::parse("/api/mcp?source_id=otlp.a")
+        let output = Request::parse("/api/mcp?source_id=otlp.a&q=TEST%5F&limit=1")
             .unwrap()
             .execute("binding", &|request| {
-                let ReaderHistoryRequest::History { query, .. } = request else {
-                    panic!("metadata only");
+                let ReaderHistoryRequest::History {
+                    query,
+                    selection:
+                        NativeSelection::Projected {
+                            projection,
+                            scope: ProjectedHistoryScope::All,
+                        },
+                } = request
+                else {
+                    panic!("expected a source-scoped projection");
                 };
                 assert_eq!(query.harness_id.as_deref(), Some("otlp.a"));
+                assert_eq!(query.limit, 1);
+                assert_eq!(
+                    projection,
+                    HistoryProjection::Mcp {
+                        query: Some("TEST_".into())
+                    }
+                );
                 Ok(ReaderHistoryReply::History(page.clone()))
             })
             .unwrap();
         assert_eq!(output["inspected"], 1);
-        assert!(output["observations"].as_array().unwrap().is_empty());
+        assert_eq!(output["observations"][0]["event_id"], "one");
         assert_eq!(
             output["next_cursor"],
             serde_json::to_value(
@@ -597,6 +600,50 @@ mod tests {
             .unwrap()
         );
         assert_eq!(output["has_more"], true);
+    }
+
+    #[test]
+    fn trace_spans_and_progress_use_distinct_exact_source_scoped_projections() {
+        let trace = "AB".repeat(16);
+        for (route, expected) in [
+            (
+                "spans",
+                HistoryProjection::Traces {
+                    trace_id: Some(trace.to_ascii_lowercase()),
+                },
+            ),
+            (
+                "progress",
+                HistoryProjection::Progress {
+                    trace_id: Some(trace.to_ascii_lowercase()),
+                },
+            ),
+        ] {
+            let request = Request::parse(&format!(
+                "/api/traces/{trace}/{route}?source_id=otlp.fixture&limit=1&session_id=one"
+            ))
+            .unwrap();
+            request
+                .execute("binding", &|request| {
+                    let ReaderHistoryRequest::History {
+                        query,
+                        selection:
+                            NativeSelection::Projected {
+                                projection,
+                                scope: ProjectedHistoryScope::All,
+                            },
+                    } = request
+                    else {
+                        panic!("expected exact projection")
+                    };
+                    assert_eq!(projection, expected);
+                    assert_eq!(query.harness_id.as_deref(), Some("otlp.fixture"));
+                    assert_eq!(query.session_id.as_deref(), Some("one"));
+                    assert_eq!(query.limit, 1);
+                    Ok(ReaderHistoryReply::History(ObservationPage::default()))
+                })
+                .unwrap();
+        }
     }
     #[test]
     fn integer_evidence_and_opaque_cursor_survive_json_number_precision_limits() {

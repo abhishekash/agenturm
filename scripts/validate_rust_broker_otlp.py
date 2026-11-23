@@ -63,6 +63,29 @@ def field(number, data):
     return varint(number << 3 | 2) + varint(len(data)) + data
 
 
+def trace_pairs(rows, source, trace_id, span_ids):
+    spans = [row for row in rows if row["observation"]["kind"] == "trace_span"]
+    summaries = {
+        row["event_id"]: row for row in rows if row["observation"]["kind"] == "trace_span_summary"
+    }
+    assert len(rows) == 2 * len(span_ids)
+    assert len(spans) == len(summaries) == len(span_ids)
+    assert {row["observation"]["span_id"] for row in spans} == set(span_ids)
+    for span in spans:
+        assert span["event_id"] == f"otlp:{trace_id}:{span['observation']['span_id']}"
+        assert span["observation"]["trace_id"] == trace_id
+        summary = summaries[span["event_id"] + ":summary"]
+        assert span["harness_id"] == summary["harness_id"] == source
+        for field in ("identity", "observed_at_unix_ns", "revision"):
+            assert span[field] == summary[field], field
+        assert summary["observation"] == {
+            "kind": "trace_span_summary", "trace_id": trace_id,
+            "span_id": span["observation"]["span_id"],
+            "agent_run": False, "reported_error": False,
+        }
+    return spans
+
+
 def launcher_producer(args):
     assert args == CHILD_ARGS, args
     assert os.environ["OTEL_EXPORTER_OTLP_TRACES_PROTOCOL"] == "http/protobuf"
@@ -280,8 +303,10 @@ def main():
 
             assert post(url, full_export, "application/json", token) == (200, b"{}")
             observed = query(LIVE_SOURCE)
-            assert len(observed) == 2 and progress_row in observed
-            [span_row] = [row for row in observed if row["observation"]["kind"] == "trace_span"]
+            assert len(observed) == 3 and progress_row in observed
+            [span_row] = trace_pairs(
+                [row for row in observed if row != progress_row], LIVE_SOURCE, LIVE_TRACE, ["55" * 8],
+            )
             assert span_row["identity"]["turn_id"] == TURN
             assert span_row["identity"]["worker_id"] == WORKER
             assert "private span name" not in json.dumps(observed)
@@ -320,8 +345,7 @@ def main():
             child = run(collector, "run", "--source-id", RUN_SOURCE, "--",
                         sys.executable, Path(__file__).resolve(), "--emit", *CHILD_ARGS, code=23)
             assert not child.stdout and not child.stderr
-            spans = query(RUN_SOURCE)
-            assert len(spans) == 2
+            spans = trace_pairs(query(RUN_SOURCE), RUN_SOURCE, RUN_TRACE, ["33" * 8, "44" * 8])
             assert any(row["identity"]["session_id"].startswith("launch-") for row in spans)
             receipt = json.loads(run(
                 reader, "review", "--harness-id", NATIVE_SOURCE, "--session-id", SESSION,

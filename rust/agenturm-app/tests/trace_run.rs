@@ -13,6 +13,10 @@ use std::time::{Duration, Instant};
 
 const FIXTURE: &str = "AGENTURM_TEST_TRACE_PRODUCER";
 
+#[cfg(target_os = "linux")]
+#[path = "trace_run/existing_endpoint.rs"]
+mod existing_endpoint;
+
 struct Scratch(PathBuf);
 
 impl Scratch {
@@ -170,20 +174,202 @@ fn assigns_unscoped_spans_to_the_actual_command_launch() {
         String::from_utf8_lossy(&output.stderr)
     );
     let store = Store::open_read_only(&db).unwrap();
-    let rows = store.observation_page(2).unwrap().observations;
-    assert_eq!(rows.len(), 1);
-    assert!(
-        rows[0]
-            .identity
+    let rows = store.observation_page(3).unwrap().observations;
+    assert_eq!(rows.len(), 2);
+    assert!(rows.iter().all(|row| {
+        row.identity
             .session_id
             .as_deref()
-            .unwrap()
-            .starts_with("launch-")
-    );
-    assert!(
-        matches!(&rows[0].kind, agenturm_kernel::ObservationKind::TraceSpan(span)
-        if span.target_source_id.is_none())
-    );
+            .is_some_and(|session| session.starts_with("launch-"))
+    }));
+    assert!(rows.iter().any(|row| matches!(
+        &row.kind, agenturm_kernel::ObservationKind::TraceSpan(span)
+        if span.target_source_id.is_none()
+    )));
+}
+
+fn python_available() -> bool {
+    Command::new("python3")
+        .args([
+            "-P",
+            "-c",
+            "import sys; sys.exit(sys.version_info < (3, 11))",
+        ])
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .status()
+        .is_ok_and(|status| status.success())
+}
+
+fn python_launcher(root: &std::path::Path, sdk: &std::path::Path) -> Command {
+    let mut command = Command::new(env!("CARGO_BIN_EXE_agenturm"));
+    command
+        .current_dir(root)
+        .env("PYTHONPATH", sdk)
+        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .arg("run")
+        .arg("--db")
+        .arg(root.join("python.sqlite"))
+        .args([
+            "--instrument",
+            "python",
+            "--service",
+            "test-service",
+            "--",
+            "python3",
+        ]);
+    command
+}
+
+#[test]
+fn automatic_python_preserves_script_and_module_arguments_and_exit_status() {
+    if !python_available() {
+        return;
+    }
+    let root = Scratch::new();
+    let sdk = root.0.join("sdk");
+    let package = sdk.join("observatory");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(package.join("__init__.py"), "").unwrap();
+    fs::write(
+        package.join("auto.py"),
+        r#"
+import os
+import runpy
+import sys
+
+class SetupError(Exception):
+    pass
+
+def run_agent(target, arguments, *, endpoint, service, module, capture_content, transport,
+              session_id, managed_launcher):
+    assert sys.flags.safe_path
+    assert endpoint == os.environ["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]
+    assert endpoint.startswith("http://127.0.0.1:") and endpoint.endswith("/v1/traces")
+    assert not os.environ.get("OTEL_EXPORTER_OTLP_HEADERS")
+    assert "127.0.0.1" in os.environ["NO_PROXY"].split(",")
+    assert transport == "otlp" and managed_launcher
+    assert service == "test-service" and session_id.startswith("launch-")
+    assert not capture_content
+    sys.argv = [target, *arguments]
+    if module:
+        runpy.run_module(target, run_name="__main__", alter_sys=True)
+    else:
+        runpy.run_path(target, run_name="__main__")
+"#,
+    )
+    .unwrap();
+    fs::write(
+        root.0.join("observatory.py"),
+        "raise RuntimeError('working directory shadow')
+",
+    )
+    .unwrap();
+    let target = r#"
+import sys
+assert sys.argv[1:] == ["with spaces", "--flag", "; literal"]
+print("observed child arguments")
+raise SystemExit(23)
+"#;
+    fs::write(root.0.join("target.py"), target).unwrap();
+    for arguments in [&["target.py"][..], &["-m", "target"][..]] {
+        let output = python_launcher(&root.0, &sdk)
+            .args(arguments)
+            .args(["with spaces", "--flag", "; literal"])
+            .env(
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT",
+                "https://invalid.example",
+            )
+            .env("OTEL_EXPORTER_OTLP_HEADERS", "authorization=secret-marker")
+            .output()
+            .unwrap();
+        assert_eq!(output.status.code(), Some(23), "{output:?}");
+        assert_eq!(
+            output.stdout,
+            b"observed child arguments
+"
+        );
+        assert!(!String::from_utf8_lossy(&output.stderr).contains("secret-marker"));
+    }
+    fs::write(
+        root.0.join("target.py"),
+        "raise KeyboardInterrupt
+",
+    )
+    .unwrap();
+    let output = python_launcher(&root.0, &sdk)
+        .arg("target.py")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(130), "{output:?}");
+}
+
+#[test]
+fn incompatible_python_instrumentation_fails_before_the_target_runs() {
+    if !python_available() {
+        return;
+    }
+    let root = Scratch::new();
+    let sdk = root.0.join("sdk");
+    let package = sdk.join("observatory");
+    fs::create_dir_all(&package).unwrap();
+    fs::write(package.join("__init__.py"), "").unwrap();
+    fs::write(
+        package.join("auto.py"),
+        "class SetupError(Exception): pass
+def run_agent(target): raise RuntimeError('old SDK ran')
+",
+    )
+    .unwrap();
+    fs::write(
+        root.0.join("target.py"),
+        "print('target ran')
+",
+    )
+    .unwrap();
+    let output = python_launcher(&root.0, &sdk)
+        .arg("target.py")
+        .output()
+        .unwrap();
+    assert_eq!(output.status.code(), Some(2), "{output:?}");
+    assert!(output.stdout.is_empty());
+    assert!(String::from_utf8_lossy(&output.stderr).contains("pip install '.[auto]'"));
+}
+
+#[test]
+fn automatic_python_rejects_conflicting_targets_and_content_scope() {
+    let root = Scratch::new();
+    for arguments in [
+        &["--instrument", "python", "--", "node", "app.js"][..],
+        &[
+            "--instrument",
+            "python",
+            "--",
+            "python3",
+            "-c",
+            "raise SystemExit(0)",
+        ][..],
+        &[
+            "--instrument",
+            "python",
+            "--capture-content",
+            "--",
+            "python3",
+            "app.py",
+        ][..],
+        &["--service", "fixture", "--", "python3", "app.py"][..],
+    ] {
+        let db = root.0.join("invalid.sqlite");
+        let output = Command::new(env!("CARGO_BIN_EXE_agenturm"))
+            .arg("run")
+            .arg("--db")
+            .arg(&db)
+            .args(arguments)
+            .output()
+            .unwrap();
+        assert!(!output.status.success());
+        assert!(!db.exists());
+    }
 }
 
 fn assert_trace(db: &std::path::Path, source: &str) {
@@ -191,8 +377,12 @@ fn assert_trace(db: &std::path::Path, source: &str) {
     let mut query = ObservationQuery::latest(10);
     query.harness_id = Some(source.into());
     let page = ObservationStore::query_observations(&store, &query).unwrap();
-    assert_eq!(page.observations.len(), 1);
-    let row = &page.observations[0];
+    assert_eq!(page.observations.len(), 2);
+    let row = page
+        .observations
+        .iter()
+        .find(|row| matches!(row.kind, agenturm_kernel::ObservationKind::TraceSpan(_)))
+        .unwrap();
     assert_eq!(row.identity.session_id.as_deref(), Some("launched-session"));
     assert!(
         matches!(&row.kind, agenturm_kernel::ObservationKind::TraceSpan(span)
@@ -240,16 +430,31 @@ fn native_otlp_producer() {
     for key in [
         "OTEL_EXPORTER_OTLP_HEADERS",
         "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
-        "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
         "OTEL_CONFIG_FILE",
         "OTEL_EXPERIMENTAL_CONFIG_FILE",
     ] {
         assert!(std::env::var_os(key).is_none());
     }
+    assert_eq!(
+        std::env::var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT").unwrap(),
+        format!("http://{address}/v1/metrics")
+    );
+    assert_eq!(
+        std::env::var("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL").unwrap(),
+        "http/protobuf"
+    );
+    assert_eq!(
+        std::env::var("OTEL_EXPORTER_OTLP_LOGS_ENDPOINT").unwrap(),
+        format!("http://{address}/v1/logs")
+    );
+    assert_eq!(
+        std::env::var("OTEL_EXPORTER_OTLP_LOGS_PROTOCOL").unwrap(),
+        "http/protobuf"
+    );
     assert_eq!(std::env::var("OTEL_SDK_DISABLED").unwrap(), "false");
     assert_eq!(std::env::var("OTEL_TRACES_EXPORTER").unwrap(), "otlp");
-    assert_eq!(std::env::var("OTEL_METRICS_EXPORTER").unwrap(), "none");
-    assert_eq!(std::env::var("OTEL_LOGS_EXPORTER").unwrap(), "none");
+    assert_eq!(std::env::var("OTEL_METRICS_EXPORTER").unwrap(), "otlp");
+    assert_eq!(std::env::var("OTEL_LOGS_EXPORTER").unwrap(), "otlp");
     for key in ["NO_PROXY", "no_proxy"] {
         let value = std::env::var(key).unwrap();
         assert!(value.split(',').any(|item| item == "127.0.0.1"));

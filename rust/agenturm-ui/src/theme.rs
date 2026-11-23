@@ -164,14 +164,14 @@ pub(super) fn footer() -> Style {
     surface(palette().footer_key)
 }
 
-fn preference_path() -> Option<PathBuf> {
+pub(super) fn preference_path() -> Option<PathBuf> {
     let directory = std::env::var_os("XDG_CONFIG_HOME")
         .map(PathBuf::from)
         .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
     Some(directory.join("agenturm-rust").join("ui.json"))
 }
 
-fn preferences_enabled() -> bool {
+pub(super) fn preferences_enabled() -> bool {
     !matches!(
         std::env::var("AGENTURM_UI_PREFERENCES")
             .unwrap_or_default()

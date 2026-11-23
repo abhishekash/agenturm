@@ -6,7 +6,7 @@
 use agenturm_kernel::ExtensionId;
 use agenturm_store::{CommitOutcome, ObservationBatch, Store, StoreError};
 #[cfg(target_os = "linux")]
-use agenturm_store::{TelemetryBinding, TelemetryPayloadRecord};
+use agenturm_store::{TelemetryBinding, TelemetryLogTextBinding, TelemetryPayloadRecord};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 
@@ -72,6 +72,17 @@ pub(crate) fn admit_telemetry(
 ) -> Result<AdmissionReply, AdmissionFailure> {
     let prepared = prepare(batch)?;
     committed(store.commit_telemetry_batch(&prepared, binding, records))
+}
+
+#[cfg(target_os = "linux")]
+pub(crate) fn admit_telemetry_logs(
+    store: &mut Store,
+    binding: &TelemetryLogTextBinding,
+    batch: ObservationBatch,
+    records: &[TelemetryPayloadRecord],
+) -> Result<AdmissionReply, AdmissionFailure> {
+    let prepared = prepare(batch)?;
+    committed(store.commit_telemetry_log_batch(&prepared, binding, records))
 }
 
 fn prepare(batch: ObservationBatch) -> Result<ObservationBatch, AdmissionFailure> {

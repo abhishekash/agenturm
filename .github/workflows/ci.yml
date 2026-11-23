@@ -107,6 +107,12 @@ jobs:
         run: python -m unittest tests.test_python_otlp_client tests.test_rust_python_client_e2e -v
         env:
           AGENTURM_RUST_APP_BIN: ${{ github.workspace }}/target/debug/agenturm
+      - name: Verify ordinary OTLP error logs and opt-in text
+        run: python scripts/validate_rust_error_logs.py --agenturm target/debug/agenturm
+      - name: Verify protected log and current evaluation Finding journeys
+        run: |
+          python scripts/validate_rust_log_finding_source.py --app target/debug/agenturm
+          python scripts/validate_rust_finding_eval_source.py --app target/debug/agenturm
       - run: python -m unittest tests.test_plugin_reference_wire_spi -v
       - run: python -m unittest tests.test_plugin_private_reference_e2e -v
       - run: python -m unittest tests.test_store_writer_lease -v

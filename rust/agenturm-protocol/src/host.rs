@@ -45,7 +45,16 @@ impl HostSample {
         valid_boot_id(&self.boot_id)
             && self.clock_ticks_per_second.is_none_or(|value| value > 0)
             && self.processes.len() <= MAX_HOST_PROCESSES
-            && self.processes.iter().all(|process| process.pid > 0)
+            && self.processes.iter().all(|process| {
+                process.pid > 0
+                    && process
+                        .parent_pid
+                        .is_none_or(|pid| pid > 0 && pid != process.pid)
+                    && process
+                        .working_directory_name
+                        .as_deref()
+                        .is_none_or(HostProcess::valid_working_directory_name)
+            })
             && self
                 .processes
                 .windows(2)
@@ -61,16 +70,39 @@ fn valid_boot_id(value: &str) -> bool {
         })
 }
 
-#[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct HostProcess {
     pub pid: u32,
+    /// Parent PID observed during this sample. It does not identify a retained process.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub parent_pid: Option<u32>,
     pub start_ticks: u64,
     pub runtime: HostRuntime,
     pub state: Option<HostProcessState>,
     pub resident_bytes: Option<u64>,
     pub user_ticks: Option<u64>,
     pub system_ticks: Option<u64>,
+    /// Basename observed during this process sample. The path is discarded.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub working_directory_name: Option<String>,
+}
+
+impl HostProcess {
+    pub const MAX_WORKING_DIRECTORY_NAME_BYTES: usize = 128;
+
+    pub fn valid_working_directory_name(value: &str) -> bool {
+        !value.is_empty()
+            && value.len() <= Self::MAX_WORKING_DIRECTORY_NAME_BYTES
+            && value.trim() == value
+            && !matches!(value, "." | "..")
+            && !value.ends_with(" (deleted)")
+            && !value.chars().any(|character| {
+                character.is_control()
+                    || matches!(character, '/' | '\\' | '\u{061c}' | '\u{200e}' | '\u{200f}'
+                        | '\u{2028}'..='\u{202e}' | '\u{2066}'..='\u{2069}')
+            })
+    }
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -136,5 +168,58 @@ impl HostProcessState {
             Self::Idle => "Idle",
             Self::Parked => "Parked",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_host_process_payload_round_trips_without_a_directory_or_parent() {
+        let prior = serde_json::json!({"pid":12,"start_ticks":1,"runtime":"codex","state":null,
+            "resident_bytes":null,"user_ticks":null,"system_ticks":null});
+        let process: HostProcess = serde_json::from_value(prior.clone()).unwrap();
+        assert!(process.working_directory_name.is_none());
+        assert!(process.parent_pid.is_none());
+        assert_eq!(serde_json::to_value(process).unwrap(), prior);
+    }
+
+    #[test]
+    fn retained_host_sample_preserves_only_a_valid_parent_pid() {
+        let mut retained = serde_json::json!({
+            "boot_id": "11111111-1111-1111-1111-111111111111", "processes_partial": false,
+            "processes": [{"pid":12,"parent_pid":9,"start_ticks":1,"runtime":"codex",
+                "state":null,"resident_bytes":null,"user_ticks":null,"system_ticks":null}]
+        });
+        let sample: HostSample = serde_json::from_value(retained.clone()).unwrap();
+        assert!(sample.is_valid());
+        assert_eq!(sample.processes[0].parent_pid, Some(9));
+        let restored: HostSample =
+            serde_json::from_slice(&serde_json::to_vec(&sample).unwrap()).unwrap();
+        assert_eq!(restored, sample);
+        for invalid in [0, 12] {
+            retained["processes"][0]["parent_pid"] = serde_json::json!(invalid);
+            let sample: HostSample = serde_json::from_value(retained.clone()).unwrap();
+            assert!(!sample.is_valid());
+        }
+    }
+
+    #[test]
+    fn working_directory_labels_cannot_be_paths_or_controls() {
+        assert!(HostProcess::valid_working_directory_name("作業 tree"));
+        for invalid in [
+            "",
+            "/home/user/repo",
+            "project (deleted)",
+            "a\\b",
+            "..",
+            " spaced",
+            "a\u{202e}b",
+            "line\nfeed",
+        ] {
+            assert!(!HostProcess::valid_working_directory_name(invalid));
+        }
+        assert!(!HostProcess::valid_working_directory_name(&"x".repeat(129)));
     }
 }

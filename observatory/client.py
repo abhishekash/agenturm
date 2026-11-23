@@ -10,7 +10,7 @@ import time
 import urllib.request
 from typing import Any
 
-from .otlp_transport import OtlpTransport, PAYLOAD_KEYS, TraceScope
+from .otlp_transport import OtlpTransport, TraceScope
 
 _ACTIVE_RUN: contextvars.ContextVar["Run | None"] = contextvars.ContextVar("observatory_run", default=None)
 _ACTIVE_SPAN: contextvars.ContextVar["Span | None"] = contextvars.ContextVar("observatory_span", default=None)
@@ -271,13 +271,11 @@ class Run:
             for span in self.spans
         )
         if self._otlp_scope is not None:
-            if self.client.capture_content:
-                metadata = (
-                    {**row, "attributes": {key: span.attributes[key] for key in PAYLOAD_KEYS
-                                           if key in span.attributes}}
-                    for row, span in zip(metadata, self.spans)
-                )
-            return self.client._post_otlp_spans(metadata, self._otlp_scope)
+            return self.client._post_otlp_spans(
+                ({**row, "agent_run": span is self.root and span.name == "agent.run"}
+                 for row, span in zip(metadata, self.spans)),
+                self._otlp_scope,
+            )
         return self.client._post_spans([
             {**row, "name": span.name, "events": span.events,
              "resource_attributes": self.client.resource_attributes}

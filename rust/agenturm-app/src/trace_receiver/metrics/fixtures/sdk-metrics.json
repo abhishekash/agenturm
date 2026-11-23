@@ -1,0 +1,208 @@
+{
+  "resourceMetrics": [
+    {
+      "resource": {
+        "attributes": [
+          {
+            "key": "service.name",
+            "value": {
+              "stringValue": "synthetic"
+            }
+          },
+          {
+            "key": "secret-resource",
+            "value": {
+              "stringValue": "resource-body-marker!"
+            }
+          }
+        ]
+      },
+      "scopeMetrics": [
+        {
+          "scope": {
+            "name": "metrics-fixture",
+            "version": "1.1.0",
+            "attributes": [
+              {
+                "key": "hidden-scope",
+                "value": {
+                  "boolValue": true
+                }
+              }
+            ]
+          },
+          "metrics": [
+            {
+              "name": "agents.gauge",
+              "unit": "1",
+              "gauge": {
+                "dataPoints": [
+                  {
+                    "timeUnixNano": "14",
+                    "exemplars": [
+                      {
+                        "timeUnixNano": "13",
+                        "asDouble": -0.0,
+                        "spanId": "CDCDCDCDCDCDCDCD",
+                        "traceId": "ABABABABABABABABABABABABABABABAB",
+                        "filteredAttributes": [
+                          {
+                            "key": "private-exemplar",
+                            "value": {
+                              "stringValue": "exemplar-body-marker!"
+                            }
+                          }
+                        ]
+                      }
+                    ],
+                    "asInt": "-9223372036854775808",
+                    "attributes": [
+                      {
+                        "key": "hidden-point",
+                        "value": {
+                          "arrayValue": {
+                            "values": [
+                              {
+                                "stringValue": "point-body-marker!"
+                              },
+                              {
+                                "bytesValue": "AAH/"
+                              },
+                              {
+                                "intValue": "-9"
+                              },
+                              {
+                                "kvlistValue": {
+                                  "values": [
+                                    {
+                                      "key": "nested",
+                                      "value": {
+                                        "doubleValue": -0.5
+                                      }
+                                    }
+                                  ]
+                                }
+                              }
+                            ]
+                          }
+                        }
+                      }
+                    ]
+                  },
+                  {
+                    "timeUnixNano": "15",
+                    "flags": 1
+                  },
+                  {
+                    "timeUnixNano": "16",
+                    "asInt": "0"
+                  }
+                ]
+              }
+            },
+            {
+              "name": "runs.count",
+              "unit": "{run}",
+              "sum": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1",
+                    "timeUnixNano": "20",
+                    "asInt": "9223372036854775807"
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_CUMULATIVE",
+                "isMonotonic": true
+              }
+            },
+            {
+              "name": "runs.duration",
+              "unit": "ms",
+              "histogram": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "20",
+                    "timeUnixNano": "21",
+                    "count": "3",
+                    "sum": 9.0,
+                    "bucketCounts": [
+                      "1",
+                      "2",
+                      "0"
+                    ],
+                    "explicitBounds": [
+                      2.0,
+                      4.0
+                    ],
+                    "min": 1.0,
+                    "max": 4.0
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_DELTA"
+              }
+            },
+            {
+              "name": "runs.bytes",
+              "unit": "By",
+              "exponentialHistogram": {
+                "dataPoints": [
+                  {
+                    "startTimeUnixNano": "1",
+                    "timeUnixNano": "22",
+                    "count": "6",
+                    "sum": 3.0,
+                    "scale": -2,
+                    "zeroCount": "2",
+                    "positive": {
+                      "offset": -2,
+                      "bucketCounts": [
+                        "1",
+                        "2"
+                      ]
+                    },
+                    "negative": {
+                      "offset": 3,
+                      "bucketCounts": [
+                        "1"
+                      ]
+                    },
+                    "min": -3.0,
+                    "max": 5.0,
+                    "zeroThreshold": 0.01
+                  }
+                ],
+                "aggregationTemporality": "AGGREGATION_TEMPORALITY_CUMULATIVE"
+              }
+            },
+            {
+              "name": "runs.sample",
+              "unit": "1",
+              "summary": {
+                "dataPoints": [
+                  {
+                    "timeUnixNano": "23",
+                    "count": "7",
+                    "sum": 19.0,
+                    "quantileValues": [
+                      {},
+                      {
+                        "quantile": 0.95,
+                        "value": 8.0
+                      },
+                      {
+                        "quantile": 1.0,
+                        "value": 9.0
+                      }
+                    ]
+                  }
+                ]
+              }
+            }
+          ],
+          "schemaUrl": "urn:fixture:scope"
+        }
+      ],
+      "schemaUrl": "urn:fixture:resource"
+    }
+  ]
+}

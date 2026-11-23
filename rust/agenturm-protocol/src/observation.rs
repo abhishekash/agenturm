@@ -134,6 +134,9 @@ impl<'de> Deserialize<'de> for ObservationRecord {
             FileEdit,
             McpCall,
             TraceSpan,
+            InternalReview,
+            NativeRequest,
+            SessionDiscovered,
             Lifecycle,
             Check,
             PullRequestRaised,
@@ -159,6 +162,20 @@ impl<'de> Deserialize<'de> for ObservationRecord {
             FactKind::FileEdit => serde_json::from_str(payload).map(ObservationFact::FileEdit),
             FactKind::McpCall => serde_json::from_str(payload).map(ObservationFact::McpCall),
             FactKind::TraceSpan => serde_json::from_str(payload).map(ObservationFact::TraceSpan),
+            FactKind::InternalReview => {
+                serde_json::from_str(payload).map(ObservationFact::InternalReview)
+            }
+            FactKind::NativeRequest => {
+                serde_json::from_str(payload).map(ObservationFact::NativeRequest)
+            }
+            FactKind::SessionDiscovered => {
+                if !payload.trim_start().starts_with('{') {
+                    return Err(serde::de::Error::custom(
+                        "invalid session discovery payload",
+                    ));
+                }
+                serde_json::from_str(payload).map(ObservationFact::SessionDiscovered)
+            }
             FactKind::Lifecycle => serde_json::from_str(payload).map(ObservationFact::Lifecycle),
             FactKind::Check => serde_json::from_str(payload).map(ObservationFact::Check),
             FactKind::PullRequestRaised => {
@@ -217,6 +234,9 @@ pub enum ObservationFact {
     FileEdit(FileEdit),
     McpCall(McpCall),
     TraceSpan(TraceSpan),
+    InternalReview(crate::native_review::InternalReview),
+    NativeRequest(crate::native_review::NativeRequest),
+    SessionDiscovered(SessionDiscovered),
     Lifecycle(Lifecycle),
     Check(Check),
     PullRequestRaised(PullRequestRaised),
@@ -224,6 +244,11 @@ pub enum ObservationFact {
     Message(Message),
     Diagnostic(Diagnostic),
 }
+
+/// A validated native header established an identity, without execution state.
+#[derive(Debug, Deserialize, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SessionDiscovered {}
 
 /// Counts from one explicitly successful file edit. Native paths and diffs
 /// stay in the source transcript and are outside this observation contract.
@@ -589,6 +614,9 @@ pub struct TraceSpan {
     /// Explicit harness source for the observation's native session identity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_source_id: Option<String>,
+    /// Explicit native operation anchor; never inferred from a span name or time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_operation_id: Option<String>,
     pub started_at_unix_ns: u64,
     pub status: TraceStatus,
 }
@@ -601,6 +629,14 @@ impl TraceSpan {
                 .parent_span_id
                 .as_deref()
                 .is_none_or(|parent| valid_otlp_id(parent, 8) && parent != self.span_id)
+            && self.target_operation_id.as_deref().is_none_or(|operation| {
+                self.target_source_id.is_some()
+                    && !operation.is_empty()
+                    && operation.len() <= 200
+                    && operation
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte))
+            })
             && (1..=ended_at_unix_ns).contains(&self.started_at_unix_ns)
             && ended_at_unix_ns <= i64::MAX as u64
     }
@@ -689,7 +725,7 @@ fn valid_progress_stage(stage: &str) -> bool {
         })
 }
 
-fn valid_otlp_id(value: &str, bytes: usize) -> bool {
+pub(crate) fn valid_otlp_id(value: &str, bytes: usize) -> bool {
     value.len() == bytes * 2
         && value
             .bytes()

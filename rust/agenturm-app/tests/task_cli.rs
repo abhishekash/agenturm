@@ -7,6 +7,54 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(target_os = "linux")]
+#[test]
+fn task_backup_publishes_a_private_file_and_refuses_existing_destinations() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let scratch = Scratch::new();
+    let db = scratch.0.join("history.sqlite");
+    let _writer = Store::open(&db).unwrap();
+    let backup = scratch.0.join("task-backup.sqlite");
+    let backup_args = ["backup", "--destination", backup.to_str().unwrap()];
+    assert_failure(run(&db, &backup_args));
+    assert!(!backup.exists());
+    json(
+        &db,
+        &[
+            "add",
+            "--title",
+            "Keep this task",
+            "--notes",
+            "Private work note",
+        ],
+    );
+    let report = json(&db, &backup_args);
+    assert_eq!(report["format"], "agenturm-rust-task-backup/1");
+    assert_eq!(report["path"], backup.to_str().unwrap());
+    assert!(!report.to_string().contains("Private work note"));
+    assert_eq!(
+        std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let original = std::fs::read(&backup).unwrap();
+    assert_failure(run(&db, &backup_args));
+    let link = scratch.0.join("link.sqlite");
+    symlink(&backup, &link).unwrap();
+    assert_failure(run(
+        &db,
+        &["backup", "--destination", link.to_str().unwrap()],
+    ));
+    let blocked = scratch.0.join("blocked.sqlite");
+    std::fs::write(scratch.0.join("blocked.sqlite-wal"), "existing file").unwrap();
+    assert_failure(run(
+        &db,
+        &["backup", "--destination", blocked.to_str().unwrap()],
+    ));
+    assert!(!blocked.exists());
+    assert_eq!(std::fs::read(&backup).unwrap(), original);
+}
+
 #[test]
 fn tasks_share_the_cockpit_ledger_and_validate_exact_history_links() {
     let scratch = Scratch::new();
@@ -139,6 +187,8 @@ fn source_backed_task_drafts_require_the_same_exact_live_grant_and_keep_authored
     let config = root.0.join("sources.json");
     let draft = root.0.join("draft.json");
     let unbound = root.0.join("unbound.json");
+    let review_file = root.0.join("review.json");
+    let pending_review_draft = root.0.join("pending-review-draft.json");
     let content = "synthetic retained prompt excerpt";
     let rows = concat!(
         "{\"type\":\"session\",\"id\":\"pi-draft\"}\n",
@@ -180,6 +230,32 @@ fn source_backed_task_drafts_require_the_same_exact_live_grant_and_keep_authored
         .unwrap()["event_id"]
         .as_str()
         .unwrap();
+    let review = invoke(&[
+        "review",
+        "--db",
+        db_arg,
+        "--harness-id",
+        "harness.pi",
+        "--session-id",
+        "pi-draft",
+        "--turn-id",
+        "turn-1",
+        "--format",
+        "json",
+    ]);
+    assert!(review.status.success());
+    assert!(!String::from_utf8_lossy(&review.stdout).contains(content));
+    let receipt: Value = serde_json::from_slice(&review.stdout).unwrap();
+    assert!(receipt["history_identity"].is_string());
+    std::fs::write(&review_file, &review.stdout).unwrap();
+    let review_args = [
+        "draft",
+        "--config",
+        config_arg,
+        "--review-file",
+        review_file.to_str().unwrap(),
+    ];
+    assert_failure(run(&db, &review_args));
     let task = self::json(
         &db,
         &[
@@ -233,6 +309,49 @@ fn source_backed_task_drafts_require_the_same_exact_live_grant_and_keep_authored
     assert_failure(prepare("turn-1"));
     assert!(!draft.exists());
     check(acquire());
+    let mut forged_review = receipt.clone();
+    for (name, altered) in [
+        ("history_identity", json!("1".repeat(32))),
+        ("history_identity", Value::Null),
+    ] {
+        forged_review[name] = altered;
+        std::fs::write(&review_file, forged_review.to_string()).unwrap();
+        assert_failure(run(&db, &review_args));
+    }
+    let mut forged_review = receipt.clone();
+    let selected = forged_review["observations"]
+        .as_array_mut()
+        .unwrap()
+        .iter_mut()
+        .find(|row| row["event_id"] == event)
+        .unwrap();
+    selected["observed_at_unix_ns"] = json!("1");
+    std::fs::write(&review_file, forged_review.to_string()).unwrap();
+    assert_failure(run(&db, &review_args));
+    std::fs::write(&review_file, &review.stdout).unwrap();
+    let pinned = self::json(&db, &review_args);
+    assert_eq!(
+        pinned["review"]["history_identity"],
+        receipt["history_identity"]
+    );
+    assert_eq!(pinned["excerpt"], content);
+    assert_eq!(pinned["source"]["event_id"], event);
+    let restored_copy = root.0.join("restored-copy.sqlite");
+    Store::open_read_only(&db)
+        .unwrap()
+        .backup_to(&restored_copy)
+        .unwrap();
+    check(invoke(&[
+        "content",
+        "grant",
+        "--db",
+        restored_copy.to_str().unwrap(),
+        "--source-id",
+        "harness.pi",
+        "--config",
+        config_arg,
+    ]));
+    assert_failure(run(&restored_copy, &review_args));
     assert_failure(prepare("another-turn"));
     check(prepare("turn-1"));
     assert_failure(prepare("turn-1"));
@@ -287,7 +406,21 @@ fn source_backed_task_drafts_require_the_same_exact_live_grant_and_keep_authored
     ];
     assert_eq!(self::json(&db, &reveal_args)["excerpt"], content);
 
-    check(run(&db, &draft_args("turn-1", unbound_path)));
+    check(run(
+        &db,
+        &[
+            &review_args[..],
+            &[
+                "--event-id",
+                event,
+                "--revision",
+                "0",
+                "--output",
+                unbound_path,
+            ],
+        ]
+        .concat(),
+    ));
     let decision_args = [
         "decide",
         &id,
@@ -325,6 +458,14 @@ fn source_backed_task_drafts_require_the_same_exact_live_grant_and_keep_authored
             .len(),
         2
     );
+    check(run(
+        &db,
+        &[
+            &review_args[..],
+            &["--output", pending_review_draft.to_str().unwrap()],
+        ]
+        .concat(),
+    ));
     check(invoke(&[
         "content",
         "revoke",
@@ -334,8 +475,11 @@ fn source_backed_task_drafts_require_the_same_exact_live_grant_and_keep_authored
         "harness.pi",
     ]));
     assert_failure(run(&db, &reveal_args));
+    assert_failure(run(&db, &review_args));
+    assert_failure(approve(pending_review_draft.to_str().unwrap(), &db));
     check(acquire());
     assert_failure(run(&db, &reveal_args));
+    assert_failure(approve(pending_review_draft.to_str().unwrap(), &db));
     let metadata = self::json(&db, &["continuity", &id]);
     assert_eq!(
         metadata["approvals"][0]["continuation"],

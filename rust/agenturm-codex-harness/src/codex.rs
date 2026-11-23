@@ -2,6 +2,8 @@
 //! Completion and interruption require explicit source events. A PR, tool
 //! result, EOF or ordinary assistant message never supplies a terminal state.
 
+mod approval;
+
 use agenturm_jsonl_source::Result;
 use agenturm_protocol::observation::{
     FileEdit, McpCall, McpMethod, RelationshipKind, is_github_pull_request, is_mcp_identifier,
@@ -32,8 +34,10 @@ pub(crate) struct Context {
     pub worker_id: String,
     pub turn_id: String,
     parent_thread: Option<String>,
+    guardian: Option<approval::Guardian>,
     header_bytes: usize,
     in_copied_context: bool,
+    header_discovered: bool,
 }
 
 impl Context {
@@ -43,22 +47,34 @@ impl Context {
         format!("fork-copy:{:0>200}", self.session_id)
     }
 
+    fn discovery_checkpoint(&self) -> String {
+        // Longer than every native turn ID and distinct from copied context.
+        format!("session-discovered:{:0>200}", self.session_id)
+    }
+
     pub(crate) fn checkpoint(&self) -> String {
         if self.in_copied_context {
             self.copied_checkpoint()
+        } else if self.turn_id.is_empty() && self.header_discovered {
+            self.discovery_checkpoint()
         } else {
             self.turn_id.clone()
         }
     }
 
     pub(crate) fn restore(&mut self, checkpoint: &str) {
+        self.header_discovered = checkpoint == self.discovery_checkpoint();
         self.in_copied_context =
             self.parent_thread.is_some() && checkpoint == self.copied_checkpoint();
-        self.turn_id = if self.in_copied_context {
+        self.turn_id = if self.in_copied_context || self.header_discovered {
             String::new()
         } else {
             checkpoint.to_owned()
         };
+    }
+
+    pub(crate) fn omit_discovery(&mut self) {
+        self.header_discovered = false;
     }
 }
 
@@ -96,8 +112,10 @@ pub(crate) fn header_identity(raw: &[u8]) -> Result<Context> {
             .and_then(Value::as_str)
             .filter(|parent| identifier(parent) && *parent != thread)
             .map(str::to_owned),
+        guardian: approval::Guardian::from_header(raw, thread)?,
         header_bytes: raw.len(),
         in_copied_context: false,
+        header_discovered: false,
     })
 }
 
@@ -143,6 +161,43 @@ fn stamp(row: &Value) -> Result<String> {
         return Err(invalid("Codex timestamp outside supported range"));
     }
     Ok(nanos.to_string())
+}
+
+fn discovered(context: &mut Context, origin: &str, time_ns: &str) -> Value {
+    context.header_discovered = true;
+    fact(
+        format!("codex:{origin}:0:discovered"),
+        "session_discovered",
+        time_ns,
+        context,
+        json!({}),
+        None,
+    )
+}
+
+pub(crate) fn resume_verified_header(
+    raw: &[u8],
+    context: &mut Context,
+    origin: &str,
+) -> Result<Option<Value>> {
+    if context.guardian.is_some()
+        || context.header_discovered
+        || context.in_copied_context
+        || !context.turn_id.is_empty()
+    {
+        return Ok(None);
+    }
+    let row: Value = serde_json::from_slice(raw)?;
+    let payload = &row["payload"];
+    // Older readers already admitted this header's relationship as a
+    // session-scoped fact. Those sessions already appear on the roster.
+    if header_relationship(payload, &context.session_id).is_some() {
+        return Ok(None);
+    }
+    Ok(stamp(&row)
+        .or_else(|_| stamp(payload))
+        .ok()
+        .map(|time_ns| discovered(context, origin, &time_ns)))
 }
 
 fn header_relationship(payload: &Value, child: &str) -> Option<Value> {
@@ -325,16 +380,28 @@ fn check_category(item: &Value) -> Option<&'static str> {
         (program, args) => (program, args),
     };
     if args.iter().any(|arg| {
+        let option = arg.split_once('=').map_or(*arg, |(option, _)| option);
         matches!(
-            *arg,
+            option,
             "-h" | "--help"
+                | "-V"
                 | "--version"
                 | "--collect-only"
                 | "--co"
+                | "--fixtures"
+                | "--fixtures-per-test"
+                | "--markers"
+                | "--trace-config"
                 | "--dry-run"
                 | "--list"
+                | "--listTests"
+                | "--listFilesOnly"
+                | "--showConfig"
+                | "--show-files"
+                | "--show-settings"
+                | "--if-present"
                 | "--no-run"
-        )
+        ) || (program == "go" && matches!(option, "-list" | "-n"))
     }) {
         return None;
     }
@@ -344,6 +411,22 @@ fn check_category(item: &Value) -> Option<&'static str> {
         | ("python" | "python3", ["-m", "pytest" | "unittest", ..])
         | ("npm" | "pnpm", ["test", ..]) => Some("test"),
         ("cargo", ["clippy", ..]) | ("ruff", ["check", ..]) => Some("lint"),
+        ("cargo", ["fmt", flags @ ..]) | ("ruff", ["format", flags @ ..])
+            if flags.contains(&"--check") =>
+        {
+            Some("lint")
+        }
+        ("git", ["diff", flags @ ..])
+            if flags.contains(&"--check")
+                && !flags.iter().any(|flag| {
+                    matches!(
+                        *flag,
+                        "--quiet" | "--exit-code" | "--no-patch" | "--name-only" | "--name-status"
+                    )
+                }) =>
+        {
+            Some("lint")
+        }
         ("cargo" | "go", ["build", ..]) => Some("build"),
         ("npm" | "pnpm", ["run", name]) | ("yarn", [name]) => {
             if *name == "check" || *name == "typecheck" || *name == "lint" {
@@ -366,7 +449,7 @@ fn check_result(item: &Value) -> Option<&'static str> {
         item.get("exit_code").and_then(Value::as_i64),
     ) {
         (Some("completed" | "success" | "ok"), Some(0)) => Some("passed"),
-        (Some("failed" | "error"), Some(code)) if code > 0 => Some("failed"),
+        (Some("failed" | "error"), Some(1..=255)) => Some("failed"),
         _ => None,
     }
 }
@@ -511,6 +594,28 @@ pub(crate) fn translate_line(
     let mut next = context.clone();
     if kind == "session_meta" {
         let header = header_identity(raw)?;
+        if let Some(guardian) = &context.guardian {
+            if header.session_id != context.session_id
+                || header.worker_id != context.worker_id
+                || header.guardian.as_ref() != Some(guardian)
+            {
+                return Err(invalid("Codex guardian identity changed inside one file"));
+            }
+            let facts = if offset == 0 {
+                stamp(&row)
+                    .or_else(|_| stamp(&row["payload"]))
+                    .ok()
+                    .map(|time| guardian.classification(context, origin, &time))
+                    .into_iter()
+                    .collect()
+            } else {
+                Vec::new()
+            };
+            return Ok((facts, next));
+        }
+        if header.guardian.is_some() {
+            return Err(invalid("Codex guardian header changed inside one file"));
+        }
         if header.session_id != context.session_id || header.worker_id != context.worker_id {
             // A forked worker can embed the parent's rollout immediately
             // after its own header. Preserve the worker's original identity.
@@ -523,25 +628,28 @@ pub(crate) fn translate_line(
             return Ok((Vec::new(), next));
         }
         let payload = &row["payload"];
+        let mut facts = Vec::new();
         if offset == 0
-            && let Some(relationship) = header_relationship(payload, &header.session_id)
             && let Ok(time_ns) = stamp(&row).or_else(|_| stamp(payload))
         {
-            return Ok((
-                vec![fact(
+            facts.push(discovered(&mut next, origin, &time_ns));
+            if let Some(relationship) = header_relationship(payload, &header.session_id) {
+                facts.push(fact(
                     format!("codex:{origin}:{offset}:relationship"),
                     "relationship",
                     &time_ns,
                     &header,
                     relationship,
                     None,
-                )],
-                next,
-            ));
+                ));
+            }
         }
-        return Ok((Vec::new(), next));
+        return Ok((facts, next));
     }
     let base = format!("codex:{origin}:{offset}");
+    if let Some(guardian) = &context.guardian {
+        return guardian.translate(raw, &row, context, kind, &base);
+    }
     if context.in_copied_context {
         let payload = &row["payload"];
         if kind == "event_msg"
@@ -721,6 +829,9 @@ pub(crate) fn translate_line(
                     }
                 }
                 "approval_request" | "request_user_input" => {
+                    if let Some(request) = approval::request(raw, &row_context, &base, &time_ns) {
+                        facts.push(request);
+                    }
                     if historical_turn(payload, context) {
                         facts.push(diagnostic(
                             format!("{base}:historical-wait"),
@@ -966,11 +1077,12 @@ mod tests {
             let raw = row("session_meta", payload);
             let context = header_identity(&raw).unwrap();
             let (facts, _) = translate_line(&raw, &context, "generation", 0).unwrap();
-            assert_eq!(facts.len(), 1);
+            assert_eq!(facts.len(), 2);
             assert_eq!(facts[0]["identity"]["session_id"], "child");
-            assert_eq!(facts[0]["kind"], "relationship");
+            assert_eq!(facts[0]["kind"], "session_discovered");
+            assert_eq!(facts[1]["kind"], "relationship");
             assert_eq!(
-                facts[0]["payload"],
+                facts[1]["payload"],
                 json!({"relationship_kind":relationship_kind,"parent_session_id":"parent"}),
             );
             assert!(
@@ -984,7 +1096,7 @@ mod tests {
         let nested_only = br#"{"type":"session_meta","payload":{"id":"child","timestamp":"2026-11-14T10:00:00Z","source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}}}"#;
         let context = header_identity(nested_only).unwrap();
         let (facts, _) = translate_line(nested_only, &context, "generation", 0).unwrap();
-        assert_eq!(facts[0]["payload"]["relationship_kind"], "delegated");
+        assert_eq!(facts[1]["payload"]["relationship_kind"], "delegated");
     }
 
     #[test]
@@ -999,7 +1111,8 @@ mod tests {
             let raw = row("session_meta", payload);
             let context = header_identity(&raw).unwrap();
             let (facts, _) = translate_line(&raw, &context, "generation", 0).unwrap();
-            assert!(facts.is_empty());
+            assert_eq!(facts.len(), 1);
+            assert_eq!(facts[0]["kind"], "session_discovered");
         }
     }
 
@@ -1162,6 +1275,51 @@ mod tests {
     }
 
     #[test]
+    fn check_modes_require_validation_and_keep_read_only_lints_typed() {
+        let context =
+            header_identity(br#"{"type":"session_meta","payload":{"id":"thread-1"}}"#).unwrap();
+        for (command, status, exit, expected) in [
+            ("cargo fmt --all -- --check", "completed", 0, Some("passed")),
+            ("ruff format --check tests", "failed", 1, Some("failed")),
+            ("git diff --cached --check", "completed", 0, Some("passed")),
+            ("cargo fmt --all", "completed", 0, None),
+            ("ruff format tests", "completed", 0, None),
+            ("git diff --check --exit-code", "failed", 1, None),
+            ("git diff --check --name-only", "completed", 0, None),
+            ("pytest --fixtures", "completed", 0, None),
+            ("pytest --markers", "completed", 0, None),
+            ("go test -list=Test ./...", "completed", 0, None),
+            ("go test -n ./...", "completed", 0, None),
+            ("npm test --if-present", "completed", 0, None),
+            ("cargo fmt --all -- --check", "failed", 256, None),
+            ("ruff format --check tests && true", "completed", 0, None),
+        ] {
+            let (facts, _) = translate(
+                json!({"type":"item_completed","turn_id":"turn-1",
+                "item":{"type":"CommandExecution","id":"operation", "status":status,"exit_code":exit,
+                    "command":["/usr/bin/zsh","-lc",command],"aggregated_output":"private result"}}),
+                &context,
+            );
+            let check = facts.iter().find(|fact| fact["kind"] == "check");
+            assert_eq!(
+                check.and_then(|fact| fact["payload"]["result"].as_str()),
+                expected,
+                "{command}"
+            );
+            assert_eq!(facts[0]["kind"], "tool");
+            if let Some(check) = check {
+                assert_eq!(check["payload"]["category"], "lint");
+                assert_eq!(check["identity"], facts[0]["identity"]);
+            }
+            assert!(
+                !serde_json::to_string(&facts)
+                    .unwrap()
+                    .contains("private result")
+            );
+        }
+    }
+
+    #[test]
     fn command_check_and_usage_are_typed_without_source_content() {
         let context =
             header_identity(br#"{"type":"session_meta","payload":{"id":"thread-1"}}"#).unwrap();
@@ -1300,6 +1458,135 @@ mod tests {
             "call_id":"c1","isError":"false"}),
         );
         assert!(translate_line(&bad_result, &context, "generation", 1).is_err());
+    }
+
+    #[test]
+    fn guardian_rows_keep_scope_and_lifecycle_without_private_content_or_decisions() {
+        let header = row(
+            "session_meta",
+            json!({"id":"guardian-thread","session_id":"parent-thread",
+                "parent_thread_id":"parent-thread","thread_source":"guardian_review",
+                "source":{"subagent":{"other":"guardian"}}}),
+        );
+        let context = header_identity(&header).unwrap();
+        let (facts, _) = translate_line(&header, &context, "generation", 0).unwrap();
+        assert_eq!(facts[0]["kind"], "internal_review");
+        assert!(facts[0].get("identity").is_none());
+        assert_eq!(
+            facts[0]["payload"],
+            json!({
+                "state":"classified","session_id":"guardian-thread",
+                "worker_id":"guardian-thread","parent_session_id":"parent-thread",
+            })
+        );
+        let (facts, next) = translate(
+            json!({"type":"task_started","turn_id":"review-turn"}),
+            &context,
+        );
+        assert_eq!(facts[0]["payload"]["state"], "started");
+        assert_eq!(facts[0]["payload"]["turn_id"], "review-turn");
+        let mut resumed = header_identity(&header).unwrap();
+        resumed.restore(&next.checkpoint());
+        assert_eq!(resumed, next);
+        for payload in [
+            json!({"type":"item_completed","turn_id":"review-turn","item":{
+                "type":"AgentMessage","phase":"final_answer","text":"approved private"},
+            }),
+            json!({"type":"approval_request","turn_id":"review-turn","request_id":"private"}),
+            json!({"type":"task_complete","last_agent_message":"approved private"}),
+            json!({"type":"task_complete","turn_id":"review-turn","error":{"message":"private"}}),
+        ] {
+            assert!(translate(payload, &resumed).0.is_empty());
+        }
+        let (facts, _) = translate(
+            json!({"type":"task_complete","turn_id":"review-turn",
+            "last_agent_message":"approved private"}),
+            &resumed,
+        );
+        assert_eq!(facts[0]["payload"]["state"], "completed");
+        assert_eq!(facts[0]["payload"]["turn_id"], "review-turn");
+        assert!(!facts[0].to_string().contains("approved"));
+        assert!(!facts[0].to_string().contains("private"));
+        let (facts, _) = translate(
+            json!({"type":"turn_aborted","turn_id":"previous-turn",
+            "reason":"private"}),
+            &resumed,
+        );
+        assert_eq!(facts[0]["payload"]["turn_id"], "previous-turn");
+        assert_eq!(facts[0]["payload"]["state"], "interrupted");
+        assert!(!facts[0].to_string().contains("private"));
+    }
+
+    #[test]
+    fn native_requests_require_exact_identity_and_never_invent_resolution() {
+        let context = header_identity(&row(
+            "session_meta",
+            json!({
+                "id":"native-thread","session_id":"parent-thread",
+            }),
+        ))
+        .unwrap();
+        let (_, current) = translate(
+            json!({"type":"task_started","turn_id":"active-turn"}),
+            &context,
+        );
+        let request = json!({"type":"approval_request","turn_id":"previous-turn",
+            "request_id":"approval-one","prompt":"private sentinel"});
+        let (facts, next) = translate(request, &current);
+        assert_eq!(next.turn_id, "active-turn");
+        assert_eq!(facts[0]["kind"], "native_request");
+        assert_eq!(
+            facts[0]["identity"],
+            json!({"session_id":"native-thread",
+            "worker_id":"native-thread","turn_id":"previous-turn"})
+        );
+        assert_eq!(
+            facts[0]["payload"],
+            json!({"request_kind":"approval","state":"requested",
+            "request_id":opaque_operation("approval-one").unwrap()})
+        );
+        assert!(!facts[0].to_string().contains("private sentinel"));
+        assert_eq!(facts[1]["payload"]["code"], "codex_historical_wait");
+        for payload in [
+            json!({"type":"approval_request","turn_id":"active-turn","call_id":"not-a-request-id"}),
+            json!({"type":"approval_request","request_id":"no-turn"}),
+            json!({"type":"approval_response","turn_id":"active-turn","request_id":"approval-one","decision":"approve"}),
+            json!({"type":"item_completed","turn_id":"active-turn","item":{
+                "type":"AgentMessage","phase":"final_answer","text":"approved"},
+            }),
+        ] {
+            assert!(
+                translate(payload, &current)
+                    .0
+                    .iter()
+                    .all(|row| row["kind"] != "native_request")
+            );
+        }
+        let (facts, _) = translate(
+            json!({"type":"request_user_input","turn_id":"active-turn",
+            "request_id":"input-one","questions":["private"]}),
+            &current,
+        );
+        assert_eq!(facts[0]["payload"]["request_kind"], "user_input");
+        assert_eq!(facts[0]["payload"]["state"], "requested");
+        assert!(!facts[0].to_string().contains("private"));
+    }
+
+    #[test]
+    fn duplicate_scope_fields_cannot_create_a_request_or_hide_a_guardian() {
+        let context =
+            header_identity(br#"{"type":"session_meta","payload":{"id":"thread"}}"#).unwrap();
+        let request = br#"{"type":"event_msg","timestamp":"2026-11-14T10:00:00Z","payload":{
+            "type":"approval_request","turn_id":"turn","request_id":"one","request_id":"two"}}"#;
+        let (facts, _) = translate_line(request, &context, "generation", 10).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0]["kind"], "lifecycle");
+        for header in [
+            br#"{"type":"session_meta","payload":{"id":"thread","thread_source":"guardian_review","thread_source":"cli"}}"#.as_slice(),
+            br#"{"type":"session_meta","payload":{"id":"thread","source":{"subagent":{"other":"guardian","other":"ordinary"}}}}"#.as_slice(),
+        ] {
+            assert!(header_identity(header).is_err());
+        }
     }
 
     #[test]

@@ -17,14 +17,21 @@ mod content_grant;
 mod eval_detail;
 mod eval_inventory;
 mod eval_outcome;
+mod history_projection;
 mod linked_trace;
+pub mod metric_history;
+pub mod native_attention;
 #[cfg(target_os = "linux")]
 mod native_codex_metadata;
+#[cfg(target_os = "linux")]
+pub mod native_outbox;
 mod private_text;
 mod retention;
 mod review_ledger;
 mod session_catalog;
+mod telemetry_log_text;
 mod telemetry_payload;
+pub mod usage_history;
 mod workspace_ledger;
 
 pub use automatic_retention::{
@@ -37,7 +44,7 @@ pub use content_grant::{
     UserTextEvidence,
 };
 pub use eval_detail::{
-    EvalDetailRecord, EvalDetailSelection, EvalResultDetail, EvalScoreDetail,
+    EvalDetailRecord, EvalDetailSelection, EvalFindingSelection, EvalResultDetail, EvalScoreDetail,
     eval_detail_grant_scope,
 };
 pub use eval_inventory::{
@@ -48,7 +55,11 @@ pub use eval_outcome::{
     EvalImportReport, EvalOutcome, EvalPage, EvalQuery, EvalScore, MAX_EVAL_OUTCOMES,
     RetainedEvalOutcome, SelectedEvalPage, SelectedEvalQuery, deserialize_eval_batch,
 };
-pub use linked_trace::{ResolvedTraceReview, ResolvedTraceTurn, TraceReviewQuery, TraceTurnQuery};
+use linked_trace::TraceLink;
+pub use linked_trace::{
+    McpTraceQuery, ResolvedTraceReview, ResolvedTraceTurn, StandaloneTraceQuery, TraceReviewQuery,
+    TraceTurnQuery,
+};
 #[cfg(target_os = "linux")]
 pub use native_codex_metadata::{CodexThreadMetadata, read_codex_thread_metadata};
 pub use private_text::bounded_text_preview;
@@ -58,14 +69,21 @@ pub use session_catalog::{
     MAX_SESSION_PAGE_SIZE, SessionLifecycle, SessionPage, SessionPosition, SessionQuery,
     SessionSummary,
 };
+pub use telemetry_log_text::{
+    TelemetryLogText, TelemetryLogTextBinding, TelemetryLogTextSelection,
+    deserialize_telemetry_log_records,
+};
 pub use telemetry_payload::{
     MAX_TELEMETRY_PAYLOAD_BATCH_BYTES, MAX_TELEMETRY_PAYLOAD_TEXT_BYTES, TelemetryBinding,
     TelemetryPayload, TelemetryPayloadRecord, TelemetryPayloadSelection,
 };
 pub use workspace_ledger::{
-    ApprovedTaskDraft, MAX_WORKSPACE_GIT_DIFF_BYTES, MAX_WORKSPACE_PAGE_SIZE, SavedHandoff,
-    SavedTask, SavedTaskDecision, TaskBrief, TaskBriefUpdate, TaskDecisionInput, TaskDecisionKind,
-    TaskDraftApproval, TaskHandoff, TaskSourceProof, WorkspaceAnchor, WorkspaceError,
+    ApprovedTaskDraft, ApprovedTaskSource, DesktopAttentionRequest, LegacyActivityId,
+    LegacyDesktopAttentionRequest, LegacyTaskOccurrence, LegacyTaskOccurrenceAuthority,
+    LegacyTaskScope, LegacyTaskSourceProof, MAX_WORKSPACE_GIT_DIFF_BYTES, MAX_WORKSPACE_PAGE_SIZE,
+    SavedHandoff, SavedTask, SavedTaskDecision, TaskBrief, TaskBriefUpdate, TaskDecisionInput,
+    TaskDecisionKind, TaskDraftApproval, TaskHandoff, TaskSourceProof, WorkflowAlertCandidate,
+    WorkflowDeliveryAttempt, WorkflowNotificationRead, WorkspaceAnchor, WorkspaceError,
     WorkspaceGitDiff, WorkspaceGitSnapshot, WorkspaceHistory, WorkspaceLedger, WorkspacePage,
 };
 
@@ -83,7 +101,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 17;
+const SCHEMA_VERSION: i64 = 20;
 pub const MAX_HOST_HISTORY_PAGE: usize = 64;
 const MAX_BATCH_EVENTS: usize = 2_048;
 pub const MAX_OTLP_BATCH_SPANS: usize = 1_024;
@@ -100,7 +118,10 @@ const STORE_MARKER_V13: &str = "agenturm.observation-store.v13";
 const STORE_MARKER_V14: &str = "agenturm.observation-store.v14";
 const STORE_MARKER_V15: &str = "agenturm.observation-store.v15";
 const STORE_MARKER_V16: &str = "agenturm.observation-store.v16";
-const STORE_MARKER: &str = "agenturm.observation-store.v17";
+const STORE_MARKER_V17: &str = "agenturm.observation-store.v17";
+const STORE_MARKER_V18: &str = "agenturm.observation-store.v18";
+const STORE_MARKER_V19: &str = "agenturm.observation-store.v19";
+const STORE_MARKER: &str = "agenturm.observation-store.v20";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -133,6 +154,12 @@ pub enum ObservationKind {
     TraceSpan(agenturm_kernel::TraceSpan),
     TraceProgress(agenturm_kernel::TraceProgress),
     HostSample(agenturm_kernel::HostSample),
+    MetricPoint(agenturm_kernel::MetricPoint),
+    TraceSpanSummary(agenturm_kernel::telemetry_summary::TraceSpanSummary),
+    OtlpActivityLog(agenturm_kernel::telemetry_summary::OtlpActivityLog),
+    OtlpErrorLog(agenturm_kernel::telemetry_summary::OtlpErrorLog),
+    InternalReview(agenturm_kernel::native_review::InternalReview),
+    NativeRequest(agenturm_kernel::native_review::NativeRequest),
     Lifecycle {
         state: String,
         reason_code: Option<String>,
@@ -311,6 +338,24 @@ impl ObservationBatch {
                     KernelObservationKind::TraceProgress(progress) => {
                         ObservationKind::TraceProgress(progress.clone())
                     }
+                    KernelObservationKind::InternalReview(review) => {
+                        ObservationKind::InternalReview(review.clone())
+                    }
+                    KernelObservationKind::NativeRequest(request) => {
+                        ObservationKind::NativeRequest(request.clone())
+                    }
+                    KernelObservationKind::TraceSpanSummary(summary) => {
+                        ObservationKind::TraceSpanSummary(summary.clone())
+                    }
+                    KernelObservationKind::OtlpActivityLog(log) => {
+                        ObservationKind::OtlpActivityLog(log.clone())
+                    }
+                    KernelObservationKind::OtlpErrorLog(log) => {
+                        ObservationKind::OtlpErrorLog(log.clone())
+                    }
+                    KernelObservationKind::MetricPoint(point) => {
+                        ObservationKind::MetricPoint(point.clone())
+                    }
                     KernelObservationKind::HostSample(sample) => {
                         ObservationKind::HostSample(sample.clone())
                     }
@@ -452,10 +497,9 @@ impl Display for StoreError {
             Self::SnapshotReplaced => f.write_str(
                 "history snapshot belongs to a restored or replaced history; start a new query",
             ),
-            Self::TraceScopeTooLarge { max_rows } => write!(
-                f,
-                "trace exceeds the {max_rows}-row turn-resolution limit; select an explicit turn"
-            ),
+            Self::TraceScopeTooLarge { max_rows } => {
+                write!(f, "trace exceeds the {max_rows}-row retained scope limit")
+            }
             Self::EventConflict { event_id } => {
                 write!(f, "event ID was reused with different content: {event_id}")
             }
@@ -553,6 +597,24 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         expected.push(("table".into(), "agenturm_eval_details".into()));
         eval_detail::validate_schema(connection)?;
     }
+    if version >= 18 {
+        expected.push(("index".into(), "agenturm_metric_series_points".into()));
+        expected.push(("index".into(), "agenturm_usage_history_by_time".into()));
+        metric_history::validate_index(connection)?;
+        usage_history::validate_index(connection)?;
+    }
+    if version >= 19 {
+        expected.extend([
+            ("table".into(), "agenturm_native_attention_senders".into()),
+            ("table".into(), "agenturm_native_attention_events".into()),
+            (
+                "index".into(),
+                "agenturm_native_attention_by_request".into(),
+            ),
+            ("index".into(), "agenturm_native_attention_by_target".into()),
+        ]);
+        native_attention::validate_schema(connection)?;
+    }
     expected.sort();
     if objects != expected {
         return Err(StoreError::UnrecognizedDatabase);
@@ -580,7 +642,10 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         14 => STORE_MARKER_V14,
         15 => STORE_MARKER_V15,
         16 => STORE_MARKER_V16,
-        17 => STORE_MARKER,
+        17 => STORE_MARKER_V17,
+        18 => STORE_MARKER_V18,
+        19 => STORE_MARKER_V19,
+        20 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -1058,6 +1123,9 @@ impl Store {
             eval_outcome::create_schema(&transaction)?;
             telemetry_payload::create_schema(&transaction)?;
             eval_detail::create_schema(&transaction)?;
+            metric_history::create_index(&transaction)?;
+            usage_history::create_index(&transaction)?;
+            native_attention::create_schema(&transaction)?;
             initialize_history_identity(&transaction)?;
             transaction.commit()?;
         } else if schema_version == 2 {
@@ -1321,12 +1389,49 @@ impl Store {
             transaction.commit()?;
             validate_marked_shape(&connection, 16)?;
         }
-        if (2..SCHEMA_VERSION).contains(&schema_version) {
+        if (2..17).contains(&schema_version) {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            content_grant::migrate_grant_schema(&transaction, SCHEMA_VERSION)?;
+            content_grant::migrate_grant_schema(&transaction, 17)?;
             eval_detail::create_schema(&transaction)?;
             initialize_history_identity(&transaction)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V17],
+            )?;
+            transaction.pragma_update(None, "user_version", 17)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 17)?;
+        }
+        if (2..18).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            metric_history::create_index(&transaction)?;
+            usage_history::create_index(&transaction)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V18],
+            )?;
+            transaction.pragma_update(None, "user_version", 18)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 18)?;
+        }
+        if (2..19).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            native_attention::create_schema(&transaction)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V19],
+            )?;
+            transaction.pragma_update(None, "user_version", 19)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 19)?;
+        }
+        if (2..20).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            content_grant::migrate_grant_schema(&transaction, 20)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],
@@ -1372,7 +1477,23 @@ impl Store {
         self.verify_telemetry_storage()?;
         self.commit_batch_inner(
             batch,
-            Some((binding, payloads)),
+            Some(telemetry_payload::Admission::Spans(binding, payloads)),
+            None,
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    pub fn commit_telemetry_log_batch(
+        &mut self,
+        batch: &ObservationBatch,
+        binding: &TelemetryLogTextBinding,
+        records: &[TelemetryPayloadRecord],
+    ) -> Result<CommitOutcome> {
+        self.verify_telemetry_storage()?;
+        self.commit_batch_inner(
+            batch,
+            Some(telemetry_payload::Admission::Logs(binding, records)),
             None,
             #[cfg(test)]
             None,
@@ -1382,13 +1503,13 @@ impl Store {
     fn commit_batch_inner(
         &mut self,
         batch: &ObservationBatch,
-        telemetry: Option<(&TelemetryBinding, &[TelemetryPayloadRecord])>,
+        telemetry: Option<telemetry_payload::Admission<'_>>,
         fail_after_insert: Option<usize>,
         #[cfg(test)] before_commit: Option<fn()>,
     ) -> Result<CommitOutcome> {
         validate_batch(batch)?;
         let payloads = telemetry
-            .map(|(binding, records)| telemetry_payload::build_admission(batch, binding, records))
+            .map(|admission| admission.encode(batch))
             .transpose()?
             .unwrap_or_default();
         let digest = batch_digest(batch)?;
@@ -1671,7 +1792,7 @@ impl Store {
             query,
             None,
             None,
-            false,
+            TraceLink::Unlinked,
             allowed_sources,
             true,
         )
@@ -1770,7 +1891,11 @@ impl Store {
             query,
             turn_id,
             worker_filter,
-            linked_traces,
+            if linked_traces {
+                TraceLink::Session
+            } else {
+                TraceLink::Unlinked
+            },
             allowed_sources,
             false,
         )
@@ -1781,10 +1906,19 @@ impl Store {
         query: &ObservationQuery,
         turn_id: Option<&str>,
         worker_filter: Option<Option<&str>>,
-        linked_traces: bool,
+        trace_link: TraceLink<'_>,
         allowed_sources: Option<&BTreeSet<ExtensionId>>,
         host_history: bool,
     ) -> Result<ObservationPage> {
+        let linked_traces = matches!(trace_link, TraceLink::Session | TraceLink::McpOperation(_));
+        let operation = match trace_link {
+            TraceLink::McpOperation(operation) => Some(operation),
+            _ => None,
+        };
+        let (projection, filter) = match trace_link {
+            TraceLink::Projected(projection) => history_projection::selection(projection),
+            _ => (None, None),
+        };
         if query.limit == 0 || query.limit > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
             return Err(StoreError::Invalid("observation page limit is invalid"));
         }
@@ -1825,7 +1959,23 @@ impl Store {
         // and result rows so a concurrent prune cannot shift an active page.
         let (snapshot_id, receipt_watermark) =
             retention::resolve_read_snapshot(connection, query.snapshot_id)?;
-        let mut statement = connection.prepare(
+        if let TraceLink::Projected(projection) = trace_link {
+            history_projection::require_cursor(
+                connection,
+                query,
+                projection,
+                turn_id,
+                worker_filter,
+                allowed_sources,
+                receipt_watermark,
+            )?;
+        }
+        let workflow_filter = if projection == Some("workflow_alerts") {
+            history_projection::WORKFLOW_ALERTS_FILTER
+        } else {
+            "1"
+        };
+        let observation_sql = format!(
             "SELECT observation.source_id, observation.event_id, observation.revision,
                     observation.scope, observation.session_id, observation.worker_id, observation.turn_id,
                     observation.operation_id, observation.observed_at_unix_ns,
@@ -1856,11 +2006,34 @@ impl Store {
                ))
                AND (?9 IS NULL OR observation.turn_id=?9)
                AND (?10 = 0 OR observation.worker_id IS ?11)
+               AND (?15 IS NULL OR (observation.scope='session'
+                    AND json_extract(observation.kind_json,'$.kind')='trace_span'
+                    AND json_extract(observation.kind_json,'$.target_operation_id')=?15))
                AND (?13 IS NULL OR observation.source_id IN (SELECT value FROM json_each(?13)))
                AND ((?14 = 1 AND substr(observation.source_id,1,5)='host.'
                      AND json_extract(observation.kind_json,'$.kind')='host_sample')
                     OR (?14 = 0 AND (substr(observation.source_id,1,5)<>'host.'
                           OR json_extract(observation.kind_json,'$.kind')<>'host_sample')))
+               AND CASE ?16
+                   WHEN 'activity' THEN json_extract(observation.kind_json,'$.kind')<>'trace_span_summary'
+                   WHEN 'traces' THEN (
+                       (json_extract(observation.kind_json,'$.kind')='trace_span'
+                           AND (?17 IS NULL OR json_extract(observation.kind_json,'$.trace_id')=?17))
+                       OR (?17 IS NULL AND json_extract(observation.kind_json,'$.kind')='trace_progress'))
+                   WHEN 'progress' THEN (json_extract(observation.kind_json,'$.kind')='trace_progress'
+                       AND (?17 IS NULL OR json_extract(observation.kind_json,'$.trace_id')=?17))
+                   WHEN 'mcp' THEN (json_extract(observation.kind_json,'$.kind')='mcp_call' AND (
+                       ?17 IS NULL
+                       OR instr(lower(json_extract(observation.kind_json,'$.server')),lower(?17))>0
+                       OR instr(lower(json_extract(observation.kind_json,'$.tool')),lower(?17))>0
+                       OR instr(lower(json_extract(observation.kind_json,'$.method')),lower(?17))>0
+                       OR instr(lower(json_extract(observation.kind_json,'$.result')),lower(?17))>0))
+                   WHEN 'usage' THEN json_extract(observation.kind_json,'$.kind') IN (
+                       'usage','credit_usage','reported_cost','span_token_usage')
+                   WHEN 'relationships' THEN json_extract(observation.kind_json,'$.kind')='relationship'
+                   WHEN 'workflow_alerts' THEN ({workflow_filter})
+                   ELSE ?16 IS NULL
+               END
                AND (?4 IS NULL OR
                     (observation.observed_at_unix_ns,observation.source_id,
                      observation.event_id,observation.revision) <
@@ -1868,7 +2041,8 @@ impl Store {
              ORDER BY observation.observed_at_unix_ns DESC, observation.source_id DESC,
                       observation.event_id DESC, observation.revision DESC
              LIMIT ?8",
-        )?;
+        );
+        let mut statement = connection.prepare(&observation_sql)?;
         let read_limit = i64::try_from(query.limit + 1)
             .map_err(|_| StoreError::Invalid("observation page limit is invalid"))?;
         let before = query.before.as_ref();
@@ -1888,6 +2062,9 @@ impl Store {
                 linked_traces,
                 allowed_sources.map(serde_json::to_string).transpose()?,
                 host_history,
+                operation,
+                projection,
+                filter,
             ],
             |row| {
                 let revision: i64 = row.get(2)?;
@@ -1985,6 +2162,22 @@ impl Store {
                     ObservationKind::TraceSpan(span) => KernelObservationKind::TraceSpan(span),
                     ObservationKind::TraceProgress(progress) => {
                         KernelObservationKind::TraceProgress(progress)
+                    }
+                    ObservationKind::InternalReview(review) => {
+                        KernelObservationKind::InternalReview(review)
+                    }
+                    ObservationKind::NativeRequest(request) => {
+                        KernelObservationKind::NativeRequest(request)
+                    }
+                    ObservationKind::TraceSpanSummary(summary) => {
+                        KernelObservationKind::TraceSpanSummary(summary)
+                    }
+                    ObservationKind::OtlpActivityLog(log) => {
+                        KernelObservationKind::OtlpActivityLog(log)
+                    }
+                    ObservationKind::OtlpErrorLog(log) => KernelObservationKind::OtlpErrorLog(log),
+                    ObservationKind::MetricPoint(point) => {
+                        KernelObservationKind::MetricPoint(point)
                     }
                     ObservationKind::HostSample(sample) => {
                         KernelObservationKind::HostSample(sample)
@@ -2184,7 +2377,11 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
             StoredScope::Source
                 if matches!(
                     observation.kind,
-                    ObservationKind::Diagnostic { .. } | ObservationKind::HostSample(_)
+                    ObservationKind::Diagnostic { .. }
+                        | ObservationKind::HostSample(_)
+                        | ObservationKind::MetricPoint(_)
+                        | ObservationKind::OtlpErrorLog(_)
+                        | ObservationKind::InternalReview(_)
                 ) && observation.identity.session_id.is_none()
                     && observation.identity.worker_id.is_none()
                     && observation.identity.turn_id.is_none()
@@ -2214,6 +2411,84 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
         {
             return Err(StoreError::Invalid(
                 "host sample requires a valid host source and source-scoped metrics",
+            ));
+        }
+        if let ObservationKind::MetricPoint(point) = &observation.kind
+            && (observation.identity.scope != StoredScope::Source
+                || observation.revision != 0
+                || !agenturm_kernel::is_metric_source(&batch.source_id)
+                || !point.is_valid_at(observation.observed_at_unix_ns)
+                || !point.matches_event(&observation.event_id, observation.observed_at_unix_ns))
+        {
+            return Err(StoreError::Invalid(
+                "metric point requires a valid OTLP source, event, and source scope",
+            ));
+        }
+        if let ObservationKind::TraceSpanSummary(summary) = &observation.kind
+            && (observation.identity.scope != StoredScope::Session || !batch.source_id.starts_with("otlp.") || observation.revision != 0 || !summary.is_valid() || !summary.matches_event(&observation.event_id) || !batch.observations.iter().any(|anchor| {
+                matches!(&anchor.kind, ObservationKind::TraceSpan(span) if span.trace_id == summary.trace_id && span.span_id == summary.span_id)
+                && anchor.identity == observation.identity && anchor.observed_at_unix_ns == observation.observed_at_unix_ns && anchor.revision == observation.revision
+            })) {
+            return Err(StoreError::Invalid("trace summary requires its exact structural span in the same batch"));
+        }
+        if let ObservationKind::OtlpActivityLog(log) = &observation.kind
+            && (observation.identity.scope != StoredScope::Session
+                || !batch.source_id.starts_with("otlp.")
+                || observation.revision != 0
+                || observation.identity.operation_id.is_some()
+                || !log.is_valid()
+                || !log.matches_event(&observation.event_id)
+                || (observation.identity.turn_id.is_some() && log.target_source_id.is_none())
+                || (observation.identity.worker_id.is_some()
+                    && observation.identity.turn_id.is_none()))
+        {
+            return Err(StoreError::Invalid(
+                "activity log requires exact OTLP session scope and safe metadata",
+            ));
+        }
+        if let ObservationKind::OtlpErrorLog(log) = &observation.kind
+            && (!batch.source_id.starts_with("otlp.")
+                || observation.revision != 0
+                || observation.identity.operation_id.is_some()
+                || !log.is_valid_at(observation.observed_at_unix_ns)
+                || !log.matches_event(&observation.event_id)
+                || (log.target_source_id.is_some() && observation.identity.session_id.is_none())
+                || (observation.identity.turn_id.is_some() && log.target_source_id.is_none())
+                || (observation.identity.worker_id.is_some()
+                    && observation.identity.turn_id.is_none()))
+        {
+            return Err(StoreError::Invalid(
+                "error log requires exact typed OTLP scope and safe metadata",
+            ));
+        }
+        let review_source =
+            agenturm_kernel::native_review::is_codex_review_source(&batch.source_id);
+        if review_source
+            && !matches!(
+                observation.kind,
+                ObservationKind::InternalReview(_) | ObservationKind::Diagnostic { .. }
+            )
+        {
+            return Err(StoreError::Invalid(
+                "internal review sources may emit only review metadata",
+            ));
+        }
+        if let ObservationKind::InternalReview(review) = &observation.kind
+            && (!review_source
+                || observation.identity.scope != StoredScope::Source
+                || !review.is_valid())
+        {
+            return Err(StoreError::Invalid(
+                "internal review metadata requires a valid reserved source",
+            ));
+        }
+        if let ObservationKind::NativeRequest(request) = &observation.kind
+            && (observation.identity.scope != StoredScope::Session
+                || observation.identity.turn_id.is_none()
+                || !request.is_valid())
+        {
+            return Err(StoreError::Invalid(
+                "native requests require a session, turn and opaque request ID",
             ));
         }
         if let ObservationKind::Activity { category } = &observation.kind
@@ -2413,7 +2688,7 @@ fn validate_native_cost_anchors(rows: &[StoredObservation]) -> Result<()> {
 
 fn validate_otlp_metadata_batch(batch: &ObservationBatch) -> Result<()> {
     let rows = &batch.observations;
-    if rows.len() > MAX_OTLP_BATCH_SPANS * 3 {
+    if rows.len() > MAX_OTLP_BATCH_SPANS * 4 {
         return Err(StoreError::Invalid("batch exceeds event count limit"));
     }
     if !batch.source_id.starts_with("otlp.") || ExtensionId::parse(&batch.source_id).is_err() {
@@ -2459,7 +2734,7 @@ fn validate_otlp_metadata_batch(batch: &ObservationBatch) -> Result<()> {
     };
     for row in rows {
         match &row.kind {
-            ObservationKind::TraceSpan(_) => {}
+            ObservationKind::TraceSpan(_) | ObservationKind::TraceSpanSummary(_) => {}
             ObservationKind::ReportedCost(cost) => {
                 if !cost.matches_event(&row.event_id)
                     || !cost
@@ -2599,7 +2874,10 @@ mod tests {
 
     fn downgrade_fixture_to_v14(connection: &Connection) {
         connection.execute_batch(
-            "DROP TABLE agenturm_eval_details;
+            "DROP TABLE agenturm_native_attention_events; DROP TABLE agenturm_native_attention_senders;
+             DROP INDEX agenturm_metric_series_points;
+             DROP INDEX agenturm_usage_history_by_time;
+             DROP TABLE agenturm_eval_details;
              DROP TABLE agenturm_eval_detail_admissions;
              DROP INDEX agenturm_observations_by_trace;
              DROP TABLE agenturm_eval_outcomes;
@@ -2681,7 +2959,10 @@ mod tests {
         let snapshot = store.query_observations(&query).unwrap().snapshot_id;
         let tx = store.connection.transaction().unwrap();
         tx.execute_batch(
-            "DROP TABLE agenturm_eval_details; DROP TABLE agenturm_eval_detail_admissions;",
+            "DROP TABLE agenturm_native_attention_events; DROP TABLE agenturm_native_attention_senders;
+             DROP INDEX agenturm_metric_series_points;
+             DROP INDEX agenturm_usage_history_by_time;
+             DROP TABLE agenturm_eval_details; DROP TABLE agenturm_eval_detail_admissions;",
         )
         .unwrap();
         content_grant::migrate_grant_schema(&tx, 16).unwrap();
@@ -2723,6 +3004,45 @@ mod tests {
             SCHEMA_VERSION
         );
         eval_detail::validate_schema(&upgraded.connection).unwrap();
+    }
+
+    #[test]
+    fn v17_upgrade_preserves_existing_eval_tables_and_pinned_history() {
+        let db = TempDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        store
+            .commit_batch(&batch("prior", vec![event("prior", "session", 10)]))
+            .unwrap();
+        let query = ObservationQuery::latest(1);
+        let snapshot = store.query_observations(&query).unwrap().snapshot_id;
+        let identity = store.history_identity().unwrap();
+        store.connection.execute_batch("DROP TABLE agenturm_native_attention_events; DROP TABLE agenturm_native_attention_senders;
+             DROP INDEX agenturm_metric_series_points; DROP INDEX agenturm_usage_history_by_time;").unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V17],
+            )
+            .unwrap();
+        store
+            .connection
+            .pragma_update(None, "user_version", 17)
+            .unwrap();
+        drop(store);
+        let reader = Store::open_read_only(&db.0).unwrap();
+        assert_eq!(
+            reader.query_observations(&query).unwrap().snapshot_id,
+            snapshot
+        );
+        drop(reader);
+        let upgraded = Store::open(&db.0).unwrap();
+        assert_eq!(upgraded.history_identity().unwrap(), identity);
+        assert_eq!(
+            upgraded.query_observations(&query).unwrap().snapshot_id,
+            snapshot
+        );
+        validate_marked_shape(&upgraded.connection, SCHEMA_VERSION).unwrap();
     }
 
     #[test]
@@ -2787,6 +3107,7 @@ mod tests {
                 span_id: trace.span_id.clone(),
                 parent_span_id: None,
                 target_source_id: Some("harness.pi".into()),
+                target_operation_id: None,
                 started_at_unix_ns: 1,
                 status: TraceStatus::Ok,
             }),
@@ -2868,6 +3189,7 @@ mod tests {
                             span_id: span_id.into(),
                             parent_span_id: None,
                             target_source_id: None,
+                            target_operation_id: None,
                             started_at_unix_ns: 1,
                             status: TraceStatus::Error,
                         }),
@@ -3008,6 +3330,7 @@ mod tests {
                         span_id: span_id.into(),
                         parent_span_id: None,
                         target_source_id: None,
+                        target_operation_id: None,
                         started_at_unix_ns: 1,
                         status: TraceStatus::Ok,
                     }),
@@ -3220,6 +3543,59 @@ mod tests {
             next_cursor: "cursor-1".into(),
             observations,
         }
+    }
+
+    #[test]
+    fn telemetry_summaries_and_logs_require_exact_structural_scope() {
+        use agenturm_kernel::telemetry_summary::{OtlpActivityLog, TraceSpanSummary};
+        let mut store = Store::open(":memory:").unwrap();
+        let mut log = event(&format!("otlp-log:{}", "a".repeat(64)), "session", 10);
+        log.identity.worker_id = None;
+        log.identity.turn_id = None;
+        log.identity.operation_id = None;
+        log.kind = ObservationKind::OtlpActivityLog(OtlpActivityLog {
+            reported_error: true,
+            target_source_id: None,
+            usage: None,
+            cost: None,
+        });
+        let mut logged = batch("log", vec![log.clone()]);
+        assert!(store.commit_batch(&logged).is_err());
+        logged.source_id = "otlp.fixture".into();
+        assert!(store.commit_batch(&logged).is_ok());
+        let mut malformed = logged.clone();
+        malformed.request_id = "malformed".into();
+        malformed.expected_cursor = Some(logged.next_cursor.clone());
+        malformed.observations[0].identity.turn_id = Some("turn-without-target".into());
+        assert!(store.commit_batch(&malformed).is_err());
+        let trace_id = "11".repeat(16);
+        let span_id = "22".repeat(8);
+        let mut summary = event(&format!("otlp:{trace_id}:{span_id}:summary"), "session", 10);
+        summary.identity = log.identity.clone();
+        summary.kind = ObservationKind::TraceSpanSummary(TraceSpanSummary {
+            trace_id: trace_id.clone(),
+            span_id: span_id.clone(),
+            agent_run: false,
+            reported_error: false,
+        });
+        let mut missing = batch("missing", vec![summary.clone()]);
+        missing.source_id = "otlp.other".into();
+        assert!(store.commit_batch(&missing).is_err());
+        let mut anchor = summary.clone();
+        anchor.event_id = format!("otlp:{trace_id}:{span_id}");
+        anchor.kind = ObservationKind::TraceSpan(agenturm_kernel::TraceSpan {
+            trace_id,
+            span_id,
+            parent_span_id: None,
+            started_at_unix_ns: 1,
+            status: agenturm_kernel::TraceStatus::Ok,
+            target_source_id: None,
+            target_operation_id: None,
+        });
+        missing.observations.push(anchor);
+        assert!(store.commit_batch(&missing).is_ok());
+        missing.observations[0].identity.session_id = Some("sibling".into());
+        assert!(store.commit_batch(&missing).is_err());
     }
 
     #[test]

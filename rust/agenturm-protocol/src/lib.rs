@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod host;
+pub mod metric;
 pub mod observation;
 
 use std::fmt;
@@ -206,3 +207,9 @@ mod tests {
         ));
     }
 }
+
+pub mod native_review;
+
+pub mod telemetry_summary;
+
+pub mod native_attention;

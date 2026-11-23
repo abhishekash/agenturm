@@ -141,6 +141,12 @@ fn main() -> ExitCode {
                 return ExitCode::FAILURE;
             }
         },
+        Command::WatchJsonl(options) => {
+            if let Err(message) = agenturm_app::execute_span_jsonl_follow(&options) {
+                eprintln!("watch-jsonl failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
         Command::ImportJsonl(options) => match execute_span_jsonl_import(&options) {
             Ok(summary) => print!("{summary}"),
             Err(message) => {
@@ -159,6 +165,21 @@ fn main() -> ExitCode {
             Ok(result) => println!("{result}"),
             Err(message) => {
                 eprintln!("query failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        },
+        #[cfg(target_os = "linux")]
+        Command::LegacyReview(options) => {
+            if let Err(message) = agenturm_app::execute_legacy_review(&options) {
+                eprintln!("review failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
+        #[cfg(target_os = "linux")]
+        Command::RemoteReview(options) => match agenturm_app::execute_remote_review(&options) {
+            Ok(result) => println!("{result}"),
+            Err(message) => {
+                eprintln!("review failed: {message}");
                 return ExitCode::FAILURE;
             }
         },

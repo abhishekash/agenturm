@@ -7,17 +7,27 @@
 #![forbid(unsafe_code)]
 
 mod evidence_view;
+mod findings;
 mod keymap;
 mod live_receiver;
 mod loaded_view;
+pub mod metric_history;
 mod operation_table;
+mod pane_filter;
 mod theme;
+pub mod usage_chart;
 mod workbench;
 mod workspace;
 pub use evidence_view::{EvidenceRow, EvidenceSpec, EvidenceTable, EvidenceTables};
-pub use operation_table::{OperationRow, OperationTables};
+pub use findings::{
+    FindingEvaluation, FindingGroup, FindingOccurrence, FindingSource, FindingsPage,
+};
+pub use operation_table::{ConfiguredMcpServer, McpInventory, OperationRow, OperationTables};
 
-pub use live_receiver::{LiveOwner, LivePage, LiveRow, run_live_receiver};
+pub use live_receiver::{
+    LiveOwner, LivePage, LiveRequest, LiveResponse, LiveReviewMode, LiveReviewSelection,
+    LiveReviewTarget, LiveRow, run_live_receiver, run_live_receiver_with_review,
+};
 pub use loaded_view::LoadedView;
 
 pub use workbench::evaluation::{
@@ -27,21 +37,23 @@ pub use workbench::evaluation::{
 pub use workbench::investigation::{
     InvestigationKind, InvestigationMatch, InvestigationPage, InvestigationRead,
 };
+pub use workbench::workflow_resume::{ResumeRuntime, WorkflowResume};
 
+pub use agenturm_kernel::workflow_notifications::WorkflowDelivery;
 pub use workbench::{
-    HandoffEntry, OperationDetailEntry, OperationDetailKind, PromptDelivery, PromptEntry,
-    RequestEntry, RequestProof, ReviewNoteEntry, TaskEntry, TelemetrySpanEntry, WorkAnchor,
-    WorkCommand, WorkResult,
+    CurrentHostSample, HandoffEntry, OperationDetailEntry, OperationDetailKind, PromptDelivery,
+    PromptEntry, RequestEntry, RequestProof, ReviewNoteEntry, TaskEntry, TelemetryLogEntry,
+    TelemetrySpanEntry, WorkAnchor, WorkCommand, WorkResult, WorkflowAlertInbox,
 };
 
 pub use workspace::{
-    HistorySelection, NativeSessionContext, ProjectOrigin, RecordedSession, ReviewVersion,
-    SessionCatalog, SessionCursor, SessionView, WorkspaceRequest, WorkspaceResponse, WorkspaceView,
-    run_workspace,
+    HistorySelection, McpSearchScope, NativeSessionContext, ProjectOrigin, RecordedSession,
+    ReviewVersion, SessionCatalog, SessionCursor, SessionView, WorkspaceRequest, WorkspaceResponse,
+    WorkspaceView, run_workspace, run_workspace_with_stop,
 };
 
 use agenturm_kernel::ReadSnapshot;
-use agenturm_kernel::{ExtensionId, MetricRow, ObservationKind, ObservationPosition, Snapshot};
+use agenturm_kernel::{ExtensionId, MetricRow, ObservationPosition, Snapshot};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -335,7 +347,18 @@ pub struct RecordedTurn {
     pub lifecycle: Option<(String, Option<String>)>,
 }
 
+#[derive(Default)]
+pub struct HistoryFeatures {
+    /// Ordered continuation of the unfiltered history page.
+    pub continuation: Option<Box<ObservationPosition>>,
+    pub metric_history: Option<Box<agenturm_kernel::retained_history::MetricHistoryPage>>,
+    pub usage_history: Option<Box<usage_chart::UsageChartData>>,
+    pub findings: Option<(ExtensionId, FindingsPage)>,
+    pub mcp_inventory: Option<McpInventory>,
+}
+
 pub struct HistoryPage {
+    pub features: HistoryFeatures,
     pub snapshot: Snapshot,
     pub history_identity: Option<String>,
     pub turns: Vec<RecordedTurn>,
@@ -356,6 +379,7 @@ struct PageView {
     review_pane: Option<ExtensionId>,
     operation_details: Vec<OperationDetailEntry>,
     operation_table: operation_table::Browser,
+    findings: Option<(ExtensionId, findings::Browser)>,
     operation_picker: Option<(OperationDetailKind, ListState)>,
     telemetry_spans: Vec<TelemetrySpanEntry>,
     evaluation_traces: Vec<TraceEvaluationEntry>,
@@ -374,20 +398,11 @@ impl PageView {
                 .iter()
                 .rev()
                 .filter_map(|observation| {
-                    let ObservationKind::TraceSpan(span) = &observation.kind else {
-                        return None;
-                    };
-                    Some(TelemetrySpanEntry {
-                        history_identity: history_identity.clone(),
-                        source_id: observation.harness_id.clone(),
-                        native_source_id: span.target_source_id.clone(),
-                        trace_id: span.trace_id.clone(),
-                        span_id: span.span_id.clone(),
-                        session_id: observation.identity.session_id.clone()?,
-                        turn_id: observation.identity.turn_id.clone(),
-                        worker_id: observation.identity.worker_id.clone(),
-                        snapshot_id: page.snapshot.history_snapshot_id,
-                    })
+                    TelemetrySpanEntry::from_observation(
+                        observation,
+                        page.snapshot.history_snapshot_id,
+                        history_identity,
+                    )
                 })
                 .collect()
         } else {
@@ -396,6 +411,12 @@ impl PageView {
         let evaluation_traces = workbench::evaluation::trace_entries(&page.snapshot);
         let snapshot_id = page.snapshot.history_snapshot_id;
         let mut ui = UiModel::from_snapshot(page.snapshot);
+        if ui.truncated
+            && let Some(continuation) = page.features.continuation
+            && continuation.snapshot_id == snapshot_id
+        {
+            ui.older_cursor = Some(*continuation);
+        }
         ui.evidence = page.evidence_tables;
         if let Some(selected) = selected {
             ui.selected = selected;
@@ -410,13 +431,39 @@ impl PageView {
             turn_picker: None,
             review_pane: page.review_pane,
             operation_details: page.operation_details,
-            operation_table: operation_table::Browser::new(page.operation_tables),
+            operation_table: operation_table::Browser::new(
+                page.operation_tables,
+                page.features.mcp_inventory,
+            ),
+            findings: page
+                .features
+                .findings
+                .map(|(id, data)| (id, findings::Browser::new(data))),
             operation_picker: None,
             telemetry_spans,
             evaluation_traces,
             evaluation_picker: None,
         }
     }
+    fn inherit_filters(&mut self, previous: &Self) {
+        self.operation_table
+            .inherit_filters(&previous.operation_table);
+        if let (Some((id, next)), Some((previous_id, prior))) =
+            (&mut self.findings, &previous.findings)
+            && id == previous_id
+        {
+            next.set_filter(prior.filter());
+        }
+    }
+
+    fn active_findings(&mut self) -> Option<&mut findings::Browser> {
+        let selected = self.ui.panes.get(self.ui.selected)?.id.as_ref()?;
+        self.findings
+            .as_mut()
+            .filter(|(id, _)| id == selected)
+            .map(|(_, browser)| browser)
+    }
+
     fn reviewing(&self) -> bool {
         self.review_pane.as_ref().is_some_and(|review| {
             self.ui
@@ -434,6 +481,7 @@ pub fn run_with_history(
     mut load_older: impl FnMut(&ObservationPosition) -> io::Result<Option<Snapshot>>,
 ) -> io::Result<()> {
     let initial = HistoryPage {
+        features: Default::default(),
         history_identity: None,
         snapshot,
         turns: Vec::new(),
@@ -449,6 +497,7 @@ pub fn run_with_history(
             return Ok(None);
         };
         Ok(load_older(cursor)?.map(|snapshot| HistoryPage {
+            features: Default::default(),
             history_identity: None,
             snapshot,
             turns: Vec::new(),
@@ -759,6 +808,9 @@ fn draw_view_bar(frame: &mut Frame, model: &UiModel, area: Rect) {
             Style::default()
         };
         let tab = Span::styled(format!(" {} ", pane.title), style);
+        if index > model.selected && used + tab.width() > usize::from(area.width) {
+            break;
+        }
         used += tab.width();
         tabs.push(tab);
         while index <= model.selected && used > usize::from(area.width) && tabs.len() > 1 {

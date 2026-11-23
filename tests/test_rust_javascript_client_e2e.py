@@ -163,6 +163,25 @@ class RustJavaScriptTraceTests(unittest.TestCase):
         self.assertNotIn("synthetic private span", query.stdout)
         return json.loads(query.stdout)["observations"]
 
+    def paired_spans(self, rows, expected):
+        spans = [row for row in rows if row["observation"]["kind"] == "trace_span"]
+        summaries = [row for row in rows if row["observation"]["kind"] == "trace_span_summary"]
+        self.assertEqual((len(spans), len(summaries)), (expected, expected))
+
+        def span_key(row):
+            evidence = row["observation"]
+            return evidence["trace_id"], evidence["span_id"]
+
+        matching = {span_key(row): row for row in summaries}
+        self.assertEqual(len(matching), expected)
+        self.assertEqual(set(matching), {span_key(row) for row in spans})
+        for row in spans:
+            summary = matching[span_key(row)]
+            self.assertEqual(summary["event_id"], row["event_id"] + ":summary")
+            for field in ("harness_id", "identity", "observed_at_unix_ns", "revision"):
+                self.assertEqual(summary[field], row[field])
+        return spans
+
     def test_rust_run_keeps_nested_trace_scope_and_node_exit_status(self):
         self.write_producer("""
 const client = new Client({ transport: 'otlp', strict: true });
@@ -323,9 +342,10 @@ console.log(JSON.stringify(traces));
         self.assertEqual(completed.returncode, 0, completed.stderr)
         traces = json.loads(completed.stdout)
         observations = self.observations("otlp.node")
-        self.assertEqual(len(observations), 9)
+        self.assertEqual(len(observations), 18)
+        spans = self.paired_spans(observations, 9)
         selected = [
-            row for row in observations if row["observation"]["trace_id"] == traces["exact"]
+            row for row in spans if row["observation"]["trace_id"] == traces["exact"]
         ]
         self.assertEqual(len(selected), 3)
         for row in selected:
@@ -419,9 +439,9 @@ if (client.lastError) throw client.lastError;
                 receiver.communicate()
         self.assertEqual(receiver.returncode, 0)
         rows = self.observations("otlp.standalone")
-        self.assertEqual(len(rows), 1025)
+        self.assertEqual(len(rows), 2050)
         self.assertEqual({row["identity"]["session_id"] for row in rows}, {"large-session"})
-        spans = [row["observation"] for row in rows]
+        spans = [row["observation"] for row in self.paired_spans(rows, 1025)]
         root = next(span for span in spans if span["parent_span_id"] is None)
         self.assertEqual(
             {span.get("parent_span_id") for span in spans}, {None, root["span_id"]}
@@ -467,8 +487,10 @@ await client.trace({
                 child.kill()
                 child.communicate()
         reopened = self.observations("otlp.node-progress")
-        self.assertIn(progress, reopened)
-        self.assertEqual(len(reopened), 2)
+        self.assertEqual([row for row in reopened if row["observation"]["kind"] == "trace_progress"],
+                         [progress])
+        self.assertEqual(len(reopened), 3)
+        self.paired_spans(reopened, 1)
         self.assertEqual({row["observation"]["trace_id"] for row in reopened}, {trace_id})
 
 

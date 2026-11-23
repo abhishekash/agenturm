@@ -22,6 +22,7 @@ pub(crate) const PROTOCOL: &str = "python-v0.2.8";
 enum ReadError {
     Protocol(&'static str),
     Unavailable,
+    ResponseBudget,
 }
 
 impl From<ReadError> for String {
@@ -29,6 +30,7 @@ impl From<ReadError> for String {
         match error {
             ReadError::Protocol(message) => message,
             ReadError::Unavailable => "Python receiver metadata is temporarily unavailable",
+            ReadError::ResponseBudget => "Python receiver response exceeds its bounded read budget",
         }
         .into()
     }
@@ -44,18 +46,24 @@ fn wire_error(error: std::io::Error) -> ReadError {
 }
 
 #[derive(Clone)]
-struct LegacyReceiver {
+pub(crate) struct LegacyReceiver {
     endpoint: SocketAddr,
     token: ProducerToken,
     identity: String,
 }
 
 impl LegacyReceiver {
-    fn connect(options: &RemoteHistoryOptions) -> Result<Self, String> {
+    pub(crate) fn connect(options: &RemoteHistoryOptions) -> Result<Self, String> {
         let token = ProducerToken::from_python_receiver_file(options.token_file())?;
         let deadline = Instant::now() + MAX_READ_TIME;
-        let (identity, health) =
-            get::<Health>(options.endpoint(), &token, "/api/health", None, deadline)?;
+        let (identity, health) = get::<Health>(
+            options.endpoint(),
+            &token,
+            "/api/health",
+            None,
+            deadline,
+            MAX_REPLY,
+        )?;
         health.require_identity(&identity)?;
         Ok(Self {
             endpoint: options.endpoint(),
@@ -71,8 +79,107 @@ impl LegacyReceiver {
             path,
             Some(&self.identity),
             deadline,
+            MAX_REPLY,
         )?;
         Ok(value)
+    }
+
+    pub(crate) fn get_for_native<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        deadline: Instant,
+    ) -> Result<T, String> {
+        self.get(path, deadline).map_err(String::from)
+    }
+
+    pub(super) fn get_for_review<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        deadline: Instant,
+    ) -> Result<T, String> {
+        const REVIEW_REPLY_LIMIT: usize = 2 * 1024 * 1024;
+        let (_, value) = get(
+            self.endpoint,
+            &self.token,
+            path,
+            Some(&self.identity),
+            deadline,
+            REVIEW_REPLY_LIMIT,
+        )?;
+        Ok(value)
+    }
+
+    pub(super) fn get_for_investigation<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        deadline: Instant,
+        remaining_bytes: usize,
+    ) -> Result<Option<(T, usize)>, String> {
+        match get_with_size(
+            self.endpoint,
+            &self.token,
+            path,
+            Some(&self.identity),
+            deadline,
+            remaining_bytes,
+        ) {
+            Ok((_, value, size)) => Ok(Some((value, size))),
+            Err(ReadError::ResponseBudget) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
+    pub(crate) fn native_identity(&self) -> &str {
+        &self.identity
+    }
+
+    pub(crate) fn post_native(&self, body: &[u8], deadline: Instant) -> Result<(), String> {
+        const UNCERTAIN: &str =
+            "Native lifecycle delivery was not confirmed; pending event retained";
+        let budget = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|budget| !budget.is_zero())
+            .ok_or(UNCERTAIN)?;
+        let endpoint = self.endpoint;
+        let stream = TcpStream::connect_timeout(&endpoint, budget).map_err(|_| UNCERTAIN)?;
+        let head = format!(
+            "POST /v1/logs HTTP/1.1\r\nHost: {endpoint}\r\nAuthorization: {}\r\nX-Agenturm-Expected-Receiver-ID: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            self.token.bearer_header(),
+            self.identity,
+            body.len()
+        );
+        http::write(&stream, deadline, &head, body).map_err(|_| UNCERTAIN)?;
+        let mut reader = BufReader::new(&stream);
+        let head = http::read_python_head(&mut reader, deadline, 8192).map_err(|_| UNCERTAIN)?;
+        let mut status = head.start.split_whitespace();
+        if !matches!(status.next(), Some("HTTP/1.0" | "HTTP/1.1"))
+            || status.next() != Some("200")
+            || head
+                .receiver_id
+                .is_some_and(|receiver| receiver != self.identity)
+        {
+            return Err(UNCERTAIN.into());
+        }
+        let body = http::read_body(&mut reader, deadline, head.length).map_err(|_| UNCERTAIN)?;
+        let receipt: NativeWriteReceipt = serde_json::from_slice(&body).map_err(|_| UNCERTAIN)?;
+        if receipt
+            .receiver_id
+            .is_some_and(|receiver| receiver != self.identity)
+            || receipt.accepted != 1
+            || receipt.partial_success.rejected_log_records != 0
+        {
+            return Err(UNCERTAIN.into());
+        }
+        self.native_health_check(deadline)?;
+        Ok(())
+    }
+
+    pub(crate) fn native_health_check(&self, deadline: Instant) -> Result<(), String> {
+        let health = self.health(deadline)?;
+        if !health.ready() || !health.native_lifecycle_v1 {
+            return Err("Python receiver native lifecycle is unavailable or indexing".into());
+        }
+        Ok(())
     }
 
     fn health(&self, deadline: Instant) -> Result<Health, ReadError> {
@@ -130,11 +237,24 @@ impl LegacyReceiver {
     }
 
     fn pending(&self, attention: &mut AttentionState) -> Result<AttentionReport, ReadError> {
+        self.pending_with_clock(attention).map(|(report, _)| report)
+    }
+
+    fn pending_with_clock(
+        &self,
+        attention: &mut AttentionState,
+    ) -> Result<(AttentionReport, Option<u64>), ReadError> {
         let deadline = Instant::now() + MAX_READ_TIME;
         let initial = self.health(deadline)?;
         let inventory = self.inventory(&initial, deadline)?;
         let final_health = self.health(deadline)?;
-        Ok(attention.observe(&self.identity, &initial, &final_health, inventory))
+        let report = attention.observe(&self.identity, &initial, &final_health, inventory);
+        let clock = initial
+            .observed_time_unix_nano
+            .zip(final_health.observed_time_unix_nano)
+            .filter(|(initial, final_clock)| report.ready && initial <= final_clock)
+            .map(|(_, final_clock)| final_clock);
+        Ok((report, clock))
     }
 }
 
@@ -142,14 +262,24 @@ pub(super) fn cockpit(options: &RemoteHistoryOptions) -> Result<(), String> {
     let options = options.clone();
     let mut receiver = None;
     let mut attention = AttentionState::default();
-    agenturm_ui::run_live_receiver(move || {
+    agenturm_ui::run_live_receiver_with_review(move |request| {
         let receiver = match &receiver {
             Some(receiver) => receiver,
             None => receiver.insert(LegacyReceiver::connect(&options)?),
         };
-        receiver
-            .report(SESSION_PAGE, &mut attention)
-            .map(Report::into_live_page)
+        match request {
+            agenturm_ui::LiveRequest::Refresh => receiver
+                .report(SESSION_PAGE, &mut attention)
+                .map(Report::into_live_page)
+                .map(agenturm_ui::LiveResponse::Page),
+            agenturm_ui::LiveRequest::Review {
+                selection,
+                delivery,
+            } => {
+                super::legacy_review::cockpit::deliver(receiver, &options, &selection, delivery)?;
+                Ok(agenturm_ui::LiveResponse::ReviewClosed)
+            }
+        }
     })
     .map_err(|_| "Cannot run the Python receiver cockpit".into())
 }
@@ -183,13 +313,60 @@ pub(crate) fn attention_reader(
     })
 }
 
+pub(crate) struct DesktopAttentionReader {
+    receiver: LegacyReceiver,
+    attention: AttentionState,
+}
+
+pub(crate) struct DesktopAttentionSample {
+    pub report: AttentionReport,
+    pub clock: Option<u64>,
+}
+
+impl DesktopAttentionReader {
+    pub(crate) fn connect(options: &RemoteHistoryOptions) -> Result<Self, String> {
+        Ok(Self {
+            receiver: LegacyReceiver::connect(options)?,
+            attention: AttentionState::default(),
+        })
+    }
+
+    pub(crate) fn identity(&self) -> &str {
+        &self.receiver.identity
+    }
+
+    pub(crate) fn read(&mut self) -> Result<DesktopAttentionSample, String> {
+        match self.receiver.pending_with_clock(&mut self.attention) {
+            Ok((report, clock)) => Ok(DesktopAttentionSample { report, clock }),
+            Err(ReadError::Unavailable) => Ok(DesktopAttentionSample {
+                report: self.attention.report(&self.receiver.identity, false),
+                clock: None,
+            }),
+            Err(error) => Err(error.into()),
+        }
+    }
+}
+
 fn get<T: DeserializeOwned>(
     endpoint: SocketAddr,
     token: &ProducerToken,
     path: &str,
     expected: Option<&str>,
     deadline: Instant,
+    max_reply: usize,
 ) -> Result<(String, T), ReadError> {
+    get_with_size(endpoint, token, path, expected, deadline, max_reply)
+        .map(|(identity, value, _)| (identity, value))
+}
+
+fn get_with_size<T: DeserializeOwned>(
+    endpoint: SocketAddr,
+    token: &ProducerToken,
+    path: &str,
+    expected: Option<&str>,
+    deadline: Instant,
+    max_reply: usize,
+) -> Result<(String, T, usize), ReadError> {
     let budget = deadline
         .checked_duration_since(Instant::now())
         .filter(|budget| !budget.is_zero())
@@ -241,6 +418,9 @@ fn get<T: DeserializeOwned>(
             "Python receiver identity changed. Reopen the cockpit or watcher.",
         ));
     }
+    if head.length > max_reply {
+        return Err(ReadError::ResponseBudget);
+    }
     let body = http::read_body(&mut reader, deadline, head.length).map_err(wire_error)?;
     let declared: BodyIdentity = serde_json::from_slice(&body)
         .map_err(|_| ReadError::Protocol("Python receiver metadata is invalid"))?;
@@ -254,7 +434,22 @@ fn get<T: DeserializeOwned>(
     }
     let value = serde_json::from_slice(&body)
         .map_err(|_| ReadError::Protocol("Python receiver metadata is invalid"))?;
-    Ok((identity, value))
+    Ok((identity, value, body.len()))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeWriteReceipt {
+    accepted: u64,
+    #[serde(rename = "receiver_id")]
+    receiver_id: Option<String>,
+    partial_success: NativePartialSuccess,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativePartialSuccess {
+    rejected_log_records: u64,
 }
 
 #[derive(Deserialize)]
@@ -465,9 +660,17 @@ pub(crate) struct AttentionReport {
     pending: Vec<PendingRequest>,
 }
 
+impl AttentionReport {
+    /// Only a complete report confirms that all unresolved rows were present
+    /// in the current authenticated inventory.
+    pub(crate) fn desktop_requests(&self) -> Option<&[PendingRequest]> {
+        self.ready.then_some(&self.pending)
+    }
+}
+
 /// Only derived public identity and explicitly reported request state enter the output.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct PendingRequest {
+pub(crate) struct PendingRequest {
     source_id: String,
     service: String,
     agent_id: String,
@@ -481,6 +684,35 @@ struct PendingRequest {
     reason_code: RequestKind,
     observed_at_unix_ns: String,
     source_clock: SourceClock,
+}
+
+impl PendingRequest {
+    pub(crate) fn receiver_clock(&self) -> Option<u64> {
+        let time = self.observed_at_unix_ns.parse().ok()?;
+        (self.source_clock == SourceClock::Receiver && time_ns(time)).then_some(time)
+    }
+
+    pub(crate) fn desktop_key(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+
+        let mut key = Sha256::new();
+        for field in [
+            self.source_id.as_str(),
+            self.service.as_str(),
+            self.agent_id.as_str(),
+            self.session_id.as_str(),
+            self.trace_id.as_str(),
+            self.turn_id.as_deref().unwrap_or_default(),
+            self.sender_id.as_str(),
+            self.request_id.as_str(),
+            self.event_id.as_str(),
+        ] {
+            key.update((field.len() as u64).to_be_bytes());
+            key.update(field.as_bytes());
+        }
+        key.update(self.sequence.to_be_bytes());
+        key.finalize().into()
+    }
 }
 
 impl From<&RequestState> for PendingRequest {

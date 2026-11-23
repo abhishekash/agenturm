@@ -146,6 +146,14 @@ pub struct EvalDetailSelection {
     pub snapshot_id: ReadSnapshot,
 }
 
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct EvalFindingSelection {
+    pub detail: EvalDetailSelection,
+    pub history_identity: String,
+    pub evidence_snapshot: ReadSnapshot,
+}
+
 pub fn eval_detail_grant_scope(source: &ExtensionId) -> Result<ContentGrantScope> {
     if !source.as_str().starts_with("otlp.") {
         return Err(StoreError::Invalid(
@@ -342,6 +350,24 @@ impl Store {
         selected: &EvalDetailSelection,
         consume: impl FnOnce(&EvalResultDetail) -> T,
     ) -> Result<Option<T>> {
+        self.with_eval_detail(selected, None, consume)
+    }
+
+    /// Opens detail for a still-current failed evaluation selected in Findings.
+    pub fn with_failed_eval_finding<T>(
+        &self,
+        selected: &EvalFindingSelection,
+        consume: impl FnOnce(&EvalResultDetail) -> T,
+    ) -> Result<Option<T>> {
+        self.with_eval_detail(&selected.detail, Some(selected), consume)
+    }
+
+    fn with_eval_detail<T>(
+        &self,
+        selected: &EvalDetailSelection,
+        finding: Option<&EvalFindingSelection>,
+        consume: impl FnOnce(&EvalResultDetail) -> T,
+    ) -> Result<Option<T>> {
         self.require_eval_detail_storage()?;
         let scope = eval_detail_grant_scope(&selected.trace_source_id)?;
         if !valid_trace_id(&selected.trace_id)
@@ -360,6 +386,21 @@ impl Store {
                 return Err(StoreError::StaleContentGrant);
             }
             let (_, watermark) = retention::resolve_read_snapshot(&store.connection, Some(selected.snapshot_id))?;
+            let evidence_watermark = if let Some(finding) = finding {
+                if store.history_identity()? != finding.history_identity {
+                    return Err(StoreError::SnapshotReplaced);
+                }
+                let (_, evidence) = retention::resolve_read_snapshot(
+                    &store.connection,
+                    Some(finding.evidence_snapshot),
+                )?;
+                if evidence > watermark {
+                    return Err(StoreError::Invalid("evaluation detail predates its trace evidence selection"));
+                }
+                Some(evidence)
+            } else {
+                None
+            };
             let row: Option<(String, [u8; 32], usize)> = store.connection.query_row(
                 "SELECT d.detail_json,d.detail_digest,json_array_length(e.outcome_json,'$.scores')
                  FROM agenturm_eval_details AS d
@@ -374,8 +415,21 @@ impl Store {
                    AND d.detail_json IS NOT NULL AND e.outcome_json IS NOT NULL
                    AND admission.sequence<=?4 AND support.sequence<=?4 AND admission.receipt_id=?5
                    AND o.scope='session' AND json_extract(o.kind_json,'$.kind')='trace_span'
-                   AND json_extract(o.kind_json,'$.trace_id')=d.trace_id",
-                params![selected.trace_source_id.as_str(), selected.trace_id, selected.revision, watermark, selected.receipt_id],
+                   AND json_extract(o.kind_json,'$.trace_id')=d.trace_id
+                   AND (?6 IS NULL OR (
+                       json_extract(e.outcome_json,'$.passed')=0
+                       AND NOT EXISTS (
+                           SELECT 1 FROM agenturm_eval_outcomes AS latest
+                           WHERE latest.trace_source_id=e.trace_source_id AND latest.trace_id=e.trace_id
+                             AND latest.revision>e.revision)
+                       AND EXISTS (
+                           SELECT 1 FROM agenturm_observations AS trace
+                           JOIN agenturm_history_batches AS batch USING(request_id)
+                           WHERE trace.source_id=e.trace_source_id AND trace.scope='session'
+                             AND json_extract(trace.kind_json,'$.kind')='trace_span'
+                             AND json_extract(trace.kind_json,'$.trace_id')=e.trace_id
+                             AND batch.sequence<=?6)))",
+                params![selected.trace_source_id.as_str(), selected.trace_id, selected.revision, watermark, selected.receipt_id, evidence_watermark],
                 |row| Ok((row.get(0)?,row.get(1)?,row.get(2)?)),
             ).optional()?;
             row.map(|(json, digest, score_count)| {

@@ -74,8 +74,32 @@ pub(super) fn execute(
     store: &impl super::HistoryReader,
     db: &Path,
     command: WorkCommand,
+    stop: &std::sync::atomic::AtomicBool,
 ) -> Result<WorkResult, String> {
     match command {
+        WorkCommand::HostNow => {
+            #[cfg(target_os = "linux")]
+            let capture = store
+                .local_host_data()
+                .then(|| {
+                    let sample = crate::cockpit_host::capture().ok()?;
+                    let captured_at_unix_ns = u64::try_from(
+                        std::time::SystemTime::now()
+                            .duration_since(std::time::UNIX_EPOCH)
+                            .ok()?
+                            .as_nanos(),
+                    )
+                    .ok()?;
+                    Some(Box::new(agenturm_ui::CurrentHostSample {
+                        captured_at_unix_ns,
+                        sample,
+                    }))
+                })
+                .flatten();
+            #[cfg(not(target_os = "linux"))]
+            let capture = None;
+            Ok(WorkResult::HostNow(capture))
+        }
         WorkCommand::ExportView {
             document,
             directory,
@@ -200,12 +224,88 @@ pub(super) fn execute(
                 destination.display()
             )))
         }
-        WorkCommand::Workflow => {
-            let (items, partial) = pending_requests_with_seen(store, &store.workspace_ledger(db)?)?;
-            Ok(WorkResult::Workflow { items, partial })
+        WorkCommand::Workflow => workflow(store, db),
+        #[cfg(target_os = "linux")]
+        WorkCommand::WorkflowSettings => {
+            let (policy, authority) = crate::attention::workflow_settings(store, db)?;
+            Ok(WorkResult::WorkflowSettings {
+                policy: Box::new(policy),
+                authority,
+            })
+        }
+        #[cfg(target_os = "linux")]
+        WorkCommand::ChangeWorkflowSettings {
+            authority,
+            expected_revision,
+            change,
+        } => {
+            let (policy, authority) = crate::attention::change_workflow_settings(
+                store,
+                db,
+                &authority,
+                expected_revision,
+                change,
+            )?;
+            Ok(WorkResult::WorkflowSettings {
+                policy: Box::new(policy),
+                authority,
+            })
+        }
+        #[cfg(target_os = "linux")]
+        WorkCommand::RetryWorkflow {
+            authority,
+            expected_revision,
+            key,
+            expected_attempt,
+        } => {
+            let state = crate::attention::retry_workflow_delivery(
+                store,
+                db,
+                &authority,
+                expected_revision,
+                key,
+                expected_attempt,
+                stop,
+            )?;
+            Ok(WorkResult::WorkflowDeliveryUpdated(
+                agenturm_kernel::workflow_notifications::WorkflowDelivery {
+                    authority,
+                    key,
+                    policy_revision: expected_revision,
+                    attempt: expected_attempt
+                        .checked_add(1)
+                        .ok_or("Invalid delivery attempt")?,
+                    state,
+                },
+            ))
+        }
+        #[cfg(target_os = "linux")]
+        WorkCommand::WorkflowAlerts => {
+            let (policy, _) = crate::attention::workflow_settings(store, db)?;
+            let (page, deliveries) = if policy.thresholds == Default::default() {
+                (
+                    crate::workflow_alerts::load(store, &policy.thresholds)?,
+                    Vec::new(),
+                )
+            } else {
+                crate::attention::workflow_alert_deliveries(store, db)?
+            };
+            Ok(WorkResult::WorkflowAlerts(Box::new(
+                agenturm_ui::WorkflowAlertInbox { page, deliveries },
+            )))
         }
         WorkCommand::SessionAttention(session) => session_attention(store, db, session),
         WorkCommand::Seen(item) => mark_seen(store, db, item),
+        WorkCommand::WorkflowResume(item) => {
+            verify_current_request(store, &item)?;
+            let runtime = resume_runtime(&item.owner)?;
+            Ok(WorkResult::WorkflowResume(Box::new(
+                agenturm_ui::WorkflowResume {
+                    request: item,
+                    runtime,
+                },
+            )))
+        }
         WorkCommand::Locate(item) => {
             verify_current_request(store, &item)?;
             if item.owner.worker.is_some() {
@@ -221,6 +321,19 @@ pub(super) fn execute(
     }
 }
 
+fn workflow(store: &impl super::HistoryReader, db: &Path) -> Result<WorkResult, String> {
+    let (items, partial) = pending_requests_with_seen(store, &store.workspace_ledger(db)?)?;
+    #[cfg(target_os = "linux")]
+    let deliveries = crate::attention::workflow_deliveries(store, db, &items).unwrap_or_default();
+    #[cfg(not(target_os = "linux"))]
+    let deliveries = Vec::new();
+    Ok(WorkResult::Workflow {
+        items,
+        partial,
+        deliveries,
+    })
+}
+
 pub(super) fn is_prompt_command(command: &WorkCommand) -> bool {
     matches!(
         command,
@@ -228,7 +341,9 @@ pub(super) fn is_prompt_command(command: &WorkCommand) -> bool {
             | WorkCommand::RevealPrompt(_, _)
             | WorkCommand::RevealOperation(_, _)
             | WorkCommand::RevealTelemetry(_, _)
+            | WorkCommand::RevealTelemetryLog(_, _)
             | WorkCommand::RevealEvalDetail(_, _)
+            | WorkCommand::RevealFailedEvalFinding { .. }
             | WorkCommand::RevealInvestigation { .. }
     ) || matches!(command, WorkCommand::Investigate(request) if request.kind.is_private())
 }
@@ -333,6 +448,23 @@ pub(super) fn execute_prompt(
                 .ok_or("Exact retained telemetry payload is unavailable")??;
             Ok(WorkResult::Status(String::new()))
         }
+        WorkCommand::RevealTelemetryLog(log, mut delivery) => {
+            let selection = super::findings::log_selection(*log);
+            let opened;
+            let store = if let Some(writer) = writer {
+                writer
+            } else {
+                opened = Store::open_collector(db).map_err(string)?;
+                &opened
+            };
+            store
+                .with_telemetry_log_text(&selection, |body| {
+                    super::findings::deliver_log_text(body, &mut delivery)
+                })
+                .map_err(string)?
+                .ok_or("Captured log text is unavailable")??;
+            Ok(WorkResult::Status(String::new()))
+        }
         WorkCommand::RevealEvalDetail(detail, mut delivery) => {
             let selection = super::eval_detail_cli::modal_selection(*detail);
             let opened;
@@ -348,6 +480,32 @@ pub(super) fn execute_prompt(
                 })
                 .map_err(string)?
                 .ok_or("Exact retained evaluation detail is unavailable")??;
+            Ok(WorkResult::Status(String::new()))
+        }
+        WorkCommand::RevealFailedEvalFinding {
+            detail,
+            history_identity,
+            evidence_snapshot,
+            mut delivery,
+        } => {
+            let selection = agenturm_store::EvalFindingSelection {
+                detail: super::eval_detail_cli::modal_selection(*detail),
+                history_identity,
+                evidence_snapshot,
+            };
+            let opened;
+            let store = if let Some(writer) = writer {
+                writer
+            } else {
+                opened = Store::open_collector(db).map_err(string)?;
+                &opened
+            };
+            store
+                .with_failed_eval_finding(&selection, |body| {
+                    super::eval_detail_cli::deliver_modal(body, &mut delivery)
+                })
+                .map_err(string)?
+                .ok_or("Failed evaluation changed or detail is unavailable")??;
             Ok(WorkResult::Status(String::new()))
         }
         _ => Err("Unsupported prompt request".into()),
@@ -457,7 +615,7 @@ fn from_store(anchor: WorkspaceAnchor) -> WorkAnchor {
     }
 }
 
-fn request_key(row: &RequestEntry) -> Result<(WorkspaceAnchor, String, u32), String> {
+pub(super) fn request_key(row: &RequestEntry) -> Result<(WorkspaceAnchor, String, u32), String> {
     Ok((
         to_store(row.owner.clone())?,
         row.event_id.clone(),
@@ -486,7 +644,51 @@ fn pending_requests(
         history_identity: store.workspace_history_identity(),
     };
     let mut results = project_requests(&page.observations, &proof);
-    let partial = page.has_more || results.len() > MAX_REQUESTS;
+    let native =
+        store.query_native_attention(&agenturm_store::native_attention::NativeAttentionQuery {
+            source_id: owner
+                .map(|value| ExtensionId::parse(&value.source))
+                .transpose()
+                .map_err(string)?,
+            session_id: owner.map(|value| value.session.clone()),
+            snapshot_id: Some(page.snapshot_id),
+            limit: MAX_REQUESTS,
+            include_receiver_clock: false,
+        })?;
+    if native.snapshot_id != page.snapshot_id {
+        return Err("Native attention history changed; refresh Workflow".into());
+    }
+    for request in native.pending {
+        results.push(RequestEntry {
+            owner: WorkAnchor {
+                source: request.scope.source_id,
+                session: request.scope.session_id,
+                turn: Some(request.scope.turn_id),
+                worker: request.scope.worker_id,
+            },
+            event_id: request.event_id,
+            revision: 0,
+            timestamp: request.receipt_time_unix_ns,
+            reason: if request.kind
+                == agenturm_kernel::native_attention::NativeAttentionKind::ApprovalRequested
+            {
+                "native_approval_request"
+            } else {
+                "native_user_input_request"
+            }
+            .into(),
+            seen: false,
+            proof: proof.clone(),
+        });
+    }
+    results.sort_by(|a, b| {
+        (b.timestamp, &b.owner.source, &b.event_id).cmp(&(
+            a.timestamp,
+            &a.owner.source,
+            &a.event_id,
+        ))
+    });
+    let partial = page.has_more || native.truncated || results.len() > MAX_REQUESTS;
     results.truncate(MAX_REQUESTS);
     Ok((results, partial))
 }
@@ -575,6 +777,39 @@ fn same_request(left: &RequestEntry, right: &RequestEntry) -> bool {
         && left.proof.snapshot_id.incarnation() == right.proof.snapshot_id.incarnation()
 }
 
+fn resume_runtime(owner: &WorkAnchor) -> Result<agenturm_ui::ResumeRuntime, String> {
+    if owner.worker.is_some()
+        || owner.session.len() > 200
+        || !owner
+            .session
+            .as_bytes()
+            .first()
+            .is_some_and(u8::is_ascii_alphanumeric)
+        || !owner
+            .session
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+    {
+        return Err(
+            "A resume command requires an exact main session with a safe native identifier".into(),
+        );
+    }
+    for (source, runtime) in [
+        ("harness.codex", agenturm_ui::ResumeRuntime::Codex),
+        ("harness.claude", agenturm_ui::ResumeRuntime::Claude),
+    ] {
+        if owner.source == source
+            || owner
+                .source
+                .strip_prefix(source)
+                .is_some_and(|rest| rest.starts_with('.'))
+        {
+            return Ok(runtime);
+        }
+    }
+    Err("This provider does not have a supported native resume command".into())
+}
+
 fn verify_current_request(
     store: &impl super::HistoryReader,
     item: &RequestEntry,
@@ -622,7 +857,7 @@ fn mark_seen(
     Ok(WorkResult::Seen(item))
 }
 
-fn project_requests(rows: &[Observation], proof: &RequestProof) -> Vec<RequestEntry> {
+pub(super) fn project_requests(rows: &[Observation], proof: &RequestProof) -> Vec<RequestEntry> {
     let mut latest_revisions = HashMap::new();
     for row in rows
         .iter()
@@ -716,6 +951,19 @@ fn event_position(event_id: &str) -> (&str, u64, &str) {
 mod tests {
     use super::*;
     use agenturm_kernel::ObservationIdentity;
+
+    fn execute(
+        store: &impl crate::HistoryReader,
+        db: &Path,
+        command: WorkCommand,
+    ) -> Result<WorkResult, String> {
+        super::execute(
+            store,
+            db,
+            command,
+            &std::sync::atomic::AtomicBool::new(false),
+        )
+    }
 
     #[test]
     fn a_stale_cockpit_task_cannot_overwrite_an_intervening_cli_edit() {

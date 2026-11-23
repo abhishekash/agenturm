@@ -896,6 +896,46 @@ pub(super) fn describe_observation(kind: &ObservationKind) -> (&'static str, Str
                 progress.trace_id
             ),
         ),
+        ObservationKind::InternalReview(review) => (
+            "Internal review",
+            format!("{} · review {}", review.state.as_str(), review.session_id),
+        ),
+        ObservationKind::NativeRequest(request) => (
+            "Native request",
+            format!(
+                "{} · {}",
+                request.request_kind.as_str(),
+                request.state.as_str()
+            ),
+        ),
+        ObservationKind::TraceSpanSummary(summary) => (
+            "Span classification",
+            format!(
+                "Agent run {} · reported error {}",
+                summary.agent_run, summary.reported_error
+            ),
+        ),
+        ObservationKind::OtlpActivityLog(log) => (
+            "Activity log",
+            if log.reported_error {
+                "Reported error".into()
+            } else {
+                "Recorded activity".into()
+            },
+        ),
+        ObservationKind::OtlpErrorLog(log) => (
+            "Error log",
+            format!("Reported severity {}", log.severity_number),
+        ),
+        ObservationKind::MetricPoint(point) => (
+            "Metric point",
+            format!(
+                "{} · {} · {}",
+                point.series.name,
+                point.series.kind.label(),
+                point.series.unit
+            ),
+        ),
         ObservationKind::TraceSpan(span) => (
             "Trace span",
             format!("{} · trace {}", span_description(span), span.trace_id),
@@ -1027,6 +1067,7 @@ mod tests {
                 span_id: span_id.clone(),
                 parent_span_id: None,
                 target_source_id: None,
+                target_operation_id: None,
                 started_at_unix_ns: 1,
                 status: TraceStatus::Ok,
             }),

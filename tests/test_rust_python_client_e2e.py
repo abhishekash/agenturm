@@ -47,14 +47,83 @@ class RustPythonProducerTests(unittest.TestCase):
         self.assertNotIn("synthetic private", query.stdout)
         return json.loads(query.stdout)["observations"]
 
-    def launch(self, source, status):
+    def paired_spans(self, rows, expected):
+        spans = [row for row in rows if row["observation"]["kind"] == "trace_span"]
+        summaries = [row for row in rows if row["observation"]["kind"] == "trace_span_summary"]
+        self.assertEqual((len(spans), len(summaries)), (expected, expected))
+        by_event_id = {row["event_id"]: row for row in summaries}
+        self.assertEqual(set(by_event_id), {row["event_id"] + ":summary" for row in spans})
+        self.assertEqual(len(by_event_id), expected)
+        for row in spans:
+            summary = by_event_id[row["event_id"] + ":summary"]
+            for field in ("harness_id", "identity", "observed_at_unix_ns", "revision"):
+                self.assertEqual(summary[field], row[field])
+            for field in ("trace_id", "span_id"):
+                self.assertEqual(summary["observation"][field], row["observation"][field])
+        return spans
+
+    def launch(self, source, status, *options):
         result = subprocess.run(
             [RUST_APP, "run", "--db", self.database, "--source-id", source,
-             "--", sys.executable, self.producer],
+             *options, "--", sys.executable, self.producer],
             env=self.environment, capture_output=True, text=True, timeout=25,
         )
         self.assertEqual(result.returncode, status, result.stderr)
         return json.loads(result.stdout)
+
+    def test_manual_run_retains_classification_and_usage_with_capture(self):
+        self.producer.write_text("""
+import json
+from observatory.client import Client
+
+client = Client(transport="otlp", strict=True, capture_content=True)
+with client.trace(session_id="python-capture") as run:
+    run.root.set_status("ERROR")
+    run.root.set_attribute("agenturm.payload.input", "synthetic private captured message")
+    run.root.set_attribute("gen_ai.usage.output_tokens", 999)
+    run.root.set_attribute("agenturm.reported_cost.amount", 99)
+    run.root.set_attribute("agenturm.reported_cost.currency", "USD")
+    run.root.set_attribute("model.name", "synthetic private model")
+    with run.span("synthetic private name") as child:
+        child.set_attribute("gen_ai.usage.input_tokens", 0)
+        child.set_attribute("agenturm.reported_cost.amount", 0)
+        child.set_attribute("agenturm.reported_cost.currency", "EUR")
+print(json.dumps({"trace": run.trace_id, "root": run.root.span_id, "child": child.span_id}))
+""")
+        source = "otlp.python-capture"
+        ids = self.launch(source, 0, "--payload-scope", "standalone")
+        rows = self.observations(source)
+        self.paired_spans(rows, 2)
+        self.assertEqual(len(rows), 8)
+        summary = {
+            row["observation"]["span_id"]: row["observation"]
+            for row in rows if row["observation"]["kind"] == "trace_span_summary"
+        }
+        for key, is_root in (("root", True), ("child", False)):
+            self.assertEqual(summary[ids[key]], {
+                "kind": "trace_span_summary", "trace_id": ids["trace"], "span_id": ids[key],
+                "agent_run": is_root, "reported_error": is_root,
+            })
+        usage = {
+            row["observation"]["span"]["span_id"]: row["observation"]
+            for row in rows if row["observation"]["kind"] == "span_token_usage"
+        }
+        cost = {
+            row["observation"]["span"]["span_id"]: row["observation"]
+            for row in rows if row["observation"]["kind"] == "reported_cost"
+        }
+        root_span = {"trace_id": ids["trace"], "span_id": ids["root"]}
+        child_span = {"trace_id": ids["trace"], "span_id": ids["child"]}
+        self.assertEqual(usage, {
+            ids["root"]: {"kind": "span_token_usage", "span": root_span, "output_tokens": 999},
+            ids["child"]: {"kind": "span_token_usage", "span": child_span, "input_tokens": 0},
+        })
+        self.assertEqual(cost, {
+            ids["root"]: {"kind": "reported_cost", "span": root_span, "currency": "USD",
+                          "nanounits": "99000000000"},
+            ids["child"]: {"kind": "reported_cost", "span": child_span, "currency": "EUR",
+                           "nanounits": "0"},
+        })
 
     def test_launcher_reopens_exact_python_scope_ancestry_and_exit(self):
         self.producer.write_text("""
@@ -164,9 +233,9 @@ assert client.last_error is None, client.last_error
                 receiver.communicate()
         self.assertEqual(receiver.returncode, 0)
         rows = self.observations("otlp.python-standalone")
-        self.assertEqual(len(rows), 1025)
+        self.assertEqual(len(rows), 2050)
         self.assertEqual({row["identity"]["session_id"] for row in rows}, {"python-large"})
-        spans = [row["observation"] for row in rows]
+        spans = [row["observation"] for row in self.paired_spans(rows, 1025)]
         root = next(span for span in spans if span.get("parent_span_id") is None)
         self.assertEqual({span.get("parent_span_id") for span in spans}, {None, root["span_id"]})
 
@@ -217,7 +286,8 @@ with client.trace(session_id="progress-session", harness_id="harness.pi",
         reopened = self.observations("otlp.python-progress")
         self.assertEqual([row for row in reopened if row["observation"]["kind"] == "trace_progress"],
                          rows)
-        self.assertEqual(len(reopened), 3)
+        self.assertEqual(len(reopened), 4)
+        self.paired_spans(reopened, 1)
         self.assertEqual({row["observation"]["trace_id"] for row in reopened}, {trace_id})
 
     def test_slow_reply_cannot_extend_the_request_deadline(self):

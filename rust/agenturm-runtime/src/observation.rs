@@ -80,7 +80,11 @@ fn project_record(record: ObservationRecord, source_id: &str) -> Result<Option<R
                 operation_id: identity.operation_id,
             }
         }
-        None if matches!(record.fact, ObservationFact::Diagnostic(_)) => {
+        None if matches!(
+            record.fact,
+            ObservationFact::Diagnostic(_) | ObservationFact::InternalReview(_)
+        ) =>
+        {
             ObservationIdentity::source()
         }
         None => return Err(RuntimeError::new("source fact identity is missing")),
@@ -202,6 +206,42 @@ fn project_record(record: ObservationRecord, source_id: &str) -> Result<Option<R
             }
             ObservationKind::TraceSpan(span)
         }
+        ObservationFact::InternalReview(review) => {
+            if identity.scope != ObservationScope::Source
+                || !agenturm_protocol::native_review::is_codex_review_source(source_id)
+                || !review.is_valid()
+            {
+                return Err(RuntimeError::new(
+                    "source internal review metadata is invalid",
+                ));
+            }
+            ObservationKind::InternalReview(review)
+        }
+        ObservationFact::NativeRequest(request) => {
+            if identity.scope != ObservationScope::Session
+                || identity.turn_id.is_none()
+                || !request.is_valid()
+            {
+                return Err(RuntimeError::new(
+                    "source native request metadata is invalid",
+                ));
+            }
+            ObservationKind::NativeRequest(request)
+        }
+        ObservationFact::SessionDiscovered(_) => {
+            if record.revision != 0
+                || identity.scope != ObservationScope::Session
+                || identity.turn_id.is_some()
+                || identity.operation_id.is_some()
+            {
+                return Err(RuntimeError::new(
+                    "source session discovery identity is invalid",
+                ));
+            }
+            ObservationKind::Activity {
+                category: "session_discovered".into(),
+            }
+        }
         ObservationFact::Lifecycle(lifecycle) => {
             if !is_lifecycle_state(&lifecycle.state)
                 || lifecycle
@@ -320,7 +360,245 @@ pub(super) fn parse_decimal_timestamp(value: &str) -> Result<u64> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agenturm_kernel::{
+        ExtensionId, ExtensionStage, Kernel, Observation, ObservationStore, SourceAdapter,
+    };
+    use agenturm_store::{SessionQuery, Store};
     use serde_json::json;
+
+    #[test]
+    fn internal_review_requires_reserved_source_and_source_scope() {
+        let source = format!("review.codex.{}", "a".repeat(64));
+        let mut batch = json!({"type":"batch","protocol":1,"source_id":source,"cursor":"review",
+            "records":[{"event_id":"review","revision":0,"kind":"internal_review","time_ns":"1",
+                "payload":{"session_id":"review-thread","parent_session_id":"parent-thread",
+                    "turn_id":"review-turn","state":"interrupted"}}]});
+        let decoded = parse_source_batch(&batch.to_string(), &source).unwrap();
+        assert_eq!(
+            decoded.observations[0].identity,
+            ObservationIdentity::source()
+        );
+        assert!(matches!(
+            decoded.observations[0].kind,
+            ObservationKind::InternalReview(_)
+        ));
+        batch["source_id"] = json!("harness.codex");
+        assert!(parse_source_batch(&batch.to_string(), "harness.codex").is_err());
+        batch["source_id"] = json!("review.codex.short");
+        assert!(parse_source_batch(&batch.to_string(), "review.codex.short").is_err());
+        batch["source_id"] = json!(source);
+        batch["records"][0]["identity"] = json!({"session_id":"review-thread"});
+        assert!(parse_source_batch(&batch.to_string(), &source).is_err());
+    }
+
+    #[test]
+    fn native_request_rejects_missing_exact_scope_and_untyped_payload() {
+        let mut batch = json!({"type":"batch","protocol":1,"source_id":"harness.codex","cursor":"request",
+            "records":[{"event_id":"approval-request","revision":0,"kind":"native_request","time_ns":"1",
+                "identity":{"session_id":"session","turn_id":"turn","worker_id":"worker"},
+                "payload":{"request_id":"b".repeat(64),"request_kind":"approval","state":"requested"}}]});
+        let decoded = parse_source_batch(&batch.to_string(), "harness.codex").unwrap();
+        let event = &decoded.observations[0];
+        assert!(matches!(event.kind, ObservationKind::NativeRequest(_)));
+        assert_eq!(event.identity.turn_id.as_deref(), Some("turn"));
+        assert_eq!(event.identity.worker_id.as_deref(), Some("worker"));
+        let valid = batch["records"][0].clone();
+        for invalid in [
+            ("identity", json!(null)),
+            (
+                "identity",
+                json!({"session_id":"session","worker_id":"worker"}),
+            ),
+            (
+                "payload",
+                json!({"request_id":"raw identity","request_kind":"approval","state":"requested"}),
+            ),
+            (
+                "payload",
+                json!({"request_id":"b".repeat(64),"request_kind":"approval","state":"approved"}),
+            ),
+            (
+                "payload",
+                json!({"request_id":"b".repeat(64),"request_kind":"approval","state":"requested","body":"private sentinel"}),
+            ),
+        ] {
+            batch["records"][0] = valid.clone();
+            batch["records"][0][invalid.0] = invalid.1;
+            let error = parse_source_batch(&batch.to_string(), "harness.codex").unwrap_err();
+            assert!(!error.to_string().contains("private sentinel"));
+        }
+    }
+
+    #[test]
+    fn header_discovery_creates_unknown_roster_evidence_without_overriding_lifecycle() {
+        let source = "harness.codex";
+        let mut batch = json!({"type":"batch","protocol":1,"source_id":source,"cursor":"verified-header",
+            "records":[{"event_id":"header","revision":0,"kind":"session_discovered","time_ns":"100",
+                "identity":{"session_id":"thread-1","worker_id":"thread-1"}, "payload":{}}]});
+        let prepared = parse_source_batch(&batch.to_string(), source).unwrap();
+        let original = batch["records"][0].clone();
+        for (field, invalid) in [
+            ("revision", json!(1)),
+            ("identity", json!(null)),
+            (
+                "identity",
+                json!({"session_id":"thread-1","turn_id":"unproved"}),
+            ),
+            (
+                "identity",
+                json!({"session_id":"thread-1","operation_id":"unproved"}),
+            ),
+            (
+                "payload",
+                json!({"state":"running","body":"private fixture"}),
+            ),
+            ("payload", json!([])),
+        ] {
+            batch["records"][0] = original.clone();
+            batch["records"][0][field] = invalid;
+            let message = parse_source_batch(&batch.to_string(), source)
+                .unwrap_err()
+                .to_string();
+            assert!(!message.contains("private fixture"));
+        }
+        let raw = prepared.observations.into_iter().next().unwrap();
+        let row = Observation {
+            harness_id: ExtensionId::parse(source).unwrap(),
+            event_id: raw.event_id,
+            revision: raw.revision,
+            identity: raw.identity,
+            observed_at_unix_ns: raw.observed_at_unix_ns,
+            kind: raw.kind,
+        };
+        assert_eq!(
+            row.kind,
+            ObservationKind::Activity {
+                category: "session_discovered".into()
+            }
+        );
+        let mut store = Store::open(":memory:").unwrap();
+        store
+            .commit(
+                source,
+                None,
+                &prepared.next_cursor,
+                std::slice::from_ref(&row),
+            )
+            .unwrap();
+        let query = SessionQuery::latest(1);
+        let page = store.query_sessions(&query).unwrap();
+        assert_eq!(page.sessions.len(), 1);
+        assert_eq!(page.sessions[0].session_id, "thread-1");
+        assert_eq!(page.sessions[0].observed_at_unix_ns, 100);
+        assert!(page.sessions[0].lifecycle.is_none());
+
+        let mut started = row.clone();
+        started.event_id = "explicit-turn-start".into();
+        started.identity.turn_id = Some("turn-1".into());
+        // Source clocks can record the real turn before the metadata header.
+        started.observed_at_unix_ns = 99;
+        started.kind = ObservationKind::Lifecycle {
+            state: "running".into(),
+            reason_code: None,
+        };
+        store
+            .commit(
+                source,
+                Some(&prepared.next_cursor),
+                "verified-turn",
+                &[started],
+            )
+            .unwrap();
+        let page = store.query_sessions(&query).unwrap();
+        let lifecycle = page.sessions[0].lifecycle.as_ref().unwrap();
+        assert_eq!(lifecycle.state, "running");
+        assert_eq!(lifecycle.turn_id.as_deref(), Some("turn-1"));
+        assert_eq!(lifecycle.observed_at_unix_ns, 99);
+    }
+
+    #[test]
+    fn reserved_review_cannot_admit_session_work_at_either_boundary() {
+        struct FixedReviewSource(String, RawObservation);
+        impl SourceAdapter for FixedReviewSource {
+            fn source_id(&self) -> &str {
+                &self.0
+            }
+            fn poll(&mut self, _: &str) -> std::result::Result<PreparedSourceBatch, String> {
+                Ok(PreparedSourceBatch {
+                    next_cursor: "next".into(),
+                    observations: vec![self.1.clone()],
+                    skipped_unprojected_facts: 0,
+                })
+            }
+            fn ack(&mut self, _: &str) -> std::result::Result<(), String> {
+                Ok(())
+            }
+            fn reset(&mut self) -> std::result::Result<(), String> {
+                Ok(())
+            }
+        }
+        let source = format!("review.codex.{}", "a".repeat(64));
+        let id = ExtensionId::parse(&source).unwrap();
+        let mut store = Store::open(":memory:").unwrap();
+        let invalid = RawObservation {
+            event_id: "spoofed-session".into(),
+            revision: 0,
+            identity: ObservationIdentity::session("review-thread"),
+            observed_at_unix_ns: 10,
+            kind: ObservationKind::SessionStarted,
+        };
+        let mut kernel = Kernel::new();
+        kernel
+            .register_source_adapter(
+                id.clone(),
+                FixedReviewSource(source.clone(), invalid.clone()),
+            )
+            .unwrap();
+        let outcome = kernel.refresh_with_store(&mut store);
+        assert!(outcome.admissions.is_empty());
+        assert_eq!(outcome.failures.len(), 1);
+        assert_eq!(
+            outcome.failures[0].stage,
+            ExtensionStage::AdmissionValidation
+        );
+        let forged = Observation {
+            harness_id: id.clone(),
+            event_id: invalid.event_id,
+            revision: invalid.revision,
+            identity: invalid.identity,
+            observed_at_unix_ns: invalid.observed_at_unix_ns,
+            kind: invalid.kind,
+        };
+        assert!(ObservationStore::commit(&mut store, &source, None, "next", &[forged]).is_err());
+        assert!(store.source_cursor(&source).unwrap().is_none());
+
+        let batch = json!({"type":"batch","protocol":1,"source_id":source,"cursor":"next",
+            "records":[{"event_id":"review","revision":0,"kind":"internal_review","time_ns":"11",
+                "payload":{"session_id":"review-thread","turn_id":"turn","state":"started"}}]});
+        let allowed = parse_source_batch(&batch.to_string(), &source)
+            .unwrap()
+            .observations
+            .pop()
+            .unwrap();
+        kernel.unregister_source_adapter(&id);
+        kernel
+            .register_source_adapter(id.clone(), FixedReviewSource(source, allowed))
+            .unwrap();
+        let retained = kernel.refresh_with_store(&mut store);
+        assert!(retained.failures.is_empty());
+        assert_eq!(retained.admissions[&id].inserted, 1);
+        assert!(matches!(
+            retained.observations[0].kind,
+            ObservationKind::InternalReview(_)
+        ));
+        assert!(
+            store
+                .query_sessions(&SessionQuery::latest(10))
+                .unwrap()
+                .sessions
+                .is_empty()
+        );
+    }
 
     #[test]
     fn native_mcp_details_require_an_operation_and_bounded_metadata() {

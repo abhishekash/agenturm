@@ -2,12 +2,55 @@
 
 use super::*;
 use crate::keymap::{self, Destination};
+use crate::workbench::{PromptKind, PromptReceiver, prompt_channel};
+use crate::workspace::prompt::PromptScreen;
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
     mpsc,
 };
 use std::time::{Duration, Instant};
+
+#[cfg(target_os = "linux")]
+mod output;
+
+struct FrameGate {
+    active: Arc<AtomicBool>,
+    expires: Instant,
+}
+
+impl FrameGate {
+    fn open(&self) -> bool {
+        self.active.load(Ordering::Acquire) && Instant::now() < self.expires
+    }
+}
+
+trait RenderOutput {
+    fn draw_frame(
+        &mut self,
+        gate: Option<FrameGate>,
+        draw: impl FnOnce(&mut Frame),
+    ) -> io::Result<()>;
+    fn redraw_metadata(&mut self, draw: impl FnOnce(&mut Frame)) -> io::Result<()>;
+}
+
+impl RenderOutput for ratatui::DefaultTerminal {
+    fn draw_frame(
+        &mut self,
+        gate: Option<FrameGate>,
+        draw: impl FnOnce(&mut Frame),
+    ) -> io::Result<()> {
+        if gate.is_some() {
+            return Err(io::Error::other("Guarded terminal output is unavailable"));
+        }
+        self.draw(draw).map(|_| ())
+    }
+
+    fn redraw_metadata(&mut self, draw: impl FnOnce(&mut Frame)) -> io::Result<()> {
+        self.clear()?;
+        self.draw(draw).map(|_| ())
+    }
+}
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct LiveOwner {
@@ -21,6 +64,40 @@ pub struct LiveRow {
     pub internal_review: bool,
     pub title: String,
     pub detail: Option<String>,
+    pub review: Option<LiveReviewTarget>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiveReviewTarget {
+    pub receiver_id: String,
+    pub owner: LiveOwner,
+    pub trace_id: String,
+    pub turn_id: Option<String>,
+}
+
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum LiveReviewMode {
+    Run,
+    Turn,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct LiveReviewSelection {
+    pub target: LiveReviewTarget,
+    pub mode: LiveReviewMode,
+}
+
+pub enum LiveRequest {
+    Refresh,
+    Review {
+        selection: Box<LiveReviewSelection>,
+        delivery: PromptDelivery,
+    },
+}
+
+pub enum LiveResponse {
+    Page(LivePage),
+    ReviewClosed,
 }
 
 pub struct LivePage {
@@ -65,6 +142,66 @@ struct LiveView {
     notice: Option<&'static str>,
     error: Option<String>,
     investigation_notice: bool,
+    review_supported: bool,
+    review_unavailable: bool,
+    review: LiveReviewDisplay,
+}
+
+#[derive(Default)]
+struct LiveReviewDisplay {
+    receiver: Option<PromptReceiver>,
+    screen: Option<PromptScreen>,
+    gate: Option<Arc<AtomicBool>>,
+    redact_then_ack: Option<mpsc::Sender<()>>,
+    pending: bool,
+    cancelled: bool,
+    message: Option<String>,
+}
+
+impl LiveReviewDisplay {
+    fn receive_frame(&mut self) -> bool {
+        let Some(bytes) = self
+            .receiver
+            .as_ref()
+            .and_then(|receiver| receiver.frames.try_recv().ok())
+        else {
+            return false;
+        };
+        let receiver = self
+            .receiver
+            .take()
+            .expect("received a queued Review frame");
+        match serde_json::from_slice::<String>(&bytes) {
+            Ok(body) => {
+                self.gate = Some(Arc::clone(&receiver.guarded_active));
+                self.screen = Some(PromptScreen::new(body, receiver, Instant::now()));
+            }
+            Err(_) => self.message = Some("Invalid protected Review delivery".into()),
+        }
+        true
+    }
+
+    fn frame_gate(&self) -> Option<FrameGate> {
+        Some(FrameGate {
+            active: Arc::clone(self.gate.as_ref()?),
+            expires: self.screen.as_ref()?.expires_at(),
+        })
+    }
+
+    fn redact(&mut self) -> bool {
+        let Some(mut screen) = self.screen.take() else {
+            return false;
+        };
+        self.gate = None;
+        self.redact_then_ack = screen.acknowledge.take();
+        true
+    }
+
+    fn acknowledge_redaction(&mut self) {
+        if let Some(acknowledge) = self.redact_then_ack.take() {
+            let _ = acknowledge.send(());
+        }
+    }
 }
 
 impl LiveView {
@@ -130,6 +267,13 @@ impl LiveView {
         self.pending_read = false;
         match page {
             Ok(page) => {
+                let trace_selection = if self.tab == Tab::Traces {
+                    self.detail
+                        .selected()
+                        .and_then(|index| self.rows().get(index)?.review.clone())
+                } else {
+                    None
+                };
                 let selected = self
                     .owner
                     .as_ref()
@@ -145,6 +289,16 @@ impl LiveView {
                 self.agents.select(selection);
                 self.page = Some(page);
                 self.error = None;
+                if let Some(target) = trace_selection {
+                    let selected = self
+                        .rows()
+                        .iter()
+                        .position(|row| row.review.as_ref() == Some(&target));
+                    self.detail.select(selected);
+                    if selected.is_none() {
+                        self.notice = Some("Selected trace is outside the refreshed page");
+                    }
+                }
             }
             Err(error) => {
                 self.page = None;
@@ -152,6 +306,27 @@ impl LiveView {
                 self.error = Some(error);
             }
         }
+    }
+
+    fn review_selection(&self, mode: LiveReviewMode) -> Option<LiveReviewSelection> {
+        if !self.review_supported
+            || self.tab != Tab::Traces
+            || !self.page.as_ref().is_some_and(|page| page.ready)
+        {
+            return None;
+        }
+        let rows = self.rows();
+        let row = rows.get(self.detail.selected()?)?;
+        let target = row.review.as_ref()?;
+        if row.owner.as_ref() != Some(&target.owner)
+            || mode == LiveReviewMode::Turn && target.turn_id.is_none()
+        {
+            return None;
+        }
+        Some(LiveReviewSelection {
+            target: target.clone(),
+            mode,
+        })
     }
 
     fn key(&mut self, key: KeyCode) {
@@ -294,9 +469,18 @@ impl LiveView {
             header,
         );
         if self.help {
+            let mut keys = String::from(
+                "1 Agents · 2 Activity · 4 Traces · w Pending\nEnter Session activity · t Session traces\nv Include/hide internal approval reviews\np Pause/resume · R Refresh · Esc Agents · q Quit",
+            );
+            if self.review_supported {
+                keys.push_str("\nCtrl+R Review trace · Ctrl+T Review recorded turn");
+            }
             frame.render_widget(
-                Paragraph::new("1 Agents · 2 Activity · 4 Traces · w Pending\nEnter Session activity · t Session traces\nv Include/hide internal approval reviews\np Pause/resume · R Refresh · Esc Agents · q Quit")
-                    .wrap(Wrap { trim: false }).block(panel(HELP_CLOSE_HINT)), body);
+                Paragraph::new(keys)
+                    .wrap(Wrap { trim: false })
+                    .block(panel(HELP_CLOSE_HINT)),
+                body,
+            );
             return;
         }
         let [list, info] = if area.width >= 84 {
@@ -319,7 +503,11 @@ impl LiveView {
             " Selected evidence "
         };
         let rows = self.rows();
-        let status = if let Some(notice) = self.notice {
+        let status = if self.review.pending && !self.review.cancelled {
+            "Verifying selected Review · Esc cancel".into()
+        } else if let Some(message) = &self.review.message {
+            visible_text(message)
+        } else if let Some(notice) = self.notice {
             notice.into()
         } else if let Some(error) = &self.error {
             visible_text(error)
@@ -331,6 +519,8 @@ impl LiveView {
             && self.page.as_ref().is_some_and(|page| !page.attention_ready)
         {
             "Request inventory incomplete · state unknown".into()
+        } else if self.tab == Tab::Traces && self.review_unavailable {
+            "Protected Review needs bounded terminal output".into()
         } else if self.page.as_ref().is_some_and(|page| page.partial) {
             "Coverage is partial · loaded rows only".into()
         } else {
@@ -400,7 +590,11 @@ impl LiveView {
                 info,
             );
         }
-        let keys = if self.tab == Tab::Agents {
+        let keys = if self.review_selection(LiveReviewMode::Turn).is_some() {
+            "↑↓ select · Ctrl+R Review trace · Ctrl+T Review turn"
+        } else if self.review_selection(LiveReviewMode::Run).is_some() {
+            "↑↓ select · Ctrl+R Review trace · Esc Agents"
+        } else if self.tab == Tab::Agents {
             "↑↓ select · Enter session · 2 Activity · 4 Traces · w Pending"
         } else {
             "↑↓ select · 2 Activity · 4 Traces · w Pending · Esc Agents"
@@ -432,10 +626,27 @@ impl LiveView {
     }
 }
 
-/// Interactive view over live pages loaded by one owned worker. The loader
-/// must bound each call. A closing terminal discards queued work and replies.
+/// Interactive view over live metadata pages loaded by one bounded worker.
 pub fn run_live_receiver(
     mut load: impl FnMut() -> Result<LivePage, String> + Send + 'static,
+) -> io::Result<()> {
+    run_live(false, move |request| match request {
+        LiveRequest::Refresh => load().map(LiveResponse::Page),
+        LiveRequest::Review { .. } => Err("Protected Review is unavailable".into()),
+    })
+}
+
+/// A bounded receiver loader may explicitly support protected Review reads.
+/// A Review callback uses `PromptDelivery::flush_guarded` for a verified frame.
+pub fn run_live_receiver_with_review(
+    load: impl FnMut(LiveRequest) -> Result<LiveResponse, String> + Send + 'static,
+) -> io::Result<()> {
+    run_live(true, load)
+}
+
+fn run_live(
+    review_supported: bool,
+    mut load: impl FnMut(LiveRequest) -> Result<LiveResponse, String> + Send + 'static,
 ) -> io::Result<()> {
     let (request, requests) = mpsc::sync_channel(1);
     let (send, results) = mpsc::sync_channel(1);
@@ -444,52 +655,106 @@ pub fn run_live_receiver(
     let worker = std::thread::Builder::new()
         .name("agenturm-live-receiver".into())
         .spawn(move || {
-            while requests.recv().is_ok() && !worker_cancelled.load(Ordering::Acquire) {
-                let page = load();
-                if worker_cancelled.load(Ordering::Acquire) || send.try_send(page).is_err() {
+            while let Ok(command) = requests.recv() {
+                if worker_cancelled.load(Ordering::Acquire) {
+                    break;
+                }
+                let response = load(command);
+                if worker_cancelled.load(Ordering::Acquire) || send.try_send(response).is_err() {
                     break;
                 }
             }
         })?;
+    let result = run_terminal(review_supported, &request, &results);
+    cancelled.store(true, Ordering::Release);
+    drop(request);
+    drop(results);
+    // In-flight reads retain their own deadlines when the terminal closes.
+    drop(worker);
+    result
+}
+
+fn run_terminal(
+    review_supported: bool,
+    request: &mpsc::SyncSender<LiveRequest>,
+    results: &mpsc::Receiver<Result<LiveResponse, String>>,
+) -> io::Result<()> {
+    #[cfg(target_os = "linux")]
+    if review_supported && let Ok(fd) = output::open_stdout() {
+        let mut terminal = output::BoundedTerminal::new(fd)?;
+        return run_view(&mut terminal, true, false, request, results);
+    }
+    ratatui::run(|terminal| run_view(terminal, false, review_supported, request, results))
+}
+
+fn run_view(
+    terminal: &mut impl RenderOutput,
+    review_supported: bool,
+    review_unavailable: bool,
+    request: &mpsc::SyncSender<LiveRequest>,
+    results: &mpsc::Receiver<Result<LiveResponse, String>>,
+) -> io::Result<()> {
     let mut appearance = theme::Picker::new();
-    let result = ratatui::run(|terminal| {
-        let mut view = LiveView {
-            page: None,
-            tab: Tab::Agents,
-            owner: None,
-            agents: ListState::default(),
-            detail: ListState::default(),
-            pending_read: false,
-            paused: false,
-            help: false,
-            include_reviews: false,
-            notice: None,
-            error: None,
-            investigation_notice: false,
-        };
-        let mut next_read = Instant::now();
-        let mut explicit_refresh = false;
-        let mut dirty = true;
+    let mut view = LiveView {
+        page: None,
+        tab: Tab::Agents,
+        owner: None,
+        agents: ListState::default(),
+        detail: ListState::default(),
+        pending_read: false,
+        paused: false,
+        help: false,
+        include_reviews: false,
+        notice: None,
+        error: None,
+        investigation_notice: false,
+        review_supported,
+        review_unavailable,
+        review: LiveReviewDisplay::default(),
+    };
+    let mut next_read = Instant::now();
+    let mut explicit_refresh = false;
+    let mut dirty = true;
+    let interaction = (|| -> io::Result<()> {
         loop {
+            dirty |= view.review.receive_frame();
             if let Ok(result) = results.try_recv() {
-                view.set_page(result);
+                if view.review.pending {
+                    view.review.pending = false;
+                    view.review.receiver = None;
+                    view.review.redact();
+                    if !view.review.cancelled {
+                        view.review.message = match result {
+                            Ok(LiveResponse::ReviewClosed) => None,
+                            Ok(LiveResponse::Page(_)) => Some("Unexpected Review response".into()),
+                            Err(error) => Some(error),
+                        };
+                    }
+                    view.review.cancelled = false;
+                } else {
+                    view.set_page(result.and_then(|reply| match reply {
+                        LiveResponse::Page(page) => Ok(page),
+                        LiveResponse::ReviewClosed => Err("Unexpected receiver response".into()),
+                    }));
+                }
                 next_read = Instant::now() + Duration::from_secs(2);
                 dirty = true;
             }
             if !view.pending_read
+                && !view.review.pending
                 && (explicit_refresh || !view.paused && Instant::now() >= next_read)
             {
                 request
-                    .try_send(())
+                    .try_send(LiveRequest::Refresh)
                     .map_err(|_| io::Error::other("receiver reader stopped"))?;
                 view.pending_read = true;
                 explicit_refresh = false;
             }
+            if view.review.frame_gate().is_some_and(|gate| !gate.open()) {
+                dirty |= view.review.redact();
+            }
             if dirty {
-                terminal.draw(|frame| {
-                    view.draw(frame);
-                    appearance.draw(frame);
-                })?;
+                draw_live_frame(terminal, &mut view, &mut appearance)?;
                 dirty = false;
             }
             if !event::poll(Duration::from_millis(80))? {
@@ -500,7 +765,7 @@ pub fn run_live_receiver(
                 Event::Key(key)
                     if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
                 {
-                    if appearance.key(key) {
+                    if !view.review.pending && appearance.key(key) {
                         dirty = true;
                         continue;
                     }
@@ -514,6 +779,67 @@ pub fn run_live_receiver(
                     if keymap::interrupt(key) || code == KeyCode::Char('q') {
                         break Ok(());
                     }
+                    if view.review.pending {
+                        if code == KeyCode::Esc {
+                            if !view.review.redact() {
+                                view.review.receiver = None;
+                                view.review.cancelled = true;
+                            }
+                            dirty = true;
+                        } else if let Some(screen) = &mut view.review.screen {
+                            screen.key(code);
+                            dirty = true;
+                        }
+                        continue;
+                    }
+                    let review_mode = if keymap::review(key) {
+                        Some(LiveReviewMode::Run)
+                    } else if key.modifiers == KeyModifiers::CONTROL
+                        && matches!(key.code, KeyCode::Char('t' | 'T'))
+                    {
+                        Some(LiveReviewMode::Turn)
+                    } else {
+                        None
+                    };
+                    if !view.help
+                        && view.review_supported
+                        && let Some(mode) = review_mode
+                    {
+                        view.review.message = if view.pending_read {
+                            Some("Wait for the current receiver read".into())
+                        } else if let Some(selection) = view.review_selection(mode) {
+                            let (delivery, receiver) = prompt_channel(PromptKind::LegacyReview);
+                            request
+                                .try_send(LiveRequest::Review {
+                                    selection: Box::new(selection),
+                                    delivery,
+                                })
+                                .map_err(|_| io::Error::other("receiver reader stopped"))?;
+                            view.review.receiver = Some(receiver);
+                            view.review.pending = true;
+                            None
+                        } else {
+                            Some(
+                                match mode {
+                                    LiveReviewMode::Run => {
+                                        "Select an exact retained trace owner for Review"
+                                    }
+                                    LiveReviewMode::Turn => {
+                                        "Select a trace with an exact recorded turn for Review"
+                                    }
+                                }
+                                .into(),
+                            )
+                        };
+                        dirty = true;
+                        continue;
+                    }
+                    if !view.help && view.review_unavailable && review_mode.is_some() {
+                        view.notice = Some("Protected Review needs bounded terminal output");
+                        dirty = true;
+                        continue;
+                    }
+                    view.review.message = None;
                     view.investigation_notice = !view.help
                         && key.code == KeyCode::Char('f')
                         && key.modifiers == KeyModifiers::CONTROL;
@@ -530,20 +856,216 @@ pub fn run_live_receiver(
                 _ => {}
             }
         }
-    });
-    cancelled.store(true, Ordering::Release);
-    drop(request);
-    drop(results);
-    // The in-flight read is bounded by the loader's own deadline. Keep
-    // terminal exit independent of the remaining time in that read.
-    drop(worker);
-    result
+    })();
+    // For q, Control-C and recoverable input errors, clear the private
+    // frame while the PTY is still active, then release the delivery.
+    view.review.receiver = None;
+    view.review.redact();
+    if view.review.redact_then_ack.is_some() {
+        let redrawn = terminal.redraw_metadata(|frame| view.draw(frame));
+        if redrawn.is_ok() {
+            view.review.acknowledge_redaction();
+        }
+        interaction.and(redrawn)
+    } else {
+        interaction
+    }
+}
+
+fn draw_live_frame(
+    terminal: &mut impl RenderOutput,
+    view: &mut LiveView,
+    appearance: &mut theme::Picker,
+) -> io::Result<()> {
+    if let Some(gate) = view.review.frame_gate() {
+        let result = terminal.draw_frame(Some(gate), |frame| {
+            view.review
+                .screen
+                .as_mut()
+                .expect("active Review screen")
+                .draw(frame);
+        });
+        if result.is_ok() {
+            return Ok(());
+        }
+        view.review.redact();
+        view.notice = Some("Protected Review output was interrupted");
+    }
+    let redacting = view.review.redact_then_ack.is_some();
+    let metadata = |frame: &mut Frame| {
+        view.draw(frame);
+        appearance.draw(frame);
+    };
+    if redacting {
+        terminal.redraw_metadata(metadata)?;
+        view.review.acknowledge_redaction();
+        Ok(())
+    } else {
+        terminal.draw_frame(None, metadata)
+    }
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn review_selects_only_the_bound_trace_owner_and_explicit_turn() {
+        let owner = LiveOwner {
+            service: "opencode".into(),
+            session_id: "saved-session".into(),
+            agent_id: Some("saved-actor".into()),
+        };
+        let target = LiveReviewTarget {
+            receiver_id: "receiver".into(),
+            owner: owner.clone(),
+            trace_id: "first-trace".into(),
+            turn_id: None,
+        };
+        let mut sibling = target.clone();
+        sibling.trace_id = "sibling-trace".into();
+        sibling.turn_id = Some("recorded-turn".into());
+        sibling.owner.service = "codex".into();
+        let row = |target| LiveRow {
+            owner: Some(owner.clone()),
+            internal_review: false,
+            title: "Visible trace label".into(),
+            detail: None,
+            review: Some(target),
+        };
+        let mut view = LiveView {
+            page: Some(LivePage {
+                sessions: Vec::new(),
+                activity: Vec::new(),
+                traces: vec![row(target.clone()), row(sibling.clone())],
+                pending: Vec::new(),
+                ready: true,
+                partial: true,
+                attention_ready: false,
+            }),
+            tab: Tab::Traces,
+            owner: Some(owner.clone()),
+            agents: ListState::default(),
+            detail: ListState::default().with_selected(Some(0)),
+            pending_read: false,
+            paused: false,
+            help: false,
+            include_reviews: false,
+            notice: None,
+            error: None,
+            investigation_notice: false,
+            review_supported: true,
+            review_unavailable: false,
+            review: LiveReviewDisplay::default(),
+        };
+        assert_eq!(
+            view.review_selection(LiveReviewMode::Run),
+            Some(LiveReviewSelection {
+                target: target.clone(),
+                mode: LiveReviewMode::Run,
+            })
+        );
+        assert!(view.review_selection(LiveReviewMode::Turn).is_none());
+        view.detail.select(Some(1));
+        assert!(view.review_selection(LiveReviewMode::Run).is_none());
+        view.page.as_mut().unwrap().traces[1].owner = Some(sibling.owner.clone());
+        view.owner = None;
+        assert_eq!(
+            view.review_selection(LiveReviewMode::Turn),
+            Some(LiveReviewSelection {
+                target: sibling.clone(),
+                mode: LiveReviewMode::Turn,
+            })
+        );
+        let exact = LiveRow {
+            owner: Some(sibling.owner.clone()),
+            internal_review: false,
+            title: "Moved after refresh".into(),
+            detail: None,
+            review: Some(sibling.clone()),
+        };
+        view.set_page(Ok(LivePage {
+            sessions: Vec::new(),
+            activity: Vec::new(),
+            traces: vec![exact, row(target)],
+            pending: Vec::new(),
+            ready: true,
+            partial: false,
+            attention_ready: false,
+        }));
+        assert_eq!(view.detail.selected(), Some(0));
+        assert_eq!(
+            view.review_selection(LiveReviewMode::Turn).unwrap().target,
+            sibling
+        );
+        view.page.as_mut().unwrap().ready = false;
+        assert!(view.review_selection(LiveReviewMode::Run).is_none());
+    }
+
+    #[test]
+    fn guarded_review_rechecks_before_display_and_waits_for_redaction_on_revocation() {
+        let body = "fixture-private-review-content";
+        let (mut refused, receiver) = prompt_channel(PromptKind::LegacyReview);
+        serde_json::to_writer(&mut refused, body).unwrap();
+        assert_eq!(
+            refused.flush_guarded(|_| Err("policy denies preview".into())),
+            Err("policy denies preview".into())
+        );
+        assert!(receiver.frames.try_recv().is_err());
+
+        let (mut delivery, receiver) = prompt_channel(PromptKind::LegacyReview);
+        serde_json::to_writer(&mut delivery, body).unwrap();
+        let worker = std::thread::spawn(move || {
+            let mut checked = false;
+            delivery.flush_guarded(|deadline| {
+                assert!(deadline > Instant::now());
+                if std::mem::replace(&mut checked, true) {
+                    Err("receiver capture policy changed".into())
+                } else {
+                    Ok(())
+                }
+            })
+        });
+        let bytes = receiver
+            .frames
+            .recv_timeout(Duration::from_secs(2))
+            .unwrap();
+        let gate = Arc::clone(&receiver.guarded_active);
+        let mut display = LiveReviewDisplay {
+            screen: Some(PromptScreen::new(
+                serde_json::from_slice(&bytes).unwrap(),
+                receiver,
+                Instant::now(),
+            )),
+            ..LiveReviewDisplay::default()
+        };
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| display.screen.as_mut().unwrap().draw(frame))
+                .unwrap();
+            let text = terminal.backend().to_string();
+            assert!(text.contains("verified Review") && text.contains(body));
+        }
+        let deadline = Instant::now() + Duration::from_secs(2);
+        while gate.load(Ordering::Acquire) {
+            assert!(Instant::now() < deadline, "review authority did not close");
+            std::thread::sleep(Duration::from_millis(5));
+        }
+        assert!(display.redact());
+        assert!(!worker.is_finished());
+        let mut terminal = Terminal::new(TestBackend::new(60, 18)).unwrap();
+        terminal
+            .draw(|frame| frame.render_widget(Paragraph::new("Selected trace"), frame.area()))
+            .unwrap();
+        assert!(!terminal.backend().to_string().contains(body));
+        display.acknowledge_redaction();
+        assert_eq!(
+            worker.join().unwrap(),
+            Err("receiver capture policy changed".into())
+        );
+    }
 
     #[test]
     fn explicit_review_visibility_preserves_the_regular_selected_actor() {
@@ -559,6 +1081,7 @@ mod tests {
             owner: Some(owner),
             internal_review,
             detail: None,
+            review: None,
         };
         let mut view = LiveView {
             page: None,
@@ -573,6 +1096,9 @@ mod tests {
             notice: None,
             error: None,
             investigation_notice: false,
+            review_supported: false,
+            review_unavailable: false,
+            review: LiveReviewDisplay::default(),
         };
         view.set_page(Ok(LivePage {
             sessions: vec![row(review.clone(), true), row(regular.clone(), false)],
@@ -623,6 +1149,9 @@ mod tests {
             notice: None,
             error: Some("HTTP 404".into()),
             investigation_notice: false,
+            review_supported: false,
+            review_unavailable: false,
+            review: LiveReviewDisplay::default(),
         };
         for (width, height) in [(120, 32), (60, 18)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();

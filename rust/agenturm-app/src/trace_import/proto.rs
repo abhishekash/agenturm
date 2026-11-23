@@ -1,15 +1,15 @@
 //! Decode the structural OTLP/HTTP trace fields we retain. Unknown fields
-//! are skipped without decoding names, events, links, or arbitrary attributes.
+//! are skipped. Span names are reduced to a closed classification.
 
 use super::{
-    Attribute, AttributeValue, MAX_EXPORT_SPANS, OtlpSpan, PAYLOAD_INPUT, PAYLOAD_OUTPUT, Status,
-    TURN_KEY, Timestamp, WORKER_KEY,
+    Attribute, AttributeValue, MAX_EXPORT_SPANS, OPERATION_KEY, OtlpSpan, PAYLOAD_INPUT,
+    PAYLOAD_OUTPUT, Status, TURN_KEY, Timestamp, WORKER_KEY,
 };
 use std::fmt::Write as _;
 
 const MALFORMED: &str = "invalid OTLP protobuf trace export";
 
-enum Field<'a> {
+pub(crate) enum Field<'a> {
     Varint(u64),
     Fixed64(u64),
     Bytes(&'a [u8]),
@@ -22,7 +22,7 @@ fn split<'a>(input: &mut &'a [u8], size: usize) -> Result<&'a [u8], &'static str
     Ok(head)
 }
 
-fn varint(input: &mut &[u8]) -> Result<u64, &'static str> {
+pub(crate) fn varint(input: &mut &[u8]) -> Result<u64, &'static str> {
     let mut value = 0;
     for shift in (0..=63).step_by(7) {
         let byte = split(input, 1)?[0];
@@ -37,7 +37,9 @@ fn varint(input: &mut &[u8]) -> Result<u64, &'static str> {
     Err(MALFORMED)
 }
 
-fn fields<'a>(mut input: &'a [u8]) -> impl Iterator<Item = Result<(u64, Field<'a>), &'static str>> {
+pub(crate) fn fields<'a>(
+    mut input: &'a [u8],
+) -> impl Iterator<Item = Result<(u64, Field<'a>), &'static str>> {
     std::iter::from_fn(move || {
         if input.is_empty() {
             return None;
@@ -104,6 +106,7 @@ fn decode_span(input: &[u8]) -> Result<OtlpSpan, &'static str> {
         start_time_unix_nano: Timestamp::Number(0),
         end_time_unix_nano: Timestamp::Number(0),
         status: None,
+        agent_run: false,
         attributes: Vec::new(),
     };
     for field in fields(input) {
@@ -111,10 +114,11 @@ fn decode_span(input: &[u8]) -> Result<OtlpSpan, &'static str> {
             (1, Field::Bytes(id)) => span.trace_id = id_hex(id, 16)?,
             (2, Field::Bytes(id)) => span.span_id = id_hex(id, 8)?,
             (4, Field::Bytes(id)) if !id.is_empty() => span.parent_span_id = Some(id_hex(id, 8)?),
+            (5, Field::Bytes(name)) => span.agent_run = name == b"agent.run",
             (7, Field::Fixed64(time)) => span.start_time_unix_nano = Timestamp::Number(time),
             (8, Field::Fixed64(time)) => span.end_time_unix_nano = Timestamp::Number(time),
             (9, Field::Bytes(value)) => {
-                if let Some(attribute) = decode_attribute(value)? {
+                if let Some(attribute) = decode_attribute(value, span_attribute_key)? {
                     if span.attributes.len() == 64 {
                         return Err(MALFORMED);
                     }
@@ -136,7 +140,25 @@ fn decode_span(input: &[u8]) -> Result<OtlpSpan, &'static str> {
     Ok(span)
 }
 
-fn decode_attribute(input: &[u8]) -> Result<Option<Attribute>, &'static str> {
+fn span_attribute_key(key: &str) -> bool {
+    matches!(
+        key,
+        "session.id"
+            | "gen_ai.conversation.id"
+            | "agenturm.source.id"
+            | TURN_KEY
+            | WORKER_KEY
+            | OPERATION_KEY
+            | PAYLOAD_INPUT
+            | PAYLOAD_OUTPUT
+    ) || super::cost::is_cost_key(key)
+        || super::token_usage::is_token_key(key)
+}
+
+pub(crate) fn decode_attribute(
+    input: &[u8],
+    retain: fn(&str) -> bool,
+) -> Result<Option<Attribute>, &'static str> {
     let mut key = None;
     let mut value = None;
     for field in fields(input) {
@@ -149,22 +171,11 @@ fn decode_attribute(input: &[u8]) -> Result<Option<Attribute>, &'static str> {
     let Some(key) = key.and_then(|bytes| std::str::from_utf8(bytes).ok()) else {
         return Ok(None);
     };
-    let cost_key = super::cost::is_cost_key(key);
-    let numeric_key = cost_key || super::token_usage::is_token_key(key);
-    if !numeric_key
-        && !matches!(
-            key,
-            "session.id"
-                | "gen_ai.conversation.id"
-                | "agenturm.source.id"
-                | TURN_KEY
-                | WORKER_KEY
-                | PAYLOAD_INPUT
-                | PAYLOAD_OUTPUT
-        )
-    {
+    if !retain(key) {
         return Ok(None);
     }
+    let cost_key = super::cost::is_cost_key(key);
+    let numeric_key = cost_key || super::token_usage::is_token_key(key);
     let max_len = if matches!(key, PAYLOAD_INPUT | PAYLOAD_OUTPUT) {
         agenturm_store::MAX_TELEMETRY_PAYLOAD_TEXT_BYTES
     } else {
@@ -205,7 +216,7 @@ fn decode_attribute(input: &[u8]) -> Result<Option<Attribute>, &'static str> {
     }))
 }
 
-fn id_hex(bytes: &[u8], size: usize) -> Result<String, &'static str> {
+pub(crate) fn id_hex(bytes: &[u8], size: usize) -> Result<String, &'static str> {
     if bytes.len() != size {
         return Err(MALFORMED);
     }
@@ -216,11 +227,10 @@ fn id_hex(bytes: &[u8], size: usize) -> Result<String, &'static str> {
     Ok(id)
 }
 
-pub(super) fn response(rejected: usize) -> Vec<u8> {
+pub(crate) fn partial_success(rejected: usize, message: &[u8]) -> Vec<u8> {
     if rejected == 0 {
         return Vec::new();
     }
-    let message = b"Span lacks an explicit session identity";
     let mut partial = vec![0x08];
     encode_varint(&mut partial, rejected);
     partial.push(0x12);
@@ -265,6 +275,12 @@ mod tests {
         span.push(8 << 3 | 1);
         span.extend(20_u64.to_le_bytes());
         span.extend(attribute("session.id", &message(1, b"usage-session")));
+        span.extend(attribute(
+            "agenturm.source.id",
+            &message(1, b"harness.codex"),
+        ));
+        span.extend(attribute(TURN_KEY, &message(1, b"native-turn")));
+        span.extend(attribute(OPERATION_KEY, &message(1, b"native-mcp-call")));
         span.extend(attribute("llm.token_count.prompt", &[3 << 3, 0]));
         span.extend(attribute(
             "gen_ai.usage.cache_read.input_tokens",
@@ -279,9 +295,16 @@ mod tests {
         let export = message(1, &message(2, &message(2, &span)));
         let (rows, unscoped, payloads) =
             super::super::decode_protobuf(&export, &source, None, None).unwrap();
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 3);
         assert_eq!(unscoped, 0);
         assert!(payloads.is_empty());
+        assert_eq!(rows[0].identity, rows[1].identity);
+        assert!(rows[0].identity.operation_id.is_none());
+        assert!(rows.iter().any(|row| matches!(
+            &row.kind,
+            agenturm_kernel::ObservationKind::TraceSpan(span)
+                if span.target_operation_id.as_deref() == Some("native-mcp-call")
+        )));
         let usage = rows
             .iter()
             .find_map(|row| match &row.kind {
@@ -324,7 +347,7 @@ mod tests {
                 .0
         };
         let rows = project(&span);
-        assert_eq!(rows.len(), 2);
+        assert_eq!(rows.len(), 3);
         let cost = rows
             .iter()
             .find_map(|row| match &row.kind {
@@ -341,7 +364,7 @@ mod tests {
                 .contains("private prompt")
         );
         span.extend(attribute("llm.cost_known", &[2 << 3, 0]));
-        assert_eq!(project(&span).len(), 1);
+        assert_eq!(project(&span).len(), 2);
     }
 
     #[test]
@@ -349,7 +372,7 @@ mod tests {
         let mut span = message(1, &[3; 16]);
         span.extend(message(2, &[4; 8]));
         span.extend(message(4, &[5; 8]));
-        span.extend(message(5, b"private span name"));
+        span.extend(message(5, b"agent.run"));
         span.push(7 << 3 | 1);
         span.extend(10_u64.to_le_bytes());
         span.push(8 << 3 | 1);
@@ -363,7 +386,7 @@ mod tests {
         let id = agenturm_kernel::ExtensionId::parse("otlp.fixture").unwrap();
         let (rows, skipped, _) = super::super::decode_protobuf(&export, &id, None, None).unwrap();
         assert_eq!(skipped, 0);
-        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.len(), 2);
         assert_eq!(
             rows[0].identity.session_id.as_deref(),
             Some("native-session")
@@ -376,6 +399,11 @@ mod tests {
         assert_eq!(span.started_at_unix_ns, 10);
         assert_eq!(rows[0].observed_at_unix_ns, 20);
         assert_eq!(span.status, agenturm_kernel::TraceStatus::Error);
+        assert!(matches!(
+            &rows[1].kind,
+            agenturm_kernel::ObservationKind::TraceSpanSummary(summary)
+                if summary.agent_run && summary.reported_error
+        ));
         assert!(
             super::super::decode_protobuf(&export[..export.len() - 1], &id, None, None).is_err()
         );
@@ -409,7 +437,7 @@ mod tests {
         let (rows, skipped, private) =
             super::super::decode_protobuf(&export, &source, None, Some(&binding)).unwrap();
         assert_eq!(skipped, 0);
-        assert_eq!(rows.len(), 1);
+        assert_eq!(rows.len(), 2);
         assert_eq!(private.len(), 1);
         assert_eq!(private[0].event_id, rows[0].event_id);
         assert_eq!(private[0].payload.input.as_deref(), Some("recorded text"));
@@ -420,8 +448,8 @@ mod tests {
 
     #[test]
     fn reports_partial_success_as_a_protobuf_message() {
-        assert!(response(0).is_empty());
-        let encoded = response(513);
+        assert!(partial_success(0, b"test message").is_empty());
+        let encoded = partial_success(513, b"test message");
         let (number, Field::Bytes(partial)) = fields(&encoded).next().unwrap().unwrap() else {
             panic!("expected the partial success field");
         };

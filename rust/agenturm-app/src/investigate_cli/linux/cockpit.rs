@@ -17,6 +17,33 @@ fn bind_history(workspace: &Path, identity: Option<&str>) -> Result<String, Stri
     ))
 }
 
+/// Mint only a body-free exact failed-command selector; reveal still needs
+/// its live grant and the original retained/source proof.
+pub(crate) fn finding_reference(
+    row: &Observation,
+    snapshot_id: ReadSnapshot,
+    workspace: &Path,
+    identity: Option<&str>,
+) -> Result<Option<String>, String> {
+    if identity.is_none()
+        || !matches!(&row.kind, ObservationKind::Tool { category, result }
+            if category == "shell" && matches!(result.as_str(), "failed" | "denied"))
+        || !row.event_id.starts_with("codex:")
+        || !row.event_id.ends_with(":tool")
+    {
+        return Ok(None);
+    }
+    let history = bind_history(workspace, identity)?;
+    let Some(mut reference) = candidate(row, EvidenceKind::Command, &history, snapshot_id) else {
+        return Ok(None);
+    };
+    reference.version = 2;
+    if !reference.valid() {
+        return Ok(None);
+    }
+    encoded(&reference).map(Some)
+}
+
 fn match_row(
     row: &Observation,
     position: ObservationPosition,

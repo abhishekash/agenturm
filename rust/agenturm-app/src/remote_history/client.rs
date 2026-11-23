@@ -3,6 +3,9 @@
 use super::{Reply, Request, VERSION, http, loopback_address, parse_address_and_token};
 use crate::trace_receiver::ProducerToken;
 use crate::{AgenturmApp, HistoryReader, cockpit_startup, cockpit_workflows, workspace_response};
+use agenturm_kernel::retained_history::{
+    MetricHistoryPage, MetricHistoryQuery, UsageHistoryPage, UsageHistoryQuery,
+};
 use agenturm_kernel::{
     ExtensionId, Observation, ObservationPage, ObservationQuery, ObservationStore, StoreCommit,
 };
@@ -11,8 +14,8 @@ use agenturm_storage_service::{
     NativeSelection, ReaderHistoryReply, ReaderHistoryRequest, logical_read_identity,
 };
 use agenturm_store::{
-    ResolvedTraceReview, SessionPage, SessionQuery, TraceReviewQuery, WorkspaceAnchor,
-    WorkspaceHistory, WorkspaceLedger,
+    McpTraceQuery, ResolvedTraceReview, SessionPage, SessionQuery, StandaloneTraceQuery,
+    TraceReviewQuery, WorkspaceAnchor, WorkspaceHistory, WorkspaceLedger,
 };
 use agenturm_ui::{WorkCommand, WorkspaceRequest};
 use sha2::{Digest, Sha256};
@@ -34,7 +37,7 @@ impl RemoteHistoryOptions {
     pub(crate) fn is_python(&self) -> bool {
         self.python_receiver
     }
-    pub(super) fn endpoint(&self) -> SocketAddr {
+    pub(crate) fn endpoint(&self) -> SocketAddr {
         self.endpoint
     }
     pub(super) fn token_file(&self) -> &Path {
@@ -77,7 +80,9 @@ pub fn execute_remote_cockpit(options: &RemoteHistoryOptions) -> Result<(), Stri
     }
     let (store, marker) = open_workspace(options)?;
     let mut app = AgenturmApp::default_composition();
-    agenturm_ui::run_workspace(move |request| {
+    let ui_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
+    let loader_stop = std::sync::Arc::clone(&ui_stop);
+    agenturm_ui::run_workspace_with_stop(move |request| {
         if let WorkspaceRequest::Work(command) = &request {
             if cockpit_workflows::is_prompt_command(command) {
                 return Err("This receiver supplies metadata only. Use a local or broker content reader for protected evidence.".into());
@@ -86,8 +91,8 @@ pub fn execute_remote_cockpit(options: &RemoteHistoryOptions) -> Result<(), Stri
                 return Err("The native terminal belongs to the receiver host.".into());
             }
         }
-        workspace_response(&mut app, &store, &marker, request, || None)
-    })
+        workspace_response(&mut app, &store, &marker, request, || None, &loader_stop)
+    }, ui_stop)
     .map_err(|error| error.to_string())
 }
 
@@ -143,6 +148,34 @@ impl RemoteStore {
             identity,
             read_binding: reply.history_identity,
         })
+    }
+
+    pub(crate) fn read_binding(&self) -> &str {
+        &self.read_binding
+    }
+
+    pub(crate) fn query_execution_clocks(
+        &self,
+        query: &agenturm_store::native_attention::ExecutionClockQuery,
+    ) -> Result<agenturm_store::native_attention::ExecutionClockPage, String> {
+        match self.request(ReaderHistoryRequest::ExecutionClocks {
+            query: query.clone(),
+        })? {
+            ReaderHistoryReply::ExecutionClocks(page) => Ok(page),
+            _ => Err("History gateway returned the wrong execution clock reply".into()),
+        }
+    }
+
+    pub(crate) fn query_native_attention(
+        &self,
+        query: &agenturm_store::native_attention::NativeAttentionQuery,
+    ) -> Result<agenturm_store::native_attention::NativeAttentionPage, String> {
+        match self.request(ReaderHistoryRequest::NativeAttention {
+            query: query.clone(),
+        })? {
+            ReaderHistoryReply::NativeAttention(page) => Ok(page),
+            _ => Err("History receiver sent an unexpected native attention page".into()),
+        }
     }
 
     fn request(&self, request: ReaderHistoryRequest) -> Result<ReaderHistoryReply, String> {
@@ -247,7 +280,7 @@ fn read_error(error: ReadFailure) -> String {
             format!("History snapshot expired. Refresh at snapshot {minimum_snapshot_id} or later.")
         }
         ReadFailure::TraceScopeTooLarge { max_rows } => {
-            format!("Trace exceeds the {max_rows}-row turn-resolution limit")
+            format!("Trace exceeds the {max_rows}-row retained scope limit")
         }
         ReadFailure::Unavailable => "History receiver is unavailable".into(),
         ReadFailure::EvalTraceNotRetained => "Evaluation trace is no longer retained".into(),
@@ -392,6 +425,78 @@ impl HistoryReader for RemoteStore {
         })? {
             ReaderHistoryReply::TraceReview(page) => Ok(page),
             _ => Err("History receiver sent an unexpected trace Review page".into()),
+        }
+    }
+
+    fn query_execution_clocks(
+        &self,
+        query: &agenturm_store::native_attention::ExecutionClockQuery,
+    ) -> Result<agenturm_store::native_attention::ExecutionClockPage, String> {
+        RemoteStore::query_execution_clocks(self, query)
+    }
+    fn query_native_attention(
+        &self,
+        query: &agenturm_store::native_attention::NativeAttentionQuery,
+    ) -> Result<agenturm_store::native_attention::NativeAttentionPage, String> {
+        RemoteStore::query_native_attention(self, query)
+    }
+    fn query_standalone_trace(
+        &self,
+        query: &StandaloneTraceQuery,
+    ) -> Result<ObservationPage, String> {
+        match self.request(ReaderHistoryRequest::StandaloneTrace {
+            query: query.clone(),
+        })? {
+            ReaderHistoryReply::StandaloneTrace(page) => Ok(page),
+            _ => Err("History receiver sent an unexpected standalone trace page".into()),
+        }
+    }
+
+    fn query_projected_history(
+        &self,
+        query: &ObservationQuery,
+        projection: &agenturm_kernel::retained_history::HistoryProjection,
+        turn: Option<&str>,
+        worker: Option<Option<&str>>,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        let scope = agenturm_storage_service::ProjectedHistoryScope::from_filters(turn, worker)
+            .ok_or("A worker projection requires a turn")?;
+        self.history(
+            query,
+            NativeSelection::Projected {
+                projection: projection.clone(),
+                scope,
+            },
+        )
+    }
+
+    fn query_mcp_traces(&self, query: &McpTraceQuery) -> Result<Option<ObservationPage>, String> {
+        match self.request(ReaderHistoryRequest::McpTraces {
+            query: query.clone(),
+        })? {
+            ReaderHistoryReply::McpTraces(page) => Ok(page),
+            _ => Err("History receiver sent an unexpected MCP trace page".into()),
+        }
+    }
+
+    fn query_metric_history(
+        &self,
+        query: &MetricHistoryQuery,
+    ) -> Result<MetricHistoryPage, String> {
+        match self.request(ReaderHistoryRequest::MetricHistory {
+            query: query.clone(),
+        })? {
+            ReaderHistoryReply::MetricHistory(page) => Ok(page),
+            _ => Err("History receiver sent an unexpected metric page".into()),
+        }
+    }
+
+    fn query_usage_history(&self, query: &UsageHistoryQuery) -> Result<UsageHistoryPage, String> {
+        match self.request(ReaderHistoryRequest::UsageHistory {
+            query: query.clone(),
+        })? {
+            ReaderHistoryReply::UsageHistory(page) => Ok(*page),
+            _ => Err("History receiver sent an unexpected usage history page".into()),
         }
     }
 }

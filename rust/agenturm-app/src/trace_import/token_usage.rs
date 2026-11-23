@@ -1,6 +1,7 @@
 //! Explicit producer counters recorded independently of span structure.
 
 use super::{Attribute, AttributeValue};
+use agenturm_kernel::telemetry_summary::LogTokenUsage;
 use agenturm_kernel::{SpanTokenUsage, TraceSpan, TraceSpanIdentity};
 use serde_json::Value;
 
@@ -52,12 +53,25 @@ pub(crate) fn is_token_key(key: &str) -> bool {
 }
 
 pub(super) fn reported(attributes: &[Attribute], span: &TraceSpan) -> Option<SpanTokenUsage> {
+    let counters = reported_counters(attributes)?;
     let usage = SpanTokenUsage {
         span: TraceSpanIdentity {
             trace_id: span.trace_id.clone(),
             span_id: span.span_id.clone(),
         },
         target_source_id: span.target_source_id.clone(),
+        input_tokens: counters.input_tokens,
+        output_tokens: counters.output_tokens,
+        cache_read_input_tokens: counters.cache_read_input_tokens,
+        cache_write_input_tokens: counters.cache_write_input_tokens,
+        reasoning_output_tokens: counters.reasoning_output_tokens,
+        total_tokens: counters.total_tokens,
+    };
+    usage.is_valid().then_some(usage)
+}
+
+pub(crate) fn reported_counters(attributes: &[Attribute]) -> Option<LogTokenUsage> {
+    let usage = LogTokenUsage {
         input_tokens: counter(attributes, INPUT),
         output_tokens: counter(attributes, OUTPUT),
         cache_read_input_tokens: counter(attributes, CACHE_READ),

@@ -6,7 +6,7 @@ use crate::workbench::{PromptKind, PromptReceiver};
 const DISPLAY_LIFETIME: Duration = Duration::from_secs(25);
 const TAB_COLUMNS: usize = 8;
 
-pub(super) struct PromptScreen {
+pub(crate) struct PromptScreen {
     text: String,
     kind: PromptKind,
     readable_start: usize,
@@ -17,13 +17,13 @@ pub(super) struct PromptScreen {
     column: usize,
     max_row: usize,
     max_column: usize,
-    pub(super) acknowledge: Option<mpsc::Sender<()>>,
-    pub(super) active: Arc<Mutex<bool>>,
+    pub(crate) acknowledge: Option<mpsc::Sender<()>>,
+    pub(crate) active: Arc<Mutex<bool>>,
     expires: Instant,
 }
 
 impl PromptScreen {
-    pub(super) fn new(text: String, receiver: PromptReceiver, now: Instant) -> Self {
+    pub(crate) fn new(text: String, receiver: PromptReceiver, now: Instant) -> Self {
         let (readable, hidden_context) = if receiver.kind == PromptKind::User {
             readable_request(&text)
         } else {
@@ -46,11 +46,15 @@ impl PromptScreen {
         }
     }
 
-    pub(super) fn expired(&self, now: Instant) -> bool {
+    pub(crate) fn expired(&self, now: Instant) -> bool {
         now >= self.expires
     }
 
-    pub(super) fn key(&mut self, code: KeyCode) {
+    pub(crate) fn expires_at(&self) -> Instant {
+        self.expires
+    }
+
+    pub(crate) fn key(&mut self, code: KeyCode) {
         if code == KeyCode::Char('z') && self.kind == PromptKind::User {
             self.original = !self.original;
             return;
@@ -77,7 +81,7 @@ impl PromptScreen {
         }
     }
 
-    pub(super) fn draw(&mut self, frame: &mut Frame) {
+    pub(crate) fn draw(&mut self, frame: &mut Frame) {
         let footer_lines = if self.kind == PromptKind::User { 2 } else { 1 };
         let [main, foot] = Layout::vertical([Constraint::Min(1), Constraint::Length(footer_lines)])
             .areas(frame.area());

@@ -2,8 +2,10 @@
 
 mod api;
 mod client;
-mod http;
+pub(crate) mod http;
 pub(crate) mod legacy;
+pub(crate) mod legacy_investigation;
+pub(crate) mod legacy_review;
 
 pub(crate) use client::RemoteStore;
 pub use client::{RemoteHistoryOptions, execute_remote_cockpit};
@@ -245,19 +247,7 @@ fn handle(
         if frame.version != VERSION {
             return Err("400 Bad Request");
         }
-        let result = match frame.history_identity.as_deref() {
-            Some(expected) if logical_read_identity(expected).is_none() => {
-                Err(ReadFailure::InvalidRequest)
-            }
-            Some(expected) if logical_read_identity(expected) != logical_read_identity(binding) => {
-                Err(ReadFailure::HistoryReplaced)
-            }
-            Some(expected) if expected != binding => Err(ReadFailure::SnapshotReplaced),
-            None if !matches!(frame.request, ReaderHistoryRequest::Identity) => {
-                Err(ReadFailure::InvalidRequest)
-            }
-            _ => read(frame.request),
-        };
+        let result = bound_read(frame, binding, read);
         let reply = Reply {
             version: VERSION,
             history_identity: binding.into(),
@@ -288,11 +278,88 @@ fn handle(
     let _ = http::write(stream, Instant::now() + http::IO_BUDGET, &head, &bytes);
 }
 
+fn bound_read(
+    frame: Request,
+    binding: &str,
+    read: impl FnOnce(ReaderHistoryRequest) -> Result<ReaderHistoryReply, ReadFailure>,
+) -> Result<ReaderHistoryReply, ReadFailure> {
+    match frame.history_identity.as_deref() {
+        Some(expected) if logical_read_identity(expected).is_none() => {
+            Err(ReadFailure::InvalidRequest)
+        }
+        Some(expected) if logical_read_identity(expected) != logical_read_identity(binding) => {
+            Err(ReadFailure::HistoryReplaced)
+        }
+        Some(expected) if expected != binding => Err(ReadFailure::SnapshotReplaced),
+        None if !matches!(frame.request, ReaderHistoryRequest::Identity) => {
+            Err(ReadFailure::InvalidRequest)
+        }
+        _ => read(frame.request),
+    }
+}
+
 #[cfg(test)]
 mod http_api_tests {
     use super::*;
     use std::io::{Read, Write};
     use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn typed_post_routes_hold_history_binding_without_replacing_legacy_metrics_get() {
+        use serde_json::json;
+        let identity = "a".repeat(32);
+        let binding = format!("{identity}:{}", "b".repeat(32));
+        let requests = [
+            json!({"op":"mcp_traces","query":{"source_id":"harness.fixture","event_id":"call-1","revision":3,"snapshot_id":0,"limit":1,"before":null}}),
+            json!({"op":"metric_history","query":{"kind":"series","source_id":"otlp.fixture","snapshot_id":null,"after":null,"limit":1}}),
+            json!({"op":"usage_history","query":{"source_id":null,"session_id":null,"snapshot_id":null,"end_unix_ns":1795424400000000001_u64}}),
+        ];
+        for (index, request) in requests.into_iter().enumerate() {
+            let frame = |expected: Option<&str>| {
+                serde_json::from_value::<Request>(json!({
+                    "version": VERSION, "history_identity": expected, "request": &request,
+                }))
+                .unwrap()
+            };
+            let never = |_| panic!("an unbound read reached the broker callback");
+            assert!(matches!(
+                bound_read(frame(None), &binding, never),
+                Err(ReadFailure::InvalidRequest)
+            ));
+            assert!(matches!(
+                bound_read(frame(Some(&identity)), &binding, never),
+                Err(ReadFailure::SnapshotReplaced)
+            ));
+            assert!(matches!(
+                bound_read(frame(Some(&"c".repeat(32))), &binding, never),
+                Err(ReadFailure::HistoryReplaced)
+            ));
+            assert!(matches!(
+                bound_read(frame(Some(&binding)), &binding, |query| {
+                    match (index, query) {
+                        (0, ReaderHistoryRequest::McpTraces { query }) => {
+                            assert_eq!(query.revision, 3)
+                        }
+                        (1, ReaderHistoryRequest::MetricHistory { .. }) => {}
+                        (2, ReaderHistoryRequest::UsageHistory { query }) => {
+                            assert_eq!(query.end_unix_ns, 1795424400000000001)
+                        }
+                        _ => panic!("the typed request changed kind"),
+                    }
+                    Ok(ReaderHistoryReply::Contains(true))
+                }),
+                Ok(ReaderHistoryReply::Contains(true))
+            ));
+        }
+        let compatibility = api::Request::parse("/api/metrics?limit=1")
+            .unwrap()
+            .execute(&binding, &|request| {
+                assert!(matches!(request, ReaderHistoryRequest::History { .. }));
+                Ok(ReaderHistoryReply::History(Default::default()))
+            })
+            .unwrap();
+        assert!(compatibility.is_object());
+    }
 
     #[test]
     fn host_history_flag_requires_an_explicit_standalone_opt_in() {

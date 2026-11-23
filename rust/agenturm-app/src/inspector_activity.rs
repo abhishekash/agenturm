@@ -40,6 +40,7 @@ pub(super) fn overview_page(snapshot: Snapshot) -> HistoryPage {
         }
     }
     HistoryPage {
+        features: Default::default(),
         history_identity: None,
         operation_details: operation_details(&snapshot),
         private_telemetry_history: None,
@@ -140,6 +141,7 @@ pub(super) fn turn_page(mut snapshot: Snapshot, turn: &RecordedTurn) -> HistoryP
         rows,
     );
     HistoryPage {
+        features: Default::default(),
         history_identity: None,
         operation_details: operation_details(&snapshot),
         private_telemetry_history: None,

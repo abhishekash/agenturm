@@ -118,6 +118,7 @@ class PythonOtlpClientTests(unittest.TestCase):
         self.assertNotIn("Authorization", headers)
         self.assertNotIn(MARKER.encode(), body)
         root, wire_parent, wire_child = self.sent_spans()
+        self.assertEqual({span["name"] for span in self.sent_spans()}, {"agenturm.span"})
         self.assertNotIn("parentSpanId", root)
         self.assertEqual(wire_parent["parentSpanId"], run.root.span_id)
         self.assertEqual(wire_child["parentSpanId"], parent.span_id)
@@ -200,6 +201,52 @@ class PythonOtlpClientTests(unittest.TestCase):
                 }):
                     pass
             self.assertEqual(len(self.requests), 2)
+
+    def test_manual_run_classification_and_reported_usage_survive_explicit_capture(self):
+        environment = {
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": ENDPOINT,
+            "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "authorization=Bearer%20" + "e1" * 32,
+        }
+        fields = {
+            "agenturm.payload.input": MARKER,
+            "gen_ai.usage.input_tokens": 0,
+            "gen_ai.usage.output_tokens": 9,
+            "agenturm.reported_cost.amount": 0,
+            "agenturm.reported_cost.currency": "EUR",
+            "model.name": "private model fixture",
+            "api_key": "private key fixture",
+        }
+        with patch.dict(os.environ, environment, clear=True):
+            client = Client(transport="otlp", strict=True, capture_content=True)
+            with self.assertRaisesRegex(RuntimeError, "private error fixture"):
+                with client.trace(session_id="exact-session", attributes=fields) as run:
+                    run.root.set_attribute("agent_run", False)
+                    with run.span("agent.run", attributes={"llm.cost_known": False}):
+                        pass
+                    raise RuntimeError("private error fixture")
+            with client.trace("agent.run.private-name", session_id="exact-session",
+                              attributes={"agent_run": True}):
+                pass
+        root, child, custom = self.sent_spans()
+        self.assertEqual([span["name"] for span in (root, child, custom)],
+                         ["agent.run", "agenturm.span", "agenturm.span"])
+        self.assertEqual(root["status"], {"code": 2})
+        root_fields = {field["key"]: field["value"] for field in root["attributes"]}
+        self.assertEqual(root_fields, {
+            "session.id": {"stringValue": "exact-session"},
+            "agenturm.payload.input": {"stringValue": MARKER},
+            "agenturm.reported_cost.amount": {"stringValue": "0"},
+            "agenturm.reported_cost.currency": {"stringValue": "EUR"},
+            "gen_ai.usage.input_tokens": {"intValue": "0"},
+            "gen_ai.usage.output_tokens": {"intValue": "9"},
+        })
+        for span in (child, custom):
+            self.assertEqual(span["attributes"],
+                             [{"key": "session.id", "value": {"stringValue": "exact-session"}}])
+        body = b"".join(request[4] for request in self.requests)
+        for hidden in (b"private model fixture", b"private key fixture",
+                       b"private error fixture", b"agent.run.private-name"):
+            self.assertNotIn(hidden, body)
 
     def test_structured_sdk_projection_only_reads_message_text(self):
         from observatory.integrations.otel_payload import agents_message_text, structured_message_text

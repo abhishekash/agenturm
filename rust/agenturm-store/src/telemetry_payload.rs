@@ -71,13 +71,7 @@ impl TelemetryPayload {
             .into_iter()
             .flatten()
         {
-            if text.len() > MAX_TELEMETRY_PAYLOAD_TEXT_BYTES
-                || !bounded_text_preview(text.clone(), MAX_TELEMETRY_PAYLOAD_TEXT_BYTES)
-                    .is_ok_and(|clean| clean == *text)
-            {
-                return Err(StoreError::Invalid("telemetry payload text was withheld"));
-            }
-            bytes += text.len();
+            bytes += validate_text(text)?;
         }
         if bytes == 0 {
             return Err(StoreError::Invalid("telemetry payload contains no text"));
@@ -122,7 +116,39 @@ pub(super) fn create_schema(connection: &Connection) -> Result<()> {
     Ok(())
 }
 
-pub(super) fn build_admission<'a>(
+pub(super) enum Admission<'a> {
+    Spans(&'a TelemetryBinding, &'a [TelemetryPayloadRecord]),
+    Logs(
+        &'a crate::TelemetryLogTextBinding,
+        &'a [TelemetryPayloadRecord],
+    ),
+}
+
+impl<'a> Admission<'a> {
+    pub(super) fn encode(
+        self,
+        batch: &ObservationBatch,
+    ) -> Result<BTreeMap<&'a str, EncodedPayload>> {
+        match self {
+            Self::Spans(binding, records) => build_admission(batch, binding, records),
+            Self::Logs(binding, records) => {
+                crate::telemetry_log_text::build_admission(batch, binding, records)
+            }
+        }
+    }
+}
+
+pub(super) fn validate_text(text: &str) -> Result<usize> {
+    if text.len() > MAX_TELEMETRY_PAYLOAD_TEXT_BYTES
+        || !bounded_text_preview(text.to_owned(), MAX_TELEMETRY_PAYLOAD_TEXT_BYTES)
+            .is_ok_and(|clean| clean == text)
+    {
+        return Err(StoreError::Invalid("telemetry payload text was withheld"));
+    }
+    Ok(text.len())
+}
+
+fn build_admission<'a>(
     batch: &ObservationBatch,
     binding: &TelemetryBinding,
     records: &'a [TelemetryPayloadRecord],
@@ -158,14 +184,7 @@ pub(super) fn build_admission<'a>(
                 "telemetry payload exceeds the batch scope or size",
             ));
         }
-        let payload_json = serde_json::to_string(&record.payload)?;
-        let mut hash = Sha256::new();
-        hash.update(b"agenturm-telemetry-payload/1\0");
-        hash.update(payload_json.as_bytes());
-        let payload = EncodedPayload {
-            digest: hash.finalize().into(),
-            json: payload_json,
-        };
+        let payload = EncodedPayload::new(b"agenturm-telemetry-payload/1\0", &record.payload)?;
         if payloads.insert(record.event_id.as_str(), payload).is_some() {
             return Err(StoreError::Invalid(
                 "telemetry payload span occurs more than once",
@@ -181,6 +200,17 @@ pub(super) struct EncodedPayload {
 }
 
 impl EncodedPayload {
+    pub(super) fn new(domain: &[u8], payload: &impl Serialize) -> Result<Self> {
+        let json = serde_json::to_string(payload)?;
+        let mut hash = Sha256::new();
+        hash.update(domain);
+        hash.update(json.as_bytes());
+        Ok(Self {
+            digest: hash.finalize().into(),
+            json,
+        })
+    }
+
     pub(super) fn verify_replay(
         &self,
         connection: &Connection,
@@ -305,6 +335,7 @@ impl Store {
                    AND batch.sequence <= ?3
                    AND observation.session_id = ?4
                    AND observation.turn_id IS ?5 AND observation.worker_id IS ?6
+                   AND json_extract(observation.kind_json, '$.kind') = 'trace_span'
                    AND json_extract(observation.kind_json, '$.target_source_id') IS ?7",
                     params![
                         selected.binding.source_id.as_str(),
@@ -560,6 +591,7 @@ mod tests {
                 span_id: span_id.into(),
                 parent_span_id: None,
                 target_source_id: None,
+                target_operation_id: None,
                 started_at_unix_ns: 1,
                 status: TraceStatus::Ok,
             }),

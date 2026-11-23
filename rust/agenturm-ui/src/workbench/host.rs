@@ -1,7 +1,10 @@
 //! Recorded Host drill-down with exact process identity within a retained page.
 
-use super::{WorkCommand, WorkInput, workspace};
-use crate::{EvidenceRow, EvidenceSpec, EvidenceTable};
+use super::{CurrentHostSample, WorkCommand, WorkInput, workspace};
+use crate::{
+    EvidenceRow, EvidenceSpec, EvidenceTable,
+    pane_filter::{self, Filter, FilterKey},
+};
 use agenturm_kernel::{
     HostProcess, HostSample, MetricRow, Observation, ObservationKind, ObservationPage,
 };
@@ -42,6 +45,7 @@ const PROCESSES: EvidenceSpec = EvidenceSpec {
     columns: &[
         ("Process", 3),
         ("PID", 2),
+        ("Cwd", 5),
         ("State", 3),
         ("RAM", 3),
         ("CPU ticks", 3),
@@ -52,18 +56,119 @@ const PROCESSES: EvidenceSpec = EvidenceSpec {
 const PROCESS_HISTORY: EvidenceSpec = EvidenceSpec {
     title: "Process history · loaded samples",
     inspector: "Process inspector",
-    columns: &[("Sample", 3), ("RAM", 3), ("CPU ticks", 3)],
+    columns: &[("Sample", 3), ("Cwd", 5), ("RAM", 3), ("CPU ticks", 3)],
     empty: "No samples for this exact process.",
 };
 
+pub(super) fn current_indices(sample: &HostSample, filter: &Filter) -> Vec<usize> {
+    sample
+        .processes
+        .iter()
+        .enumerate()
+        .filter_map(|(index, process)| {
+            let pid = process.pid.to_string();
+            let parent_pid = process.parent_pid.map(|pid| pid.to_string());
+            filter
+                .matches([
+                    process.runtime.label(),
+                    &pid,
+                    parent_pid.as_deref().unwrap_or_default(),
+                    cwd_name(process),
+                    process.state.map_or("Unknown", |state| state.label()),
+                ])
+                .then_some(index)
+        })
+        .collect()
+}
+
+pub(super) fn current_present(
+    capture: Option<&CurrentHostSample>,
+    filter: &Filter,
+) -> Presentation {
+    let mut spec = PROCESSES;
+    spec.title = "Host now";
+    spec.inspector = "Current sample";
+    if filter.active() {
+        spec.empty = "No matching processes in this sample.";
+    }
+    let Some(capture) = capture else {
+        spec.empty = "Current host sample is unavailable from this reader.";
+        return Presentation {
+            table: spec.table(Vec::new()),
+            keys: "R refresh · Esc back",
+        };
+    };
+    let sample = &capture.sample;
+    if sample.processes_partial {
+        spec.title = "Host now · partial";
+    }
+    let mut table = spec.table(
+        current_indices(sample, filter)
+            .into_iter()
+            .map(|index| process_row(&sample.processes[index], sample))
+            .collect(),
+    );
+    table.context = vec![detail(
+        "Captured",
+        workspace::age(capture.captured_at_unix_ns),
+    )];
+    table.context.extend(sample_details(sample));
+    Presentation {
+        table,
+        keys: filter
+            .keys()
+            .unwrap_or("/ search · Enter inspect · R refresh · Esc back"),
+    }
+}
+
+fn process_row(process: &HostProcess, sample: &HostSample) -> EvidenceRow {
+    EvidenceRow {
+        cells: vec![
+            process.runtime.label().into(),
+            process.pid.to_string(),
+            cwd_name(process).into(),
+            process
+                .state
+                .map_or("Unknown", |state| state.label())
+                .into(),
+            memory(process.resident_bytes),
+            total_ticks(process),
+        ],
+        details: process_details(process, sample),
+    }
+}
+
 impl HostLevel {
-    pub fn len(&self, page: &ObservationPage) -> usize {
+    pub fn len(&self, page: &ObservationPage, filter: &Filter) -> usize {
         match *self {
             Self::Samples => page.observations.len(),
-            Self::Processes(index) => {
-                sample(page, index).map_or(0, |(_, data)| data.processes.len())
-            }
+            Self::Processes(index) => process_indices(page, index, filter).len(),
             Self::ProcessHistory { sample, process } => occurrences(page, sample, process).count(),
+        }
+    }
+
+    pub fn filter_key(
+        &self,
+        page: &ObservationPage,
+        filter: &mut Filter,
+        cursor: &mut ListState,
+        key: KeyCode,
+    ) -> bool {
+        let Self::Processes(index) = *self else {
+            return false;
+        };
+        let previous = cursor
+            .selected()
+            .and_then(|row| process_indices(page, index, filter).get(row).copied());
+        match filter.key(key) {
+            FilterKey::Changed => {
+                let visible = process_indices(page, index, filter);
+                *cursor =
+                    ListState::default().with_selected(pane_filter::selection(&visible, previous));
+                true
+            }
+            FilterKey::Handled => true,
+            FilterKey::Ignored => false,
         }
     }
 
@@ -71,6 +176,7 @@ impl HostLevel {
         &mut self,
         page: &ObservationPage,
         cursor: &mut ListState,
+        filter: &Filter,
         key: KeyCode,
     ) -> WorkInput {
         let index = cursor.selected().unwrap_or_default();
@@ -86,24 +192,35 @@ impl HostLevel {
                 (Self::Processes(index), 0)
             }
             (Self::Processes(sample_index), KeyCode::Esc) => (Self::Samples, *sample_index),
-            (Self::Processes(sample_index), KeyCode::Enter) if index < self.len(page) => (
-                Self::ProcessHistory {
-                    sample: *sample_index,
-                    process: index,
-                },
-                0,
-            ),
+            (Self::Processes(sample_index), KeyCode::Enter) => {
+                let visible = process_indices(page, *sample_index, filter);
+                let Some(&process) = visible.get(index) else {
+                    return WorkInput::None;
+                };
+                (
+                    Self::ProcessHistory {
+                        sample: *sample_index,
+                        process,
+                    },
+                    0,
+                )
+            }
             (Self::ProcessHistory { sample, process }, KeyCode::Esc) => {
-                (Self::Processes(*sample), *process)
+                let visible = process_indices(page, *sample, filter);
+                (
+                    Self::Processes(*sample),
+                    pane_filter::selection(&visible, Some(*process)).unwrap_or(0),
+                )
             }
             _ => return WorkInput::None,
         };
         *self = next;
-        *cursor = ListState::default().with_selected((self.len(page) != 0).then_some(selected));
+        *cursor =
+            ListState::default().with_selected((self.len(page, filter) != 0).then_some(selected));
         WorkInput::None
     }
 
-    pub fn present(&self, page: &ObservationPage) -> Presentation {
+    pub fn present(&self, page: &ObservationPage, filter: &Filter) -> Presentation {
         match *self {
             Self::Samples => Presentation {
                 table: SAMPLES.table(
@@ -148,27 +265,23 @@ impl HostLevel {
                 if data.is_some_and(|data| data.processes_partial) {
                     spec.title = "Host processes · partial";
                 }
+                if filter.active() {
+                    spec.empty = "No matching processes in this sample.";
+                }
+                let visible = process_indices(page, index, filter);
                 Presentation {
                     table: spec.table(
                         data.into_iter()
                             .flat_map(|sample| {
-                                sample.processes.iter().map(|process| EvidenceRow {
-                                    cells: vec![
-                                        process.runtime.label().into(),
-                                        process.pid.to_string(),
-                                        process
-                                            .state
-                                            .map_or("Unknown", |state| state.label())
-                                            .into(),
-                                        memory(process.resident_bytes),
-                                        total_ticks(process),
-                                    ],
-                                    details: process_details(process, sample),
-                                })
+                                visible
+                                    .iter()
+                                    .map(|index| process_row(&sample.processes[*index], sample))
                             })
                             .collect(),
                     ),
-                    keys: "Enter process history · Esc samples",
+                    keys: filter
+                        .keys()
+                        .unwrap_or("/ search · Enter history · Esc samples"),
                 }
             }
             Self::ProcessHistory { sample, process } => Presentation {
@@ -180,6 +293,7 @@ impl HostLevel {
                             EvidenceRow {
                                 cells: vec![
                                     workspace::age(row.observed_at_unix_ns),
+                                    cwd_name(process).into(),
                                     memory(process.resident_bytes),
                                     total_ticks(process),
                                 ],
@@ -192,6 +306,10 @@ impl HostLevel {
             },
         }
     }
+}
+
+fn process_indices(page: &ObservationPage, index: usize, filter: &Filter) -> Vec<usize> {
+    sample(page, index).map_or_else(Vec::new, |(_, sample)| current_indices(sample, filter))
 }
 
 fn sample(page: &ObservationPage, index: usize) -> Option<(&Observation, &HostSample)> {
@@ -246,6 +364,7 @@ fn sample_details(sample: &HostSample) -> Vec<MetricRow> {
         )
     };
     vec![
+        detail("Platform", "Linux"),
         detail(
             "Process coverage",
             format!(
@@ -287,6 +406,10 @@ fn sample_details(sample: &HostSample) -> Vec<MetricRow> {
     ]
 }
 
+fn cwd_name(process: &HostProcess) -> &str {
+    process.working_directory_name.as_deref().unwrap_or("—")
+}
+
 fn process_details(process: &HostProcess, sample: &HostSample) -> Vec<MetricRow> {
     vec![
         detail(
@@ -297,6 +420,19 @@ fn process_details(process: &HostProcess, sample: &HostSample) -> Vec<MetricRow>
                 process.pid,
                 process.state.map_or("Unknown state", |state| state.label())
             ),
+        ),
+        detail(
+            "Working directory",
+            process
+                .working_directory_name
+                .as_deref()
+                .unwrap_or("Unavailable"),
+        ),
+        detail(
+            "Parent PID",
+            process
+                .parent_pid
+                .map_or_else(|| "Unavailable".into(), |pid| pid.to_string()),
         ),
         detail(
             "RSS",
@@ -356,7 +492,8 @@ fn memory(bytes: Option<u64>) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use agenturm_kernel::{ExtensionId, HostRuntime, ObservationIdentity};
+    use agenturm_kernel::{ExtensionId, HostProcessState, HostRuntime, ObservationIdentity};
+    use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
     fn process_history_keeps_source_boot_and_start_identity() {
@@ -378,12 +515,18 @@ mod tests {
                 processes_partial: false,
                 processes: vec![HostProcess {
                     pid: 12,
+                    parent_pid: match id {
+                        "selected" | "reused-pid" => Some(493),
+                        "former-parent" => Some(494),
+                        _ => None,
+                    },
                     start_ticks,
                     runtime: HostRuntime::Codex,
-                    state: None,
+                    state: Some(HostProcessState::Sleeping),
                     resident_bytes: None,
                     user_ticks: Some(0),
                     system_ticks: None,
+                    working_directory_name: (id == "selected").then(|| "fixture-project".into()),
                 }],
             }),
         };
@@ -393,6 +536,7 @@ mod tests {
                 event("other-boot", "host.a", "boot-b", 11),
                 event("other-source", "host.b", "boot-a", 11),
                 event("same-process", "host.a", "boot-a", 11),
+                event("former-parent", "host.a", "boot-a", 11),
                 event("selected", "host.a", "boot-a", 11),
             ],
             ..ObservationPage::default()
@@ -400,16 +544,107 @@ mod tests {
         let events: Vec<_> = occurrences(&page, 0, 0)
             .map(|(row, _, _)| row.event_id.as_str())
             .collect();
-        assert_eq!(events, ["selected", "same-process"]);
+        assert_eq!(events, ["selected", "former-parent", "same-process"]);
         let view = HostLevel::ProcessHistory {
             sample: 0,
             process: 0,
         }
-        .present(&page);
+        .present(&page, &Filter::default());
+        let selected = &view.table.rows[0];
+        assert_eq!(selected.cells[1], "fixture-project");
         assert!(
-            view.table.rows[0].details[2]
-                .value
-                .contains("user 0 · system unknown ticks")
+            selected
+                .details
+                .iter()
+                .any(|row| row.label == "Working directory" && row.value == "fixture-project")
         );
+        assert!(
+            selected.details.iter().any(
+                |row| row.label == "CPU" && row.value.contains("user 0 · system unknown ticks")
+            )
+        );
+        assert_eq!(view.table.rows[1].cells[1], "—");
+        assert!(
+            view.table.rows[2]
+                .details
+                .iter()
+                .any(|row| row.label == "Working directory" && row.value == "Unavailable")
+        );
+        for (row, expected) in view.table.rows.iter().zip(["493", "494", "Unavailable"]) {
+            assert!(
+                row.details
+                    .iter()
+                    .any(|row| row.label == "Parent PID" && row.value == expected)
+            );
+        }
+        let processes = HostLevel::Processes(0).present(&page, &Filter::default());
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for table in [&processes.table, &view.table] {
+                terminal
+                    .draw(|frame| table.draw(frame, frame.area(), 0))
+                    .unwrap();
+                let buffer = terminal.backend().buffer();
+                let screen = buffer
+                    .content
+                    .iter()
+                    .map(|cell| cell.symbol())
+                    .collect::<String>();
+                assert!(
+                    screen.contains("Cwd")
+                        && screen.contains("fixture-project")
+                        && screen.contains("Parent PID  493"),
+                    "{width}×{height}: {screen}"
+                );
+            }
+        }
+
+        let current = |mut sample: HostSample| {
+            sample.processes.insert(
+                0,
+                HostProcess {
+                    parent_pid: Some(494),
+                    working_directory_name: Some("unrelated-project".into()),
+                    start_ticks: 3,
+                    ..sample.processes[0].clone()
+                },
+            );
+            super::super::WorkResult::HostNow(Some(Box::new(CurrentHostSample {
+                captured_at_unix_ns: 0,
+                sample,
+            })))
+        };
+        let ObservationKind::HostSample(sample) = event("selected", "host.a", "boot-a", 11).kind
+        else {
+            unreachable!()
+        };
+        let mut work = super::super::Workbench::new(current(sample.clone()), None);
+        for key in std::iter::once(KeyCode::Char('/'))
+            .chain(
+                "CODEX 12 493 Sleeping fixture-project"
+                    .chars()
+                    .map(KeyCode::Char),
+            )
+            .chain([KeyCode::Enter])
+        {
+            assert!(work.host_filter_key(key));
+        }
+        assert_eq!(
+            work.current_process_identity(),
+            Some(("boot-a".into(), 12, 11))
+        );
+        assert!(work.host_filter_key(KeyCode::Esc));
+        assert_eq!(work.cursor.selected(), Some(1));
+        let mut next = current(sample);
+        let super::super::WorkResult::HostNow(Some(capture)) = &mut next else {
+            unreachable!()
+        };
+        capture.sample.processes.swap(0, 1);
+        work.apply(next);
+        assert_eq!(
+            work.current_process_identity(),
+            Some(("boot-a".into(), 12, 11))
+        );
+        assert_eq!(work.cursor.selected(), Some(0));
     }
 }

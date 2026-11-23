@@ -7,6 +7,7 @@ use agenturm_kernel::{
 use std::fs::{File, OpenOptions};
 use std::io::{BufRead, BufReader, Read};
 use std::os::fd::AsRawFd;
+use std::os::unix::ffi::OsStrExt;
 use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
 use std::path::Path;
 use std::time::Instant;
@@ -158,13 +159,23 @@ fn process(directory: &File, pid: u32, uid: u32) -> Option<HostProcess> {
         recognized_runtime(executable.file_name()?.to_str()?)
     })?;
     let first = read_proc(process.join("stat"))?;
-    let start_ticks = parse_stat(&first)?.start_ticks;
+    let start_ticks = parse_stat(&first, pid)?.start_ticks;
+    let working_directory_name = match runtime {
+        HostRuntime::Codex
+        | HostRuntime::Pi
+        | HostRuntime::Claude
+        | HostRuntime::Kiro
+        | HostRuntime::OpenCode => std::fs::read_link(process.join("cwd"))
+            .ok()
+            .and_then(|path| working_directory_name(&path)),
+        _ => None,
+    };
     let status = read_proc(process.join("status"))?;
     if !owns_status(&status, uid) || proc_field(&status, "Name") != Some(name) {
         return None;
     }
     let final_stat = read_proc(process.join("stat"))?;
-    let stat = parse_stat(&final_stat)?;
+    let stat = parse_stat(&final_stat, pid)?;
     if start_ticks != stat.start_ticks
         || !directory
             .metadata()
@@ -174,13 +185,30 @@ fn process(directory: &File, pid: u32, uid: u32) -> Option<HostProcess> {
     }
     Some(HostProcess {
         pid,
+        parent_pid: stat.parent_pid,
         start_ticks,
         runtime,
         state: stat.state,
         resident_bytes: bytes(&status, "VmRSS"),
         user_ticks: stat.user_ticks,
         system_ticks: stat.system_ticks,
+        working_directory_name,
     })
+}
+
+fn working_directory_name(target: &Path) -> Option<String> {
+    if !target.is_absolute() || target.as_os_str().as_bytes().ends_with(b" (deleted)") {
+        return None;
+    }
+    let name = target.file_name()?.to_str()?;
+    if !HostProcess::valid_working_directory_name(name) {
+        return None;
+    }
+    agenturm_store::bounded_text_preview(
+        name.to_owned(),
+        HostProcess::MAX_WORKING_DIRECTORY_NAME_BYTES,
+    )
+    .ok()
 }
 
 fn owns_status(text: &str, uid: u32) -> bool {
@@ -192,13 +220,19 @@ fn owns_status(text: &str, uid: u32) -> bool {
 
 struct ProcessStat {
     start_ticks: u64,
+    parent_pid: Option<u32>,
     state: Option<HostProcessState>,
     user_ticks: Option<u64>,
     system_ticks: Option<u64>,
 }
 
-fn parse_stat(stat: &str) -> Option<ProcessStat> {
-    let (_, fields) = stat.rsplit_once(") ")?;
+fn parse_stat(stat: &str, expected_pid: u32) -> Option<ProcessStat> {
+    let (identity, fields) = stat.rsplit_once(") ")?;
+    let (pid, _) = identity.split_once(" (")?;
+    let pid: u32 = pid.parse().ok()?;
+    if pid != expected_pid {
+        return None;
+    }
     let mut fields = fields.split_whitespace();
     let state = match fields.next()? {
         "R" => Some(HostProcessState::Running),
@@ -211,11 +245,17 @@ fn parse_stat(stat: &str) -> Option<ProcessStat> {
         "Z" | "X" | "x" => return None,
         _ => None,
     };
-    let user_ticks = fields.nth(10)?.parse().ok();
+    let parent_pid = match fields.next()?.parse::<u32>().ok()? {
+        0 => None,
+        parent if parent != pid => Some(parent),
+        _ => return None,
+    };
+    let user_ticks = fields.nth(9)?.parse().ok();
     let system_ticks = fields.next()?.parse().ok();
     let start_ticks = fields.nth(6)?.parse().ok()?;
     Some(ProcessStat {
         start_ticks,
+        parent_pid,
         state,
         user_ticks,
         system_ticks,
@@ -240,5 +280,55 @@ pub(super) fn recognized_runtime(name: &str) -> Option<HostRuntime> {
         "kiro-cli" | "kiro-cli-chat" => Some(Kiro),
         "opencode" => Some(OpenCode),
         _ => None,
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use std::ffi::OsStr;
+
+    #[test]
+    fn process_stat_parses_parent_after_a_name_containing_parentheses() {
+        let stat_line = |parent: &str| {
+            format!(
+                "145 (odd) process (name)) S {parent} 1 2 0 -1 0 3 0 1 0 17 19 0 0 20 0 1 0 12345"
+            )
+        };
+        let stat = parse_stat(&stat_line("293"), 145).unwrap();
+        assert_eq!(stat.parent_pid, Some(293));
+        assert_eq!(stat.state, Some(HostProcessState::Sleeping));
+        assert_eq!(stat.user_ticks, Some(17));
+        assert_eq!(stat.system_ticks, Some(19));
+        assert_eq!(stat.start_ticks, 12345);
+        assert!(
+            parse_stat(&stat_line("0"), 145)
+                .unwrap()
+                .parent_pid
+                .is_none()
+        );
+        assert!(parse_stat(&stat_line("293"), 146).is_none());
+        assert!(parse_stat(&stat_line("145"), 145).is_none());
+        assert!(parse_stat(&stat_line("-1"), 145).is_none());
+    }
+
+    #[test]
+    fn process_label_keeps_only_a_safe_sampled_basename() {
+        assert_eq!(
+            working_directory_name(Path::new("/home/operator/作業 tree")),
+            Some("作業 tree".into())
+        );
+        for path in [
+            "relative/project",
+            "/",
+            "/root/project (deleted)",
+            "/root/a\nname",
+            "/root/a\u{202e}name",
+            "/root/ghp_private",
+        ] {
+            assert_eq!(working_directory_name(Path::new(path)), None);
+        }
+        let invalid_utf8 = Path::new(OsStr::from_bytes(b"/root/\xff"));
+        assert_eq!(working_directory_name(invalid_utf8), None);
     }
 }

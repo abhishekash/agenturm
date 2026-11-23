@@ -80,7 +80,8 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
             "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"message\",\"role\":\"assistant\",\"content\":\"private text never stored\"}}\n",
             "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"function_call\",\"call_id\":\"call-1\",\"name\":\"exec_command\",\"arguments\":\"private command never stored\"}}\n",
             "{\"type\":\"response_item\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"function_call_output\",\"call_id\":\"call-1\",\"isError\":false,\"output\":\"private output never stored\"}}\n",
-            "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"item_completed\",\"turn_id\":\"turn-1\",\"item\":{\"type\":\"CommandExecution\",\"id\":\"check-1\",\"command\":[\"/usr/bin/zsh\",\"-lc\",\"npm run check\"],\"status\":\"completed\",\"exit_code\":0,\"aggregated_output\":\"private check output never stored\"}}}\n",
+            "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"item_completed\",\"turn_id\":\"turn-1\",\"item\":{\"type\":\"CommandExecution\",\"id\":\"check-1\",\"command\":[\"/usr/bin/zsh\",\"-lc\",\"cargo fmt --all -- --check\"],\"status\":\"completed\",\"exit_code\":0,\"aggregated_output\":\"private check output never stored\"}}}\n",
+            "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"item_completed\",\"turn_id\":\"turn-1\",\"item\":{\"type\":\"CommandExecution\",\"id\":\"list-fixtures\",\"command\":[\"/usr/bin/zsh\",\"-lc\",\"pytest --fixtures\"],\"status\":\"completed\",\"exit_code\":0}}}\n",
             "{\"type\":\"event_msg\",\"timestamp\":\"2026-11-20T12:00:01Z\",\"payload\":{\"type\":\"item_completed\",\"turn_id\":\"turn-1\",\"item\":{\"type\":\"UserMessage\",\"content\":\"private user prompt never stored\"}}}\n",
             "{\"type\":\"token_usage_record\",\"timestamp\":\"2026-11-20T12:00:02Z\",\"payload\":{\"type\":\"token_usage_record\",\"turn_id\":\"turn-1\",\"response_id\":\"response-1\",\"usage\":{\"input_tokens\":7,\"output_tokens\":3,\"cached_input_tokens\":2,\"cache_write_input_tokens\":1,\"total_tokens\":10}}}\n"
         ),
@@ -120,7 +121,7 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .admissions
         .get(&source_id)
         .expect("admission status");
-    assert_eq!(admission.inserted, 17);
+    assert_eq!(admission.inserted, 19);
     assert!(!admission.replay);
     assert_eq!(admission.skipped_unprojected_facts, 0);
     assert!(admission.source_ack_sent);
@@ -140,10 +141,10 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .expect("durable cursor committed");
     assert!(!cursor.is_empty());
     let observations = store.observations().expect("read committed observations");
-    assert_eq!(observations.len(), 17);
+    assert_eq!(observations.len(), 19);
     let mut restarted_kernel = Kernel::new();
     let restored = restarted_kernel.refresh_with_store(&mut store);
-    assert_eq!(restored.observations.len(), 17);
+    assert_eq!(restored.observations.len(), 19);
     assert_eq!(
         restored
             .observations
@@ -160,6 +161,12 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
     assert_eq!(source_id, "harness.codex");
     assert!(observation.event_id.len() > 32);
     assert_eq!(observation.revision, 0);
+    let (_, discovery) = observations.iter().find(|(_, row)| {
+        matches!(&row.kind, ObservationKind::Activity { category } if category == "session_discovered")
+    }).expect("reopen neutral header discovery");
+    assert_eq!(discovery.identity.session_id.as_deref(), Some("session-1"));
+    assert_eq!(discovery.identity.worker_id.as_deref(), Some("session-1"));
+    assert!(discovery.identity.turn_id.is_none());
     let usage = observations
         .iter()
         .find(|(_, row)| matches!(row.kind, ObservationKind::Usage { .. }))
@@ -221,7 +228,7 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
         .iter()
         .filter(|(_, row)| matches!(row.kind, ObservationKind::Tool { .. }))
         .collect::<Vec<_>>();
-    assert_eq!(tools.len(), 6);
+    assert_eq!(tools.len(), 7);
     let (_, edit) = observations
         .iter()
         .find(|(_, row)| {
@@ -310,7 +317,8 @@ fn codex_process_commits_metadata_usage_then_acknowledges() {
     assert!(!encoded.contains("private check output never stored"));
     assert!(!encoded.contains("private user prompt never stored"));
     assert!(!encoded.contains("private text never stored"));
-    assert!(!encoded.contains("npm run check"));
+    assert!(!encoded.contains("cargo fmt --all -- --check"));
+    assert!(!encoded.contains("pytest --fixtures"));
     assert!(!encoded.contains("private PR body never stored"));
     assert!(!encoded.contains("private diff never stored"));
     assert!(!encoded.contains("private-edited-path"));

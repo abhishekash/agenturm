@@ -10,18 +10,26 @@ use crate::native_content::{
 };
 use crate::native_read::{self, HistorySelection, ReadFailure};
 use crate::reader_history::{self, ReaderHistoryReply, ReaderHistoryRequest};
+use agenturm_kernel::retained_history::{
+    HistoryProjection, MetricHistoryPage, MetricHistoryQuery, UsageHistoryPage, UsageHistoryQuery,
+};
 use agenturm_kernel::{
     ExtensionId, Observation, ObservationPage, ObservationQuery, ObservationStore, StoreCommit,
 };
 use agenturm_kernel::{ReadIncarnation, ReadSnapshot};
 use agenturm_storage_service_contract::{ContractError, ServerPolicy, native};
+use agenturm_store::native_attention::{
+    ExecutionClockPage, ExecutionClockQuery, NativeAttentionCapture, NativeAttentionPage,
+    NativeAttentionQuery, NativeAttentionReceipt, canonical_event_id, is_attention_event_id,
+};
 use agenturm_store::{
     AutomaticRetentionPolicy, AutomaticRetentionStatus, EvalDetailRecord, EvalDetailSelection,
-    EvalImportReport, EvalInventory, EvalInventoryQuery, EvalOutcome, EvalPage, EvalQuery,
-    EvalResultDetail, ObservationBatch, ResolvedTraceReview, RetainedEvalOutcome, RetentionOutcome,
-    SelectedEvalPage, SelectedEvalQuery, SessionPage, SessionQuery, Store, TelemetryBinding,
-    TelemetryPayload, TelemetryPayloadRecord, TelemetryPayloadSelection, TraceReviewQuery,
-    WorkspaceAnchor, WorkspaceHistory,
+    EvalFindingSelection, EvalImportReport, EvalInventory, EvalInventoryQuery, EvalOutcome,
+    EvalPage, EvalQuery, EvalResultDetail, McpTraceQuery, ObservationBatch, ResolvedTraceReview,
+    RetainedEvalOutcome, RetentionOutcome, SelectedEvalPage, SelectedEvalQuery, SessionPage,
+    SessionQuery, StandaloneTraceQuery, Store, TelemetryBinding, TelemetryLogText,
+    TelemetryLogTextBinding, TelemetryLogTextSelection, TelemetryPayload, TelemetryPayloadRecord,
+    TelemetryPayloadSelection, TraceReviewQuery, WorkspaceAnchor, WorkspaceHistory,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeSet;
@@ -51,6 +59,19 @@ pub(crate) enum NativeOperation {
         history_identity: String,
         selection: TelemetryPayloadSelection,
     },
+    CheckTelemetryLogAdmission {
+        binding: TelemetryLogTextBinding,
+    },
+    AdmitTelemetryLogs {
+        binding: TelemetryLogTextBinding,
+        batch: ObservationBatch,
+        #[serde(deserialize_with = "agenturm_store::deserialize_telemetry_log_records")]
+        records: Vec<TelemetryPayloadRecord>,
+    },
+    RevealTelemetryLog {
+        history_identity: String,
+        selection: TelemetryLogTextSelection,
+    },
     QueryHistory {
         query: ObservationQuery,
         selection: NativeSelection,
@@ -70,6 +91,34 @@ pub(crate) enum NativeOperation {
         query: TraceReviewQuery,
         expected_history_identity: String,
     },
+    QueryStandaloneTrace {
+        query: StandaloneTraceQuery,
+        expected_history_identity: String,
+    },
+    QueryMcpTraces {
+        query: McpTraceQuery,
+        expected_history_identity: String,
+    },
+    QueryMetricHistory {
+        query: MetricHistoryQuery,
+        expected_history_identity: String,
+    },
+    QueryUsageHistory {
+        query: UsageHistoryQuery,
+        expected_history_identity: String,
+    },
+    AdmitNativeAttention {
+        collector: ExtensionId,
+        capture: NativeAttentionCapture,
+    },
+    QueryNativeAttention {
+        query: NativeAttentionQuery,
+        expected_history_identity: String,
+    },
+    QueryExecutionClocks {
+        query: ExecutionClockQuery,
+        expected_history_identity: String,
+    },
     ImportEvalOutcomes {
         source_id: ExtensionId,
         outcomes: Vec<EvalOutcome>,
@@ -84,6 +133,10 @@ pub(crate) enum NativeOperation {
     RevealEvalDetail {
         history_identity: String,
         selection: EvalDetailSelection,
+    },
+    RevealFailedEvalFinding {
+        history_identity: String,
+        selection: EvalFindingSelection,
     },
     EvalPage {
         source_id: ExtensionId,
@@ -168,6 +221,51 @@ pub enum NativeSelection {
         turn_id: String,
         worker_id: Option<String>,
     },
+    Projected {
+        projection: HistoryProjection,
+        scope: ProjectedHistoryScope,
+    },
+}
+
+/// A native turn can cover every worker or one exact worker (including main).
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(tag = "kind", rename_all = "snake_case", deny_unknown_fields)]
+pub enum ProjectedHistoryScope {
+    All,
+    Turn {
+        turn_id: String,
+    },
+    Worker {
+        turn_id: String,
+        worker_id: Option<String>,
+    },
+}
+
+impl ProjectedHistoryScope {
+    pub fn from_filters(
+        turn_id: Option<&str>,
+        worker_filter: Option<Option<&str>>,
+    ) -> Option<Self> {
+        match (turn_id, worker_filter) {
+            (None, None) => Some(Self::All),
+            (Some(turn_id), None) => Some(Self::Turn {
+                turn_id: turn_id.into(),
+            }),
+            (Some(turn_id), Some(worker_id)) => Some(Self::Worker {
+                turn_id: turn_id.into(),
+                worker_id: worker_id.map(str::to_owned),
+            }),
+            (None, Some(_)) => None,
+        }
+    }
+
+    fn filters(&self) -> (Option<&str>, Option<Option<&str>>) {
+        match self {
+            Self::All => (None, None),
+            Self::Turn { turn_id } => (Some(turn_id), None),
+            Self::Worker { turn_id, worker_id } => (Some(turn_id), Some(worker_id.as_deref())),
+        }
+    }
 }
 
 impl NativeSelection {
@@ -184,6 +282,14 @@ impl NativeSelection {
                 turn_id,
                 worker_id: worker_id.as_deref(),
             },
+            Self::Projected { projection, scope } => {
+                let (turn_id, worker_filter) = scope.filters();
+                HistorySelection::Projected {
+                    projection,
+                    turn_id,
+                    worker_filter,
+                }
+            }
         }
     }
 }
@@ -195,6 +301,12 @@ pub(crate) enum NativeReply {
     History(Result<ObservationPage, ReadFailure>),
     Sessions(Result<SessionPage, ReadFailure>),
     TraceReview(Result<Option<ResolvedTraceReview>, ReadFailure>),
+    McpTraces(Result<Option<ObservationPage>, ReadFailure>),
+    MetricHistory(Result<MetricHistoryPage, ReadFailure>),
+    UsageHistory(Result<Box<UsageHistoryPage>, ReadFailure>),
+    NativeAttentionAdmission(Result<NativeAttentionReceipt, AdmissionFailure>),
+    NativeAttention(Result<NativeAttentionPage, ReadFailure>),
+    ExecutionClocks(Result<ExecutionClockPage, ReadFailure>),
     EvalImported(Result<EvalImportReport, ReadFailure>),
     EvalOutcome(Result<Option<RetainedEvalOutcome>, ReadFailure>),
     EvalPage(Result<EvalPage, ReadFailure>),
@@ -216,7 +328,9 @@ impl NativeOperation {
                 | Self::VerifyPrivatePrompt { .. }
                 | Self::VerifyPrivateOperation { .. }
                 | Self::RevealTelemetry { .. }
+                | Self::RevealTelemetryLog { .. }
                 | Self::RevealEvalDetail { .. }
+                | Self::RevealFailedEvalFinding { .. }
         )
     }
 
@@ -230,6 +344,19 @@ impl NativeOperation {
         output: &mut Disclosure<'_>,
     ) -> Result<(), PrivateEvidenceFailure> {
         match self {
+            Self::RevealFailedEvalFinding {
+                history_identity,
+                selection,
+            } => {
+                authorize_private(
+                    store,
+                    allowed,
+                    role,
+                    &history_identity,
+                    &selection.detail.trace_source_id,
+                )?;
+                native_content::disclose_failed_eval_finding(store, &selection, output)
+            }
             Self::RevealEvalDetail {
                 history_identity,
                 selection,
@@ -258,6 +385,22 @@ impl NativeOperation {
                     &selection.binding.source_id,
                 )?;
                 native_content::disclose_telemetry(store, &selection, output)
+            }
+            Self::RevealTelemetryLog {
+                history_identity,
+                selection,
+            } => {
+                if !allows_telemetry_log(telemetry, allowed, &selection.binding) {
+                    return Err(PrivateEvidenceFailure::Unauthorized);
+                }
+                authorize_private(
+                    store,
+                    allowed,
+                    role,
+                    &history_identity,
+                    &selection.binding.source_id,
+                )?;
+                native_content::disclose_telemetry_log(store, &selection, output)
             }
             Self::RevealPrivate {
                 history_identity,
@@ -322,6 +465,22 @@ impl NativeOperation {
     }
 }
 
+fn allows_telemetry_log(
+    configured: &[TelemetryBinding],
+    allowed: &BTreeSet<ExtensionId>,
+    binding: &TelemetryLogTextBinding,
+) -> bool {
+    allowed.contains(&binding.source_id)
+        && binding
+            .native_source_id
+            .as_ref()
+            .is_none_or(|source| allowed.contains(source))
+        && configured.iter().any(|candidate| {
+            candidate.source_id == binding.source_id
+                && candidate.native_source_id == binding.native_source_id
+        })
+}
+
 pub(crate) fn dispatch_with_telemetry(
     store: &mut Store,
     allowed: &BTreeSet<ExtensionId>,
@@ -348,6 +507,32 @@ pub(crate) fn dispatch_with_telemetry(
         } else {
             Err(AdmissionFailure::Unauthorized)
         }),
+        NativeOperation::CheckTelemetryLogAdmission { binding } => NativeReply::Admission(
+            if role == Role::Collector && allows_telemetry_log(telemetry, allowed, &binding) {
+                Ok(AdmissionReply::PayloadPolicyEnabled)
+            } else {
+                Err(AdmissionFailure::Unauthorized)
+            },
+        ),
+        NativeOperation::AdmitTelemetryLogs {
+            binding,
+            batch,
+            records,
+        } => NativeReply::Admission(
+            if role == Role::Collector && allows_telemetry_log(telemetry, allowed, &binding) {
+                native_admission::admit_telemetry_logs(store, &binding, batch, &records)
+            } else {
+                Err(AdmissionFailure::Unauthorized)
+            },
+        ),
+        NativeOperation::Admin { request }
+            if matches!(&request, AdminRequest::ApproveGrant { binding }
+            if binding.kind == agenturm_store::ContentKind::TelemetryLogText
+                && !telemetry.iter().any(|configured| TelemetryLogTextBinding::from(configured)
+                    .grant_scope().is_ok_and(|scope| GrantBinding::from(&scope) == *binding))) =>
+        {
+            NativeReply::Admin(Err(AdminFailure::Unauthorized))
+        }
         NativeOperation::Admin { request }
             if matches!(&request, AdminRequest::ApproveGrant { binding }
             if binding.kind == agenturm_store::ContentKind::TelemetrySpanPayload
@@ -372,7 +557,9 @@ pub(crate) fn dispatch(
     let admission = match operation {
         NativeOperation::SourceCursor { source_id } => AdmissionRequest::SourceCursor { source_id },
         NativeOperation::CheckTelemetryAdmission { .. }
-        | NativeOperation::AdmitTelemetry { .. } => {
+        | NativeOperation::AdmitTelemetry { .. }
+        | NativeOperation::CheckTelemetryLogAdmission { .. }
+        | NativeOperation::AdmitTelemetryLogs { .. } => {
             return NativeReply::Admission(Err(AdmissionFailure::Unauthorized));
         }
         NativeOperation::Admit { batch } => AdmissionRequest::Admit { batch },
@@ -416,6 +603,66 @@ pub(crate) fn dispatch(
             return NativeReply::TraceReview(
                 authorize_read(store, role, Some(&expected_history_identity))
                     .and_then(|()| native_read::review_trace_turn(store, allowed, query)),
+            );
+        }
+        NativeOperation::QueryStandaloneTrace {
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::History(
+                authorize_read(store, role, Some(&expected_history_identity))
+                    .and_then(|()| native_read::query_standalone_trace(store, allowed, query)),
+            );
+        }
+        NativeOperation::QueryMcpTraces {
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::McpTraces(
+                authorize_read(store, role, Some(&expected_history_identity))
+                    .and_then(|()| native_read::query_mcp_traces(store, allowed, query)),
+            );
+        }
+        NativeOperation::QueryMetricHistory {
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::MetricHistory(
+                authorize_read(store, role, Some(&expected_history_identity))
+                    .and_then(|()| native_read::query_metric_history(store, allowed, &query)),
+            );
+        }
+        NativeOperation::AdmitNativeAttention { collector, capture } => {
+            return NativeReply::NativeAttentionAdmission(admit_native_attention(
+                store, allowed, role, &collector, &capture,
+            ));
+        }
+        NativeOperation::QueryNativeAttention {
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::NativeAttention(
+                authorize_read(store, role, Some(&expected_history_identity))
+                    .and_then(|()| native_read::query_native_attention(store, allowed, &query)),
+            );
+        }
+        NativeOperation::QueryExecutionClocks {
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::ExecutionClocks(
+                authorize_read(store, role, Some(&expected_history_identity))
+                    .and_then(|()| native_read::query_execution_clocks(store, allowed, &query)),
+            );
+        }
+        NativeOperation::QueryUsageHistory {
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::UsageHistory(
+                authorize_read(store, role, Some(&expected_history_identity))
+                    .and_then(|()| native_read::query_usage_history(store, allowed, &query))
+                    .map(Box::new),
             );
         }
         NativeOperation::ImportEvalOutcomes {
@@ -569,7 +816,9 @@ pub(crate) fn dispatch(
         | NativeOperation::VerifyPrivatePrompt { .. }
         | NativeOperation::VerifyPrivateOperation { .. }
         | NativeOperation::RevealTelemetry { .. }
-        | NativeOperation::RevealEvalDetail { .. } => {
+        | NativeOperation::RevealTelemetryLog { .. }
+        | NativeOperation::RevealEvalDetail { .. }
+        | NativeOperation::RevealFailedEvalFinding { .. } => {
             return NativeReply::PrivatePrompts(Err(PrivateEvidenceFailure::Unauthorized));
         }
         NativeOperation::Admin { request } => {
@@ -606,6 +855,36 @@ fn authorize_private(
     })
 }
 
+fn admit_native_attention(
+    store: &mut Store,
+    allowed: &BTreeSet<ExtensionId>,
+    role: Role,
+    collector: &ExtensionId,
+    capture: &NativeAttentionCapture,
+) -> Result<NativeAttentionReceipt, AdmissionFailure> {
+    if role != Role::Collector || !allowed.contains(collector) {
+        return Err(AdmissionFailure::Unauthorized);
+    }
+    let target = ExtensionId::parse(&capture.scope.source_id)
+        .map_err(|_| AdmissionFailure::InvalidRequest)?;
+    if !allowed.contains(&target) {
+        return Err(AdmissionFailure::Unauthorized);
+    }
+    if !capture.is_valid() {
+        return Err(AdmissionFailure::InvalidRequest);
+    }
+    if verify_read_binding(store, &capture.history_binding).is_err() {
+        return Err(AdmissionFailure::Conflict);
+    }
+    store
+        .admit_native_attention(collector, capture, Some(allowed))
+        .map_err(|error| match error {
+            agenturm_store::StoreError::Invalid(_) => AdmissionFailure::InvalidRequest,
+            agenturm_store::StoreError::RequestConflict => AdmissionFailure::Conflict,
+            _ => AdmissionFailure::Unavailable,
+        })
+}
+
 fn check_workspace(
     store: &Store,
     allowed: &BTreeSet<ExtensionId>,
@@ -620,6 +899,11 @@ fn check_workspace(
     authorize_read(store, role, Some(identity))?;
     match selection {
         WorkspaceSelection::Anchor {} => store.contains_anchor(anchor),
+        WorkspaceSelection::Event { event_id, revision } if is_attention_event_id(&event_id) => {
+            return store
+                .contains_native_attention_event(anchor, &event_id, revision, Some(allowed))
+                .map_err(|_| ReadFailure::Unavailable);
+        }
         WorkspaceSelection::Event { event_id, revision } => {
             store.contains_event(anchor, &event_id, revision)
         }
@@ -726,7 +1010,7 @@ impl Display for NativeClientError {
             }
             Self::Read(ReadFailure::TraceScopeTooLarge { max_rows }) => write!(
                 formatter,
-                "trace exceeds the {max_rows}-row turn-resolution limit; select an explicit turn"
+                "trace exceeds the {max_rows}-row retained scope limit"
             ),
             Self::Read(ReadFailure::EvalTraceNotRetained) => formatter
                 .write_str("an evaluation trace is absent from the selected retained source"),
@@ -1158,23 +1442,64 @@ impl NativeStore {
         )
     }
 
+    pub fn with_telemetry_log_text<T>(
+        &self,
+        selection: &TelemetryLogTextSelection,
+        consume: impl FnOnce(&TelemetryLogText) -> Result<T, String>,
+    ) -> Result<T, NativeClientError> {
+        self.consume_private(
+            NativeOperation::RevealTelemetryLog {
+                history_identity: self.private_history_identity()?,
+                selection: selection.clone(),
+            },
+            |payload: &TelemetryLogText| {
+                payload
+                    .validate()
+                    .map_err(|_| NativeClientError::InvalidReply)?;
+                consume(payload).map_err(|_| NativeClientError::PrivateConsumer)
+            },
+        )
+    }
+
     pub fn with_eval_result_detail<T>(
         &self,
         selection: &EvalDetailSelection,
         consume: impl FnOnce(&EvalResultDetail) -> Result<T, String>,
     ) -> Result<T, NativeClientError> {
-        self.consume_private(
+        self.consume_eval_detail(
             NativeOperation::RevealEvalDetail {
                 history_identity: self.private_history_identity()?,
                 selection: selection.clone(),
             },
-            |detail: &EvalResultDetail| {
-                detail
-                    .validate()
-                    .map_err(|_| NativeClientError::InvalidReply)?;
-                consume(detail).map_err(|_| NativeClientError::PrivateConsumer)
-            },
+            consume,
         )
+    }
+
+    pub fn with_failed_eval_finding<T>(
+        &self,
+        selection: &EvalFindingSelection,
+        consume: impl FnOnce(&EvalResultDetail) -> Result<T, String>,
+    ) -> Result<T, NativeClientError> {
+        self.consume_eval_detail(
+            NativeOperation::RevealFailedEvalFinding {
+                history_identity: self.private_history_identity()?,
+                selection: selection.clone(),
+            },
+            consume,
+        )
+    }
+
+    fn consume_eval_detail<T>(
+        &self,
+        operation: NativeOperation,
+        consume: impl FnOnce(&EvalResultDetail) -> Result<T, String>,
+    ) -> Result<T, NativeClientError> {
+        self.consume_private(operation, |detail: &EvalResultDetail| {
+            detail
+                .validate()
+                .map_err(|_| NativeClientError::InvalidReply)?;
+            consume(detail).map_err(|_| NativeClientError::PrivateConsumer)
+        })
     }
 
     pub fn check_telemetry_admission(
@@ -1196,6 +1521,35 @@ impl NativeStore {
         records: Vec<TelemetryPayloadRecord>,
     ) -> Result<usize, NativeClientError> {
         match self.admission(NativeOperation::AdmitTelemetry {
+            binding: binding.clone(),
+            batch,
+            records,
+        })? {
+            AdmissionReply::Committed { inserted } => Ok(inserted),
+            AdmissionReply::Replay => Ok(0),
+            _ => Err(NativeClientError::InvalidReply),
+        }
+    }
+
+    pub fn check_telemetry_log_admission(
+        &self,
+        binding: &TelemetryLogTextBinding,
+    ) -> Result<(), NativeClientError> {
+        match self.admission(NativeOperation::CheckTelemetryLogAdmission {
+            binding: binding.clone(),
+        })? {
+            AdmissionReply::PayloadPolicyEnabled => Ok(()),
+            _ => Err(NativeClientError::InvalidReply),
+        }
+    }
+
+    pub fn commit_telemetry_log_batch(
+        &self,
+        binding: &TelemetryLogTextBinding,
+        batch: ObservationBatch,
+        records: Vec<TelemetryPayloadRecord>,
+    ) -> Result<usize, NativeClientError> {
+        match self.admission(NativeOperation::AdmitTelemetryLogs {
             binding: binding.clone(),
             batch,
             records,
@@ -1352,6 +1706,24 @@ impl NativeStore {
         self.query(query, NativeSelection::LinkedTraces)
     }
 
+    pub fn query_projected_history(
+        &self,
+        query: &ObservationQuery,
+        projection: &HistoryProjection,
+        turn_id: Option<&str>,
+        worker_filter: Option<Option<&str>>,
+    ) -> Result<ObservationPage, NativeClientError> {
+        let scope = ProjectedHistoryScope::from_filters(turn_id, worker_filter)
+            .ok_or(NativeClientError::Read(ReadFailure::InvalidRequest))?;
+        self.query(
+            query,
+            NativeSelection::Projected {
+                projection: projection.clone(),
+                scope,
+            },
+        )
+    }
+
     pub fn query_linked_turn_traces(
         &self,
         query: &ObservationQuery,
@@ -1382,6 +1754,111 @@ impl NativeStore {
             },
         )?
         .map_err(NativeClientError::Read)
+    }
+
+    pub fn query_mcp_traces(
+        &self,
+        query: &McpTraceQuery,
+    ) -> Result<Option<ObservationPage>, NativeClientError> {
+        self.exchange::<Result<Option<ObservationPage>, ReadFailure>>(
+            NativeOperation::QueryMcpTraces {
+                query: query.clone(),
+                expected_history_identity: self.require_read_binding()?,
+            },
+        )?
+        .map_err(NativeClientError::Read)
+    }
+
+    pub fn query_standalone_trace(
+        &self,
+        query: &StandaloneTraceQuery,
+    ) -> Result<ObservationPage, NativeClientError> {
+        self.exchange::<Result<ObservationPage, ReadFailure>>(
+            NativeOperation::QueryStandaloneTrace {
+                query: query.clone(),
+                expected_history_identity: self.require_read_binding()?,
+            },
+        )?
+        .map_err(NativeClientError::Read)
+    }
+
+    pub fn query_metric_history(
+        &self,
+        query: &MetricHistoryQuery,
+    ) -> Result<MetricHistoryPage, NativeClientError> {
+        self.exchange::<Result<MetricHistoryPage, ReadFailure>>(
+            NativeOperation::QueryMetricHistory {
+                query: query.clone(),
+                expected_history_identity: self.require_read_binding()?,
+            },
+        )?
+        .map_err(NativeClientError::Read)
+    }
+
+    pub fn admit_native_attention(
+        &self,
+        collector: &ExtensionId,
+        capture: &NativeAttentionCapture,
+    ) -> Result<NativeAttentionReceipt, NativeClientError> {
+        let result = self
+            .exchange::<Result<NativeAttentionReceipt, AdmissionFailure>>(
+                NativeOperation::AdmitNativeAttention {
+                    collector: collector.clone(),
+                    capture: capture.clone(),
+                },
+            )?
+            .map_err(NativeClientError::Admission)?;
+        if result.history_binding != capture.history_binding
+            || result.event_id != canonical_event_id(collector, capture)
+        {
+            return Err(NativeClientError::InvalidReply);
+        }
+        Ok(result)
+    }
+
+    pub fn query_native_attention(
+        &self,
+        query: &NativeAttentionQuery,
+    ) -> Result<NativeAttentionPage, NativeClientError> {
+        self.exchange::<Result<NativeAttentionPage, ReadFailure>>(
+            NativeOperation::QueryNativeAttention {
+                query: query.clone(),
+                expected_history_identity: self.require_read_binding()?,
+            },
+        )?
+        .map_err(NativeClientError::Read)
+    }
+
+    pub fn query_execution_clocks(
+        &self,
+        query: &ExecutionClockQuery,
+    ) -> Result<ExecutionClockPage, NativeClientError> {
+        self.exchange::<Result<ExecutionClockPage, ReadFailure>>(
+            NativeOperation::QueryExecutionClocks {
+                query: query.clone(),
+                expected_history_identity: self.require_read_binding()?,
+            },
+        )?
+        .map_err(NativeClientError::Read)
+    }
+
+    pub fn query_usage_history(
+        &self,
+        query: &UsageHistoryQuery,
+    ) -> Result<UsageHistoryPage, NativeClientError> {
+        self.exchange::<Result<UsageHistoryPage, ReadFailure>>(
+            NativeOperation::QueryUsageHistory {
+                query: query.clone(),
+                expected_history_identity: self.require_read_binding()?,
+            },
+        )?
+        .map_err(NativeClientError::Read)
+    }
+
+    fn require_read_binding(&self) -> Result<String, NativeClientError> {
+        self.read_binding
+            .clone()
+            .ok_or(NativeClientError::Read(ReadFailure::InvalidRequest))
     }
 
     fn admission(&self, operation: NativeOperation) -> Result<AdmissionReply, NativeClientError> {
@@ -1505,6 +1982,122 @@ mod tests {
     use agenturm_store::TraceTurnQuery;
 
     #[test]
+    fn telemetry_log_policy_checks_exact_configured_pair_advancing_only_collector() {
+        let directory =
+            std::env::temp_dir().join(format!("agenturm-broker-log-policy-{}", std::process::id()));
+        std::fs::create_dir(&directory).unwrap();
+        let mut store = Store::open_collector(directory.join("history.sqlite")).unwrap();
+        let binding = TelemetryBinding {
+            source_id: ExtensionId::parse("otlp.error").unwrap(),
+            native_source_id: Some(ExtensionId::parse("harness.codex.linked").unwrap()),
+        };
+        let configured = std::slice::from_ref(&binding);
+        let bound = TelemetryLogTextBinding::from(&binding);
+        let standalone = TelemetryLogTextBinding {
+            native_source_id: None,
+            ..bound.clone()
+        };
+        let producer = BTreeSet::from([bound.source_id.clone()]);
+        let mut all = producer.clone();
+        all.insert(bound.native_source_id.clone().unwrap());
+        let mut check = |role, scope, tested: &TelemetryLogTextBinding| {
+            dispatch_with_telemetry(
+                &mut store,
+                scope,
+                role,
+                NativeOperation::CheckTelemetryLogAdmission {
+                    binding: tested.clone(),
+                },
+                None,
+                None,
+                configured,
+            )
+        };
+        for (role, scope, wrong) in [
+            (Role::Reader, &all, &bound),
+            (Role::GrantAdministrator, &all, &bound),
+            (Role::Collector, &producer, &bound),
+            (Role::Collector, &all, &standalone),
+        ] {
+            assert!(matches!(
+                check(role, scope, wrong),
+                NativeReply::Admission(Err(AdmissionFailure::Unauthorized))
+            ));
+        }
+        assert!(matches!(
+            check(Role::Collector, &all, &bound),
+            NativeReply::Admission(Ok(AdmissionReply::PayloadPolicyEnabled))
+        ));
+        assert!(!allows_telemetry_log(configured, &producer, &bound));
+        assert!(allows_telemetry_log(configured, &all, &bound));
+
+        for (tested, accepted) in [(&standalone, false), (&bound, true)] {
+            let grant = GrantBinding::from(&tested.grant_scope().unwrap());
+            let reply = dispatch_with_telemetry(
+                &mut store,
+                &all,
+                Role::GrantAdministrator,
+                NativeOperation::Admin {
+                    request: AdminRequest::ApproveGrant { binding: grant },
+                },
+                None,
+                None,
+                configured,
+            );
+            if accepted {
+                assert!(matches!(reply, NativeReply::Admin(Ok(_))));
+            } else {
+                assert!(matches!(
+                    reply,
+                    NativeReply::Admin(Err(AdminFailure::Unauthorized))
+                ));
+            }
+        }
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn telemetry_log_wire_records_are_bounded_and_body_kind_is_closed() {
+        let encoded_record = |text: String| {
+            serde_json::json!({
+                "event_id": format!("otlp-error-log:{}", "a".repeat(64)),
+                "payload": { "input": text },
+            })
+        };
+        let parse = |records| {
+            serde_json::from_value::<NativeOperation>(serde_json::json!({
+                "op": "admit_telemetry_logs",
+                "binding": { "source_id": "otlp.fixture", "native_source_id": null },
+                "batch": {
+                    "source_id": "otlp.fixture",
+                    "request_id": "test-request",
+                    "expected_cursor": null,
+                    "next_cursor": "next",
+                    "observations": [],
+                },
+                "records": records,
+            }))
+        };
+        assert!(matches!(
+            parse(vec![encoded_record("fixture".into())]),
+            Ok(NativeOperation::AdmitTelemetryLogs { .. })
+        ));
+        for records in [
+            vec![encoded_record("a".repeat(
+                agenturm_store::MAX_TELEMETRY_PAYLOAD_TEXT_BYTES + 1,
+            ))],
+            vec![encoded_record("a".repeat(agenturm_store::MAX_TELEMETRY_PAYLOAD_TEXT_BYTES)); 33],
+            vec![encoded_record("a".into()); agenturm_store::MAX_OTLP_BATCH_SPANS + 1],
+            vec![
+                serde_json::json!({"event_id": format!("otlp-error-log:{}", "a".repeat(64)), "payload": {"output": "must be withheld"}}),
+            ],
+        ] {
+            assert!(parse(records).is_err());
+        }
+    }
+
+    #[test]
     fn evaluation_transport_checks_collector_role_and_exact_source_allowlist() {
         let directory =
             std::env::temp_dir().join(format!("agenturm-broker-evaluation-{}", std::process::id()));
@@ -1606,6 +2199,7 @@ mod tests {
                         span_id: span_id.into(),
                         parent_span_id: None,
                         target_source_id: None,
+                        target_operation_id: None,
                         started_at_unix_ns: 1,
                         status: TraceStatus::Ok,
                     }),
@@ -1772,6 +2366,7 @@ mod tests {
                         span_id: span_id.into(),
                         parent_span_id: None,
                         target_source_id: Some(source.into()),
+                        target_operation_id: None,
                         started_at_unix_ns: 2,
                         status: TraceStatus::Ok,
                     }),

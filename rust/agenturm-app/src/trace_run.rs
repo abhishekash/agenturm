@@ -1,4 +1,10 @@
-//! Launch an already instrumented process with a local OTLP trace receiver.
+//! Run a program with managed or explicitly selected OTLP delivery.
+
+#[cfg(target_os = "linux")]
+mod endpoint;
+mod python;
+
+use python::PythonInstrumentation;
 
 use crate::trace_import::{commit, commit_payloads, parse_source_id};
 use crate::trace_receiver::{ProducerToken, TraceReceiver, parse_payload_scope};
@@ -15,15 +21,30 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "agenturm run --db <path> [--source-id otlp.<id>] [--payload-scope <standalone|harness-id>] -- <program> [args...]";
+const USAGE: &str = concat!(
+    "agenturm run --db <path> [--source-id otlp.<id>] [--payload-scope <standalone|harness-id>] ",
+    "[--instrument python [--service <name>] [--capture-content]] -- <program> [args...]\n",
+    "       agenturm run --endpoint http://<loopback-IP:port> --token-file <path> ",
+    "--instrument python [--service <name>] -- <python> <script|-m module> [args...]",
+);
 #[cfg(target_os = "linux")]
-const BROKER_USAGE: &str = "agenturm broker run --broker-config <json> --source-id otlp.<id> [--payload-scope <standalone|harness-id>] -- <program> [args...]";
+const BROKER_USAGE: &str = "agenturm broker run --broker-config <json> --source-id otlp.<id> [--payload-scope <standalone|harness-id>] [--instrument python [--service <name>] [--capture-content]] -- <program> [args...]";
 const SIGNAL_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TraceRunOptions {
-    db: PathBuf,
+    destination: TraceDestination,
     invocation: TraceInvocation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+enum TraceDestination {
+    Database(PathBuf),
+    #[cfg(target_os = "linux")]
+    Endpoint {
+        address: SocketAddr,
+        token_file: PathBuf,
+    },
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,12 +53,13 @@ pub(super) struct TraceInvocation {
     pub payload_binding: Option<TelemetryBinding>,
     program: OsString,
     arguments: Vec<OsString>,
+    instrument_python: Option<PythonInstrumentation>,
 }
 
 pub(super) fn parse_trace_run(args: &[OsString]) -> Result<TraceRunOptions, String> {
-    let (invocation, db) = parse_invocation(args, true, USAGE)?;
+    let (invocation, destination) = parse_invocation(args, true, USAGE)?;
     Ok(TraceRunOptions {
-        db: db.ok_or(USAGE)?,
+        destination: destination.ok_or(USAGE)?,
         invocation,
     })
 }
@@ -51,19 +73,24 @@ fn parse_invocation(
     args: &[OsString],
     local: bool,
     usage: &str,
-) -> Result<(TraceInvocation, Option<PathBuf>), String> {
+) -> Result<(TraceInvocation, Option<TraceDestination>), String> {
     let delimiter = args.iter().position(|arg| arg == "--").ok_or(usage)?;
     let (program, arguments) = args[delimiter + 1..].split_first().ok_or(usage)?;
     if program.is_empty() {
         return Err(usage.into());
     }
-    let (flags, extras) = args[..delimiter].as_chunks::<2>();
-    if !extras.is_empty() {
-        return Err(usage.into());
-    }
+    let mut flags = args[..delimiter].iter();
     let (mut db, mut source) = (None, None);
-    let mut payload_scope = None;
-    for [flag, value] in flags {
+    #[cfg(target_os = "linux")]
+    let (mut endpoint, mut token_file) = (None, None);
+    let (mut payload_scope, mut service) = (None, None);
+    let (mut instrument_python, mut capture_content) = (false, false);
+    while let Some(flag) = flags.next() {
+        if flag == "--capture-content" && !capture_content {
+            capture_content = true;
+            continue;
+        }
+        let value = flags.next().ok_or(usage)?;
         if value.is_empty() || value.as_encoded_bytes().starts_with(b"--") {
             return Err(usage.into());
         }
@@ -71,15 +98,53 @@ fn parse_invocation(
             Some("--db") if local && db.is_none() && value != "-" && value != ":memory:" => {
                 db = Some(PathBuf::from(value))
             }
+            #[cfg(target_os = "linux")]
+            Some("--endpoint") if local && endpoint.is_none() => {
+                endpoint = Some(endpoint::parse(value.to_str().ok_or(usage)?)?);
+            }
+            #[cfg(target_os = "linux")]
+            Some("--token-file") if local && token_file.is_none() => {
+                token_file = Some(PathBuf::from(value));
+            }
             Some("--source-id") if source.is_none() => {
                 source = Some(parse_source_id(value.to_str().ok_or(usage)?)?)
             }
             Some("--payload-scope") if payload_scope.is_none() => {
                 payload_scope = Some(value.to_str().ok_or(usage)?)
             }
+            Some("--instrument") if !instrument_python && value == "python" => {
+                instrument_python = true;
+            }
+            Some("--service") if service.is_none() => {
+                service = Some(value.to_str().ok_or(usage)?.to_owned());
+            }
             _ => return Err(usage.into()),
         }
     }
+    let destination = db.map(TraceDestination::Database);
+    #[cfg(target_os = "linux")]
+    let destination = match (endpoint, token_file) {
+        (Some(address), Some(token_file)) => {
+            if destination.is_some()
+                || source.is_some()
+                || payload_scope.is_some()
+                || capture_content
+            {
+                return Err("--endpoint cannot be combined with --db, --source-id, --payload-scope or --capture-content".into());
+            }
+            if !instrument_python {
+                return Err(
+                    "--endpoint requires --instrument python for an explicit launch session".into(),
+                );
+            }
+            Some(TraceDestination::Endpoint {
+                address,
+                token_file,
+            })
+        }
+        (None, None) => destination,
+        _ => return Err("--endpoint and --token-file are required together".into()),
+    };
     let source = match source {
         Some(source) => source,
         None if local && payload_scope.is_none() => {
@@ -90,25 +155,58 @@ fn parse_invocation(
     let payload_binding = payload_scope
         .map(|scope| parse_payload_scope(&source, scope))
         .transpose()?;
+    if !instrument_python && (service.is_some() || capture_content) {
+        return Err("--service and --capture-content require --instrument python".into());
+    }
+    if capture_content && payload_scope != Some("standalone") {
+        return Err("Automatic Python capture requires --payload-scope standalone".into());
+    }
+    if instrument_python && payload_scope.is_some_and(|scope| scope != "standalone") {
+        return Err("Automatic Python instrumentation uses a standalone launch session".into());
+    }
+    let instrument_python = instrument_python
+        .then(|| PythonInstrumentation::parse(program, arguments, service, capture_content))
+        .transpose()?;
     Ok((
         TraceInvocation {
             source,
             payload_binding,
             program: program.clone(),
             arguments: arguments.to_vec(),
+            instrument_python,
         },
-        db,
+        destination,
     ))
 }
 
 pub fn execute_trace_run(options: &TraceRunOptions) -> Result<ExitCode, String> {
+    let db = match &options.destination {
+        TraceDestination::Database(db) => db,
+        #[cfg(target_os = "linux")]
+        TraceDestination::Endpoint {
+            address,
+            token_file,
+        } => {
+            let token = ProducerToken::from_file(token_file)?;
+            endpoint::verify(*address, &token)?;
+            return supervise_program(
+                &options.invocation,
+                *address,
+                Some(&token),
+                &launch_session()?,
+                None,
+                RunSignals::new()?,
+            )
+            .map(exit_code);
+        }
+    };
     // Fail before spawning a program if the observation database cannot
     // accept traces, and release the writer before the receiver starts.
     drop(
-        agenturm_store::Store::open_collector(&options.db)
+        agenturm_store::Store::open_collector(db)
             .map_err(|error| format!("open trace history: {error}"))?,
     );
-    let db = options.db.clone();
+    let db = db.clone();
     let payload = options.invocation.payload_binding.clone();
     #[cfg(target_os = "linux")]
     let token = if payload.is_some() {
@@ -125,7 +223,7 @@ pub fn execute_trace_run(options: &TraceRunOptions) -> Result<ExitCode, String> 
     execute_with_maintenance(
         &options.invocation,
         token,
-        Some(options.db.clone()),
+        Some(db.clone()),
         move |source, rows, payloads| match &payload {
             Some(binding) => commit_payloads(&db, binding, &rows, &payloads).map(|_| ()),
             None => commit(&db, source, &rows).map(|_| ()),
@@ -159,47 +257,76 @@ fn execute_with_maintenance(
     + Send
     + 'static,
 ) -> Result<ExitCode, String> {
-    let mut signals = RunSignals::new()?;
-    let launch_time = std::time::SystemTime::now()
-        .duration_since(std::time::UNIX_EPOCH)
-        .map_err(|_| "system time is outside the launcher range")?
-        .as_nanos();
-    let launch_session = format!("launch-{}-{launch_time}", std::process::id());
+    let signals = RunSignals::new()?;
+    let launch_session = launch_session()?;
     let receiver = TraceReceiver::bind_ephemeral(
         invocation.source.clone(),
-        launch_session,
+        launch_session.clone(),
         token.clone(),
         invocation.payload_binding.clone(),
     )?
     .with_local_maintenance(maintenance_db);
-    let mut command = traced_command(invocation, receiver.address(), token.as_ref());
-    let isolated = configure_process_group(&mut command);
+    let address = receiver.address();
     let receiver = ReceiverTask::start(receiver, commit)?;
-    let mut child = command
-        .spawn()
-        .map_err(|error| format!("launch program: {error}"))?;
-
-    let status = wait_for_child(&mut child, isolated, &receiver, &mut signals);
-    if status.is_err() {
-        force_stop(&mut child, isolated);
-        let _ = child.wait();
-    }
+    let status = supervise_program(
+        invocation,
+        address,
+        token.as_ref(),
+        &launch_session,
+        Some(&receiver),
+        signals,
+    );
     let receiver_result = receiver.finish();
     let status = status?;
     receiver_result?;
     Ok(exit_code(status))
 }
 
+fn launch_session() -> Result<String, String> {
+    let launch_time = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map_err(|_| "system time is outside the launcher range")?
+        .as_nanos();
+    Ok(format!("launch-{}-{launch_time}", std::process::id()))
+}
+
+fn supervise_program(
+    invocation: &TraceInvocation,
+    address: SocketAddr,
+    token: Option<&ProducerToken>,
+    launch_session: &str,
+    receiver: Option<&ReceiverTask>,
+    mut signals: RunSignals,
+) -> Result<ExitStatus, String> {
+    let mut command = traced_command(invocation, address, token, launch_session);
+    let isolated = configure_process_group(&mut command);
+    let mut child = command
+        .spawn()
+        .map_err(|error| format!("launch program: {error}"))?;
+
+    let status = wait_for_child(&mut child, isolated, receiver, &mut signals);
+    if status.is_err() {
+        force_stop(&mut child, isolated);
+        let _ = child.wait();
+    }
+    status
+}
+
 fn traced_command(
     invocation: &TraceInvocation,
     address: SocketAddr,
     token: Option<&ProducerToken>,
+    launch_session: &str,
 ) -> Command {
     let base = format!("http://{address}");
     let endpoint = format!("{base}/v1/traces");
     let mut child = Command::new(&invocation.program);
+    if let Some(instrumentation) = &invocation.instrument_python {
+        instrumentation.configure(&mut child, &invocation.arguments, launch_session);
+    } else {
+        child.args(&invocation.arguments);
+    }
     child
-        .args(&invocation.arguments)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -214,7 +341,7 @@ fn traced_command(
         }
     }
     child
-        .env("OTEL_EXPORTER_OTLP_ENDPOINT", base)
+        .env("OTEL_EXPORTER_OTLP_ENDPOINT", &base)
         .env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", endpoint)
         .env("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
         .env("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/protobuf")
@@ -222,17 +349,32 @@ fn traced_command(
         .env("OTEL_EXPORTER_OTLP_TRACES_COMPRESSION", "none")
         .env("OTEL_SDK_DISABLED", "false")
         .env("OTEL_TRACES_EXPORTER", "otlp")
-        .env("OTEL_METRICS_EXPORTER", "none")
-        .env("OTEL_LOGS_EXPORTER", "none");
-    let no_proxy = loopback_exclusion();
+        .env("OTEL_METRICS_EXPORTER", "otlp")
+        .env(
+            "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
+            format!("{base}/v1/metrics"),
+        )
+        .env("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "http/protobuf")
+        .env("OTEL_EXPORTER_OTLP_METRICS_COMPRESSION", "none")
+        .env("OTEL_LOGS_EXPORTER", "otlp")
+        .env(
+            "OTEL_EXPORTER_OTLP_LOGS_ENDPOINT",
+            format!("{base}/v1/logs"),
+        )
+        .env("OTEL_EXPORTER_OTLP_LOGS_PROTOCOL", "http/protobuf")
+        .env("OTEL_EXPORTER_OTLP_LOGS_COMPRESSION", "none");
+    let no_proxy = loopback_exclusion(address.ip());
     child.env("NO_PROXY", &no_proxy).env("no_proxy", &no_proxy);
     if let Some(token) = token {
-        child.env("OTEL_EXPORTER_OTLP_TRACES_HEADERS", token.otel_header());
+        child
+            .env("OTEL_EXPORTER_OTLP_TRACES_HEADERS", token.otel_header())
+            .env("OTEL_EXPORTER_OTLP_METRICS_HEADERS", token.otel_header())
+            .env("OTEL_EXPORTER_OTLP_LOGS_HEADERS", token.otel_header());
     }
     child
 }
 
-fn loopback_exclusion() -> OsString {
+fn loopback_exclusion(address: std::net::IpAddr) -> OsString {
     let mut values = OsString::new();
     for name in ["NO_PROXY", "no_proxy"] {
         if let Some(value) = std::env::var_os(name).filter(|value| !value.is_empty()) {
@@ -241,6 +383,11 @@ fn loopback_exclusion() -> OsString {
         }
     }
     values.push("127.0.0.1,localhost,::1");
+    let literal = address.to_string();
+    if !matches!(literal.as_str(), "127.0.0.1" | "::1") {
+        values.push(",");
+        values.push(literal);
+    }
     values
 }
 
@@ -267,7 +414,7 @@ fn configure_process_group(_: &mut Command) -> bool {
 fn wait_for_child(
     child: &mut Child,
     isolated: bool,
-    receiver: &ReceiverTask,
+    receiver: Option<&ReceiverTask>,
     signals: &mut RunSignals,
 ) -> Result<ExitStatus, String> {
     let mut grace = None;
@@ -275,7 +422,7 @@ fn wait_for_child(
         if let Some(status) = child.try_wait().map_err(|error| error.to_string())? {
             return Ok(status);
         }
-        if receiver.finished() {
+        if receiver.is_some_and(ReceiverTask::finished) {
             return Err("trace receiver stopped while program was running".into());
         }
         if grace.is_none()

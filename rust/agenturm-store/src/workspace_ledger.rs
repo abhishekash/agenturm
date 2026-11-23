@@ -1,7 +1,17 @@
 //! Explicit, local cockpit tasks and cross-session handoffs.
 
 mod continuity;
-pub use continuity::{ApprovedTaskDraft, TaskDraftApproval, TaskSourceProof};
+mod desktop_attention;
+mod workflow_notifications;
+pub use continuity::{
+    ApprovedTaskDraft, ApprovedTaskSource, LegacyActivityId, LegacyTaskOccurrence,
+    LegacyTaskOccurrenceAuthority, LegacyTaskScope, LegacyTaskSourceProof, TaskDraftApproval,
+    TaskSourceProof,
+};
+pub use desktop_attention::{DesktopAttentionRequest, LegacyDesktopAttentionRequest};
+pub use workflow_notifications::{
+    WorkflowAlertCandidate, WorkflowDeliveryAttempt, WorkflowNotificationRead,
+};
 
 use crate::{MAX_EVENT_ID_BYTES, MAX_SESSION_KEY_BYTES, Store, StoreError, validate_identifier};
 use agenturm_kernel::{ExtensionId, ReadSnapshot};
@@ -305,6 +315,21 @@ impl WorkspaceLedger {
 
     pub(super) fn open_for_backup(&self) -> Result<Option<Connection>> {
         self.connect(false)
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn task_archive_identity(&self) -> Result<Option<(u64, u64)>> {
+        use std::os::unix::fs::MetadataExt;
+
+        self.verify_history()?;
+        match fs::symlink_metadata(&self.path) {
+            Ok(file) if file.is_file() && file.nlink() == 1 && file.mode() & 0o077 == 0 => {
+                Ok(Some((file.dev(), file.ino())))
+            }
+            Ok(_) => Err(WorkspaceError::UnrecognizedLedger),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub fn open(history_path: impl AsRef<Path>) -> Result<Self> {
@@ -1378,6 +1403,13 @@ fn contains_event_in(
     revision: u32,
 ) -> Result<bool> {
     validate_request_key(anchor, event_id)?;
+    if crate::native_attention::is_attention_event_id(event_id) {
+        return crate::native_attention::contains_event_in(
+            connection, anchor, event_id, revision, None,
+        )
+        .map_err(WorkspaceError::History);
+    }
+
     Ok(connection.query_row(
         "SELECT EXISTS(SELECT 1 FROM agenturm_observations
             WHERE source_id = ?1 AND session_id = ?2 AND worker_id IS ?3 AND turn_id IS ?4

@@ -48,6 +48,7 @@ pub(crate) struct DiscoveryCoverage {
     pub(crate) open_selected: usize,
     pub(crate) open_found: usize,
     pub(crate) excluded_reviews: usize,
+    pub(crate) selected_reviews: usize,
     pub(crate) scan_partial: bool,
     pub(crate) handles_partial: bool,
 }
@@ -71,7 +72,10 @@ impl DiscoveryCoverage {
             ));
         }
         if self.excluded_reviews > 0 {
-            text.push_str(&format!(" · {} reviews excluded", self.excluded_reviews));
+            text.push_str(&format!(
+                " · {}/{} internal reviews captured separately",
+                self.selected_reviews, self.excluded_reviews
+            ));
         }
         if self.scan_partial {
             text.push_str(" · file scan partial");
@@ -178,6 +182,10 @@ impl FollowDiscovery {
         ]
         .into_iter()
         .filter_map(|(kind, plugin, path, shape)| Some((kind, plugin, path?, shape)))
+    }
+
+    pub(crate) fn claude_root(&self) -> Option<&Path> {
+        self.claude_root.as_deref()
     }
 
     pub(crate) fn codex_home(&self) -> Option<PathBuf> {
@@ -321,6 +329,28 @@ impl FollowDiscovery {
         coverage.open_selected = sources.len();
         allocate(&mut catch_up, capacity, &mut sources)?;
         coverage.selected = sources.len();
+        // Reserved built-in review slots never displace an ordinary harness.
+        let mut review_paths = next_reviews
+            .iter()
+            .filter(|(_, stamp)| stamp.review)
+            .collect::<Vec<_>>();
+        review_paths.sort_by_key(|(path, stamp)| {
+            (
+                schedule.selected.get(*path).copied().unwrap_or(0),
+                Reverse(stamp.modified),
+                (*path).clone(),
+            )
+        });
+        for (path, _) in review_paths.into_iter().take(2) {
+            let mut source = source_entry("codex", agenturm_runtime::CODEX_PLUGIN_ID, path)?;
+            source.source_id = format!(
+                "review.codex.{:x}",
+                Sha256::digest(config_path(path)?.as_bytes())
+            );
+            available.insert(path.clone());
+            sources.push(source);
+            coverage.selected_reviews += 1;
+        }
         schedule.epoch = schedule.epoch.saturating_add(1);
         schedule.selected.retain(|path, _| available.contains(path));
         for source in &sources {
@@ -950,7 +980,7 @@ mod tests {
             r#"{"type":"session_meta","payload":{"source":{"subagent":{"other":"guardian"}}}}"#,
         );
         let mut open_files = idle.clone();
-        open_files.push(review);
+        open_files.push(review.clone());
         let open = open_transcripts::OpenTranscripts::from_files("codex", &open_files);
         let selection = FollowDiscovery {
             codex_root: codex.clone(),
@@ -973,6 +1003,8 @@ mod tests {
             assert_eq!(coverage.open_selected, 7);
             assert_eq!(coverage.open_found, 7);
             assert_eq!(coverage.excluded_reviews, 1);
+            assert_eq!(coverage.selected_reviews, 1);
+            assert!(paths.contains(&review));
             assert_eq!(coverage.selected, 10);
             assert!(coverage.notice().contains("3 queued"));
             visited.extend(paths);
@@ -988,7 +1020,10 @@ mod tests {
         );
         let history_batches = (0..2)
             .flat_map(|_| selection.select(&mut scheduler, &open, 8).unwrap().0)
-            .filter(|source| !idle.contains(&source.source_root))
+            .filter(|source| {
+                !idle.contains(&source.source_root)
+                    && !source.source_id.starts_with("review.codex.")
+            })
             .map(|source| source.source_root)
             .collect::<Vec<_>>();
         assert_eq!(history_batches.len(), 2);
@@ -1006,7 +1041,12 @@ mod tests {
             assert_eq!(coverage.open_selected, 4);
             assert_eq!(coverage.selected, 4);
             assert!(coverage.notice().contains("4/8 open handles"));
-            seen_open.extend(batch.into_iter().map(|source| source.source_root));
+            seen_open.extend(
+                batch
+                    .into_iter()
+                    .filter(|source| !source.source_id.starts_with("review.codex."))
+                    .map(|source| source.source_root),
+            );
         }
         assert_eq!(seen_open.len(), 8);
         assert!(seen_open.contains(&newcomer));

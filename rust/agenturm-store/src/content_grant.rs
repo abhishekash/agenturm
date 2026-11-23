@@ -31,6 +31,8 @@ pub enum ContentKind {
     TelemetrySpanPayload,
     #[serde(rename = "eval.result_detail")]
     EvalResultDetail,
+    #[serde(rename = "telemetry.log_text")]
+    TelemetryLogText,
 }
 
 impl ContentKind {
@@ -46,6 +48,7 @@ impl ContentKind {
             Self::CodexCommandDetail => "codex.command_detail",
             Self::TelemetrySpanPayload => "telemetry.span_payload",
             Self::EvalResultDetail => "eval.result_detail",
+            Self::TelemetryLogText => "telemetry.log_text",
         }
     }
 }
@@ -167,8 +170,11 @@ pub(super) fn create_schema(connection: &Connection, version: i64) -> Result<()>
         16 => {
             "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'codex.command_detail', 'telemetry.span_payload')"
         }
-        17 => {
+        17..=19 => {
             "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail')"
+        }
+        20 => {
+            "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')"
         }
         _ => return Err(StoreError::UnsupportedSchema(version)),
     };

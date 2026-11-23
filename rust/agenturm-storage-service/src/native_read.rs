@@ -1,12 +1,18 @@
 //! Scoped native history reads for an authenticated broker client.
 
 use agenturm_kernel::ReadSnapshot;
+use agenturm_kernel::retained_history::{
+    HistoryProjection, MetricHistoryPage, MetricHistoryQuery, UsageHistoryPage, UsageHistoryQuery,
+};
 use agenturm_kernel::{
     ExtensionId, MAX_DURABLE_SNAPSHOT_OBSERVATIONS, ObservationPage, ObservationQuery,
 };
+use agenturm_store::native_attention::{
+    ExecutionClockPage, ExecutionClockQuery, NativeAttentionPage, NativeAttentionQuery,
+};
 use agenturm_store::{
-    EvalInventory, EvalInventoryQuery, ResolvedTraceReview, SessionPage, SessionQuery, Store,
-    StoreError, TraceReviewQuery,
+    EvalInventory, EvalInventoryQuery, McpTraceQuery, ResolvedTraceReview, SessionPage,
+    SessionQuery, StandaloneTraceQuery, Store, StoreError, TraceReviewQuery,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -57,6 +63,11 @@ pub enum HistorySelection<'a> {
         turn_id: &'a str,
         worker_id: Option<&'a str>,
     },
+    Projected {
+        projection: &'a HistoryProjection,
+        turn_id: Option<&'a str>,
+        worker_filter: Option<Option<&'a str>>,
+    },
 }
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -106,6 +117,17 @@ pub fn query_history(
         HistorySelection::LinkedTurnTraces { turn_id, worker_id } => {
             store.query_linked_turn_traces_from_sources(&query, turn_id, worker_id, allowed_sources)
         }
+        HistorySelection::Projected {
+            projection,
+            turn_id,
+            worker_filter,
+        } => store.query_projected_history(
+            &query,
+            projection,
+            turn_id,
+            worker_filter,
+            Some(allowed_sources),
+        ),
     }
     .map_err(failure)
 }
@@ -152,6 +174,117 @@ pub fn review_trace_turn(
     };
     store
         .review_trace_turn(&query, Some(allowed_sources))
+        .map_err(failure)
+}
+
+pub fn query_standalone_trace(
+    store: &Store,
+    allowed_sources: &BTreeSet<ExtensionId>,
+    mut query: StandaloneTraceQuery,
+) -> Result<ObservationPage, ReadFailure> {
+    authorize(allowed_sources, Some(query.source_id.as_str()))?;
+    authorize(
+        allowed_sources,
+        query
+            .before
+            .as_ref()
+            .map(|cursor| cursor.harness_id.as_str()),
+    )?;
+    if !(1..=MAX_DURABLE_SNAPSHOT_OBSERVATIONS).contains(&query.limit) {
+        return Err(ReadFailure::InvalidRequest);
+    }
+    query.limit = query.limit.min(MAX_NATIVE_HISTORY_ROWS);
+    store
+        .query_standalone_trace(&query, Some(allowed_sources))
+        .map_err(failure)
+}
+
+pub fn query_mcp_traces(
+    store: &Store,
+    allowed_sources: &BTreeSet<ExtensionId>,
+    mut query: McpTraceQuery,
+) -> Result<Option<ObservationPage>, ReadFailure> {
+    authorize(allowed_sources, Some(query.source_id.as_str()))?;
+    authorize(
+        allowed_sources,
+        query
+            .before
+            .as_ref()
+            .map(|cursor| cursor.harness_id.as_str()),
+    )?;
+    if !(1..=MAX_DURABLE_SNAPSHOT_OBSERVATIONS).contains(&query.limit) {
+        return Err(ReadFailure::InvalidRequest);
+    }
+    query.limit = query.limit.min(MAX_NATIVE_HISTORY_ROWS);
+    store
+        .query_mcp_traces(&query, Some(allowed_sources))
+        .map_err(failure)
+}
+
+pub fn query_metric_history(
+    store: &Store,
+    allowed_sources: &BTreeSet<ExtensionId>,
+    query: &MetricHistoryQuery,
+) -> Result<MetricHistoryPage, ReadFailure> {
+    authorize(allowed_sources, query.source_id().map(ExtensionId::as_str))?;
+    match query {
+        MetricHistoryQuery::Series {
+            after: Some(cursor),
+            ..
+        } => {
+            authorize(allowed_sources, Some(cursor.series.source_id.as_str()))?;
+        }
+        MetricHistoryQuery::Points {
+            before: Some(cursor),
+            ..
+        } => {
+            authorize(allowed_sources, Some(cursor.series.source_id.as_str()))?;
+        }
+        _ => {}
+    }
+    store
+        .query_metric_history(query, Some(allowed_sources))
+        .map_err(failure)
+}
+
+pub fn query_native_attention(
+    store: &Store,
+    allowed_sources: &BTreeSet<ExtensionId>,
+    query: &NativeAttentionQuery,
+) -> Result<NativeAttentionPage, ReadFailure> {
+    authorize(
+        allowed_sources,
+        query.source_id.as_ref().map(ExtensionId::as_str),
+    )?;
+    store
+        .query_native_attention(query, Some(allowed_sources))
+        .map_err(failure)
+}
+
+pub fn query_execution_clocks(
+    store: &Store,
+    allowed_sources: &BTreeSet<ExtensionId>,
+    query: &ExecutionClockQuery,
+) -> Result<ExecutionClockPage, ReadFailure> {
+    for scope in &query.scopes {
+        authorize(allowed_sources, Some(scope.source_id.as_str()))?;
+    }
+    store
+        .query_execution_clocks(query, Some(allowed_sources))
+        .map_err(failure)
+}
+
+pub fn query_usage_history(
+    store: &Store,
+    allowed_sources: &BTreeSet<ExtensionId>,
+    query: &UsageHistoryQuery,
+) -> Result<UsageHistoryPage, ReadFailure> {
+    authorize(
+        allowed_sources,
+        query.source_id.as_ref().map(ExtensionId::as_str),
+    )?;
+    store
+        .query_usage_history(query, Some(allowed_sources))
         .map_err(failure)
 }
 

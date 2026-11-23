@@ -92,10 +92,12 @@ sidecar for the version being installed.</p>
 <p>The 0.3.8 tag run passed archive qualification and the offline installer check on
 both native Linux architectures. The published assets match the digests above.
 <a href="https://github.com/abhishekash/agenturm/actions/runs/45121070134">Native tag qualification</a></p>
-<h3>Qualified 0.3.9 candidate</h3>
-<p>The candidate has passed local Linux x86-64 qualification and native x86-64 and
-ARM64 CI. It is not a published release. Build it from the current source, or
-use the matching checksum-verified CI candidate archive, then install locally:</p>
+<h3>Rust 0.3.9 development candidate</h3>
+<p>The earlier 0.3.9 source passed local Linux x86-64 qualification and native
+x86-64/ARM64 CI. The final migration changes are undergoing their own archive
+qualification in PR #379; those earlier checks do not certify this new source.
+This is not a published release. Build the source you intend to test, or use
+its matching checksum-verified CI archive, then install locally:</p>
 <pre><code class="language-sh">bash scripts/build-rust-linux-bundle.sh ./dist
 archive=&quot;./dist/agenturm-0.3.9-linux-$(uname -m).tar.gz&quot;
 agenturm=$(bash scripts/install-rust.sh install --version 0.3.9 \
@@ -200,6 +202,26 @@ opens a byte-verified payload where an MCP approval is active. Use
 <code>content grant --kind codex.mcp_payload</code> with the history path, source
 configuration and source ID to establish it. Use
 <code>content revoke --kind codex.mcp_payload</code> to remove that approval.</p>
+<p>In MCP, <code>/</code> searches retained calls before pagination at the selected history
+snapshot. It matches server, tool, method and result, treating <code>%</code> and <code>_</code>
+literally. <code>f</code> chooses a server on the loaded page, and <code>i</code> switches between
+calls and configured inventory. Enter on an eligible call opens its exact
+linked traces; Escape restores the same call. A configured server is not a
+claim that it is currently connected.</p>
+<p>In Metrics, <code>/</code> filters the loaded instrument page by name, service, kind,
+unit, scope or source; the filter continues across pages. Choose a series to
+browse points and exact retained exemplars. Usage displays seven UTC days,
+keeps currencies separate, and distinguishes explicit zero from unreported
+counters. Its coverage labels distinguish native reports, representative
+traces and activity logs.</p>
+<p>In Findings, <code>/</code> filters loaded groups and occurrences. Enter opens a group,
+then an exact occurrence. Where an exact retained failed Codex command has a
+source route, <code>s</code> requests its protected evidence under the current grant;
+unsupported bodies stay unavailable. Source text never enters loaded-view
+copy or export. In live Host (<code>H</code>), <code>/</code> filters same-user runtime, PID and
+working-directory basename. Enter opens process details and <code>R</code> refreshes
+while retaining boot/PID/start identity. <code>5</code> opens recorded Host history.
+Escape first clears an active filter, then returns to the prior view.</p>
 <p>From Agents or a session or turn detail, press <code>b</code> to open saved tasks.
 Use <code>n</code> to create a task linked to the selection, <code>r</code> to see its linked
 runs, and <code>h</code> to create a handoff using the current selection. Open the
@@ -211,7 +233,27 @@ copy of the loaded metadata and <code>x</code> exports that metadata to a new pr
 Markdown/HTML/JSON directory. Private modal bodies stay outside these exports.</p>
 <p>From Agents, press <code>w</code> to see recorded requests. Use <code>s</code> to mark an item
 seen and <code>l</code> to focus the matching tmux pane when Agenturm verifies the
-route. Respond in the harness terminal.</p>
+route. <code>c</code> verifies the selected exact pending main-session request and previews
+and copies <code>codex resume …</code> or <code>claude --resume …</code> for supported sources.
+It never launches the command; Escape restores the request selection. Respond
+in the harness terminal.</p>
+<p>Press <code>S</code> in Workflow to open notification settings. Enter toggles desktop
+notifications; Tab selects the task token, USD and elapsed-minute thresholds;
+Ctrl+S saves them. Zero disables a threshold. <code>z</code> snoozes delivery for ten
+minutes or ends the snooze. Tab from the request list switches to typed
+incidents. A Failed or Unavailable delivery can be retried with <code>T</code>; retries
+require the same current request or threshold crossing and exact delivery
+attempt. Claimed and uncertain attempts are not retried automatically.</p>
+<p>Settings start with desktop notifications unset, leaving the explicit watch
+configuration in control. Saving Off overrides that configuration. New or
+already-above-threshold evidence establishes a quiet baseline. Token and cost
+alerts require complete native turn evidence and a fresh below-to-above
+crossing; missing values remain unknown. Elapsed alerts require an
+authenticated current execution-start receipt. Completion is quiet. Cockpit
+delivery is checked while fresh views load; paused or stale history does not
+replay notifications. Messages contain only a generic count, without task
+names, commands or private bodies. These controls are implemented in the
+unpublished candidate and remain subject to final package qualification.</p>
 <p>In Review, press <code>n</code> for saved decision notes. In the decision list, press
 <code>e</code> to write a note against the selected evidence version and Ctrl+S to save it.
 Review shows recorded Codex edit counts. Press <code>e</code> from Review or turn
@@ -256,6 +298,30 @@ Use <code>--format text</code>, <code>--format markdown</code>, or <code>--forma
 stdout output. Omitting <code>--format</code> preserves the history query JSON on
 stdout. Review receipts contain retained observation metadata. Use the
 content-grant commands separately to inspect protected bodies.</p>
+<h3>Read an explicit Python 0.2.8 receiver</h3>
+<p>An already-running authenticated Python receiver is selected explicitly;
+Agenturm's Rust client does not launch Python. Use a literal loopback endpoint
+and the receiver's token file. Review rechecks the exact receiver, scope and
+capture policy around bounded evidence reads and before output:</p>
+<pre><code class="language-sh">&quot;$agenturm&quot; review --receiver-protocol python-v0.2.8 \
+  --endpoint &quot;$endpoint&quot; --token-file &quot;$token_file&quot; --service &quot;$service&quot; \
+  --session-id &quot;$session&quot; --trace-id &quot;$trace&quot; --pages 5 --format json \
+  -o ./captured-review.json
+&quot;$agenturm&quot; investigate command 'cargo test' --failed \
+  --receiver-protocol python-v0.2.8 --endpoint &quot;$endpoint&quot; \
+  --token-file &quot;$token_file&quot; --service &quot;$service&quot; --pages 5 --format json
+</code></pre>
+<p>Use <code>--turn-of-trace</code> instead of <code>--trace-id</code> to select the recorded whole turn.
+Review exports use new private destinations and include Markdown and HTML.
+Investigation cursors are opaque; keep the query, receiver and scope unchanged
+when continuing a page. Source references identify one exact occurrence and
+are revalidated on reveal. Capture can be metadata-only, in which case private
+text is unavailable. In the explicit Python receiver cockpit, choose an exact trace and press
+Ctrl+R for run Review or Ctrl+T for an explicitly recorded whole turn. The
+private viewer has a fixed lifetime and no copy/export action; Escape restores
+the exact trace. Receiver authorization is polled with bounded checks rather
+than a server-held display lock. Private output backpressure and turn-member
+changes are part of candidate qualification.</p>
 <h2>Edit tasks from the CLI</h2>
 <p>Set <code>db</code> to an existing Rust history database and get a task's ID and
 revision from <code>task list</code> or <code>task show</code>. Pass <code>--expected-revision</code> when
@@ -373,7 +439,69 @@ loopback addresses to the proxy exclusions. Configure scope on the
 producer as described above. The launcher is for existing instrumentation
 and SDKs that honor these settings.
 <a href="https://opentelemetry.io/docs/specs/otel/protocol/exporter/">OpenTelemetry exporter configuration</a></p>
+<h3>Follow a span JSONL file or instrument Python</h3>
+<pre><code class="language-sh">&quot;$agenturm&quot; watch-jsonl --file ./spans.jsonl --db &quot;$db&quot; \
+  --source-id otlp.local --session-id &quot;$session&quot; --interval-ms 1000
+&quot;$agenturm&quot; run --db &quot;$db&quot; --source-id otlp.local \
+  --instrument python --service my-app -- python app.py
+</code></pre>
+<p>The follower checkpoints complete lines and committed prefixes; restart resumes
+without publishing the same batch twice. Rotation and truncation begin a new
+verified generation. Python instrumentation requires a compatible Agenturm SDK
+and its selected integrations already installed in that interpreter. The Rust
+launcher installs no dependencies and starts no Python receiver. Captured text
+requires explicit <code>--capture-content</code> and the corresponding payload scope;
+metadata is the default.</p>
+<h3>Inspect reported error logs</h3>
+<p>The candidate accepts ordinary OTLP error/fatal records (severity 17–24) over
+JSON or protobuf. Metadata records source, reported time, exact supplied scope
+and genuine trace/span correlation. Missing session identity stays source-scoped.
+Bodies, event labels and arbitrary attributes stay outside public history.
+Existing <code>agent.activity</code> records retain their separate usage cohort.</p>
+<p>To retain bounded scalar log text, explicitly enable it on the authenticated
+receiver and separately grant display:</p>
+<pre><code class="language-sh">&quot;$agenturm&quot; serve-traces --listen 127.0.0.1:4318 --db &quot;$db&quot; \
+  --source-id otlp.local --payload-scope standalone --token-file producer.token \
+  --capture-log-text
+# After stopping a local writer, or through the broker's maintenance grant:
+&quot;$agenturm&quot; log-text grant --db &quot;$db&quot; --source-id otlp.local --payload-scope standalone
+&quot;$agenturm&quot; log-text snapshot --db &quot;$db&quot; --source-id otlp.local
+</code></pre>
+<p>A source-only log needs no invented session flag. In Findings, inspect an exact
+error-log occurrence and press <code>s</code> to open producer-captured text under its
+current log grant. Escape redacts it and returns to that occurrence. A span
+payload grant does not authorize log text. <code>log-text revoke</code> uses the same
+binding flags as grant. <code>binding</code> prints the distinct <code>telemetry.log_text</code>
+fingerprint for broker maintenance configuration; broker <code>log-text snapshot</code>
+and <code>preview --selection</code> use the authenticated reader. Private bodies stay
+outside ordinary query, copy and export.</p>
+<p>Text must be a validated scalar of at most 2 KiB; a batch carries at most 64 KiB.
+No text is reconstructed from older metadata-only receipts. When a producer
+omits its record ID, public metadata forms the replay identity. Identical
+metadata coalesces, and different captured bodies under that identity conflict;
+provide a unique record ID to distinguish those records.</p>
+<p>The log grant requires schema 20. A writer upgrades supported existing histories;
+read-only use does not upgrade them. Schema 19 span grants and receipts remain
+valid. Older executables refuse schema 20, so retain a pre-upgrade backup for
+rollback. Restore requires fresh private-content approval as before.</p>
+<h3>Send a Python launch to an existing receiver</h3>
+<pre><code class="language-sh">&quot;$agenturm&quot; run --endpoint http://127.0.0.1:4318 \
+  --token-file producer.token --instrument python --service my-app -- python app.py
+</code></pre>
+<p>This candidate route uses an already running authenticated native receiver or
+an explicit loopback SSH tunnel. The receiver owns the source identity; the
+launcher assigns a fresh standalone session and creates no local database or
+listener. It validates the owner-only producer token and authenticated receiver
+before starting the program. The receiver remains running when the program
+exits or is interrupted. Choose either this destination or <code>--db</code>. Content
+capture and source overrides are unavailable on the existing-receiver route.</p>
 <h2>Use the workspace from scripts</h2>
+<p>Use <code>attention status --db &lt;path&gt; --workflow</code> or
+<code>attention watch --db &lt;path&gt; --once --workflow</code> for a read-only JSON snapshot
+of current typed incidents, saved notification settings and matching delivery
+receipts. This report never starts a notifier or changes stored state. Exact
+64-bit values are decimal strings. <code>delivery_scope</code> identifies current matched
+evidence; absent history does not acquire an invented receipt scope.</p>
 <p><code>agenturm task --help</code> lists the native task and handoff commands. They use
 the same task records as the cockpit. Run <code>agenturm attention status --db &lt;path&gt;</code> for one pending-request snapshot or <code>agenturm attention watch --db &lt;path&gt;</code> for changes.</p>
 <p>Explicitly enable installed capability executables in

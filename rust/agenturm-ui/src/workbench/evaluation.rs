@@ -79,7 +79,7 @@ pub struct EvaluationRow {
     pub private_detail: Option<EvaluationDetailEntry>,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EvaluationDetailEntry {
     pub source: ExtensionId,
     pub trace_id: String,

@@ -30,15 +30,19 @@ pub(super) const USAGE: &str = concat!(
     "       agenturm task decide <task-id> --db <history> --kind <accepted|rejected> --text <text>|--text-file <path> [--rationale <text>] [--scope <text>] [--supersedes <decision-id>] [--source-file <draft-json> --config <sources>] [--expected-revision <n>]\n",
     "       agenturm task decisions <task-id> --db <history>\n",
     "       agenturm task draft --db <history> --config <sources> --source-id <id> --session-id <id> --turn-id <id> [--worker-id <id>] --event-id <id> --revision <n> [--task-id <id>] [--output <new-json>]\n",
+    "       agenturm task draft --db <history> --config <sources> --review-file <review-json> [--event-id <id> [--revision <n>]] [--task-id <id>] [--output <new-json>]\n",
     "       agenturm task approve-draft <draft-json> --db <history> --config <sources> [--title <title>] [--workspace <directory>] [--expected-revision <n>]\n",
     "       agenturm task continuity <task-id> --db <history> [--config <sources> --approval-id <id>]\n",
     "       agenturm task handoff <task-id> --db <history> [--format <markdown|html|json>] [--output <new-directory>] [--include-decision-history] [--include-diff]\n",
     "       agenturm task <link|unlink> <task-id> --db <history> --source-id <id> --session-id <id> [--turn-id <id> [--worker-id <id>]] [--expected-revision <n>]\n",
     "       agenturm task handoffs --db <history> [--limit <1..200>] [--before <id>]\n",
     "       agenturm task export <handoff-id> --db <history>\n",
+    "       agenturm task backup --db <history> --destination <new-sqlite-file>\n",
+    "       Python-backed task draft, approve-draft and continuity --approval-id use --receiver-protocol python-v0.2.8 --endpoint <loopback-http-url> --token-file <path> with --db.\n",
     "\nBrief fields are intent, acceptance_criteria, constraints, open_questions and next_action. Use hyphens in flags.\n",
     "Create is an alias for add. Results are JSON except task handoff, which defaults to Markdown.\n",
     "Handoff --output and export write private Markdown and HTML pairs.\n",
+    "Task backup writes saved tasks, handoffs and their attached workbench data as a private SQLite file.\n",
 );
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -48,6 +52,9 @@ pub struct TaskOptions {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum TaskAction {
+    #[cfg(target_os = "linux")]
+    Legacy(Box<continuity::legacy::Options>),
+    Backup(PathBuf),
     List {
         limit: usize,
         before: Option<u64>,
@@ -198,7 +205,25 @@ pub(super) fn parse(args: &[String]) -> Result<TaskOptions, String> {
 
     let db = required_flag(&mut flags, "--db")?.into();
     let json_output = flags.remove("--json").is_some();
+    if ["--endpoint", "--receiver-protocol", "--token-file"]
+        .iter()
+        .any(|flag| flags.contains_key(flag))
+    {
+        #[cfg(target_os = "linux")]
+        {
+            let action = continuity::legacy::parse(verb, id, draft_file, &mut flags)?;
+            if !flags.is_empty() {
+                return Err("Unexpected option for the selected Python-backed task action".into());
+            }
+            return Ok(TaskOptions {
+                request: Some((db, TaskAction::Legacy(Box::new(action)))),
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err("Python-backed task sources require Linux".into());
+    }
     let action = match (verb.as_str(), id) {
+        ("backup", None) => TaskAction::Backup(required_flag(&mut flags, "--destination")?.into()),
         (verb @ ("list" | "handoffs"), None) => {
             let limit = flags
                 .remove("--limit")
@@ -308,19 +333,7 @@ pub(super) fn parse(args: &[String]) -> Result<TaskOptions, String> {
         }
         ("decisions", Some(id)) => TaskAction::Decisions(id),
         ("draft", None) => TaskAction::Draft(continuity::DraftRequest {
-            source: continuity::ExactSource {
-                anchor: WorkspaceAnchor {
-                    harness_id: ExtensionId::parse(required_flag(&mut flags, "--source-id")?)
-                        .map_err(string)?,
-                    session_id: required_flag(&mut flags, "--session-id")?.into(),
-                    turn_id: Some(required_flag(&mut flags, "--turn-id")?.into()),
-                    worker_id: flags.remove("--worker-id").map(str::to_owned),
-                },
-                event_id: required_flag(&mut flags, "--event-id")?.into(),
-                revision: required_flag(&mut flags, "--revision")?
-                    .parse()
-                    .map_err(|_| "--revision must be an unsigned 32-bit integer")?,
-            },
+            source: draft_source(&mut flags)?,
             config: flags.remove("--config").map(PathBuf::from),
             task_id: flags.remove("--task-id").map(parse_id).transpose()?,
             output: flags.remove("--output").map(PathBuf::from),
@@ -392,6 +405,48 @@ fn required_flag<'a>(flags: &mut BTreeMap<&str, &'a str>, name: &str) -> Result<
         .remove(name)
         .filter(|value| !value.is_empty())
         .ok_or_else(|| format!("Supply {name}"))
+}
+
+fn draft_source(flags: &mut BTreeMap<&str, &str>) -> Result<continuity::DraftSource, String> {
+    let revision = |value: &str| {
+        value
+            .parse::<u32>()
+            .map_err(|_| "--revision must be an unsigned 32-bit integer".to_owned())
+    };
+    if let Some(path) = flags.remove("--review-file") {
+        if path.is_empty()
+            || ["--source-id", "--session-id", "--turn-id", "--worker-id"]
+                .iter()
+                .any(|flag| flags.contains_key(flag))
+        {
+            return Err(
+                "Use one --review-file path or explicit source, session, and turn flags".into(),
+            );
+        }
+        let event_id = flags.remove("--event-id").map(str::to_owned);
+        let revision = flags.remove("--revision").map(revision).transpose()?;
+        if event_id.as_ref().is_some_and(String::is_empty)
+            || (revision.is_some() && event_id.is_none())
+        {
+            return Err("Supply a nonempty --event-id when specifying --revision".into());
+        }
+        return Ok(continuity::DraftSource::Review(continuity::ReviewFile {
+            file: path.into(),
+            event_id,
+            revision,
+        }));
+    }
+    Ok(continuity::DraftSource::Prompt(continuity::ExactSource {
+        anchor: WorkspaceAnchor {
+            harness_id: ExtensionId::parse(required_flag(flags, "--source-id")?).map_err(string)?,
+            session_id: required_flag(flags, "--session-id")?.into(),
+            turn_id: Some(required_flag(flags, "--turn-id")?.into()),
+            worker_id: flags.remove("--worker-id").map(str::to_owned),
+        },
+        event_id: required_flag(flags, "--event-id")?.into(),
+        revision: revision(required_flag(flags, "--revision")?)?,
+        review: None,
+    }))
 }
 
 fn text_input(
@@ -486,6 +541,13 @@ pub(super) fn with_task_stdout(
     options: &TaskOptions,
     execute: impl FnOnce(&mut dyn Write) -> TaskResult<()>,
 ) -> TaskResult<()> {
+    #[cfg(target_os = "linux")]
+    if matches!(
+        options.request.as_ref().map(|(_, action)| action),
+        Some(TaskAction::Legacy(_))
+    ) {
+        return crate::with_private_stdout(execute);
+    }
     if matches!(
         options.request.as_ref().map(|(_, action)| action),
         Some(
@@ -528,6 +590,17 @@ pub(super) fn execute_ledger(
         verifier: source_verifier,
     };
     let result = match action {
+        #[cfg(target_os = "linux")]
+        TaskAction::Legacy(options) => {
+            if source_verifier.is_some() {
+                return Err("Python-backed task evidence requires a local task ledger".into());
+            }
+            return continuity::legacy::execute(options, ledger, &mut output);
+        }
+        TaskAction::Backup(destination) => {
+            ledger.backup_tasks_to(destination).map_err(string)?;
+            json!({"format": "agenturm-rust-task-backup/1", "path": destination})
+        }
         TaskAction::List { limit, before, all } => {
             let page = ledger.list_tasks_including_archived(*limit, *before, *all)?;
             json!({

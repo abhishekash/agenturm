@@ -8,6 +8,10 @@
 mod adapter_install;
 mod attention;
 #[cfg(target_os = "linux")]
+mod attention_native;
+#[cfg(target_os = "linux")]
+pub use attention_native::NativeOptions as NativeAttentionOptions;
+#[cfg(target_os = "linux")]
 mod broker_cli;
 mod cockpit_host;
 mod cockpit_startup;
@@ -16,22 +20,28 @@ mod content_preview;
 mod discovery;
 mod eval_detail_cli;
 mod eval_import;
+mod findings;
 mod handoff_export;
 mod host_cli;
 mod inspector_activity;
 mod investigate_cli;
+mod mcp_inventory;
+mod metric_history;
 mod native_session_context;
 #[cfg(target_os = "linux")]
 mod new_window;
 mod private_output;
 #[cfg(target_os = "linux")]
 mod remote_history;
+#[cfg(target_os = "linux")]
+mod remote_review;
 mod retention_cli;
 mod review_receipt;
 mod session_display;
 mod session_evidence;
 mod session_projects;
 mod session_titles;
+mod span_jsonl_follow;
 mod span_jsonl_import;
 mod summary_cli;
 mod task_cli;
@@ -41,7 +51,9 @@ mod trace_import;
 mod trace_progress;
 mod trace_receiver;
 mod trace_run;
+mod usage_history;
 mod view_export;
+mod workflow_alerts;
 mod workflow_route;
 
 #[cfg(target_os = "linux")]
@@ -62,8 +74,13 @@ pub use new_window::{WindowOptions, execute as execute_new_window};
 pub use private_output::with_private_stdout;
 #[cfg(target_os = "linux")]
 pub use remote_history::{RemoteHistoryOptions, execute_remote_cockpit};
+#[cfg(target_os = "linux")]
+pub use remote_review::{
+    LegacyReviewOptions, RemoteReviewOptions, execute_legacy_review, execute_remote_review,
+};
 pub use retention_cli::{RetentionOptions, execute_retention};
 pub use review_receipt::ReviewOutput;
+pub use span_jsonl_follow::{SpanJsonlFollowOptions, execute_span_jsonl_follow};
 pub use span_jsonl_import::{SpanJsonlImportOptions, execute_span_jsonl_import};
 pub use summary_cli::{SummaryOptions, execute_summary};
 pub use task_cli::{TaskOptions, execute_task, execute_task_stdout};
@@ -93,8 +110,9 @@ use agenturm_store::{
     SessionPosition, SessionQuery, Store, TraceReviewQuery,
 };
 use agenturm_ui::{
-    HistorySelection, NativeSessionContext, ProjectOrigin, RecordedSession, ReviewVersion,
-    SessionCatalog, SessionCursor, SessionView, WorkspaceRequest, WorkspaceResponse, WorkspaceView,
+    HistorySelection, McpSearchScope, NativeSessionContext, ProjectOrigin, RecordedSession,
+    ReviewVersion, SessionCatalog, SessionCursor, SessionView, WorkspaceRequest, WorkspaceResponse,
+    WorkspaceView,
 };
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -232,6 +250,10 @@ pub enum Command {
     Window(WindowOptions),
     #[cfg(target_os = "linux")]
     RemoteCockpit(RemoteHistoryOptions),
+    #[cfg(target_os = "linux")]
+    RemoteReview(RemoteReviewOptions),
+    #[cfg(target_os = "linux")]
+    LegacyReview(Box<LegacyReviewOptions>),
     Query(HistoryQueryOptions),
     #[cfg(target_os = "linux")]
     Broker(broker_cli::BrokerOptions),
@@ -267,6 +289,7 @@ pub enum Command {
     Ingest(IngestOptions),
     ImportTraces(TraceImportOptions),
     ImportJsonl(SpanJsonlImportOptions),
+    WatchJsonl(SpanJsonlFollowOptions),
     Evals(EvalOptions),
     ServeTraces(TraceReceiverOptions),
     Run(TraceRunOptions),
@@ -469,6 +492,10 @@ pub struct ReviewSelection {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum ReviewAnchor {
+    StandaloneTrace {
+        trace_id: String,
+        worker_id: Option<String>,
+    },
     Turn {
         turn_id: String,
         worker_id: Option<String>,
@@ -871,6 +898,9 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         }),
         Some("inspect") => parse_inspect_options(&args[1..]).map(Command::Inspect),
         Some("query") => parse_query_options(&args[1..], false),
+        #[cfg(target_os = "linux")]
+        Some("review") => remote_review::parse(&args[1..]),
+        #[cfg(not(target_os = "linux"))]
         Some("review") => parse_query_options(&args[1..], true),
         Some("investigate") => investigate_cli::parse(&args[1..], false).map(Command::Investigate),
         Some("backup") => {
@@ -905,6 +935,9 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         Some("trace-payload") => {
             telemetry_payload_cli::parse(&args[1..]).map(Command::TracePayload)
         }
+        Some("log-text") => {
+            telemetry_payload_cli::parse_log_text(&args[1..]).map(Command::TracePayload)
+        }
         Some("discover") => parse_discover_options(&args[1..]),
         Some("collect") => parse_collect_options(&args[1..]).map(Command::Collect),
         Some("service") => parse_service_options(&args[1..]).map(Command::Service),
@@ -918,6 +951,7 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         )
         .map(Command::Run),
         Some("import-traces") => trace_import::parse(&args[1..]).map(Command::ImportTraces),
+        Some("watch-jsonl") => span_jsonl_follow::parse(&args[1..]).map(Command::WatchJsonl),
         Some("import-jsonl") => span_jsonl_import::parse(&args[1..]).map(Command::ImportJsonl),
         Some("import-evals") => eval_import::parse(&args[1..], true).map(Command::Evals),
         Some("evals") => eval_import::parse(&args[1..], false).map(Command::Evals),
@@ -1500,6 +1534,7 @@ fn parse_query_options(args: &[String], review: bool) -> Result<Command, String>
     let mut turn_id = None;
     let mut worker_id = None;
     let mut trace_id = None;
+    let mut standalone_trace_id = None;
     let mut trace_source_id = None;
     let mut linked_traces = false;
     let mut format = None;
@@ -1531,6 +1566,7 @@ fn parse_query_options(args: &[String], review: bool) -> Result<Command, String>
             "--session-id" => &mut session_id,
             "--turn-id" if review => &mut turn_id,
             "--worker-id" if review => &mut worker_id,
+            "--trace-id" if review => &mut standalone_trace_id,
             "--turn-of-trace" if review => &mut trace_id,
             "--trace-source-id" if review => &mut trace_source_id,
             "--format" if review => &mut format,
@@ -1585,6 +1621,12 @@ fn parse_query_options(args: &[String], review: bool) -> Result<Command, String>
     if limit == 0 || limit > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
         return Err(usage());
     }
+    if standalone_trace_id.is_some() {
+        if harness_id.is_some() || linked_traces {
+            return Err(usage());
+        }
+        harness_id = trace_source_id.clone();
+    }
     let query = HistoryQueryOptions {
         db: PathBuf::from(db.ok_or_else(usage)?),
         harness_id,
@@ -1594,9 +1636,13 @@ fn parse_query_options(args: &[String], review: bool) -> Result<Command, String>
         limit,
     };
     if review {
-        let anchor = match (turn_id, trace_id, trace_source_id) {
-            (Some(turn_id), None, None) => ReviewAnchor::Turn { turn_id, worker_id },
-            (None, Some(trace_id), Some(trace_source_id)) => ReviewAnchor::Trace {
+        let anchor = match (turn_id, trace_id, trace_source_id, standalone_trace_id) {
+            (None, None, Some(_), Some(trace_id)) => ReviewAnchor::StandaloneTrace {
+                trace_id: trace_id.to_ascii_lowercase(),
+                worker_id,
+            },
+            (Some(turn_id), None, None, None) => ReviewAnchor::Turn { turn_id, worker_id },
+            (None, Some(trace_id), Some(trace_source_id), None) => ReviewAnchor::Trace {
                 trace_id: trace_id.to_ascii_lowercase(),
                 trace_source_id,
                 expected_worker_id: worker_id,
@@ -1769,41 +1815,52 @@ pub fn execute_cockpit_with_extensions(
     };
     install_process_extensions(&mut app, &extensions)?;
     let mut store = None;
-    agenturm_ui::run_workspace(move |request| {
-        if startup.is_none() {
-            startup = Some(cockpit_startup::prepare_cockpit_store(None)?);
-        }
-        let startup = startup.as_ref().expect("cockpit store prepared");
-        if store.is_none() {
-            store = Some(
-                Store::open_read_only(&startup.db)
-                    .map_err(|error| format!("Open history failed: {error}"))?,
-            );
-        }
-        let store = store.as_ref().expect("history opened");
-        match request {
-            WorkspaceRequest::Work(command) if cockpit_workflows::is_prompt_command(&command) => {
-                startup.prompt(command).map(WorkspaceResponse::Work)
+    let ui_stop = Arc::new(AtomicBool::new(false));
+    let loader_stop = Arc::clone(&ui_stop);
+    agenturm_ui::run_workspace_with_stop(
+        move |request| {
+            if startup.is_none() {
+                startup = Some(cockpit_startup::prepare_cockpit_store(None)?);
             }
-            request => {
-                let native_sources = matches!(request, WorkspaceRequest::Sessions(_))
+            let startup = startup.as_ref().expect("cockpit store prepared");
+            if store.is_none() {
+                store = Some(
+                    Store::open_read_only(&startup.db)
+                        .map_err(|error| format!("Open history failed: {error}"))?,
+                );
+            }
+            let store = store.as_ref().expect("history opened");
+            match request {
+                WorkspaceRequest::Work(command)
+                    if cockpit_workflows::is_prompt_command(&command) =>
+                {
+                    startup.prompt(command).map(WorkspaceResponse::Work)
+                }
+                request => {
+                    let native_sources = matches!(
+                        request,
+                        WorkspaceRequest::Sessions(_) | WorkspaceRequest::History { .. }
+                    )
                     .then(|| {
                         startup
                             .source_authority()
                             .or_else(|| native_session_context::configured_sources(&startup.db))
                     })
                     .flatten();
-                workspace_response_with_sources(
-                    &mut app,
-                    store,
-                    &startup.db,
-                    request,
-                    || startup.notice(),
-                    native_sources.as_ref(),
-                )
+                    workspace_response_with_sources(
+                        &mut app,
+                        store,
+                        &startup.db,
+                        request,
+                        || startup.notice(),
+                        native_sources.as_ref(),
+                        &loader_stop,
+                    )
+                }
             }
-        }
-    })
+        },
+        ui_stop,
+    )
     .map_err(|error| error.to_string())
 }
 
@@ -1813,19 +1870,25 @@ pub fn execute_inspect_ui(options: &InspectOptions) -> Result<(), String> {
     let store = Store::open_read_only(&options.db)
         .map_err(|error| format!("open store failed: {error}"))?;
     let db = options.db.clone();
-    agenturm_ui::run_workspace(move |request| {
-        let native_sources = matches!(request, WorkspaceRequest::Sessions(_))
-            .then(|| native_session_context::configured_sources(&db))
-            .flatten();
-        workspace_response_with_sources(
-            &mut app,
-            &store,
-            &db,
-            request,
-            || None,
-            native_sources.as_ref(),
-        )
-    })
+    let ui_stop = Arc::new(AtomicBool::new(false));
+    let loader_stop = Arc::clone(&ui_stop);
+    agenturm_ui::run_workspace_with_stop(
+        move |request| {
+            let native_sources = matches!(request, WorkspaceRequest::Sessions(_))
+                .then(|| native_session_context::configured_sources(&db))
+                .flatten();
+            workspace_response_with_sources(
+                &mut app,
+                &store,
+                &db,
+                request,
+                || None,
+                native_sources.as_ref(),
+                &loader_stop,
+            )
+        },
+        ui_stop,
+    )
     .map_err(|error| error.to_string())
 }
 
@@ -1871,8 +1934,9 @@ fn workspace_response(
     db: &std::path::Path,
     request: WorkspaceRequest,
     notice: impl FnOnce() -> Option<String>,
+    stop: &AtomicBool,
 ) -> Result<WorkspaceResponse, String> {
-    workspace_response_with_sources(app, store, db, request, notice, None)
+    workspace_response_with_sources(app, store, db, request, notice, None, stop)
 }
 
 fn workspace_response_with_sources(
@@ -1882,7 +1946,27 @@ fn workspace_response_with_sources(
     request: WorkspaceRequest,
     notice: impl FnOnce() -> Option<String>,
     native_sources: Option<&discovery::SourceAuthority>,
+    stop: &AtomicBool,
 ) -> Result<WorkspaceResponse, String> {
+    #[cfg(target_os = "linux")]
+    let notification_unavailable = if matches!(
+        &request,
+        WorkspaceRequest::Sessions(None)
+            | WorkspaceRequest::History { before: None, .. }
+            | WorkspaceRequest::MetricHistory(_)
+            | WorkspaceRequest::Work(
+                agenturm_ui::WorkCommand::Workflow | agenturm_ui::WorkCommand::WorkflowAlerts
+            )
+    ) {
+        attention::poll_workflow_delivery(store, db, stop).is_err()
+    } else {
+        false
+    };
+    #[cfg(not(target_os = "linux"))]
+    let notification_unavailable = {
+        let _ = stop;
+        false
+    };
     match request {
         WorkspaceRequest::Sessions(before) => {
             let mut catalog = if let Some(native_sources) = native_sources {
@@ -1890,6 +1974,14 @@ fn workspace_response_with_sources(
             } else {
                 load_session_catalog(store, db, before)?
             };
+            if notification_unavailable {
+                let status = "Workflow notification check unavailable";
+                catalog.notice = Some(
+                    catalog
+                        .notice
+                        .map_or_else(|| status.into(), |prior| format!("{prior} · {status}")),
+                );
+            }
             catalog.notice = match (notice(), catalog.notice) {
                 (Some(startup), Some(coverage)) if startup != coverage => {
                     Some(format!("{startup} · {coverage}"))
@@ -1899,7 +1991,7 @@ fn workspace_response_with_sources(
             Ok(WorkspaceResponse::Sessions(catalog))
         }
         WorkspaceRequest::Work(command) => {
-            cockpit_workflows::execute(store, db, command).map(WorkspaceResponse::Work)
+            cockpit_workflows::execute(store, db, command, stop).map(WorkspaceResponse::Work)
         }
         WorkspaceRequest::MarkReviewed(session) => {
             cockpit_workflows::verify_review_snapshot(store, &session)?;
@@ -1931,10 +2023,29 @@ fn workspace_response_with_sources(
             }
             Ok(WorkspaceResponse::ReviewSaved)
         }
-        WorkspaceRequest::History { selection, before } => {
-            let mut page = load_workspace_history(app, store, selection, before)?;
+        WorkspaceRequest::ReviewVisibility(value) => Ok(WorkspaceResponse::ReviewVisibility(value)),
+        WorkspaceRequest::MetricHistory(query) => store
+            .query_metric_history(&query)
+            .map(WorkspaceResponse::MetricHistory),
+        WorkspaceRequest::History {
+            selection,
+            before,
+            include_reviews,
+        } => {
+            let mut page =
+                load_workspace_history(app, store, db, selection, before, include_reviews)?;
             page.history_identity = store.workspace_history_identity();
             page.private_telemetry_history = store.private_telemetry_history();
+            if store.session_title_store().is_some() {
+                let configured;
+                let authority = if native_sources.is_some() {
+                    native_sources
+                } else {
+                    configured = native_session_context::configured_sources(db);
+                    configured.as_ref()
+                };
+                page.features.mcp_inventory = mcp_inventory::configured(authority);
+            }
             Ok(WorkspaceResponse::History(page))
         }
     }
@@ -2133,6 +2244,37 @@ trait HistoryReader: ObservationStore {
     fn session_title_store(&self) -> Option<&Store> {
         None
     }
+    fn query_execution_clocks(
+        &self,
+        query: &agenturm_store::native_attention::ExecutionClockQuery,
+    ) -> Result<agenturm_store::native_attention::ExecutionClockPage, String>;
+    fn query_native_attention(
+        &self,
+        query: &agenturm_store::native_attention::NativeAttentionQuery,
+    ) -> Result<agenturm_store::native_attention::NativeAttentionPage, String>;
+    fn query_standalone_trace(
+        &self,
+        query: &agenturm_store::StandaloneTraceQuery,
+    ) -> Result<agenturm_kernel::ObservationPage, String>;
+    fn query_projected_history(
+        &self,
+        query: &ObservationQuery,
+        projection: &agenturm_kernel::retained_history::HistoryProjection,
+        turn: Option<&str>,
+        worker: Option<Option<&str>>,
+    ) -> Result<agenturm_kernel::ObservationPage, String>;
+    fn query_mcp_traces(
+        &self,
+        query: &agenturm_store::McpTraceQuery,
+    ) -> Result<Option<agenturm_kernel::ObservationPage>, String>;
+    fn query_metric_history(
+        &self,
+        query: &agenturm_kernel::retained_history::MetricHistoryQuery,
+    ) -> Result<agenturm_kernel::retained_history::MetricHistoryPage, String>;
+    fn query_usage_history(
+        &self,
+        query: &agenturm_kernel::retained_history::UsageHistoryQuery,
+    ) -> Result<agenturm_kernel::retained_history::UsageHistoryPage, String>;
     fn query_sessions(&self, query: &SessionQuery) -> Result<agenturm_store::SessionPage, String>;
     fn query_linked_traces(
         &self,
@@ -2180,6 +2322,52 @@ impl HistoryReader for Store {
         marker: &std::path::Path,
     ) -> Result<agenturm_store::WorkspaceLedger, String> {
         agenturm_store::WorkspaceLedger::open(marker).map_err(|error| error.to_string())
+    }
+    fn query_execution_clocks(
+        &self,
+        query: &agenturm_store::native_attention::ExecutionClockQuery,
+    ) -> Result<agenturm_store::native_attention::ExecutionClockPage, String> {
+        Store::query_execution_clocks(self, query, None).map_err(|error| error.to_string())
+    }
+    fn query_native_attention(
+        &self,
+        query: &agenturm_store::native_attention::NativeAttentionQuery,
+    ) -> Result<agenturm_store::native_attention::NativeAttentionPage, String> {
+        Store::query_native_attention(self, query, None).map_err(|error| error.to_string())
+    }
+    fn query_standalone_trace(
+        &self,
+        query: &agenturm_store::StandaloneTraceQuery,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        Store::query_standalone_trace(self, query, None).map_err(|error| error.to_string())
+    }
+    fn query_projected_history(
+        &self,
+        query: &ObservationQuery,
+        projection: &agenturm_kernel::retained_history::HistoryProjection,
+        turn: Option<&str>,
+        worker: Option<Option<&str>>,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        Store::query_projected_history(self, query, projection, turn, worker, None)
+            .map_err(|error| error.to_string())
+    }
+    fn query_mcp_traces(
+        &self,
+        query: &agenturm_store::McpTraceQuery,
+    ) -> Result<Option<agenturm_kernel::ObservationPage>, String> {
+        Store::query_mcp_traces(self, query, None).map_err(|error| error.to_string())
+    }
+    fn query_metric_history(
+        &self,
+        query: &agenturm_kernel::retained_history::MetricHistoryQuery,
+    ) -> Result<agenturm_kernel::retained_history::MetricHistoryPage, String> {
+        Store::query_metric_history(self, query, None).map_err(|error| error.to_string())
+    }
+    fn query_usage_history(
+        &self,
+        query: &agenturm_kernel::retained_history::UsageHistoryQuery,
+    ) -> Result<agenturm_kernel::retained_history::UsageHistoryPage, String> {
+        Store::query_usage_history(self, query, None).map_err(|error| error.to_string())
     }
     fn query_sessions(&self, query: &SessionQuery) -> Result<agenturm_store::SessionPage, String> {
         Store::query_sessions(self, query).map_err(|error| error.to_string())
@@ -2239,6 +2427,58 @@ impl HistoryReader for agenturm_storage_service::NativeStore {
         agenturm_store::WorkspaceLedger::open_with_history(marker, self.clone())
             .map_err(|error| error.to_string())
     }
+    fn query_execution_clocks(
+        &self,
+        query: &agenturm_store::native_attention::ExecutionClockQuery,
+    ) -> Result<agenturm_store::native_attention::ExecutionClockPage, String> {
+        self.query_execution_clocks(query)
+            .map_err(|error| error.to_string())
+    }
+    fn query_native_attention(
+        &self,
+        query: &agenturm_store::native_attention::NativeAttentionQuery,
+    ) -> Result<agenturm_store::native_attention::NativeAttentionPage, String> {
+        self.query_native_attention(query)
+            .map_err(|error| error.to_string())
+    }
+    fn query_standalone_trace(
+        &self,
+        query: &agenturm_store::StandaloneTraceQuery,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        self.query_standalone_trace(query)
+            .map_err(|error| error.to_string())
+    }
+    fn query_projected_history(
+        &self,
+        query: &ObservationQuery,
+        projection: &agenturm_kernel::retained_history::HistoryProjection,
+        turn: Option<&str>,
+        worker: Option<Option<&str>>,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        self.query_projected_history(query, projection, turn, worker)
+            .map_err(|error| error.to_string())
+    }
+    fn query_mcp_traces(
+        &self,
+        query: &agenturm_store::McpTraceQuery,
+    ) -> Result<Option<agenturm_kernel::ObservationPage>, String> {
+        self.query_mcp_traces(query)
+            .map_err(|error| error.to_string())
+    }
+    fn query_metric_history(
+        &self,
+        query: &agenturm_kernel::retained_history::MetricHistoryQuery,
+    ) -> Result<agenturm_kernel::retained_history::MetricHistoryPage, String> {
+        self.query_metric_history(query)
+            .map_err(|error| error.to_string())
+    }
+    fn query_usage_history(
+        &self,
+        query: &agenturm_kernel::retained_history::UsageHistoryQuery,
+    ) -> Result<agenturm_kernel::retained_history::UsageHistoryPage, String> {
+        self.query_usage_history(query)
+            .map_err(|error| error.to_string())
+    }
     fn query_sessions(&self, query: &SessionQuery) -> Result<agenturm_store::SessionPage, String> {
         self.query_sessions(query)
             .map_err(|error| error.to_string())
@@ -2271,30 +2511,111 @@ impl HistoryReader for agenturm_storage_service::NativeStore {
 fn load_workspace_history(
     app: &mut AgenturmApp,
     store: &impl HistoryReader,
+    db: &std::path::Path,
     selection: HistorySelection,
     before: Option<ObservationPosition>,
+    include_reviews: bool,
 ) -> Result<agenturm_ui::HistoryPage, String> {
     let (source, session, pinned) = match &selection {
         HistorySelection::All(_) => (None, None, None),
+        HistorySelection::McpSearch {
+            scope, snapshot_id, ..
+        } => {
+            let (source, session) = match scope {
+                McpSearchScope::All => (None, None),
+                McpSearchScope::Session(row) => {
+                    (Some(row.harness_id.as_str()), Some(&row.session_id))
+                }
+                McpSearchScope::Turn(row) => (Some(row.harness_id.as_str()), Some(&row.session_id)),
+            };
+            (source, session, Some(*snapshot_id))
+        }
+        HistorySelection::McpTraces {
+            source_id,
+            snapshot_id,
+            ..
+        } => (Some(source_id.as_str()), None, Some(*snapshot_id)),
         HistorySelection::Session(session, _) => (
-            Some(&session.harness_id),
+            Some(session.harness_id.as_str()),
             Some(&session.session_id),
             Some(session.snapshot_id),
         ),
         HistorySelection::Turn(turn) => (
-            Some(&turn.harness_id),
+            Some(turn.harness_id.as_str()),
             Some(&turn.session_id),
             Some(turn.snapshot_id),
         ),
     };
     let query = ObservationQuery {
-        harness_id: source.cloned(),
+        harness_id: source.map(str::to_owned),
         session_id: session.cloned(),
         snapshot_id: before.as_ref().map(|cursor| cursor.snapshot_id).or(pinned),
         before,
         limit: INSPECT_PAGE_SIZE,
     };
     match selection {
+        HistorySelection::McpSearch {
+            scope,
+            query: search,
+            ..
+        } => {
+            let (turn, worker) = match &scope {
+                McpSearchScope::Turn(row) => {
+                    (Some(row.turn_id.as_str()), Some(row.worker_id.as_deref()))
+                }
+                _ => (None, None),
+            };
+            let retained = store.query_projected_history(
+                &query,
+                &agenturm_kernel::retained_history::HistoryProjection::Mcp {
+                    query: Some(search),
+                },
+                turn,
+                worker,
+            )?;
+            let continuation = retained.older_position();
+            let mut snapshot = Snapshot {
+                observations: retained.observations,
+                observations_truncated: retained.has_more,
+                history_snapshot_id: retained.snapshot_id,
+                ..Snapshot::default()
+            };
+            let ids = session_evidence::add_workspace_panes(&mut snapshot);
+            let mut page = inspector_activity::overview_page(snapshot);
+            page.features.continuation = continuation.map(Box::new);
+            page.operation_tables = ids.tables;
+            page.evidence_tables = ids.evidence;
+            page.initial_pane = Some(ids.mcp);
+            Ok(page)
+        }
+        HistorySelection::McpTraces {
+            source_id,
+            event_id,
+            revision,
+            snapshot_id,
+        } => {
+            let page = store
+                .query_mcp_traces(&agenturm_store::McpTraceQuery {
+                    source_id,
+                    event_id,
+                    revision,
+                    snapshot_id,
+                    limit: INSPECT_PAGE_SIZE,
+                    before: query.before,
+                })?
+                .ok_or("Selected MCP call is unavailable at this history snapshot")?;
+            let mut snapshot = Snapshot {
+                observations: page.observations,
+                observations_truncated: page.has_more,
+                history_snapshot_id: page.snapshot_id,
+                ..Snapshot::default()
+            };
+            let mut ids = session_evidence::add_workspace_panes(&mut snapshot);
+            let mut page = inspector_activity::overview_page(snapshot);
+            page.initial_pane = Some(ids.traces);
+            page.evidence_tables = std::mem::take(&mut ids.evidence);
+            Ok(page)
+        }
         HistorySelection::Turn(turn) => {
             let snapshot = app.kernel.refresh_worker_turn_with_store(
                 store,
@@ -2334,7 +2655,10 @@ fn load_workspace_history(
                     return Ok(page);
                 }
             };
-            let mut snapshot = workspace_history_snapshot(app.refresh_history_query(store, query))?;
+            let (mut snapshot, continuation) = visible_workspace_history(
+                app.refresh_history_query(store, query),
+                include_reviews,
+            )?;
             let mut panes = session_evidence::add_session_panes(
                 &mut snapshot,
                 &session.harness_id,
@@ -2342,16 +2666,31 @@ fn load_workspace_history(
             );
             session_display::add_context(&mut snapshot, &panes.overview, &session);
             let mut page = inspector_activity::overview_page(snapshot);
+            page.features.continuation = continuation.map(Box::new);
             if !page.snapshot.observations.is_empty() {
                 page.review_pane = Some(panes.review.clone());
             }
             page.operation_tables = std::mem::take(&mut panes.tables);
             page.evidence_tables = std::mem::take(&mut panes.evidence);
+            if matches!(view, SessionView::Usage) {
+                page.features.usage_history = Some(Box::new(usage_history::load(
+                    store,
+                    Some(
+                        ExtensionId::parse(session.harness_id.clone())
+                            .map_err(|e| e.to_string())?,
+                    ),
+                    Some(session.session_id.clone()),
+                    page.snapshot.history_snapshot_id,
+                )?));
+            }
             page.initial_pane = Some(select_pane(panes));
             Ok(page)
         }
         HistorySelection::All(view) => {
-            let mut snapshot = workspace_history_snapshot(app.refresh_history_query(store, query))?;
+            let (mut snapshot, continuation) = visible_workspace_history(
+                app.refresh_history_query(store, query),
+                include_reviews,
+            )?;
             let mut ids = session_evidence::add_workspace_panes(&mut snapshot);
             let host = store.local_host_data().then(|| {
                 let (id, evidence) = cockpit_host::add_host_pane(&mut snapshot);
@@ -2359,6 +2698,54 @@ fn load_workspace_history(
                 id
             });
             let mut page = inspector_activity::overview_page(snapshot);
+            page.features.continuation = continuation.map(Box::new);
+            if view == WorkspaceView::Metrics {
+                page.features.metric_history = Some(Box::new(metric_history::initial(
+                    store,
+                    page.snapshot.history_snapshot_id,
+                )?));
+            }
+            if view == WorkspaceView::Usage {
+                page.features.usage_history = Some(Box::new(usage_history::load(
+                    store,
+                    None,
+                    None,
+                    page.snapshot.history_snapshot_id,
+                )?));
+            }
+            let history_identity = store.workspace_history_identity();
+            let mut findings = findings::project(&page.snapshot, |row, snapshot_id| {
+                #[cfg(target_os = "linux")]
+                if store.allows_private_capture() {
+                    if let Some(reference) = investigate_cli::cockpit::finding_reference(
+                        row,
+                        snapshot_id,
+                        db,
+                        history_identity.as_deref(),
+                    )
+                    .ok()
+                    .flatten()
+                    {
+                        return Some(agenturm_ui::FindingSource::Command(reference));
+                    }
+                    if let Some(identity) = store.private_telemetry_history() {
+                        return findings::telemetry_source(row, snapshot_id, &identity)
+                            .or_else(|| findings::log_source(row, snapshot_id, &identity));
+                    }
+                }
+                #[cfg(not(target_os = "linux"))]
+                let _ = (row, snapshot_id, &history_identity);
+                None
+            });
+            if view == WorkspaceView::Findings {
+                findings::include_failed_evaluations(
+                    &mut findings,
+                    &page.snapshot,
+                    store.allows_private_capture() && history_identity.is_some(),
+                    |source, query| store.query_selected_evals(source, query),
+                );
+            }
+            page.features.findings = Some((ids.findings.clone(), findings));
             page.operation_tables = ids.tables;
             page.evidence_tables = ids.evidence;
             page.initial_pane = match view {
@@ -2379,6 +2766,34 @@ fn load_workspace_history(
             Ok(page)
         }
     }
+}
+
+fn visible_workspace_history(
+    snapshot: Snapshot,
+    include_reviews: bool,
+) -> Result<(Snapshot, Option<ObservationPosition>), String> {
+    let mut snapshot = workspace_history_snapshot(snapshot)?;
+    let continuation = snapshot
+        .observations_truncated
+        .then(|| {
+            snapshot
+                .observations
+                .first()
+                .map(|row| ObservationPosition {
+                    observed_at_unix_ns: row.observed_at_unix_ns,
+                    harness_id: row.harness_id.as_str().into(),
+                    event_id: row.event_id.clone(),
+                    revision: row.revision,
+                    snapshot_id: snapshot.history_snapshot_id,
+                })
+        })
+        .flatten();
+    snapshot.observations.retain(|row| {
+        !matches!(row.kind, ObservationKind::TraceSpanSummary(_))
+            && (include_reviews
+                || !agenturm_kernel::native_review::is_codex_review_source(row.harness_id.as_str()))
+    });
+    Ok((snapshot, continuation))
 }
 
 fn workspace_history_snapshot(snapshot: Snapshot) -> Result<Snapshot, String> {
@@ -2463,7 +2878,23 @@ fn review_from_store(
         .as_deref()
         .ok_or("Review requires a session ID")?;
     let query = options.observation_query();
-    let (turn_id, worker_id, page) = match &selection.anchor {
+    let (turn_id, worker_id, trace_id, page) = match &selection.anchor {
+        ReviewAnchor::StandaloneTrace {
+            trace_id,
+            worker_id,
+        } => {
+            let page = store.query_standalone_trace(&agenturm_store::StandaloneTraceQuery {
+                source_id: ExtensionId::parse(harness_id).map_err(|error| error.to_string())?,
+                session_id: session_id.into(),
+                trace_id: trace_id.clone(),
+                worker_id: worker_id.clone(),
+                snapshot_id: query.snapshot_id,
+                before: query.before.clone(),
+                limit: query.limit,
+            })?;
+            (None, worker_id.clone(), Some(trace_id.clone()), page)
+        }
+
         ReviewAnchor::Turn { turn_id, worker_id } => {
             let page = if selection.linked_traces {
                 store.query_linked_turn_traces(&query, turn_id, worker_id.as_deref())
@@ -2471,7 +2902,7 @@ fn review_from_store(
                 store.query_worker_turn_observations(&query, turn_id, worker_id.as_deref())
             }
             .map_err(|error| format!("query store failed: {error}"))?;
-            (turn_id.clone(), worker_id.clone(), page)
+            (Some(turn_id.clone()), worker_id.clone(), None, page)
         }
         ReviewAnchor::Trace {
             trace_id,
@@ -2487,17 +2918,27 @@ fn review_from_store(
                     linked_traces: selection.linked_traces,
                 })?
                 .ok_or("Trace has no unique explicit turn for the selected native scope at this snapshot")?;
-            (resolved.turn_id, resolved.worker_id, resolved.page)
+            (
+                Some(resolved.turn_id),
+                resolved.worker_id,
+                None,
+                resolved.page,
+            )
         }
     };
     let scope = review_receipt::ReviewScope {
         harness_id,
         session_id,
-        turn_id: &turn_id,
+        turn_id: turn_id.as_deref(),
+        trace_id: trace_id.as_deref(),
         worker_id: worker_id.as_deref(),
     };
     let snapshot = page.snapshot_id;
-    review_receipt::render(history_page_data(page), scope, snapshot, output)
+    let mut data = history_page_data(page);
+    if let Some(identity) = store.workspace_history_identity() {
+        data["history_identity"] = serde_json::json!(identity);
+    }
+    review_receipt::render(data, scope, snapshot, output)
 }
 
 fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Value {
@@ -2550,6 +2991,8 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                     "method":method.as_str(), "duration_ns":duration_ns.map(|nanos| nanos.to_string()),
                     "result":result,
                 }),
+                ObservationKind::TraceSpanSummary(_) | ObservationKind::OtlpActivityLog(_) | ObservationKind::OtlpErrorLog(_) | ObservationKind::InternalReview(_) | ObservationKind::NativeRequest(_) | ObservationKind::MetricPoint(_) => serde_json::to_value(&row.kind)
+                    .expect("typed metric metadata serializes"),
                 ObservationKind::TraceSpan(span) => {
                     let mut evidence = serde_json::json!({
                         "kind":"trace_span", "trace_id":span.trace_id, "span_id":span.span_id,
@@ -2559,6 +3002,9 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                     });
                     if let Some(target) = &span.target_source_id {
                         evidence["target_source_id"] = serde_json::json!(target);
+                    }
+                    if let Some(operation) = &span.target_operation_id {
+                        evidence["target_operation_id"] = serde_json::json!(operation);
                     }
                     evidence
                 }
@@ -3727,6 +4173,8 @@ pub fn execute_ingest(options: &IngestOptions) -> Result<String, String> {
 
 pub fn render(command: Command) -> String {
     match command {
+        #[cfg(target_os = "linux")]
+        Command::RemoteReview(_) | Command::LegacyReview(_) => String::new(),
         Command::Help => concat!(
             "Agenturm · Rust application (early composition shell)\n",
             "\n",
@@ -3741,6 +4189,8 @@ pub fn render(command: Command) -> String {
             "       agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]\n",
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
             "       agenturm review --db <path> --harness-id <id> --session-id <id> (--turn-id <id> | --turn-of-trace <trace-id> --trace-source-id <id>) [--worker-id <id>] [--linked-traces] [--format text|json|markdown|html] [--output <new-directory>] [query paging options]\n",
+            "       agenturm review --db <path> --trace-id <id> --trace-source-id otlp.<id> --session-id <id> [--worker-id <id>] [Review paging/output options]\n",
+            "       agenturm review --endpoint http://<loopback-IP:port> --token-file <path> [exact Review scope/paging/output options]\n",
             "       agenturm investigate <instruction|path|command|source> <query> [options]\n",
             "       agenturm investigate failures [--source-id <id>] [--session-id <id>] [options]\n",
             "       agenturm backup --db <path> --output <new-path>\n",
@@ -3750,10 +4200,13 @@ pub fn render(command: Command) -> String {
             "       agenturm retention <status|set|disable|run> --db <path> [--max-age-days <days>]\n",
             "       agenturm content <grant|revoke|list|preview> [options]\n",
             "       agenturm serve-traces --listen <loopback-IP:port> --db <path> --source-id otlp.<id> [--payload-scope <standalone|harness-id> --token-file <path>]\n",
-            "       agenturm run --db <path> [--source-id otlp.<id>] [--payload-scope <standalone|harness-id>] -- <program> [args...]\n",
+            "       agenturm run --db <path> [--source-id otlp.<id>] [--payload-scope <standalone|harness-id>] [--instrument python [--service <name>] [--capture-content]] -- <program> [args...]\n",
+            "       agenturm run --endpoint http://<loopback-IP:port> --token-file <path> --instrument python [--service <name>] -- <python> <script|-m module> [args...]\n",
             "       agenturm trace-payload <binding|grant|revoke|snapshot|preview> [options]\n",
+            "       agenturm log-text <binding|grant|revoke|snapshot|preview> [options]\n",
             "       agenturm eval-detail <binding|grant|revoke|preview> [options]\n",
             "       agenturm import-traces --file <otlp-json-path|-> --db <path> --source-id otlp.<id>\n",
+            "       agenturm watch-jsonl --file <span-jsonl-path> --db <path> --source-id otlp.<id> [--session-id <id>] [--interval-ms <100..60000>] [payload options]\n",
             "       agenturm import-jsonl --file <span-jsonl-path|-> --db <path> --source-id otlp.<id> [--session-id <id>] [--payload-scope <standalone|harness-id> [--payload-format agent-harness]]\n",
             "       agenturm import-evals --file <results.json|-> --db <path> --source-id otlp.<id> [--include-detail]\n",
             "       agenturm evals --db <path> --source-id otlp.<id> [--trace-id <id> [--history [--before-revision <n>]] | --summary [--after-trace-id <id>]] [--limit <1..256>] [--json]\n",
@@ -3812,7 +4265,7 @@ pub fn render(command: Command) -> String {
         Command::Query(_) | Command::Review { .. } | Command::Attention(_) | Command::Task(_) | Command::Investigate(_) => {
             String::new()
         }
-        Command::Ingest(_) | Command::ImportTraces(_) | Command::ImportJsonl(_) | Command::Evals(_) | Command::ServeTraces(_) | Command::Run(_) => String::new(),
+        Command::Ingest(_) | Command::ImportTraces(_) | Command::ImportJsonl(_) | Command::WatchJsonl(_) | Command::Evals(_) | Command::ServeTraces(_) | Command::Run(_) => String::new(),
         Command::Collect(_) => String::new(),
         Command::Service(_) => String::new(),
     }

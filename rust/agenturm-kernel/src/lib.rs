@@ -244,6 +244,12 @@ pub enum ObservationKind {
     TraceSpan(TraceSpan),
     TraceProgress(TraceProgress),
     HostSample(HostSample),
+    MetricPoint(MetricPoint),
+    TraceSpanSummary(telemetry_summary::TraceSpanSummary),
+    OtlpActivityLog(telemetry_summary::OtlpActivityLog),
+    OtlpErrorLog(telemetry_summary::OtlpErrorLog),
+    InternalReview(agenturm_protocol::native_review::InternalReview),
+    NativeRequest(agenturm_protocol::native_review::NativeRequest),
     Lifecycle {
         state: String,
         reason_code: Option<String>,
@@ -306,6 +312,8 @@ pub use agenturm_protocol::host::{
     HostCpu, HostProcess, HostProcessState, HostRuntime, HostSample, MAX_HOST_PROCESSES,
     is_host_source,
 };
+pub use agenturm_protocol::metric;
+pub use agenturm_protocol::metric::{MetricPoint, is_metric_source};
 pub use agenturm_protocol::observation::{
     FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, NANOUNITS_PER_CURRENCY_UNIT, NativeCostBasis,
     RelationshipKind, ReportedCost, SpanTokenUsage, TraceProgress, TraceSpan, TraceSpanIdentity,
@@ -379,6 +387,10 @@ pub fn is_trace_turn_link_valid(
     worker_id: Option<&str>,
     operation_id: Option<&str>,
 ) -> bool {
+    if span.target_operation_id.is_some() && (turn_id.is_none() || span.target_source_id.is_none())
+    {
+        return false;
+    }
     match turn_id {
         Some(_) => {
             span.target_source_id.is_some()
@@ -1428,7 +1440,11 @@ fn validate_raw_observation_slice(
             ObservationScope::Source => {
                 matches!(
                     row.kind,
-                    ObservationKind::Diagnostic { .. } | ObservationKind::HostSample(_)
+                    ObservationKind::Diagnostic { .. }
+                        | ObservationKind::HostSample(_)
+                        | ObservationKind::MetricPoint(_)
+                        | ObservationKind::InternalReview(_)
+                        | ObservationKind::OtlpErrorLog(_)
                 ) && row.identity.session_id.is_none()
                     && row.identity.worker_id.is_none()
                     && row.identity.turn_id.is_none()
@@ -1462,6 +1478,72 @@ fn validate_raw_observation_slice(
             return Err(
                 "host sample requires a valid host source and source-scoped metrics".into(),
             );
+        }
+        if let ObservationKind::MetricPoint(point) = &row.kind
+            && (row.identity.scope != ObservationScope::Source
+                || row.revision != 0
+                || !is_metric_source(source.as_str())
+                || !point.is_valid_at(row.observed_at_unix_ns)
+                || !point.matches_event(&row.event_id, row.observed_at_unix_ns))
+        {
+            return Err(
+                "metric point requires a valid OTLP source, event, and source scope".into(),
+            );
+        }
+        if let ObservationKind::TraceSpanSummary(summary) = &row.kind
+            && (row.identity.scope != ObservationScope::Session || !source.as_str().starts_with("otlp.") || row.revision != 0 || !summary.is_valid() || !summary.matches_event(&row.event_id) || !rows.iter().any(|anchor| {
+                matches!(&anchor.kind, ObservationKind::TraceSpan(span) if span.trace_id == summary.trace_id && span.span_id == summary.span_id)
+                && anchor.identity == row.identity && anchor.observed_at_unix_ns == row.observed_at_unix_ns && anchor.revision == row.revision
+            })) {
+            return Err("trace summary requires its exact structural span in the same batch".into());
+        }
+        if let ObservationKind::OtlpActivityLog(log) = &row.kind
+            && (row.identity.scope != ObservationScope::Session
+                || !source.as_str().starts_with("otlp.")
+                || row.revision != 0
+                || row.identity.operation_id.is_some()
+                || !log.is_valid()
+                || !log.matches_event(&row.event_id)
+                || (row.identity.turn_id.is_some() && log.target_source_id.is_none())
+                || (row.identity.worker_id.is_some() && row.identity.turn_id.is_none()))
+        {
+            return Err("activity log requires exact OTLP session scope and safe metadata".into());
+        }
+        if let ObservationKind::OtlpErrorLog(log) = &row.kind
+            && (!source.as_str().starts_with("otlp.")
+                || row.revision != 0
+                || row.identity.operation_id.is_some()
+                || !log.is_valid_at(row.observed_at_unix_ns)
+                || !log.matches_event(&row.event_id)
+                || (log.target_source_id.is_some() && row.identity.session_id.is_none())
+                || (row.identity.turn_id.is_some() && log.target_source_id.is_none())
+                || (row.identity.worker_id.is_some() && row.identity.turn_id.is_none()))
+        {
+            return Err("error log requires exact typed OTLP scope and safe metadata".into());
+        }
+        let review_source =
+            agenturm_protocol::native_review::is_codex_review_source(source.as_str());
+        if review_source
+            && !matches!(
+                row.kind,
+                ObservationKind::InternalReview(_) | ObservationKind::Diagnostic { .. }
+            )
+        {
+            return Err("internal review sources may emit only review metadata".into());
+        }
+        if let ObservationKind::InternalReview(review) = &row.kind
+            && (!review_source
+                || row.identity.scope != ObservationScope::Source
+                || !review.is_valid())
+        {
+            return Err("internal review metadata requires a valid reserved source".into());
+        }
+        if let ObservationKind::NativeRequest(request) = &row.kind
+            && (row.identity.scope != ObservationScope::Session
+                || row.identity.turn_id.is_none()
+                || !request.is_valid())
+        {
+            return Err("native requests require a session, turn and opaque request ID".into());
         }
         if let ObservationKind::Activity { category } = &row.kind
             && (category.is_empty()
@@ -1915,6 +1997,65 @@ mod tests {
                 inserted: 0,
                 replay: false,
             })
+        }
+    }
+
+    #[test]
+    fn durable_source_only_error_log_rehydrates_without_fabricating_a_session() {
+        let log = telemetry_summary::OtlpErrorLog {
+            severity_number: 17,
+            source_time_unix_ns: None,
+            observed_time_unix_ns: Some(23),
+            trace_id: Some("a1".repeat(16)),
+            span_id: None,
+            target_source_id: None,
+        };
+        let row = Observation {
+            harness_id: id("otlp.errors"),
+            event_id: format!("otlp-error-log:{}", "2f".repeat(32)),
+            revision: 0,
+            identity: ObservationIdentity::source(),
+            observed_at_unix_ns: 23,
+            kind: ObservationKind::OtlpErrorLog(log.clone()),
+        };
+        let mut kernel = Kernel::new();
+        let load = |kernel: &mut Kernel, observation: Observation| {
+            let store = OnePageStore(ObservationPage {
+                observations: vec![observation],
+                has_more: false,
+                snapshot_id: 7.into(),
+            });
+            kernel.refresh_query_with_store(&store, ObservationQuery::latest(10))
+        };
+        let snapshot = load(&mut kernel, row.clone());
+        assert!(snapshot.failures.is_empty(), "{:?}", snapshot.failures);
+        assert_eq!(snapshot.observations.as_slice(), std::slice::from_ref(&row));
+        assert_eq!(snapshot.history_snapshot_id, 7.into());
+
+        for inadmissible in [
+            Observation {
+                harness_id: id("harness.codex"),
+                ..row.clone()
+            },
+            Observation {
+                kind: ObservationKind::OtlpErrorLog(telemetry_summary::OtlpErrorLog {
+                    target_source_id: Some("harness.codex".into()),
+                    ..log
+                }),
+                ..row.clone()
+            },
+            Observation {
+                identity: ObservationIdentity {
+                    session_id: Some("not-a-source-session".into()),
+                    ..row.identity.clone()
+                },
+                ..row
+            },
+        ] {
+            let snapshot = load(&mut kernel, inadmissible);
+            assert!(snapshot.observations.is_empty());
+            assert_eq!(snapshot.failures.len(), 1);
+            assert_eq!(snapshot.failures[0].stage, ExtensionStage::AdmissionRead);
         }
     }
 
@@ -2804,3 +2945,13 @@ mod tests {
         assert!(snapshot.failures[1].message.contains("metric row text"));
     }
 }
+
+pub mod retained_history;
+pub mod workflow_alerts;
+pub mod workflow_notifications;
+
+pub use agenturm_protocol::native_review;
+
+pub use agenturm_protocol::telemetry_summary;
+
+pub use agenturm_protocol::native_attention;
