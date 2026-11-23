@@ -332,7 +332,6 @@ G Group project/source/none · f Tree/flat · o Sort\n←/→ Collapse/expand ·
             .height(2)
             .style(theme::row(position)),
         );
-
     }
     let has_more = agents
         .catalog

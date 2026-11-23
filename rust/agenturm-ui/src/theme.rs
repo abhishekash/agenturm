@@ -310,8 +310,7 @@ impl Picker {
             height,
         );
         frame.render_widget(Clear, popup);
-        let block =
-            panel(" Appearance · Python 0.2.8 themes ").border_style(foreground(palette().primary));
+        let block = panel(" Appearance ").border_style(foreground(palette().primary));
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
         let [names, help] =
