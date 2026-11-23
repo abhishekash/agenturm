@@ -89,11 +89,7 @@ impl PromptScreen {
             (PromptKind::User, false) => "Granted prompt · readable",
             (kind, _) => kind.title(),
         };
-        let block = if self.kind == PromptKind::User {
-            panel(title)
-        } else {
-            Block::bordered().title(title)
-        };
+        let block = panel(title);
         let interior = block.inner(main);
         let width = usize::from(interior.width);
         let height = usize::from(interior.height);

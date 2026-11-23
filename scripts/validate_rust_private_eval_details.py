@@ -158,9 +158,11 @@ def cockpit_preview(receiver, state, reader, gid, admin, binding, columns, rows,
 
     revoke = None
     try:
-        assert redacted(until('eval-session'))
+        assert redacted(wait_for_cells(lambda: all(marker in screen.contents() for marker in
+                        ('Agenturm command center', '› ')), 'loaded command center'))
         os.write(master, b'8')
-        assert redacted(until('E evaluations'))
+        assert redacted(wait_for_cells(lambda: all(marker in screen.contents() for marker in
+                        ('E evaluations', TRACE)), 'exact trace evaluations'))
         os.write(master, b'E')
         assert redacted(until('Enter evaluations'))
         os.write(master, b'\r')

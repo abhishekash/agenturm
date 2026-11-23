@@ -16,15 +16,15 @@ collection is available on Linux systems without a user manager.
 
 ## Build and install
 
-Rust 0.3.8 is published for Linux x86-64 and ARM64. Use the opt-in source
+This guide describes Rust 0.3.9 for Linux x86-64 and ARM64. Use the opt-in source
 installer from a checkout and verify the matching versioned archive.
 
 ~~~sh
-agenturm=$(bash scripts/install-rust.sh install --version 0.3.8)
+agenturm=$(bash scripts/install-rust.sh install --version 0.3.9)
 "$agenturm" --version
 ~~~
 
-[Rust 0.3.8 release assets](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.8)
+[Rust 0.3.9 release assets](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.9)
 
 It installs the complete versioned bundle and an agenturm-rust launcher,
 preserving the existing agenturm command and leaving services and history
@@ -42,7 +42,7 @@ From the directory containing the published archive and its checksum, use
 the matching asset for your architecture. This example uses x86-64.
 
 ```sh
-archive="agenturm-0.3.8-linux-x86_64.tar.gz"
+archive="agenturm-0.3.9-linux-x86_64.tar.gz"
 sha256sum -c "$archive.sha256"
 mkdir -p "$HOME/.local/opt"
 tar -xzf "$archive" -C "$HOME/.local/opt"
@@ -50,11 +50,11 @@ agenturm="$HOME/.local/opt/${archive%.tar.gz}/bin/agenturm"
 "$agenturm" --version
 ```
 
-Use `agenturm-0.3.8-linux-aarch64.tar.gz` and its sidecar on ARM64. Keep the
+Use `agenturm-0.3.9-linux-aarch64.tar.gz` and its sidecar on ARM64. Keep the
 catalog and binaries in the extracted directory. Verify the matching release
 sidecar for the version being installed.
 
-The published **Rust 0.3.8** Linux archives have these SHA-256 digests:
+For comparison, the previous published **Rust 0.3.8** Linux archives have these SHA-256 digests:
 
 | Platform | SHA-256 |
 | --- | --- |
@@ -80,6 +80,35 @@ available for writing. When another writer owns the database, the cockpit
 reads the same history. When the cockpit owns collection, it also receives
 OTLP/HTTP traces at `http://127.0.0.1:14318/v1/traces`. Set `AGENTURM_OTLP_PORT`
 to use another loopback port. Both stop on quit.
+
+Follow collection prioritizes exact transcript handles held by supported native
+Codex and Claude processes, skips confirmed guardian reviews, and rotates queued
+sources within the existing source limit. The footer reports selection and
+partial discovery coverage. A fixed `discover` configuration remains a bounded
+recent-file selection. An explicit `--db` cockpit states that discovery is
+disabled and needs a separate writer for fresh observations.
+
+The roster uses explicit saved task names first, then safe native conversation
+names. Provider, agent name and role provide supporting context. Native recorded
+workspaces supply project headings when an operator task link does not override
+them. Missing names remain “Name unavailable”; tool activity and session IDs do
+not become names. Source and session IDs stay in the inspector and copy/export.
+Names are display metadata and never change stable selection or task links.
+Metadata is rechecked against the selected history and exact retained source
+receipt, including after restart. Native logs and databases remain read-only.
+
+Counts cover the loaded retained page. Working reflects recorded lifecycle,
+not proof of current process activity. Open handles prioritize collection and
+do not change lifecycle state. Header-only files without any session facts do
+not yet create retained roster rows. Discovery scans are bounded and can report
+partial coverage. Claude mutable-name scans are bounded to 16 MiB per transcript
+and 32 MiB per roster read. A verified first-line workspace can survive that
+limit with a partial-title notice; a two-record snapshot prelude requires a
+fully verified committed prefix before its workspace is shown.
+
+Press `F2` or `Ctrl+P` to preview Observation, Current, Bright, Dark and Solarized.
+Enter saves the selected theme; Escape restores the previous one. The shared
+palette applies to the command center, evidence tables, inspectors and dialogs.
 
 A newly created default cockpit history uses a 14-day age policy. Existing
 histories retain their current policy; an explicitly selected database can
@@ -113,7 +142,7 @@ policy; a broker owner can disable it before starting a restored history.
 
 ### Keyboard navigation
 
-These controls apply to Rust 0.3.8. The previous 0.3.7 controls remain in its [tagged guide](https://github.com/abhishekash/agenturm/blob/rust-v0.3.7/docs/rfcs/rust-linux-bundle.md).
+These controls apply to Rust 0.3.9. The previous 0.3.8 controls remain in its [tagged guide](https://github.com/abhishekash/agenturm/blob/rust-v0.3.8/docs/rfcs/rust-linux-bundle.md).
 
 Use `↑` and `↓` to choose a session, `/` to search the loaded roster,
 and Enter to open its Overview. The newest roster page refreshes while open.

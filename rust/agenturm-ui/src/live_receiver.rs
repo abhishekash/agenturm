@@ -234,7 +234,10 @@ impl LiveView {
             );
             return;
         }
-        frame.render_widget(Block::default().style(surface(CANVAS)), area);
+        frame.render_widget(
+            Block::default().style(surface(theme::palette().canvas)),
+            area,
+        );
         let [header, body, footer] = Layout::vertical([
             Constraint::Length(3),
             Constraint::Min(2),
@@ -287,7 +290,7 @@ impl LiveView {
         );
         frame.render_widget(
             Paragraph::new(vec![title, Line::from(tabs), Line::from(scope)])
-                .style(surface(SURFACE)),
+                .style(surface(theme::palette().surface)),
             header,
         );
         if self.help {
@@ -448,6 +451,7 @@ pub fn run_live_receiver(
                 }
             }
         })?;
+    let mut appearance = theme::Picker::new();
     let result = ratatui::run(|terminal| {
         let mut view = LiveView {
             page: None,
@@ -482,7 +486,10 @@ pub fn run_live_receiver(
                 explicit_refresh = false;
             }
             if dirty {
-                terminal.draw(|frame| view.draw(frame))?;
+                terminal.draw(|frame| {
+                    view.draw(frame);
+                    appearance.draw(frame);
+                })?;
                 dirty = false;
             }
             if !event::poll(Duration::from_millis(80))? {
@@ -493,6 +500,10 @@ pub fn run_live_receiver(
                 Event::Key(key)
                     if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
                 {
+                    if appearance.key(key) {
+                        dirty = true;
+                        continue;
+                    }
                     let code = keymap::plain(key).unwrap_or_else(|| {
                         if keymap::back(key) {
                             KeyCode::Esc

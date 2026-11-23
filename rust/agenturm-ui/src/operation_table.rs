@@ -1,6 +1,6 @@
 //! Selectable, host-supplied operation summaries and their recorded evidence.
 use super::*;
-use ratatui::widgets::{Row, Table, TableState};
+use ratatui::widgets::{Cell, Row, Table, TableState};
 use std::collections::BTreeMap;
 
 pub type OperationTables = BTreeMap<ExtensionId, Vec<OperationRow>>;
@@ -118,15 +118,54 @@ impl OperationList {
     }
 
     pub(super) fn draw(&mut self, frame: &mut Frame, area: Rect, title: &str) {
+        let content = if !self.expanded && !self.servers.is_empty() && area.height >= 19 {
+            let [inventory, content] = Layout::vertical([
+                Constraint::Length((self.servers.len() as u16 + 3).min(7)),
+                Constraint::Min(1),
+            ])
+            .areas(area);
+            let rows = self.servers.iter().enumerate().map(|(index, server)| {
+                let calls = self
+                    .rows
+                    .iter()
+                    .filter(|row| row.server.as_ref() == Some(server));
+                let count = calls.clone().count();
+                let errors = calls
+                    .filter(|row| matches!(row.result.as_deref(), Some("failed" | "error")))
+                    .count();
+                let style = if self.server_filter == Some(index) {
+                    selection_style()
+                } else {
+                    theme::row(index)
+                };
+                Row::new([visible_text(server), count.to_string(), errors.to_string()]).style(style)
+            });
+            frame.render_widget(
+                Table::new(
+                    rows,
+                    [
+                        Constraint::Fill(1),
+                        Constraint::Length(9),
+                        Constraint::Length(9),
+                    ],
+                )
+                .header(Row::new(["Observed server", "Calls", "Errors"]).style(heading_style()))
+                .block(panel(" MCP servers on this page · f filter ")),
+                inventory,
+            );
+            content
+        } else {
+            area
+        };
         let (list, detail) = if self.expanded {
-            (Rect::default(), area)
-        } else if area.width >= 96 {
+            (Rect::default(), content)
+        } else if content.width >= 96 {
             let [left, right] =
                 Layout::horizontal([Constraint::Percentage(58), Constraint::Percentage(42)])
-                    .areas(area);
+                    .areas(content);
             (left, right)
         } else {
-            (area, Rect::default())
+            (content, Rect::default())
         };
         if !list.is_empty() {
             let filter = if self.servers.is_empty() {
@@ -147,29 +186,52 @@ impl OperationList {
                     list,
                 );
             } else {
-                let header = Row::new(["UTC", "Server", "Tool / method", "Result", "Latency"])
-                    .style(heading_style());
-                let rows = self.visible.iter().map(|&index| {
+                let compact = list.width < 70;
+                let headings: Vec<&str> = if compact {
+                    vec!["Tool / method", "Result", "Latency"]
+                } else {
+                    vec!["UTC", "Server", "Tool / method", "Result", "Latency"]
+                };
+                let header = Row::new(headings).style(heading_style());
+                let rows = self.visible.iter().enumerate().map(|(position, &index)| {
                     let op = &self.rows[index];
-                    let time = op
-                        .time
-                        .split_once(' ')
-                        .map_or(op.time.as_str(), |(_, t)| t.trim_end_matches('Z'));
-                    Row::new(vec![
-                        visible_text(time),
-                        visible_text(op.server.as_deref().unwrap_or("—")),
-                        visible_text(&op.tool),
-                        visible_text(op.result.as_deref().unwrap_or("—")),
-                        visible_text(op.latency.as_deref().unwrap_or("—")),
-                    ])
+                    let mut cells = Vec::new();
+                    if !compact {
+                        let time = op
+                            .time
+                            .split_once(' ')
+                            .map_or(op.time.as_str(), |(_, time)| time.trim_end_matches('Z'));
+                        cells.push(Cell::from(visible_text(time)).style(theme::muted()));
+                        cells.push(
+                            Cell::from(visible_text(op.server.as_deref().unwrap_or("—")))
+                                .style(label_style()),
+                        );
+                    }
+                    cells.push(Cell::from(visible_text(&op.tool)));
+                    cells.push(
+                        Cell::from(visible_text(op.result.as_deref().unwrap_or("—")))
+                            .style(theme::status(op.result.as_deref().unwrap_or(""))),
+                    );
+                    cells.push(Cell::from(visible_text(
+                        op.latency.as_deref().unwrap_or("—"),
+                    )));
+                    Row::new(cells).style(theme::row(position))
                 });
-                let widths = [
-                    Constraint::Length(8),
-                    Constraint::Ratio(1, 5),
-                    Constraint::Fill(1),
-                    Constraint::Length(9),
-                    Constraint::Length(10),
-                ];
+                let widths = if compact {
+                    vec![
+                        Constraint::Fill(1),
+                        Constraint::Length(10),
+                        Constraint::Length(10),
+                    ]
+                } else {
+                    vec![
+                        Constraint::Length(8),
+                        Constraint::Ratio(1, 5),
+                        Constraint::Fill(1),
+                        Constraint::Length(10),
+                        Constraint::Length(10),
+                    ]
+                };
                 frame.render_stateful_widget(
                     Table::new(rows, widths)
                         .header(header)

@@ -1,4 +1,4 @@
-"""Validate an installed default cockpit with a real, empty-PATH child PTY."""
+"""Validate the installed cockpit and inspector in an empty-PATH child PTY."""
 
 import argparse
 import fcntl
@@ -27,16 +27,16 @@ USAGE = {
 
 
 class Cockpit:
-    def __init__(self, binary, environment, transcript):
+    def __init__(self, arguments, environment, transcript, *, width=WIDTH, height=HEIGHT):
         self.master, self.slave = pty.openpty()
-        self.screen = TerminalCells(WIDTH, HEIGHT)
+        self.screen = TerminalCells(width, height)
         self.transcript = transcript
         self.tail = b""
         try:
-            fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack("HHHH", HEIGHT, WIDTH, 0, 0))
+            fcntl.ioctl(self.slave, termios.TIOCSWINSZ, struct.pack("HHHH", height, width, 0, 0))
             self.original_termios = termios.tcgetattr(self.slave)
             self.process = subprocess.Popen(
-                [binary], env=environment, stdin=self.slave, stdout=self.slave, stderr=self.slave,
+                arguments, env=environment, stdin=self.slave, stdout=self.slave, stderr=self.slave,
                 start_new_session=True,
             )
         except BaseException:
@@ -202,20 +202,62 @@ def check_sessions(cockpit, sources):
         assert selected_task(returned) == selected, "the selected task changed on return"
 
 
+def check_inspector(cockpit, source):
+    cockpit.frame("the loaded inspector roster", lambda cells: (
+        "Agenturm command center" in cells and re.search(r"\bAll 2\b", cells)
+    ))
+    cockpit.send(b"g")
+    cockpit.frame("two sessions in recorded history", lambda cells: (
+        re.search(r"\bSessions observed\s+2\b", cells)
+    ))
+    cockpit.send(b"T")
+    cockpit.frame("a turn chooser with both recorded turns", lambda cells: (
+        "Turns on this page" in cells and "select · Enter open · Esc back" in cells
+        and "› running · turn-2" in cells and "completed · turn-1 · codex_task_complete" in cells
+    ))
+    cockpit.send(b"\x1b[B")
+
+    def selected(cells):
+        return "Turns on this page" in cells and "› completed · turn-1 · codex_task_complete" in cells
+
+    cockpit.frame("selection of the completed turn", selected)
+    cockpit.send(b"\r")
+    cockpit.frame("the exact completed Codex turn", lambda cells: (
+        "Turn activity" in cells
+        and re.search(rf"\bSource\s+{re.escape(source)}\b", cells)
+        and re.search(r"\bSession\s+bundle-codex-session\b", cells)
+        and re.search(r"\bTurn\s+turn-1\b", cells)
+        and re.search(r"\bLifecycle\s+completed · codex_task_complete\b", cells)
+        and "turn-2" not in cells
+    ))
+    cockpit.send(b"\x1b")
+    cockpit.frame("return to the same selected turn", selected)
+
+
 def main():
     parser = argparse.ArgumentParser(description=__doc__)
     parser.add_argument("--agenturm", required=True, type=Path)
     parser.add_argument("--home", required=True, type=Path)
     parser.add_argument("--empty-path", required=True, type=Path)
     parser.add_argument("--history", required=True, type=Path)
-    parser.add_argument("--codex", required=True, nargs=2, type=Path, metavar=("FIXTURE", "DIRECTORY"))
-    parser.add_argument("--pi", required=True, nargs=2, type=Path, metavar=("FIXTURE", "DIRECTORY"))
+    parser.add_argument("--codex", nargs=2, type=Path, metavar=("FIXTURE", "DIRECTORY"))
+    parser.add_argument("--pi", nargs=2, type=Path, metavar=("FIXTURE", "DIRECTORY"))
+    parser.add_argument("--inspect-source")
     parser.add_argument("--transcript", required=True, type=Path)
     args = parser.parse_args()
+    if not args.inspect_source and (args.codex is None or args.pi is None):
+        parser.error("bare cockpit verification requires both fixture paths")
     env = {"HOME": str(args.home), "PATH": str(args.empty_path), "TERM": "xterm-256color"}
     with args.transcript.open("wb", buffering=0) as transcript:
-        cockpit = Cockpit(args.agenturm, env, transcript)
+        cockpit = (
+            Cockpit([args.agenturm, "inspect", "--db", args.history], env, transcript, width=120, height=28)
+            if args.inspect_source else Cockpit([args.agenturm], env, transcript)
+        )
         try:
+            if args.inspect_source:
+                check_inspector(cockpit, args.inspect_source)
+                cockpit.quit()
+                return 0
             cockpit.frame(
                 "a loaded empty command center",
                 lambda cells: (
@@ -232,7 +274,7 @@ def main():
             check_sessions(cockpit, sources)
             cockpit.quit()
         except (AssertionError, OSError, subprocess.TimeoutExpired, ValueError) as error:
-            print(f"Bare cockpit PTY failed: {error}", file=sys.stderr)
+            print(f"Cockpit PTY failed: {error}", file=sys.stderr)
             print(cockpit.screen.contents(), file=sys.stderr)
             print(f"PTY tail ({args.transcript}): {cockpit.tail!r}", file=sys.stderr)
             return 1

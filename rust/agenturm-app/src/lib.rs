@@ -20,6 +20,7 @@ mod handoff_export;
 mod host_cli;
 mod inspector_activity;
 mod investigate_cli;
+mod native_session_context;
 #[cfg(target_os = "linux")]
 mod new_window;
 mod private_output;
@@ -27,6 +28,7 @@ mod private_output;
 mod remote_history;
 mod retention_cli;
 mod review_receipt;
+mod session_display;
 mod session_evidence;
 mod session_projects;
 mod session_titles;
@@ -91,8 +93,8 @@ use agenturm_store::{
     SessionPosition, SessionQuery, Store, TraceReviewQuery,
 };
 use agenturm_ui::{
-    HistorySelection, ProjectOrigin, RecordedSession, ReviewVersion, SessionCatalog, SessionCursor,
-    SessionView, WorkspaceRequest, WorkspaceResponse, WorkspaceView,
+    HistorySelection, NativeSessionContext, ProjectOrigin, RecordedSession, ReviewVersion,
+    SessionCatalog, SessionCursor, SessionView, WorkspaceRequest, WorkspaceResponse, WorkspaceView,
 };
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -324,6 +326,7 @@ pub struct CollectionReport {
     pub summary: String,
     pub failed_sources: usize,
     pub global_failures: Vec<String>,
+    discovery: Option<discovery::DiscoveryCoverage>,
 }
 
 impl CollectionReport {
@@ -1783,7 +1786,21 @@ pub fn execute_cockpit_with_extensions(
                 startup.prompt(command).map(WorkspaceResponse::Work)
             }
             request => {
-                workspace_response(&mut app, store, &startup.db, request, || startup.notice())
+                let native_sources = matches!(request, WorkspaceRequest::Sessions(_))
+                    .then(|| {
+                        startup
+                            .source_authority()
+                            .or_else(|| native_session_context::configured_sources(&startup.db))
+                    })
+                    .flatten();
+                workspace_response_with_sources(
+                    &mut app,
+                    store,
+                    &startup.db,
+                    request,
+                    || startup.notice(),
+                    native_sources.as_ref(),
+                )
             }
         }
     })
@@ -1797,7 +1814,17 @@ pub fn execute_inspect_ui(options: &InspectOptions) -> Result<(), String> {
         .map_err(|error| format!("open store failed: {error}"))?;
     let db = options.db.clone();
     agenturm_ui::run_workspace(move |request| {
-        workspace_response(&mut app, &store, &db, request, || None)
+        let native_sources = matches!(request, WorkspaceRequest::Sessions(_))
+            .then(|| native_session_context::configured_sources(&db))
+            .flatten();
+        workspace_response_with_sources(
+            &mut app,
+            &store,
+            &db,
+            request,
+            || None,
+            native_sources.as_ref(),
+        )
     })
     .map_err(|error| error.to_string())
 }
@@ -1845,12 +1872,30 @@ fn workspace_response(
     request: WorkspaceRequest,
     notice: impl FnOnce() -> Option<String>,
 ) -> Result<WorkspaceResponse, String> {
+    workspace_response_with_sources(app, store, db, request, notice, None)
+}
+
+fn workspace_response_with_sources(
+    app: &mut AgenturmApp,
+    store: &impl HistoryReader,
+    db: &std::path::Path,
+    request: WorkspaceRequest,
+    notice: impl FnOnce() -> Option<String>,
+    native_sources: Option<&discovery::SourceAuthority>,
+) -> Result<WorkspaceResponse, String> {
     match request {
         WorkspaceRequest::Sessions(before) => {
-            let mut catalog = load_session_catalog(store, db, before)?;
-            if catalog.notice.is_none() {
-                catalog.notice = notice();
-            }
+            let mut catalog = if let Some(native_sources) = native_sources {
+                load_session_catalog_with_sources(store, db, before, Some(native_sources))?
+            } else {
+                load_session_catalog(store, db, before)?
+            };
+            catalog.notice = match (notice(), catalog.notice) {
+                (Some(startup), Some(coverage)) if startup != coverage => {
+                    Some(format!("{startup} · {coverage}"))
+                }
+                (startup, coverage) => startup.or(coverage),
+            };
             Ok(WorkspaceResponse::Sessions(catalog))
         }
         WorkspaceRequest::Work(command) => {
@@ -1900,6 +1945,15 @@ fn load_session_catalog(
     db: &std::path::Path,
     before: Option<SessionCursor>,
 ) -> Result<SessionCatalog, String> {
+    load_session_catalog_with_sources(store, db, before, None)
+}
+
+fn load_session_catalog_with_sources(
+    store: &impl HistoryReader,
+    db: &std::path::Path,
+    before: Option<SessionCursor>,
+    source_authority: Option<&discovery::SourceAuthority>,
+) -> Result<SessionCatalog, String> {
     let mut query = SessionQuery::latest(200);
     query.before = before.map(|cursor| SessionPosition {
         observed_at_unix_ns: cursor.updated_at_unix_ns,
@@ -1912,7 +1966,10 @@ fn load_session_catalog(
         .query_sessions(&query)
         .map_err(|error| format!("Read sessions failed: {error}"))?;
     let mut titles = session_titles::load(store, db, &page);
+    let mut activity = session_titles::last_activity(store, &page);
     let mut projects = session_projects::load(store.session_title_store(), db, &page);
+    let mut native =
+        native_session_context::load(store.session_title_store(), db, &page, source_authority);
     let keys = page
         .sessions
         .iter()
@@ -1951,6 +2008,18 @@ fn load_session_catalog(
             Err(_) => {}
         }
     }
+    let incomplete_names = native.values().filter(|row| row.partial_title).count();
+    if incomplete_names > 0 {
+        let partial = format!(
+            "Native title coverage is partial · {incomplete_names} Claude transcript(s) have only verified header metadata within the scan budget"
+        );
+        if let Some(current) = &mut notice {
+            current.push_str(" · ");
+            current.push_str(&partial);
+        } else {
+            notice = Some(partial);
+        }
+    }
     let sessions = page
         .sessions
         .into_iter()
@@ -1960,14 +2029,42 @@ fn load_session_catalog(
                 (Some(life.state), life.reason_code, life.turn_id)
             });
             let session_key = (session.harness_id.clone(), session.session_id.clone());
-            let project_path = projects.remove(&session_key).map(String::into_boxed_str);
+            let metadata = native.remove(&session_key);
+            let task_title = titles
+                .remove(&session_key)
+                .or_else(|| metadata.as_ref().and_then(|row| row.title.clone()))
+                .map(String::into_boxed_str);
+            let project = projects
+                .remove(&session_key)
+                .map(|path| (path, ProjectOrigin::OperatorTaskWorkspace))
+                .or_else(|| {
+                    metadata
+                        .as_ref()
+                        .and_then(|row| row.workspace.clone())
+                        .map(|path| (path, ProjectOrigin::NativeRecordedWorkspace))
+                });
+            let (project_path, project_origin) = project.map_or((None, None), |(path, origin)| {
+                (Some(path.into_boxed_str()), Some(origin))
+            });
+            let last_activity = activity.remove(&session_key).map(String::into_boxed_str);
+            let native_context = if metadata.is_some() || last_activity.is_some() {
+                let metadata = metadata.unwrap_or_default();
+                Some(Box::new(NativeSessionContext {
+                    agent_name: metadata.agent_name.map(String::into_boxed_str),
+                    agent_role: metadata.agent_role.map(String::into_boxed_str),
+                    agent_path: metadata.agent_path.map(String::into_boxed_str),
+                    model_provider: metadata.model_provider.map(String::into_boxed_str),
+                    last_activity,
+                }))
+            } else {
+                None
+            };
             RecordedSession {
                 harness_id: session.harness_id.as_str().to_owned(),
-                project_origin: project_path
-                    .as_ref()
-                    .map(|_| ProjectOrigin::OperatorTaskWorkspace),
+                project_origin,
                 project_path,
-                task_title: titles.remove(&session_key).map(String::into_boxed_str),
+                task_title,
+                native_context,
                 pending_requests: pending
                     .remove(&(
                         session.harness_id.as_str().to_owned(),
@@ -2243,6 +2340,7 @@ fn load_workspace_history(
                 &session.harness_id,
                 &session.session_id,
             );
+            session_display::add_context(&mut snapshot, &panes.overview, &session);
             let mut page = inspector_activity::overview_page(snapshot);
             if !page.snapshot.observations.is_empty() {
                 page.review_pane = Some(panes.review.clone());
@@ -2645,6 +2743,7 @@ pub struct ConfiguredCollector<S = Store> {
     stop_flag: Option<Arc<AtomicBool>>,
     plugin_host: PathBuf,
     follow: Option<FollowSources>,
+    authorized_sources: Vec<discovery::AuthorizedSource>,
     #[cfg(target_os = "linux")]
     database: PathBuf,
     #[cfg(target_os = "linux")]
@@ -2713,6 +2812,7 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
             stop_flag: stop.cloned(),
             plugin_host: config.plugin_host,
             follow: config.follow,
+            authorized_sources: Vec::new(),
             #[cfg(target_os = "linux")]
             database,
             #[cfg(target_os = "linux")]
@@ -2723,6 +2823,9 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
             host_capture: config.host_capture,
         };
         for source in config.sources {
+            collector
+                .authorized_sources
+                .push(authorized_source(&source));
             collector.add_source(source)?;
         }
         Ok(collector)
@@ -2782,7 +2885,7 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
     }
 
     fn rescan_follow_sources(&mut self) -> Result<(), String> {
-        let Some(follow) = &self.follow else {
+        let Some(follow) = &mut self.follow else {
             return Ok(());
         };
         #[cfg(target_os = "linux")]
@@ -2790,6 +2893,7 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
             validate_source_root_isolation(&self.database, follow.selection.roots())?;
         }
         let selected = follow.resolve()?;
+        let authorized = selected.iter().map(authorized_source).collect();
         let selected_ids = selected
             .iter()
             .map(|source| source.source_id.as_str())
@@ -2813,7 +2917,19 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
                 self.add_source(source)?;
             }
         }
+        self.authorized_sources = authorized;
         Ok(())
+    }
+
+    fn source_authority(&self) -> discovery::SourceAuthority {
+        discovery::SourceAuthority {
+            follow: self.follow.as_ref().map(|follow| follow.selection.clone()),
+            sources: self.authorized_sources.clone(),
+            codex_home: self
+                .follow
+                .as_ref()
+                .and_then(|follow| follow.selection.codex_home()),
+        }
     }
 
     pub fn refresh(&mut self) -> CollectionReport {
@@ -2869,6 +2985,11 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
         if let Some(message) = maintenance_error {
             report.summary.push_str(&format!("{message}\n"));
             report.global_failures.push(message);
+        }
+        if let Some(follow) = &self.follow {
+            report.discovery = Some(follow.coverage);
+            report.summary.push_str(&follow.coverage.notice());
+            report.summary.push('\n');
         }
         report
     }
@@ -3063,6 +3184,7 @@ fn build_collection_report_with_discovery(
         ),
         failed_sources,
         global_failures,
+        discovery: None,
     }
 }
 
@@ -3176,10 +3298,13 @@ fn validate_collection_config(
                     ));
                 }
             }
-            let follow = FollowSources {
+            let mut follow = FollowSources {
                 selection,
                 catalog,
                 base,
+                schedule: discovery::FollowSchedule::default(),
+                capacity: MAX_CONFIGURED_SOURCES - usize::from(host_capture.is_some()),
+                coverage: discovery::DiscoveryCoverage::default(),
             };
             (follow.resolve()?, Some(follow))
         }
@@ -3520,11 +3645,27 @@ struct FollowSources {
     selection: discovery::FollowDiscovery,
     catalog: BTreeMap<String, ValidatedAdapter>,
     base: PathBuf,
+    schedule: discovery::FollowSchedule,
+    capacity: usize,
+    coverage: discovery::DiscoveryCoverage,
 }
 
 impl FollowSources {
-    fn resolve(&self) -> Result<Vec<ConfiguredSource>, String> {
-        resolve_collection_sources(self.selection.sources()?, 2, &self.catalog, &self.base)
+    fn resolve(&mut self) -> Result<Vec<ConfiguredSource>, String> {
+        let (inputs, coverage) = self
+            .selection
+            .follow_sources(&mut self.schedule, self.capacity)?;
+        let sources = resolve_collection_sources(inputs, 2, &self.catalog, &self.base)?;
+        self.coverage = coverage;
+        Ok(sources)
+    }
+}
+
+fn authorized_source(source: &ConfiguredSource) -> discovery::AuthorizedSource {
+    discovery::AuthorizedSource {
+        source_id: source.source_id.clone(),
+        plugin_id: source.plugin_id.clone(),
+        source_root: source.source_root.clone(),
     }
 }
 

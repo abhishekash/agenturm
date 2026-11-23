@@ -2,6 +2,7 @@
 
 use agenturm_jsonl_source::Result;
 use agenturm_protocol::observation::{McpCall, McpMethod, is_mcp_identifier, mcp_tool_labels};
+use serde::{Deserialize, de::IgnoredAny};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
 use std::error::Error;
@@ -12,6 +13,7 @@ use time::{OffsetDateTime, format_description::well_known::Rfc3339};
 // Even two maximum-length labels fit as one exact current declaration.
 const MAX_MCP_CHECKPOINT_BYTES: usize = 384;
 const MAX_MCP_DECLARATIONS: usize = 4;
+const MAX_PRELUDE_BYTES: usize = 64 * 1024;
 
 fn invalid(message: &'static str) -> Box<dyn Error> {
     message.into()
@@ -33,6 +35,7 @@ fn digest(value: &str) -> String {
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Context {
     pub session_id: String,
+    prelude_end: Option<u64>,
     pub turn_id: String,
     worker_id: String,
     last_usage_key: String,
@@ -59,6 +62,13 @@ impl McpDeclaration {
 }
 
 impl Context {
+    fn mcp_checkpoint_limit(&self) -> usize {
+        // The prelude checkpoint adds a length-delimited session ID. Reserve
+        // six bytes for its prefix and separators, including a 3-digit length.
+        let extra = self.prelude_end.map_or(0, |_| self.session_id.len() + 6);
+        MAX_MCP_CHECKPOINT_BYTES - extra
+    }
+
     fn mcp_worker(&self) -> String {
         if self.worker_id.is_empty() {
             "x".into()
@@ -93,7 +103,7 @@ impl Context {
         });
         while self.mcp.len() > MAX_MCP_DECLARATIONS
             || self.mcp.iter().map(McpDeclaration::wire_len).sum::<usize>()
-                > MAX_MCP_CHECKPOINT_BYTES
+                > self.mcp_checkpoint_limit()
         {
             self.mcp.remove(0);
         }
@@ -111,22 +121,53 @@ impl Context {
 }
 
 pub(crate) fn header_identity(raw: &[u8]) -> Result<Context> {
+    verify_binding_fields(raw)?;
     let row: Value = serde_json::from_slice(raw)?;
-    let session = row
-        .get("sessionId")
-        .and_then(Value::as_str)
-        .ok_or("Claude main transcript first row lacks sessionId")?;
-    if !identifier(session) {
-        return Err(invalid("invalid Claude session identity"));
+    match row.get("sessionId") {
+        Some(session) => {
+            let session = session
+                .as_str()
+                .filter(|id| identifier(id))
+                .ok_or_else(|| invalid("invalid Claude session identity"))?;
+            Ok(Context {
+                session_id: session.to_owned(),
+                ..Context::default()
+            })
+        }
+        None if raw.len() <= MAX_PRELUDE_BYTES && file_history_prelude(&row) => Ok(Context {
+            prelude_end: Some(raw.len() as u64),
+            ..Context::default()
+        }),
+        None => Err(invalid("Claude main transcript first row lacks sessionId")),
     }
-    Ok(Context {
-        session_id: session.to_owned(),
-        turn_id: String::new(),
-        worker_id: String::new(),
-        last_usage_key: String::new(),
-        last_usage: [None; 4],
-        mcp: Vec::new(),
-    })
+}
+
+/// A typed read detects repeated binding fields before a JSON map could
+/// reduce them to a single value. Other fields need no second allocation.
+fn verify_binding_fields(raw: &[u8]) -> Result<()> {
+    #[derive(Deserialize)]
+    struct BindingFields {
+        #[serde(rename = "type")]
+        _kind: Option<IgnoredAny>,
+        #[serde(rename = "sessionId")]
+        _session: Option<IgnoredAny>,
+        #[serde(rename = "agentId")]
+        _worker: Option<IgnoredAny>,
+    }
+    if serde_json::from_slice::<BindingFields>(raw).is_err() {
+        return Err(invalid("invalid or repeated Claude binding fields"));
+    }
+    Ok(())
+}
+
+fn file_history_prelude(row: &Value) -> bool {
+    row["type"].as_str() == Some("file-history-snapshot")
+        && row.get("sessionId").is_none()
+        && row.get("agentId").is_none()
+        && row["isSnapshotUpdate"].as_bool() == Some(false)
+        && row["messageId"].as_str().is_some_and(identifier)
+        && row["messageId"] == row["snapshot"]["messageId"]
+        && row["snapshot"]["trackedFileBackups"].is_object()
 }
 
 fn checkpoint_field(value: &str) -> &str {
@@ -135,7 +176,11 @@ fn checkpoint_field(value: &str) -> &str {
 
 pub(crate) fn checkpoint(context: &Context) -> String {
     let number = |value: Option<u64>| value.map_or("x".to_owned(), |value| value.to_string());
-    let mut checkpoint = format!(
+    let mut checkpoint = context.prelude_end.map_or_else(String::new, |_| {
+        format!("p{}:{}:", context.session_id.len(), context.session_id)
+    });
+    write!(
+        checkpoint,
         "c.{}.{}.{}.{}.{}.{}",
         checkpoint_field(&context.turn_id),
         checkpoint_field(&context.last_usage_key),
@@ -143,7 +188,8 @@ pub(crate) fn checkpoint(context: &Context) -> String {
         number(context.last_usage[1]),
         number(context.last_usage[2]),
         number(context.last_usage[3])
-    );
+    )
+    .expect("writing a string does not fail");
     for call in &context.mcp {
         let (server, tool) = call.labels.as_ref().map_or(("-", "-"), |(server, tool)| {
             (server.as_str(), tool.as_str())
@@ -159,6 +205,25 @@ pub(crate) fn checkpoint(context: &Context) -> String {
 }
 
 pub(crate) fn restore(context: &mut Context, checkpoint: &str) -> Result<()> {
+    let checkpoint = if context.prelude_end.is_some() {
+        let shape = || invalid("invalid Claude prelude checkpoint");
+        let (length, payload) = checkpoint
+            .strip_prefix('p')
+            .and_then(|checkpoint| checkpoint.split_once(':'))
+            .ok_or_else(shape)?;
+        let length: usize = length.parse().map_err(|_| shape())?;
+        let (session, checkpoint) = payload.split_at_checked(length).ok_or_else(shape)?;
+        let checkpoint = checkpoint.strip_prefix(':').ok_or_else(shape)?;
+        if (session.is_empty() && checkpoint != "c.x.x.x.x.x.x")
+            || (!session.is_empty() && !identifier(session))
+        {
+            return Err(shape());
+        }
+        context.session_id = session.to_owned();
+        checkpoint
+    } else {
+        checkpoint
+    };
     let (base, mcp) = checkpoint.split_once(':').unwrap_or((checkpoint, ""));
     if checkpoint.ends_with(':') {
         return Err(invalid("invalid Claude MCP checkpoint"));
@@ -207,7 +272,7 @@ pub(crate) fn restore(context: &mut Context, checkpoint: &str) -> Result<()> {
         let (entries, rest) = fields.as_chunks::<5>();
         if !rest.is_empty()
             || entries.len() > MAX_MCP_DECLARATIONS
-            || mcp.len() >= MAX_MCP_CHECKPOINT_BYTES
+            || mcp.len() >= context.mcp_checkpoint_limit()
         {
             return Err(invalid("Claude MCP checkpoint exceeds its bounds"));
         }
@@ -443,9 +508,36 @@ pub(crate) fn translate_line(
     origin: &str,
     offset: u64,
 ) -> Result<(Vec<Value>, Context)> {
+    if context.prelude_end.is_some() {
+        verify_binding_fields(raw)?;
+    }
     let row: Value = serde_json::from_slice(raw)?;
+    let kind = row
+        .get("type")
+        .and_then(Value::as_str)
+        .ok_or("Claude row lacks type")?;
+    let mut next = context.clone();
+    if next.session_id.is_empty() {
+        let prelude_end = next
+            .prelude_end
+            .ok_or_else(|| invalid("Claude session identity is unavailable"))?;
+        if offset == 0 && raw.len() as u64 == prelude_end && file_history_prelude(&row) {
+            return Ok((Vec::new(), next));
+        }
+        if offset != prelude_end || kind != "user" {
+            return Err(invalid(
+                "Claude file-history prelude must be followed by a user record",
+            ));
+        }
+        next.session_id = row
+            .get("sessionId")
+            .and_then(Value::as_str)
+            .filter(|id| identifier(id))
+            .ok_or_else(|| invalid("Claude user record after the prelude lacks a valid sessionId"))?
+            .to_owned();
+    }
     if let Some(session) = row.get("sessionId")
-        && session.as_str() != Some(context.session_id.as_str())
+        && session.as_str() != Some(next.session_id.as_str())
     {
         return Err(invalid("Claude session identity changed inside one file"));
     }
@@ -453,10 +545,6 @@ pub(crate) fn translate_line(
     if row.get("agentId").is_some() && !worker.is_some_and(identifier) {
         return Err(invalid("invalid Claude worker identity"));
     }
-    let kind = row
-        .get("type")
-        .and_then(Value::as_str)
-        .ok_or("Claude row lacks type")?;
     let row_key = row.get("uuid").and_then(Value::as_str).unwrap_or("");
     if row_key.len() > 512 {
         return Err(invalid("Claude row identity exceeds limit"));
@@ -473,7 +561,6 @@ pub(crate) fn translate_line(
         row.get("timestamp")
             .map_or(Ok("0".to_owned()), |_| timestamp(&row))?
     };
-    let mut next = context.clone();
     next.worker_id = worker.unwrap_or("").to_owned();
     if !matches!(kind, "user" | "assistant") {
         return Ok((

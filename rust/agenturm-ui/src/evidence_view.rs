@@ -1,7 +1,8 @@
 //! Tables for the app's already-scoped, metadata-only evidence projections.
 
-use super::{CANVAS, draw_view_bar, heading_style, label_style, panel, selection_style};
+use super::{draw_view_bar, heading_style, label_style, panel, selection_style};
 use super::{surface, visible_text, wrap_display_width};
+use crate::theme;
 use agenturm_kernel::{ExtensionId, MetricRow};
 use crossterm::event::KeyCode;
 use ratatui::Frame;
@@ -191,7 +192,8 @@ impl EvidenceTable {
                 } else {
                     "… more detail at a larger size"
                 };
-                *last = Line::from(hint).style(surface(CANVAS).add_modifier(Modifier::DIM));
+                *last = Line::from(hint)
+                    .style(surface(theme::palette().canvas).add_modifier(Modifier::DIM));
             }
         }
         frame.render_widget(
@@ -218,13 +220,20 @@ impl EvidenceTable {
             .map(|&(_, weight)| Constraint::Fill(weight));
         let header =
             Row::new(self.spec.columns.iter().map(|&(title, _)| title)).style(heading_style());
-        let rows = self.rows.iter().map(|row| {
-            Row::new(
-                row.cells
-                    .iter()
-                    .map(|value| Cell::from(visible_text(value))),
-            )
-        });
+        let rows =
+            self.rows.iter().enumerate().map(|(index, row)| {
+                Row::new(row.cells.iter().enumerate().map(|(column, value)| {
+                    let cell = Cell::from(visible_text(value));
+                    if self.spec.columns.get(column).is_some_and(|(name, _)| {
+                        matches!(*name, "Result" | "Severity" | "Root result")
+                    }) {
+                        cell.style(theme::status(value))
+                    } else {
+                        cell
+                    }
+                }))
+                .style(theme::row(index))
+            });
         let mut cursor = TableState::default().with_selected(Some(selected));
         let table = Table::new(rows, columns)
             .block(panel(self.spec.title))

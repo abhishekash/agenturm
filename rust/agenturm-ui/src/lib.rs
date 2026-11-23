@@ -11,6 +11,7 @@ mod keymap;
 mod live_receiver;
 mod loaded_view;
 mod operation_table;
+mod theme;
 mod workbench;
 mod workspace;
 pub use evidence_view::{EvidenceRow, EvidenceSpec, EvidenceTable, EvidenceTables};
@@ -34,8 +35,9 @@ pub use workbench::{
 };
 
 pub use workspace::{
-    HistorySelection, ProjectOrigin, RecordedSession, ReviewVersion, SessionCatalog, SessionCursor,
-    SessionView, WorkspaceRequest, WorkspaceResponse, WorkspaceView, run_workspace,
+    HistorySelection, NativeSessionContext, ProjectOrigin, RecordedSession, ReviewVersion,
+    SessionCatalog, SessionCursor, SessionView, WorkspaceRequest, WorkspaceResponse, WorkspaceView,
+    run_workspace,
 };
 
 use agenturm_kernel::ReadSnapshot;
@@ -468,6 +470,7 @@ pub fn run_with_turn_activity(
         Option<&ObservationPosition>,
     ) -> io::Result<Option<HistoryPage>>,
 ) -> io::Result<()> {
+    let mut appearance = theme::Picker::new();
     let mut page = PageView::new(initial, false);
     let mut newer_pages = Vec::<PageView>::new();
     let mut overview = None;
@@ -485,11 +488,15 @@ pub fn run_with_turn_activity(
                     page.turn_picker
                         .as_mut()
                         .map(|state| (page.turns.as_slice(), state)),
-                )
+                );
+                appearance.draw(frame);
             })?;
             if let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
             {
+                if appearance.key(key) {
+                    continue;
+                }
                 if keymap::interrupt(key) {
                     break Ok(());
                 }
@@ -590,11 +597,15 @@ fn draw(
     turn_picker: Option<(&[RecordedTurn], &mut ListState)>,
 ) {
     let area = frame.area();
+    frame.render_widget(
+        Block::default().style(surface(theme::palette().canvas)),
+        area,
+    );
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         frame.render_widget(
             Paragraph::new("Terminal too small · widen the window to inspect Agenturm")
                 .centered()
-                .style(Style::default().fg(Color::Yellow)),
+                .style(theme::foreground(theme::palette().primary)),
             area,
         );
         return;
@@ -610,7 +621,10 @@ fn draw(
             Constraint::Length(2),
         ])
         .areas(area);
-        frame.render_widget(Block::default().style(surface(CANVAS)), area);
+        frame.render_widget(
+            Block::default().style(surface(theme::palette().canvas)),
+            area,
+        );
         evidence_view::header(frame, model, head);
         let keys = if let Some(inspection) = &model.evidence_inspection {
             table.draw_expanded(frame, body, model.scroll, inspection);
@@ -633,9 +647,7 @@ fn draw(
         .split(area);
     let mut header = vec![Span::styled(
         " Agenturm ",
-        Style::default()
-            .fg(Color::Cyan)
-            .add_modifier(Modifier::BOLD),
+        label_style().add_modifier(Modifier::BOLD),
     )];
     header.push(Span::raw(format!(" · {} observations", model.observations)));
     if turn_picker.is_some() {
@@ -648,7 +660,7 @@ fn draw(
     if model.truncated {
         header.push(Span::styled(
             " · older history available",
-            Style::default().fg(Color::Yellow),
+            theme::foreground(theme::palette().primary),
         ));
     }
     frame.render_widget(
@@ -662,7 +674,7 @@ fn draw(
     } else if model.panes.is_empty() {
         frame.render_widget(
             Paragraph::new("No panes are registered yet.\nAdd a UI contribution to inspect data.")
-                .block(Block::bordered().title("Overview"))
+                .block(panel("Overview"))
                 .wrap(Wrap { trim: true }),
             rows[1],
         );
@@ -676,9 +688,7 @@ fn draw(
         history_keys(model, has_newer_page)
     };
     frame.render_widget(
-        Paragraph::new(footer)
-            .style(Style::default().fg(Color::DarkGray))
-            .centered(),
+        Paragraph::new(footer).style(theme::muted()).centered(),
         rows[2],
     );
 }
@@ -687,13 +697,13 @@ fn history_keys(model: &UiModel, has_newer_page: bool) -> &'static str {
     if model.help {
         HELP_CLOSE_HINT
     } else if model.older_cursor.is_some() && has_newer_page {
-        " ←/→ panes · ↑/↓ scroll · ] older · [ newer · ? help · q quit "
+        " ←/→ panes · ↑/↓ scroll · ] older · [ newer · F2 themes · ? help · q quit "
     } else if model.older_cursor.is_some() {
-        " ←/→ panes · ↑/↓ scroll · ] older · ? help · q quit "
+        " ←/→ panes · ↑/↓ scroll · ] older · F2 themes · ? help · q quit "
     } else if has_newer_page {
-        " ←/→ panes · ↑/↓ scroll · [ newer · ? help · q quit "
+        " ←/→ panes · ↑/↓ scroll · [ newer · F2 themes · ? help · q quit "
     } else {
-        " ←/→ or Tab switch panes · ↑/↓ scroll · ? help · q quit "
+        " ←/→ or Tab switch panes · ↑/↓ scroll · F2 themes · ? help · q quit "
     }
 }
 
@@ -726,12 +736,8 @@ fn render_turn_picker(
         ListItem::new(Text::from(vec![Line::from(summary), Line::from(source)]))
     });
     let list = List::new(items)
-        .block(Block::bordered().title("Turns on this page"))
-        .highlight_style(
-            Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )
+        .block(panel("Turns on this page"))
+        .highlight_style(selection_style())
         .highlight_symbol("› ");
     frame.render_stateful_widget(list, area, state);
 }
@@ -777,26 +783,29 @@ fn pane_lines(pane: &Pane, width: u16) -> Vec<Line<'static>> {
     if pane.rows.is_empty() {
         return vec![Line::from(Span::styled(
             "No data in this view yet",
-            Style::default().fg(Color::DarkGray),
+            theme::muted(),
         ))];
     }
     let width = usize::from(width.max(1));
     let mut output = Vec::new();
     for row in &pane.rows {
-        let text = format!("{}  {}", visible_text(&row.label), visible_text(&row.value));
-        output.extend(wrap_display_width(&text, width).into_iter().map(Line::from));
+        let label = visible_text(&row.label);
+        let text = format!("{label}  {}", visible_text(&row.value));
+        for (index, chunk) in wrap_display_width(&text, width).into_iter().enumerate() {
+            if index == 0
+                && let Some(value) = chunk.strip_prefix(&label)
+            {
+                output.push(Line::from(vec![
+                    Span::styled(label.clone(), label_style()),
+                    Span::raw(value.to_owned()),
+                ]));
+            } else {
+                output.push(Line::from(chunk));
+            }
+        }
     }
     output
 }
-
-// Color roles from the Python 0.2.8 Current theme.
-const CANVAS: Color = Color::Rgb(14, 14, 20);
-const SURFACE: Color = Color::Rgb(21, 21, 30);
-const PANEL: Color = Color::Rgb(30, 30, 42);
-const TEXT: Color = Color::Rgb(243, 241, 237);
-const BORDER: Color = Color::Rgb(57, 55, 70);
-const ACCENT: Color = Color::Rgb(255, 189, 105);
-const SECONDARY: Color = Color::Rgb(197, 173, 255);
 
 fn colors() -> bool {
     static ENABLED: std::sync::LazyLock<bool> =
@@ -806,29 +815,24 @@ fn colors() -> bool {
 
 fn surface(background: Color) -> Style {
     if colors() {
-        Style::default().fg(TEXT).bg(background)
+        Style::default().fg(theme::palette().text).bg(background)
     } else {
         Style::default()
     }
 }
 
 fn heading_style() -> Style {
-    surface(PANEL).add_modifier(Modifier::BOLD)
+    surface(theme::palette().panel).add_modifier(Modifier::BOLD)
 }
 
 fn label_style() -> Style {
-    if colors() {
-        Style::default().fg(SECONDARY)
-    } else {
-        Style::default()
-    }
+    theme::foreground(theme::palette().secondary)
 }
 
 fn selection_style() -> Style {
     if colors() {
-        Style::default()
-            .fg(ACCENT)
-            .bg(Color::Rgb(48, 41, 30))
+        surface(theme::palette().cursor)
+            .fg(theme::palette().on_cursor)
             .add_modifier(Modifier::BOLD)
     } else {
         Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
@@ -836,15 +840,11 @@ fn selection_style() -> Style {
 }
 
 fn panel<'a>(title: impl Into<Line<'a>>) -> Block<'a> {
-    let block = Block::bordered()
+    Block::bordered()
         .title(title)
-        .style(surface(SURFACE))
-        .title_style(heading_style());
-    if colors() {
-        block.border_style(Style::default().fg(BORDER))
-    } else {
-        block
-    }
+        .style(surface(theme::palette().surface))
+        .title_style(label_style().add_modifier(Modifier::BOLD))
+        .border_style(theme::foreground(theme::palette().border_subtle))
 }
 
 fn visible_text(text: &str) -> String {

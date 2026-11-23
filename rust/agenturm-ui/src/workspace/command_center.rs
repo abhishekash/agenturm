@@ -37,10 +37,58 @@ impl Grouping {
 pub(super) fn project(row: &RecordedSession) -> &str {
     row.project_path
         .as_deref()
-        .filter(|p| {
-            row.project_origin == Some(ProjectOrigin::OperatorTaskWorkspace) && !p.trim().is_empty()
-        })
+        .filter(|p| row.project_origin.is_some() && !p.trim().is_empty())
         .unwrap_or("Project unavailable")
+}
+
+pub(super) fn provider(row: &RecordedSession) -> &str {
+    match source_family(&row.harness_id) {
+        "harness.codex" => "Codex",
+        "harness.claude" => "Claude Code",
+        "harness.pi" => "Pi",
+        "harness.kiro" => "Kiro",
+        "harness.opencode" => "OpenCode",
+        source => source.strip_prefix("harness.").unwrap_or(source),
+    }
+}
+
+pub(super) fn name(row: &RecordedSession) -> &str {
+    row.task_title
+        .as_deref()
+        .filter(|name| !name.trim().is_empty())
+        .unwrap_or("Name unavailable")
+}
+
+fn supporting_context(row: &RecordedSession, grouping: Grouping, duplicate: bool) -> String {
+    let mut parts = vec![provider(row).to_owned()];
+    if let Some(value) = row
+        .native_context
+        .as_deref()
+        .and_then(|context| context.agent_name.as_deref())
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(visible_text(value));
+    }
+    if duplicate {
+        parts.push("Same name".into());
+    }
+    if let Some(value) = row
+        .native_context
+        .as_deref()
+        .and_then(|context| context.agent_role.as_deref())
+        .filter(|value| !value.is_empty())
+    {
+        parts.push(visible_text(value));
+    }
+    if grouping != Grouping::Project && row.project_origin.is_some() {
+        let path = project(row);
+        let short = std::path::Path::new(path)
+            .file_name()
+            .and_then(|name| name.to_str())
+            .unwrap_or(path);
+        parts.push(visible_text(short));
+    }
+    parts.join(" · ")
 }
 
 pub(super) fn group(row: &RecordedSession, grouping: Grouping) -> &str {
@@ -122,7 +170,12 @@ pub(super) fn draw(
     pending: bool,
     message: Option<&str>,
 ) {
-    let area = frame.area();
+    let full = frame.area();
+    let area = if full.width >= 80 {
+        full.inner(ratatui::layout::Margin::new(1, 0))
+    } else {
+        full
+    };
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
         frame.render_widget(
             Paragraph::new("Terminal too small · widen the window"),
@@ -139,6 +192,14 @@ pub(super) fn draw(
         Constraint::Length(3),
     ])
     .areas(area);
+    let [identity, appearance] =
+        Layout::horizontal([Constraint::Fill(1), Constraint::Length(17)]).areas(brand);
+    frame.render_widget(
+        Paragraph::new("F2 Themes")
+            .right_aligned()
+            .style(label_style()),
+        appearance,
+    );
     frame.render_widget(
         Paragraph::new(Line::from(vec![
             Span::styled(" Agenturm command center", heading_style()),
@@ -147,9 +208,12 @@ pub(super) fn draw(
                 label_style(),
             ),
         ])),
-        brand,
+        identity,
     );
-    frame.render_widget(Paragraph::new(lines).style(surface(SURFACE)), filters);
+    frame.render_widget(
+        Paragraph::new(lines).style(surface(theme::palette().surface)),
+        filters,
+    );
     let navigation_text = if agents.editing || !agents.search.is_empty() {
         format!(
             " / {}{}",
@@ -170,7 +234,8 @@ pub(super) fn draw(
     );
     if agents.help {
         let help = format!(
-            "{}\n{} · H live Host · U Usage\nTab / Shift+Tab Status filter · / Search · a Reset\nCtrl+F Investigate retained evidence\nEnter Inspect · Esc Back · Ctrl+R / V Review · P Prompts\nX Mark request seen · v Capture availability\nG Group project/source/none · f Tree/flat · o Sort\n←/→ Collapse/expand · p Pause · Y To review\nAlt+↑/↓ Parent/child · Alt+→ Needs attention\n[ Newer · ] Show more · l Latest · R Refresh\nb Tasks · w Workflow · c Copy · x Export · q Quit",
+            "{}\n{} · H live Host · U Usage\nTab / Shift+Tab Status filter · / Search · a Reset\nCtrl+F Investigate retained evidence\nEnter Inspect · Esc Back · Ctrl+R / V Review · P Prompts\nX Mark request seen · v Capture availability\nF2 Themes · Ctrl+P Appearance
+G Group project/source/none · f Tree/flat · o Sort\n←/→ Collapse/expand · p Pause · Y To review\nAlt+↑/↓ Parent/child · Alt+→ Needs attention\n[ Newer · ] Show more · l Latest · R Refresh\nb Tasks · w Workflow · c Copy · x Export · q Quit",
             keymap::navigation_hints(&keymap::NAVIGATION[..5]),
             keymap::navigation_hints(&keymap::NAVIGATION[5..])
         );
@@ -236,15 +301,37 @@ pub(super) fn draw(
             "○"
         };
         let indent = "  ".repeat(item.depth.min(4));
-        let text = format!(
-            "{indent}{marker} {}",
-            visible_text(row.task_title.as_deref().unwrap_or("Untitled session"))
+        let text = format!("{indent}{marker} {}", visible_text(name(row)));
+        let duplicate = row.task_title.as_ref().is_some_and(|title| {
+            agents
+                .visible
+                .iter()
+                .filter_map(|item| sessions.and_then(|rows| rows.get(item.index)))
+                .filter(|other| {
+                    other
+                        .task_title
+                        .as_ref()
+                        .is_some_and(|other| other.eq_ignore_ascii_case(title))
+                })
+                .count()
+                > 1
+        });
+        let supporting = supporting_context(row, agents.grouping, duplicate);
+        rows.push(
+            Row::new(vec![
+                Text::from(vec![
+                    Line::styled(roster_cell(&text, task_width), heading_style()),
+                    Line::styled(
+                        roster_cell(&format!("{indent}  {supporting}"), task_width),
+                        label_style(),
+                    ),
+                ]),
+                Text::styled(status(row), theme::status(status(row))),
+                Text::styled(age(row.updated_at_unix_ns), theme::muted()),
+            ])
+            .height(2)
+            .style(theme::row(position)),
         );
-        rows.push(Row::new([
-            roster_cell(&text, task_width),
-            status(row).into(),
-            age(row.updated_at_unix_ns),
-        ]));
     }
     let has_more = agents
         .catalog
@@ -303,9 +390,9 @@ pub(super) fn draw(
         },
         |row| {
             format!(
-                "{} / {} · {}",
-                visible_text(&row.harness_id),
-                visible_text(&row.session_id),
+                "{} · {} · recorded {}",
+                visible_text(name(row)),
+                supporting_context(row, agents.grouping, false),
                 visible_text(recorded_state(row))
             )
         },
@@ -320,13 +407,21 @@ pub(super) fn draw(
     let detail = message.map(visible_text).unwrap_or_else(|| {
         agents
             .current()
-            .filter(|row| {
-                row.project_origin == Some(ProjectOrigin::OperatorTaskWorkspace)
-                    && row.project_path.is_some()
-            })
+            .filter(|row| row.project_origin.is_some() && row.project_path.is_some())
             .map_or_else(
                 || connection.into(),
-                |row| format!("Operator task workspace · {}", visible_text(project(row))),
+                |row| {
+                    format!(
+                        "{} · {}",
+                        match row.project_origin {
+                            Some(ProjectOrigin::OperatorTaskWorkspace) => "Operator task workspace",
+                            Some(ProjectOrigin::NativeRecordedWorkspace) =>
+                                "Native session workspace",
+                            None => "Project unavailable",
+                        },
+                        visible_text(project(row))
+                    )
+                },
             )
     });
     let hints = if agents.editing {

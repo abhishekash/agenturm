@@ -3,12 +3,13 @@
 use serde::{Deserialize, Serialize};
 use serde_json::json;
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::cmp::Reverse;
+use std::collections::{BTreeMap, BTreeSet};
 use std::env;
 use std::fs;
-use std::io::ErrorKind;
+use std::io::{BufRead, BufReader, ErrorKind, Read};
 use std::path::{Path, PathBuf};
-use std::time::SystemTime;
+use std::time::{Duration, Instant, SystemTime};
 
 pub(crate) const MAX_SESSIONS_PER_HARNESS: usize = super::MAX_CONFIGURED_SOURCES / 2;
 pub(crate) const DEFAULT_SESSIONS_PER_HARNESS: usize = 4;
@@ -18,8 +19,93 @@ pub(crate) const KIRO_PLUGIN_ID: &str = "example.rust-kiro-harness";
 pub(crate) const OPENCODE_PLUGIN_ID: &str = "example.rust-opencode-harness";
 const MAX_DISCOVERY_ENTRIES: usize = 100_000;
 const MAX_DISCOVERY_DEPTH: usize = 8;
+const MAX_TRACKED_TRANSCRIPTS: usize = 4_096;
+const MAX_RETAINED_AUTHORITY_SOURCES: usize = 256;
+const MAX_TRACKED_PATH_BYTES: usize = 2 * 1024 * 1024;
+const MAX_SCAN_TIME: Duration = Duration::from_millis(500);
+const MAX_CODEX_HEADER_BYTES: u64 = 64 * 1024;
 
-#[derive(Clone, Debug, Deserialize, Serialize)]
+mod open_transcripts;
+
+#[derive(Clone, Debug)]
+pub(crate) struct AuthorizedSource {
+    pub(crate) source_id: String,
+    pub(crate) plugin_id: String,
+    pub(crate) source_root: PathBuf,
+}
+
+#[derive(Clone, Debug)]
+pub(crate) struct SourceAuthority {
+    pub(crate) follow: Option<FollowDiscovery>,
+    pub(crate) sources: Vec<AuthorizedSource>,
+    pub(crate) codex_home: Option<PathBuf>,
+}
+
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(crate) struct DiscoveryCoverage {
+    pub(crate) selected: usize,
+    pub(crate) eligible: usize,
+    pub(crate) open_selected: usize,
+    pub(crate) open_found: usize,
+    pub(crate) excluded_reviews: usize,
+    pub(crate) scan_partial: bool,
+    pub(crate) handles_partial: bool,
+}
+
+impl DiscoveryCoverage {
+    pub(crate) fn notice(self) -> String {
+        let omitted = self.eligible.saturating_sub(self.selected);
+        let state = if self.scan_partial || self.handles_partial {
+            "Discovery partial"
+        } else {
+            "Discovery"
+        };
+        let mut text = format!("{state}: {}/{} selected", self.selected, self.eligible);
+        if omitted > 0 {
+            text.push_str(&format!(" · {omitted} queued"));
+        }
+        if self.open_found > 0 {
+            text.push_str(&format!(
+                " · {}/{} open handles",
+                self.open_selected, self.open_found
+            ));
+        }
+        if self.excluded_reviews > 0 {
+            text.push_str(&format!(" · {} reviews excluded", self.excluded_reviews));
+        }
+        if self.scan_partial {
+            text.push_str(" · file scan partial");
+        }
+        if self.handles_partial {
+            text.push_str(" · process scan partial");
+        }
+        text
+    }
+}
+
+#[derive(Clone, Debug, Default)]
+pub(crate) struct FollowSchedule {
+    epoch: u64,
+    selected: BTreeMap<PathBuf, u64>,
+    reviews: BTreeMap<PathBuf, HeaderStamp>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+struct HeaderStamp {
+    modified: SystemTime,
+    len: u64,
+    file: Option<open_transcripts::FileIdentity>,
+    review: bool,
+}
+
+#[derive(Debug)]
+struct Candidate {
+    path: PathBuf,
+    modified: SystemTime,
+    open: bool,
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FollowDiscovery {
     pub(crate) codex_root: PathBuf,
@@ -63,7 +149,7 @@ impl FollowDiscovery {
                 "codex",
                 agenturm_runtime::CODEX_PLUGIN_ID,
                 Some(self.codex_root.as_path()),
-                SourceShape::Transcript,
+                SourceShape::Codex,
             ),
             (
                 "pi",
@@ -94,41 +180,184 @@ impl FollowDiscovery {
         .filter_map(|(kind, plugin, path, shape)| Some((kind, plugin, path?, shape)))
     }
 
+    pub(crate) fn codex_home(&self) -> Option<PathBuf> {
+        (self.codex_root.file_name()? == "sessions")
+            .then(|| self.codex_root.parent().map(Path::to_owned))
+            .flatten()
+    }
+
     pub(crate) fn sources(&self) -> Result<Vec<super::CollectionSourceInput>, String> {
-        let mut by_harness = Vec::new();
-        for (kind, plugin, root, shape) in self.targets() {
-            let paths = match shape {
-                SourceShape::Database => regular_database(root),
-                SourceShape::Transcript | SourceShape::Kiro => {
-                    recent_session_files(root, self.sessions_per_harness, shape)
-                }
-            }
-            .map_err(|error| format!("scan {kind} sessions failed: {error}"))?;
-            by_harness.push((kind, plugin, paths.into_iter()));
+        self.select(
+            &mut FollowSchedule::default(),
+            &Default::default(),
+            super::MAX_CONFIGURED_SOURCES,
+        )
+        .map(|(sources, _)| sources)
+    }
+
+    pub(crate) fn follow_sources(
+        &self,
+        schedule: &mut FollowSchedule,
+        capacity: usize,
+    ) -> Result<(Vec<super::CollectionSourceInput>, DiscoveryCoverage), String> {
+        self.select(schedule, &open_transcripts::current(), capacity)
+    }
+
+    /// Recover configured native members for retained source IDs independently
+    /// of polling slots. Callers still verify each member's durable receipt.
+    pub(crate) fn authorize_retained_sources(
+        &self,
+        wanted: &BTreeSet<String>,
+    ) -> Result<Vec<AuthorizedSource>, String> {
+        if wanted.len() > MAX_RETAINED_AUTHORITY_SOURCES {
+            return Err("retained discovery exceeds the 256 source limit".into());
         }
-        // Give each harness a slot before drawing more sessions from a busy
-        // harness. The existing per-harness limit still applies.
+        let open = open_transcripts::OpenTranscripts::default();
+        let reviews = BTreeMap::new();
+        let mut next_reviews = BTreeMap::new();
+        let mut coverage = DiscoveryCoverage::default();
         let mut sources = Vec::new();
-        while sources.len() < super::MAX_CONFIGURED_SOURCES {
-            let before = sources.len();
-            for (kind, plugin, paths) in &mut by_harness {
-                if let Some(path) = paths.next() {
-                    sources.push(source_entry(kind, plugin, &path)?);
-                    if sources.len() == super::MAX_CONFIGURED_SOURCES {
-                        break;
-                    }
-                }
+        for (kind, plugin, root, shape) in self.targets() {
+            if !matches!(plugin, agenturm_runtime::CODEX_PLUGIN_ID | CLAUDE_PLUGIN_ID)
+                || !wanted.iter().any(|id| {
+                    id.strip_prefix("harness.")
+                        .and_then(|rest| rest.split_once('.'))
+                        .is_some_and(|(provider, _)| provider == kind)
+                })
+            {
+                continue;
             }
-            if sources.len() == before {
-                break;
+            let mut scan = TranscriptScan {
+                harness: kind,
+                shape,
+                open: &open,
+                reviews: &reviews,
+                next_reviews: &mut next_reviews,
+                coverage: &mut coverage,
+            };
+            for candidate in scan
+                .files(root)
+                .map_err(|error| format!("scan {kind} sessions failed: {error}"))?
+            {
+                let entry = source_entry(kind, plugin, &candidate.path)?;
+                if wanted.contains(&entry.source_id) {
+                    sources.push(AuthorizedSource {
+                        source_id: entry.source_id,
+                        plugin_id: entry.plugin_id,
+                        source_root: entry.source_root,
+                    });
+                }
             }
         }
         Ok(sources)
     }
+
+    fn select(
+        &self,
+        schedule: &mut FollowSchedule,
+        open: &open_transcripts::OpenTranscripts,
+        capacity: usize,
+    ) -> Result<(Vec<super::CollectionSourceInput>, DiscoveryCoverage), String> {
+        let mut openings = Vec::new();
+        let mut catch_up = Vec::new();
+        let mut coverage = DiscoveryCoverage {
+            handles_partial: open.partial,
+            ..DiscoveryCoverage::default()
+        };
+        let mut next_reviews = BTreeMap::new();
+        let mut available = BTreeSet::new();
+        for (kind, plugin, root, shape) in self.targets() {
+            let candidates = match shape {
+                SourceShape::Database => regular_database(root).map(|paths| {
+                    coverage.eligible += paths.len();
+                    paths
+                        .into_iter()
+                        .map(|path| Candidate {
+                            path,
+                            modified: SystemTime::UNIX_EPOCH,
+                            open: false,
+                        })
+                        .collect()
+                }),
+                SourceShape::Codex | SourceShape::Transcript | SourceShape::Kiro => {
+                    let mut scan = TranscriptScan {
+                        harness: kind,
+                        shape,
+                        open,
+                        reviews: &schedule.reviews,
+                        next_reviews: &mut next_reviews,
+                        coverage: &mut coverage,
+                    };
+                    scan.files(root)
+                }
+            }
+            .map_err(|error| format!("scan {kind} sessions failed: {error}"))?;
+            let mut candidates = candidates;
+            candidates.sort_unstable_by(|left, right| {
+                let key = |item: &Candidate| {
+                    (
+                        schedule.selected.get(&item.path).copied().unwrap_or(0),
+                        Reverse(item.modified),
+                    )
+                };
+                key(left).cmp(&key(right)).then(left.path.cmp(&right.path))
+            });
+            available.extend(candidates.iter().map(|candidate| candidate.path.clone()));
+            let (opened, historical): (Vec<_>, Vec<_>) =
+                candidates.into_iter().partition(|candidate| candidate.open);
+            coverage.open_found += opened.len();
+            openings.push((kind, plugin, opened.into_iter()));
+            catch_up.push((
+                kind,
+                plugin,
+                historical.into_iter().take(self.sessions_per_harness),
+            ));
+        }
+        let mut sources = Vec::with_capacity(capacity);
+        let first = (schedule.epoch % openings.len() as u64) as usize;
+        openings.rotate_left(first);
+        catch_up.rotate_left(first);
+        allocate(&mut openings, capacity, &mut sources)?;
+        coverage.open_selected = sources.len();
+        allocate(&mut catch_up, capacity, &mut sources)?;
+        coverage.selected = sources.len();
+        schedule.epoch = schedule.epoch.saturating_add(1);
+        schedule.selected.retain(|path, _| available.contains(path));
+        for source in &sources {
+            schedule
+                .selected
+                .insert(source.source_root.clone(), schedule.epoch);
+        }
+        schedule.reviews = next_reviews;
+        Ok((sources, coverage))
+    }
+}
+
+fn allocate(
+    groups: &mut [(&str, &str, impl Iterator<Item = Candidate>)],
+    capacity: usize,
+    sources: &mut Vec<super::CollectionSourceInput>,
+) -> Result<(), String> {
+    while sources.len() < capacity {
+        let before = sources.len();
+        for (kind, plugin, paths) in &mut *groups {
+            if let Some(candidate) = paths.next() {
+                sources.push(source_entry(kind, plugin, &candidate.path)?);
+                if sources.len() == capacity {
+                    break;
+                }
+            }
+        }
+        if sources.len() == before {
+            break;
+        }
+    }
+    Ok(())
 }
 
 #[derive(Clone, Copy)]
 enum SourceShape {
+    Codex,
     Transcript,
     Kiro,
     Database,
@@ -233,51 +462,183 @@ fn regular_database(path: &Path) -> Result<Vec<PathBuf>, String> {
     }
 }
 
-fn recent_session_files(
-    root: &Path,
-    limit: usize,
+struct TranscriptScan<'a> {
+    harness: &'static str,
     shape: SourceShape,
-) -> Result<Vec<PathBuf>, String> {
-    let root = match fs::canonicalize(root) {
-        Ok(root) => root,
-        Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
-        Err(error) => return Err(error.to_string()),
-    };
-    let mut pending = vec![(root, 0)];
-    let mut recent = BTreeSet::<(SystemTime, PathBuf)>::new();
-    let mut entries = 0;
-    while let Some((directory, depth)) = pending.pop() {
-        for entry in fs::read_dir(directory).map_err(|error| error.to_string())? {
+    open: &'a open_transcripts::OpenTranscripts,
+    reviews: &'a BTreeMap<PathBuf, HeaderStamp>,
+    next_reviews: &'a mut BTreeMap<PathBuf, HeaderStamp>,
+    coverage: &'a mut DiscoveryCoverage,
+}
+
+impl TranscriptScan<'_> {
+    fn files(&mut self, root: &Path) -> Result<Vec<Candidate>, String> {
+        let root = match fs::canonicalize(root) {
+            Ok(root) => root,
+            Err(error) if error.kind() == ErrorKind::NotFound => return Ok(Vec::new()),
+            Err(error) => return Err(error.to_string()),
+        };
+        let entries = fs::read_dir(root).map_err(|error| error.to_string())?;
+        let mut directories = vec![(entries, 0)];
+        let mut candidates = Vec::new();
+        let mut entries = 0;
+        let mut paths = 0;
+        let mut path_bytes = 0;
+        let started = Instant::now();
+        while let Some((directory, depth)) = directories.last_mut() {
+            let Some(entry) = directory.next() else {
+                directories.pop();
+                continue;
+            };
             entries += 1;
-            if entries > MAX_DISCOVERY_ENTRIES {
-                return Err("session discovery entry limit exceeded".into());
+            if entries > MAX_DISCOVERY_ENTRIES || started.elapsed() > MAX_SCAN_TIME {
+                self.coverage.scan_partial = true;
+                break;
             }
             let entry = entry.map_err(|error| error.to_string())?;
             let kind = entry.file_type().map_err(|error| error.to_string())?;
             let path = entry.path();
-            if kind.is_dir() && depth < MAX_DISCOVERY_DEPTH {
-                if !matches!(shape, SourceShape::Kiro)
-                    || !matches!(
+            if kind.is_dir() {
+                if matches!(self.shape, SourceShape::Kiro)
+                    && matches!(
                         entry.file_name().to_str(),
                         Some("cli" | "snapshots" | ".index")
                     )
                 {
-                    pending.push((path, depth + 1));
+                    continue;
                 }
-            } else if kind.is_file() && is_transcript(&path, shape) {
-                let modified = match entry.metadata().and_then(|meta| meta.modified()) {
-                    Ok(modified) => modified,
-                    Err(error) if error.kind() == ErrorKind::NotFound => continue,
-                    Err(error) => return Err(error.to_string()),
-                };
-                recent.insert((modified, path));
-                if recent.len() > limit {
-                    recent.pop_first();
+                if *depth < MAX_DISCOVERY_DEPTH {
+                    let next_depth = *depth + 1;
+                    match fs::read_dir(path) {
+                        Ok(entries) => directories.push((entries, next_depth)),
+                        Err(error) if error.kind() == ErrorKind::NotFound => {}
+                        Err(error) => return Err(error.to_string()),
+                    }
+                } else {
+                    self.coverage.scan_partial = true;
+                }
+                continue;
+            }
+            if !kind.is_file() || !is_transcript(&path, self.shape) {
+                continue;
+            }
+            let metadata = match entry.metadata() {
+                Ok(metadata) => metadata,
+                Err(error) if error.kind() == ErrorKind::NotFound => continue,
+                Err(error) => return Err(error.to_string()),
+            };
+            let modified = metadata.modified().map_err(|error| error.to_string())?;
+            let file = open_transcripts::file_identity(&metadata);
+            let open = self.open.contains(self.harness, file);
+            let Ok(valid_path) = config_path(&path) else {
+                self.coverage.scan_partial = true;
+                continue;
+            };
+            if !open
+                && (paths >= MAX_TRACKED_TRANSCRIPTS
+                    || path_bytes + valid_path.len() > MAX_TRACKED_PATH_BYTES)
+            {
+                self.coverage.scan_partial = true;
+                continue;
+            }
+            paths += 1;
+            path_bytes += valid_path.len();
+            if matches!(self.shape, SourceShape::Codex)
+                && self.is_review(
+                    &path,
+                    HeaderStamp {
+                        modified,
+                        len: metadata.len(),
+                        file,
+                        review: false,
+                    },
+                )
+            {
+                self.coverage.excluded_reviews += 1;
+                continue;
+            }
+            self.coverage.eligible += 1;
+            candidates.push(Candidate {
+                path,
+                modified,
+                open,
+            });
+        }
+        Ok(candidates)
+    }
+
+    fn is_review(&mut self, path: &Path, mut stamp: HeaderStamp) -> bool {
+        if let Some(prior) = self.reviews.get(path)
+            && prior.file == stamp.file
+            && prior.len == stamp.len
+            && prior.modified == stamp.modified
+        {
+            stamp.review = prior.review;
+        } else {
+            match codex_review(path, stamp.file) {
+                Ok(review) => stamp.review = review,
+                Err(error) if error.kind() == ErrorKind::NotFound => return false,
+                Err(_) => {
+                    self.coverage.scan_partial = true;
+                    return false;
                 }
             }
         }
+        let review = stamp.review;
+        self.next_reviews.insert(path.to_owned(), stamp);
+        review
     }
-    Ok(recent.into_iter().rev().map(|(_, path)| path).collect())
+}
+
+fn codex_review(
+    path: &Path,
+    identity: Option<open_transcripts::FileIdentity>,
+) -> std::io::Result<bool> {
+    #[derive(Deserialize)]
+    struct Header {
+        #[serde(rename = "type")]
+        kind: String,
+        payload: MetadataRow,
+    }
+    #[derive(Deserialize)]
+    struct MetadataRow {
+        #[serde(default)]
+        source: Option<serde_json::Value>,
+        #[serde(default)]
+        thread_source: Option<String>,
+    }
+
+    let mut options = fs::OpenOptions::new();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        options.custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK);
+    }
+    let file = options.open(path)?;
+    let metadata = file.metadata()?;
+    if !metadata.is_file() || open_transcripts::file_identity(&metadata) != identity {
+        return Err(std::io::Error::other(
+            "transcript identity changed during discovery",
+        ));
+    }
+    let mut line = Vec::new();
+    BufReader::new(file.take(MAX_CODEX_HEADER_BYTES)).read_until(b'\n', &mut line)?;
+    if !line.ends_with(b"\n") {
+        return Ok(false);
+    }
+    let Ok(header) = serde_json::from_slice::<Header>(&line) else {
+        return Ok(false);
+    };
+    Ok(header.kind == "session_meta"
+        && (header.payload.thread_source.as_deref() == Some("guardian_review")
+            || header
+                .payload
+                .source
+                .as_ref()
+                .and_then(|source| source.pointer("/subagent/other"))
+                .and_then(serde_json::Value::as_str)
+                == Some("guardian")))
 }
 
 fn is_transcript(path: &Path, shape: SourceShape) -> bool {
@@ -336,6 +697,99 @@ mod tests {
     use super::*;
     use std::fs::{File, FileTimes};
     use std::time::Duration;
+
+    #[test]
+    fn retained_authority_recovers_exact_configured_members_outside_polling_slots() {
+        let directory =
+            env::temp_dir().join(format!("agenturm-discover-retained-{}", std::process::id()));
+        let codex = directory.join("codex/sessions/2026/11");
+        let claude = directory.join("claude/projects/fixture");
+        let pi = directory.join("pi");
+        for path in [&codex, &claude, &pi] {
+            fs::create_dir_all(path).unwrap();
+        }
+        let codex_header = r#"{"type":"session_meta","payload":{"id":"session"}}"#;
+        let write = |path: &Path, first: &str, modified| {
+            fs::write(path, format!("{first}\n")).unwrap();
+            File::open(path)
+                .unwrap()
+                .set_times(
+                    FileTimes::new()
+                        .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(modified)),
+                )
+                .unwrap();
+        };
+        let retained = codex.join("retained.jsonl");
+        let review = codex.join("review.jsonl");
+        let claude_retained = claude.join("retained.jsonl");
+        let pi_retained = pi.join("retained.jsonl");
+        write(&retained, codex_header, 1);
+        for index in 0..20 {
+            write(
+                &codex.join(format!("newer-{index}.jsonl")),
+                codex_header,
+                10 + index,
+            );
+        }
+        write(
+            &review,
+            r#"{"type":"session_meta","payload":{"source":{"subagent":{"other":"guardian"}}}}"#,
+            100,
+        );
+        write(
+            &claude_retained,
+            r#"{"type":"user","sessionId":"native-claude"}"#,
+            1,
+        );
+        write(&pi_retained, r#"{"type":"session","id":"native-pi"}"#, 1);
+        let selection = FollowDiscovery {
+            codex_root: directory.join("codex/sessions"),
+            pi_root: pi,
+            claude_root: Some(directory.join("claude/projects")),
+            kiro_root: None,
+            opencode_db: None,
+            sessions_per_harness: 4,
+        };
+        let selected = selection.sources().unwrap();
+        assert!(!selected.iter().any(|entry| entry.source_root == retained));
+        let expected = [
+            source_entry("codex", agenturm_runtime::CODEX_PLUGIN_ID, &retained).unwrap(),
+            source_entry("claude", CLAUDE_PLUGIN_ID, &claude_retained).unwrap(),
+        ];
+        let mut wanted = expected
+            .iter()
+            .map(|entry| entry.source_id.clone())
+            .collect::<BTreeSet<_>>();
+        wanted.insert(
+            source_entry("codex", agenturm_runtime::CODEX_PLUGIN_ID, &review)
+                .unwrap()
+                .source_id,
+        );
+        wanted.insert(
+            source_entry("pi", PI_PLUGIN_ID, &pi_retained)
+                .unwrap()
+                .source_id,
+        );
+        wanted.insert("harness.codex.unconfigured".into());
+        let authorized = selection.authorize_retained_sources(&wanted).unwrap();
+        assert_eq!(authorized.len(), expected.len());
+        for entry in &expected {
+            assert!(authorized.iter().any(|source| (
+                source.source_id.as_str(),
+                source.plugin_id.as_str(),
+                source.source_root.as_path()
+            ) == (
+                entry.source_id.as_str(),
+                entry.plugin_id.as_str(),
+                entry.source_root.as_path()
+            )));
+        }
+        let over_limit = (0..=MAX_RETAINED_AUTHORITY_SOURCES)
+            .map(|index| format!("harness.codex.{index}"))
+            .collect();
+        assert!(selection.authorize_retained_sources(&over_limit).is_err());
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn follow_discovery_budgets_all_harnesses_and_filters_kiro_paths() {
@@ -425,12 +879,24 @@ mod tests {
         #[cfg(unix)]
         std::os::unix::fs::symlink(root.join("newer.jsonl"), root.join("link.jsonl")).unwrap();
 
-        let result = recent_session_files(&root, 2, SourceShape::Transcript);
-        let missing = recent_session_files(&root.join("missing"), 2, SourceShape::Transcript);
+        let mut selection = FollowDiscovery {
+            codex_root: root.clone(),
+            pi_root: directory.join("pi-missing"),
+            claude_root: None,
+            kiro_root: None,
+            opencode_db: None,
+            sessions_per_harness: 2,
+        };
+        let result: Vec<_> = selection
+            .sources()
+            .unwrap()
+            .into_iter()
+            .map(|source| source.source_root)
+            .collect();
+        selection.codex_root = root.join("missing");
+        assert!(selection.sources().unwrap().is_empty());
         fs::remove_dir_all(&directory).unwrap();
 
-        let result = result.unwrap();
-        assert!(missing.unwrap().is_empty());
         assert_eq!(
             result
                 .iter()
@@ -448,5 +914,111 @@ mod tests {
             first.source_id
         );
         assert!(agenturm_kernel::ExtensionId::parse(&first.source_id).is_ok());
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn follow_keeps_old_open_sessions_and_rotates_around_review_files_and_capacity() {
+        let directory =
+            env::temp_dir().join(format!("agenturm-discover-rotation-{}", std::process::id()));
+        let codex = directory.join("codex/sessions");
+        let pi = directory.join("pi");
+        fs::create_dir_all(&codex).unwrap();
+        fs::create_dir(&pi).unwrap();
+        let writer = |root: &Path, name: String, seconds, head: &str| {
+            let path = root.join(name);
+            fs::write(&path, format!("{head}\n")).unwrap();
+            File::open(&path)
+                .unwrap()
+                .set_times(
+                    FileTimes::new()
+                        .set_modified(SystemTime::UNIX_EPOCH + Duration::from_secs(seconds)),
+                )
+                .unwrap();
+            path
+        };
+        let regular = r#"{"type":"session_meta","payload":{"source":"cli"}}"#;
+        let idle = (0..7)
+            .map(|n| writer(&codex, format!("idle-{n}.jsonl"), n + 1, regular))
+            .collect::<Vec<_>>();
+        let history = (0..6).map(|n| writer(&codex, format!("history-{n}.jsonl"), n + 20,
+            r#"{"type":"session_meta","payload":{"source":{"subagent":{"thread_spawn":{"parent_thread_id":"parent"}}}}}"#)).collect::<Vec<_>>();
+        let review = writer(
+            &codex,
+            "newest-review.jsonl".into(),
+            100,
+            r#"{"type":"session_meta","payload":{"source":{"subagent":{"other":"guardian"}}}}"#,
+        );
+        let mut open_files = idle.clone();
+        open_files.push(review);
+        let open = open_transcripts::OpenTranscripts::from_files("codex", &open_files);
+        let selection = FollowDiscovery {
+            codex_root: codex.clone(),
+            pi_root: pi.clone(),
+            claude_root: None,
+            kiro_root: None,
+            opencode_db: None,
+            sessions_per_harness: 4,
+        };
+        let mut scheduler = FollowSchedule::default();
+        let mut visited = BTreeSet::new();
+        for _ in 0..2 {
+            let (batch, coverage) = selection.select(&mut scheduler, &open, 10).unwrap();
+            let paths = batch
+                .into_iter()
+                .map(|source| source.source_root)
+                .collect::<BTreeSet<_>>();
+            assert!(idle.iter().all(|path| paths.contains(path)));
+            assert_eq!(coverage.eligible, 13);
+            assert_eq!(coverage.open_selected, 7);
+            assert_eq!(coverage.open_found, 7);
+            assert_eq!(coverage.excluded_reviews, 1);
+            assert_eq!(coverage.selected, 10);
+            assert!(coverage.notice().contains("3 queued"));
+            visited.extend(paths);
+        }
+        assert!(history.iter().all(|path| visited.contains(path)));
+
+        // When only one catch-up slot remains, another harness still gets a turn.
+        let pi_member = writer(
+            &pi,
+            "pi.jsonl".into(),
+            150,
+            r#"{"type":"session","id":"p"}"#,
+        );
+        let history_batches = (0..2)
+            .flat_map(|_| selection.select(&mut scheduler, &open, 8).unwrap().0)
+            .filter(|source| !idle.contains(&source.source_root))
+            .map(|source| source.source_root)
+            .collect::<Vec<_>>();
+        assert_eq!(history_batches.len(), 2);
+        assert!(history_batches.contains(&pi_member));
+        assert!(history_batches.iter().any(|path| history.contains(path)));
+
+        // A newly open member competes fairly even when open handles exhaust capacity.
+        let newcomer = writer(&codex, "newcomer.jsonl".into(), 200, regular);
+        open_files.push(newcomer.clone());
+        let open = open_transcripts::OpenTranscripts::from_files("codex", &open_files);
+        let mut seen_open = BTreeSet::new();
+        for _ in 0..2 {
+            let (batch, coverage) = selection.select(&mut scheduler, &open, 4).unwrap();
+            assert_eq!(coverage.open_found, 8);
+            assert_eq!(coverage.open_selected, 4);
+            assert_eq!(coverage.selected, 4);
+            assert!(coverage.notice().contains("4/8 open handles"));
+            seen_open.extend(batch.into_iter().map(|source| source.source_root));
+        }
+        assert_eq!(seen_open.len(), 8);
+        assert!(seen_open.contains(&newcomer));
+        let (after_restart, _) = selection
+            .select(&mut FollowSchedule::default(), &open, 10)
+            .unwrap();
+        assert!(
+            after_restart
+                .iter()
+                .any(|source| source.source_root == newcomer)
+        );
+        assert_eq!(selection.codex_home(), Some(directory.join("codex")));
+        fs::remove_dir_all(directory).unwrap();
     }
 }

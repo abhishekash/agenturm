@@ -57,6 +57,147 @@ fn main() {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use agenturm_jsonl_source::{cursor_proof, max_frame_bytes, poll};
+    use serde_json::json;
+    use sha2::{Digest, Sha256};
+    use std::fs::{self, OpenOptions};
+    use std::io::Write;
+
+    const PRELUDE: &str = concat!(
+        r#"{"type":"file-history-snapshot","messageId":"earlier-message","isSnapshotUpdate":false,"snapshot":{"messageId":"earlier-message","trackedFileBackups":{}}}"#,
+        "\n"
+    );
+
+    fn user(session: Option<&str>, uuid: &str) -> String {
+        let mut event = json!({"type":"user","uuid":uuid,"timestamp":"2026-10-24T12:00:00Z",
+            "message":{"content":"synthetic private content"}});
+        if let Some(session) = session {
+            event["sessionId"] = json!(session);
+        }
+        format!("{event}\n")
+    }
+
+    #[test]
+    fn initial_metadata_prelude_binds_exact_user_identity_and_resumes_without_reopening() {
+        let source = std::env::temp_dir().join(format!(
+            "agenturm-claude-prelude-{}.jsonl",
+            std::process::id()
+        ));
+        let session = "claude:with-delimiters";
+        let next = user(Some(session), "first-user");
+        fs::write(&source, format!("{PRELUDE}{}", next.trim_end())).unwrap();
+        let read = |cursor| {
+            poll::<ClaudeFormat<false>>(
+                &source,
+                "harness.claude.fixture",
+                cursor,
+                256,
+                max_frame_bytes(),
+            )
+        };
+        let before = read("").unwrap();
+        let checkpoint = before["cursor"].as_str().unwrap();
+        assert_eq!(before["records"], json!([]));
+        let first = cursor_proof(checkpoint).unwrap().unwrap();
+        assert_eq!(first.version, 2);
+        assert_eq!(first.offset, PRELUDE.len() as u64);
+        assert_eq!(
+            first.header_digest,
+            format!("{:x}", Sha256::digest(PRELUDE.as_bytes()))
+        );
+        assert_eq!(first.digest, first.header_digest);
+
+        let mut writer = OpenOptions::new().append(true).open(&source).unwrap();
+        writer.write_all(b"\n").unwrap();
+        let first_user = read(checkpoint).unwrap();
+        let new_cursor = first_user["cursor"].as_str().unwrap();
+        let second = cursor_proof(new_cursor).unwrap().unwrap();
+        assert_eq!(second.header_digest, first.header_digest);
+        assert_eq!(second.generation, first.generation);
+        assert_eq!(second.offset, (PRELUDE.len() + next.len()) as u64);
+        assert_eq!(
+            second.digest,
+            format!("{:x}", Sha256::digest(format!("{PRELUDE}{next}")))
+        );
+        for record in first_user["records"].as_array().unwrap() {
+            assert_eq!(record["identity"]["session_id"], session);
+        }
+        assert_eq!(first_user["records"].as_array().unwrap().len(), 2);
+        assert!(!first_user.to_string().contains("synthetic private content"));
+
+        writer
+            .write_all(user(None, "same-session-without-id").as_bytes())
+            .unwrap();
+        let resumed = read(new_cursor).unwrap();
+        for record in resumed["records"].as_array().unwrap() {
+            assert_eq!(record["identity"]["session_id"], session);
+        }
+        let resumed = resumed["cursor"].as_str().unwrap();
+        writer
+            .write_all(user(Some("unexpected-session"), "mismatch").as_bytes())
+            .unwrap();
+        let error = read(resumed).unwrap_err();
+        assert_eq!(
+            error.to_string(),
+            "Claude session identity changed inside one file"
+        );
+        drop(writer);
+        fs::remove_file(source).unwrap();
+    }
+
+    #[test]
+    fn prelude_cannot_skip_to_an_arbitrary_record_or_restore_unbound_context_as_a_session() {
+        let invalid = [
+            PRELUDE.replace("earlier-message", "../../outside"),
+            PRELUDE.replace("trackedFileBackups", "unknown"),
+            PRELUDE.replace("false", "true"),
+            PRELUDE.replace("file-history-snapshot", "unknown-record"),
+            PRELUDE.replace(
+                "\"isSnapshotUpdate\":false",
+                "\"isSnapshotUpdate\":false,\"sessionId\":\"one\",\"sessionId\":\"two\"",
+            ),
+            PRELUDE.replace(
+                "\"isSnapshotUpdate\":false",
+                "\"isSnapshotUpdate\":false,\"sessionId\":null",
+            ),
+        ];
+        for raw in invalid {
+            assert!(claude::header_identity(raw.as_bytes()).is_err());
+        }
+        let mut context = claude::header_identity(PRELUDE.as_bytes()).unwrap();
+        assert!(
+            claude::restore(
+                &mut context,
+                "p0::c.x.aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa.1.x.x.x"
+            )
+            .is_err()
+        );
+        assert!(claude::restore(&mut context, "c.x.x.x.x.x.x").is_err());
+        for raw in [
+            user(None, "missing-id"),
+            user(Some("../../invalid"), "invalid-id"),
+            user(Some("chosen"), "duplicate-id").replace(
+                "\"sessionId\":\"chosen\"",
+                "\"sessionId\":null,\"sessionId\":\"chosen\"",
+            ),
+            "{\"type\":\"custom-title\",\"sessionId\":\"title-record\"}\n".into(),
+            PRELUDE.into(),
+        ] {
+            assert!(
+                claude::translate_line(raw.as_bytes(), &context, "fixture", PRELUDE.len() as u64)
+                    .is_err()
+            );
+        }
+        assert!(
+            claude::translate_line(
+                user(Some("too-far"), "later").as_bytes(),
+                &context,
+                "fixture",
+                PRELUDE.len() as u64 + 7
+            )
+            .is_err()
+        );
+    }
 
     #[test]
     fn correction_revision_is_bounded_and_gap_identity_is_separate() {
