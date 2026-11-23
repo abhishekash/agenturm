@@ -1,6 +1,7 @@
 //! Bounded metadata browser for a receiver without durable Rust read cursors.
 
 use super::*;
+use crate::keymap::{self, Destination};
 use std::sync::{
     Arc,
     atomic::{AtomicBool, Ordering},
@@ -57,6 +58,8 @@ struct LiveView {
     agents: ListState,
     detail: ListState,
     pending_read: bool,
+    paused: bool,
+    help: bool,
     error: Option<String>,
 }
 
@@ -109,15 +112,23 @@ impl LiveView {
     }
 
     fn key(&mut self, key: KeyCode) {
-        match key {
-            KeyCode::Char('1') | KeyCode::Esc => {
+        if keymap::is_help(key) || (self.help && key == KeyCode::Esc) {
+            self.help = !self.help;
+            return;
+        }
+        if self.help {
+            return;
+        }
+        match (keymap::destination(key), key) {
+            (Some(Destination::Agents), _) | (_, KeyCode::Esc) => {
                 self.tab = Tab::Agents;
                 self.owner = None;
             }
-            KeyCode::Char('2') => self.tab = Tab::Activity,
-            KeyCode::Char('4' | '8') => self.tab = Tab::Traces,
-            KeyCode::Char('w') => self.tab = Tab::Pending,
-            KeyCode::Enter | KeyCode::Char('e') if self.tab == Tab::Agents => {
+            (Some(Destination::Activity), _) => self.tab = Tab::Activity,
+            (Some(Destination::Traces), _) | (_, KeyCode::Char('8')) => self.tab = Tab::Traces,
+            (_, KeyCode::Char('!' | 'w')) => self.tab = Tab::Pending,
+            (_, KeyCode::Char('p')) => self.paused = !self.paused,
+            (_, KeyCode::Enter | KeyCode::Char('e' | 's')) if self.tab == Tab::Agents => {
                 if let Some(owner) = self
                     .agents
                     .selected()
@@ -127,8 +138,17 @@ impl LiveView {
                     self.tab = Tab::Activity;
                 }
             }
-            KeyCode::Down | KeyCode::Char('j') => return self.move_selection(true),
-            KeyCode::Up | KeyCode::Char('k') => return self.move_selection(false),
+            (_, KeyCode::Char('t')) => {
+                if self.tab == Tab::Agents {
+                    self.owner = self
+                        .agents
+                        .selected()
+                        .and_then(|index| self.rows().get(index)?.owner.clone());
+                }
+                self.tab = Tab::Traces;
+            }
+            (_, KeyCode::Down | KeyCode::Char('j')) => return self.move_selection(true),
+            (_, KeyCode::Up | KeyCode::Char('k')) => return self.move_selection(false),
             _ => return,
         }
         self.detail.select(None);
@@ -169,7 +189,9 @@ impl LiveView {
             Constraint::Length(3),
         ])
         .areas(area);
-        let connection = if self.error.is_some() {
+        let connection = if self.paused {
+            "Paused"
+        } else if self.error.is_some() {
             "Reconnecting"
         } else if self.page.is_none() {
             "Connecting"
@@ -216,6 +238,12 @@ impl LiveView {
                 .style(surface(SURFACE)),
             header,
         );
+        if self.help {
+            frame.render_widget(
+                Paragraph::new("1 Agents · 2 Activity · 4 Traces · w Pending\nEnter Session activity · t Session traces\np Pause/resume · R Refresh · Esc Agents · q Quit")
+                    .wrap(Wrap { trim: false }).block(panel(HELP_CLOSE_HINT)), body);
+            return;
+        }
         let [list, info] = if area.width >= 84 {
             Layout::horizontal([Constraint::Percentage(61), Constraint::Percentage(39)]).areas(body)
         } else {
@@ -316,15 +344,19 @@ impl LiveView {
             );
         }
         let keys = if self.tab == Tab::Agents {
-            "↑↓ select · Enter session · 2 Activity · 8 Traces · w Pending"
+            "↑↓ select · Enter session · 2 Activity · 4 Traces · w Pending"
         } else {
-            "↑↓ select · 2 Activity · 8 Traces · w Pending · Esc Agents"
+            "↑↓ select · 2 Activity · 4 Traces · w Pending · Esc Agents"
         };
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(status),
                 Line::from(keys),
-                Line::from("r refresh · q quit"),
+                Line::from(if self.paused {
+                    "p resume · R refresh · F1 help · q quit"
+                } else {
+                    "p pause · R refresh · F1 help · q quit"
+                }),
             ]),
             footer,
         );
@@ -358,9 +390,12 @@ pub fn run_live_receiver(
             agents: ListState::default(),
             detail: ListState::default(),
             pending_read: false,
+            paused: false,
+            help: false,
             error: None,
         };
         let mut next_read = Instant::now();
+        let mut explicit_refresh = false;
         let mut dirty = true;
         loop {
             if let Ok(result) = results.try_recv() {
@@ -368,11 +403,14 @@ pub fn run_live_receiver(
                 next_read = Instant::now() + Duration::from_secs(2);
                 dirty = true;
             }
-            if !view.pending_read && Instant::now() >= next_read {
+            if !view.pending_read
+                && (explicit_refresh || !view.paused && Instant::now() >= next_read)
+            {
                 request
                     .try_send(())
                     .map_err(|_| io::Error::other("receiver reader stopped"))?;
                 view.pending_read = true;
+                explicit_refresh = false;
             }
             if dirty {
                 terminal.draw(|frame| view.draw(frame))?;
@@ -386,16 +424,20 @@ pub fn run_live_receiver(
                 Event::Key(key)
                     if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
                 {
-                    if key.code == KeyCode::Char('q')
-                        || key.code == KeyCode::Char('c')
-                            && key.modifiers.contains(KeyModifiers::CONTROL)
-                    {
+                    let code = keymap::plain(key).unwrap_or_else(|| {
+                        if keymap::back(key) {
+                            KeyCode::Esc
+                        } else {
+                            KeyCode::Null
+                        }
+                    });
+                    if keymap::interrupt(key) || code == KeyCode::Char('q') {
                         break Ok(());
                     }
-                    if matches!(key.code, KeyCode::Char('r' | 'R')) {
-                        next_read = Instant::now();
+                    if !view.help && matches!(code, KeyCode::Char('R') | keymap::LATEST) {
+                        explicit_refresh = true;
                     }
-                    view.key(key.code);
+                    view.key(code);
                     dirty = true;
                 }
                 _ => {}
@@ -425,6 +467,8 @@ mod tests {
             agents: ListState::default(),
             detail: ListState::default(),
             pending_read: false,
+            paused: false,
+            help: false,
             error: Some("HTTP 404".into()),
         };
         for (width, height) in [(120, 32), (60, 18)] {

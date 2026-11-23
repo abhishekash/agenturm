@@ -380,6 +380,14 @@ impl Workbench {
         }
     }
 
+    pub(super) fn prompt_owner(&self) -> Option<&WorkAnchor> {
+        if matches!(self.data, WorkResult::Prompts(_)) && !self.help && !self.editing() {
+            self.target.as_ref()
+        } else {
+            None
+        }
+    }
+
     pub(super) fn follows_requests(&self) -> bool {
         matches!(self.data, WorkResult::Workflow { .. }) && !self.help
     }
@@ -619,25 +627,25 @@ impl Workbench {
                     older: Some(before),
                     ..
                 },
-                KeyCode::Char('['),
+                crate::keymap::OLDER,
             ) => return WorkInput::Command(WorkCommand::Tasks(Some(*before))),
             (
                 WorkResult::Handoffs {
                     older: Some(before),
                     ..
                 },
-                KeyCode::Char('['),
+                crate::keymap::OLDER,
             ) => return WorkInput::Command(WorkCommand::Handoffs(Some(*before))),
-            (WorkResult::Tasks { .. }, KeyCode::Char(']')) => {
+            (WorkResult::Tasks { .. }, crate::keymap::NEWER | crate::keymap::LATEST) => {
                 return WorkInput::Command(WorkCommand::Tasks(None));
             }
-            (WorkResult::Handoffs { .. }, KeyCode::Char(']')) => {
+            (WorkResult::Handoffs { .. }, crate::keymap::NEWER | crate::keymap::LATEST) => {
                 return WorkInput::Command(WorkCommand::Handoffs(None));
             }
-            (WorkResult::Workflow { .. }, KeyCode::Char('r')) => {
+            (WorkResult::Workflow { .. }, KeyCode::Char('R')) => {
                 return WorkInput::Command(WorkCommand::Workflow);
             }
-            (WorkResult::Workflow { items, .. }, KeyCode::Char('s'))
+            (WorkResult::Workflow { items, .. }, KeyCode::Char('r' | 's'))
                 if let Some(item) = items.get(selected) =>
             {
                 return WorkInput::Command(WorkCommand::Seen(item.clone()));
@@ -786,7 +794,7 @@ impl Workbench {
         if self.help {
             frame.render_widget(Paragraph::new(" Workbench keys"), header);
             frame.render_widget(
-                Paragraph::new("Tasks · n new linked · N blank · e edit · c done\nl link selected session or turn · r links · Del delete\nG capture Git · g saved Git · h new handoff · o handoffs\nHandoffs · e edit · x export MD+HTML · Del delete · b tasks\nWorkflow · s seen · l locate · r refresh\nPrompts · Enter reveal · ↑↓ scroll · Esc close\nHost history · Enter drill down · ] older · Esc back")
+                Paragraph::new("Tasks · n new linked · N blank · e edit · c done\nl link selected session or turn · r links · Del delete\nG capture Git · g saved Git · h new handoff · o handoffs\nHandoffs · e edit · x export MD+HTML · Del delete · b tasks\nWorkflow · r seen · l locate · R refresh · p pause\nPrompts · Enter reveal · m activity details · Esc close\nHost history · Enter drill down · ] older · Esc back")
                     .wrap(Wrap { trim: false }).block(Block::bordered()),
                 body,
             );
@@ -940,7 +948,7 @@ impl Workbench {
                 } else {
                     "Workflow"
                 },
-                "s seen · l locate terminal · r refresh · Esc back",
+                "r seen · l locate terminal · R refresh · Esc back",
                 items
                     .iter()
                     .map(|item| {

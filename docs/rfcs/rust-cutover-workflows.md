@@ -44,6 +44,16 @@ to the same service, session, and actor. Legacy task fields can contain
 captured prompts, so the live roster leaves those fields outside its labels.
 
 
+### Cockpit keyboard navigation
+
+`1` Agents · `2` Activity · `3` MCP · `4` Traces · `5` Host · `6` Metrics · `7` Findings. `9` opens Operations, `U` opens workspace Usage, and `H` opens live local Host information. `8` remains a trace shortcut. On a selected session, `t` opens its exact linked Traces and `T` selects a recorded turn when available.
+
+`Ctrl+R` opens Review for the selected session. `m` cycles the session overview, prompt index, and recorded Activity details. `P` opens the grant-controlled prompt index directly. In MCP, `m` opens a recorded payload selection when available. `M` opens that selection from another eligible pane. In Traces, `d` opens captured text selection when available. Outside that context `d` opens recorded diagnostics, which are also available with `D`.
+
+`p` pauses or resumes automatic refresh. `R` refreshes on demand. `[` moves to a loaded newer page, `]` reads an older page, and `l` returns to the latest page within the current scope. `a` resets the roster filters. `f` switches between tree and flat views, `o` changes the sort, and `!` shows sessions needing attention. `Esc` closes the current overlay or returns to the previous view. `F1` or `?` opens keyboard help.
+
+The Python receiver attachment uses `1`, `2`, and `4` for its live metadata pages. `w` or `!` opens Pending.
+
 ### Attach to an existing Python 0.2.8 receiver
 
 Use an authenticated Python 0.2.8 receiver already listening on loopback, or
@@ -396,7 +406,7 @@ client's checkout.
 | OpenAI, Anthropic, LangChain and LangGraph | Python 0.2.8 instruments OpenAI and Anthropic calls and LangChain automatically, with explicit callbacks also available for LangChain and LangGraph. Inventory producer-side exporters and test selected integrations against Rust before claiming equivalent coverage. Python Agenturm bootstrap remains a product decision. SDK integration maintainer and release owner. |
 | OpenAI Agents SDK, Pydantic AI, Google ADK, Node.js | Python 0.2.8 supplies an Agents SDK adapter and exercises vendor OTLP exporters and a Node.js client. Test native OTLP producers independently. Decide which producer-side integrations stay required and which old Agenturm client ingestion routes to retire. SDK integration maintainer and release owner. |
 | Prompt and MCP payloads | Preserve the recorded operation and current scope when opening content. Unavailable, revoked and over-limit evidence needs a visible outcome. B2 and B4 own the prompt and MCP detail gaps. |
-| Usage, cost and host history | Rust shows recorded token counts, Kiro credits and individually reported OTLP costs. `host record` and `broker host record` capture optional Linux load, memory and CPU counters with known same-user processes. `6` opens recorded samples, then Enter opens the process list and exact process history. A v2 collection `host` block enables scheduled capture for local, broker, and managed Linux collectors. The HTTP reader can expose recorded Host history when started with `--include-host`. Aggregate cost views remain open. [Host history](rust-broker-commands.md#record-and-read-host-history) |
+| Usage, cost and host history | Rust shows recorded token counts, Kiro credits and individually reported OTLP costs. `host record` and `broker host record` capture optional Linux load, memory and CPU counters with known same-user processes. `5` opens recorded samples, then Enter opens the process list and exact process history. A v2 collection `host` block enables scheduled capture for local, broker, and managed Linux collectors. The HTTP reader can expose recorded Host history when started with `--include-host`. Aggregate cost views remain open. [Host history](rust-broker-commands.md#record-and-read-host-history) |
 
 The vendor fixture matrix records the actual SDK paths and pending checks. [Rust OTLP vendor producer qualification](../validation/rust-vendor-sdk-producers.md)
 
@@ -407,8 +417,8 @@ Run each journey at 120×32 and 60×18 in both installed applications. Record th
 | Journey | Python 0.2.8 reference | Rust candidate evidence |
 | --- | --- | --- |
 | Discover and select a session | Bare launch, Agents, `/` search, arrow selection and Enter. Expand a native child with Right. | Empty-to-populated discovery, stable search selection, explicit parentage when recorded, and Escape restoring the original selection. |
-| Follow interrupted work | Agents → Enter → Details and scoped Activity. Open recorded work, then use Back. | Use Enter and `t` to select a turn. Check recorded reason, scoped tools and edits, missing reason handling, a separate PR result and a later successful turn. Return to the same run. A6 and B3. |
-| Read a retained prompt | Enter inspector, choose Prompts, navigate index or dropdown, Enter to read, scroll, page older, and return. | Use `p` and Enter for exact current-grant evidence. Scroll without changing the request, reopen an older prompt, revoke, and confirm denial while navigation remains usable. B2. |
+| Follow interrupted work | Agents → Enter → Details and scoped Activity. Open recorded work, then use Back. | Use Enter and `T` to select a turn. Check recorded reason, scoped tools and edits, missing reason handling, a separate PR result and a later successful turn. Return to the same run. A6 and B3. |
+| Read a retained prompt | Enter inspector, choose Prompts, navigate index or dropdown, Enter to read, scroll, page older, and return. | Use `P` and Enter for exact current-grant evidence. Scroll without changing the request, reopen an older prompt, revoke, and confirm denial while navigation remains usable. B2. |
 | Inspect MCP and linked trace | Keys `3` and `4`, Enter for details, use related evidence links, and return. | Open MCP and Traces, match native operation or span identity, show only scoped granted payload and distinguish missing data. B4 and B5. |
 | Review, decide and hand off | Ctrl+R opens Review, then saved task, Decisions and Handoff. | Use Review and `b` for a task with an exact run link, record an evidence-version note, export Markdown and HTML, and reopen the same decision. B3 and B6. |
 | Triage a request | `w`, immediately select and open a request, then use the verified route and come back. | Read a pending request, persist seen state, verify the same run and route or a clear unavailable status, then return with selection intact. |

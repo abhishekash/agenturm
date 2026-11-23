@@ -6,6 +6,7 @@
 
 #![forbid(unsafe_code)]
 
+mod keymap;
 mod live_receiver;
 mod loaded_view;
 mod operation_table;
@@ -203,9 +204,26 @@ impl UiModel {
         self.scroll = self.scroll.saturating_sub(1);
     }
 
+    fn select_metrics(&mut self) {
+        self.selected = self
+            .panes
+            .iter()
+            .position(|pane| pane.id.is_none() && pane.title == "Metrics")
+            .unwrap_or_else(|| {
+                self.panes.push(Pane {
+                    id: None,
+                    title: "Metrics".into(),
+                    rows: Vec::new(),
+                });
+                self.panes.len() - 1
+            });
+        self.scroll = 0;
+        self.update_scroll_limit();
+    }
+
     /// Applies one key press. Returns true when the user requests exit.
     pub fn handle_key(&mut self, key: KeyCode) -> bool {
-        if matches!(key, KeyCode::F(1) | KeyCode::Char('?')) || (self.help && key == KeyCode::Esc) {
+        if keymap::is_help(key) || (self.help && key == KeyCode::Esc) {
             self.help = !self.help;
             return false;
         }
@@ -397,11 +415,18 @@ pub fn run_with_turn_activity(
             if let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
             {
-                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                if keymap::interrupt(key) {
                     break Ok(());
                 }
+                let code = keymap::plain(key).unwrap_or_else(|| {
+                    if keymap::back(key) {
+                        KeyCode::Esc
+                    } else {
+                        KeyCode::Null
+                    }
+                });
                 if let Some(selection) = &mut page.turn_picker {
-                    match key.code {
+                    match code {
                         KeyCode::Char('q') => break Ok(()),
                         KeyCode::Esc => page.turn_picker = None,
                         KeyCode::Down | KeyCode::Char('j') => {
@@ -430,8 +455,8 @@ pub fn run_with_turn_activity(
                     }
                     continue;
                 }
-                match key.code {
-                    KeyCode::Char('[') if !page.ui.help => {
+                match code {
+                    keymap::OLDER if !page.ui.help => {
                         if let Some(cursor) = page.ui.older_cursor()
                             && let Some(next) = load_page(active_turn.as_ref(), Some(cursor))?
                         {
@@ -445,12 +470,22 @@ pub fn run_with_turn_activity(
                             newer_pages.push(previous);
                         }
                     }
-                    KeyCode::Char(']') if !page.ui.help => {
+                    keymap::NEWER if !page.ui.help => {
                         if let Some(newer) = newer_pages.pop() {
                             page = newer;
                         }
                     }
-                    KeyCode::Char('t') if page.ui.turn_available && !page.ui.help => {
+                    keymap::LATEST if !page.ui.help => {
+                        if let Some(latest) = load_page(active_turn.as_ref(), None)? {
+                            let mut next = PageView::new(latest, active_turn.is_some());
+                            if let Some(title) = page.ui.selected_title() {
+                                next.ui.select_title(title);
+                            }
+                            page = next;
+                            newer_pages.clear();
+                        }
+                    }
+                    KeyCode::Char('t' | 'T') if page.ui.turn_available && !page.ui.help => {
                         page.turn_picker = Some(ListState::default().with_selected(Some(0)));
                     }
                     KeyCode::Esc if active_turn.is_some() && !page.ui.help => {
@@ -507,7 +542,7 @@ fn draw(
     } else if model.in_turn {
         header.push(Span::raw(" · Esc back"));
     } else if model.turn_available {
-        header.push(Span::raw(" · t Turns"));
+        header.push(Span::raw(" · T Turns"));
     }
     if model.truncated {
         header.push(Span::styled(
@@ -539,11 +574,11 @@ fn draw(
     } else if model.help {
         HELP_CLOSE_HINT
     } else if model.older_cursor.is_some() && has_newer_page {
-        " ←/→ panes · ↑/↓ scroll · [ older · ] newer · ? help · q quit "
+        " ←/→ panes · ↑/↓ scroll · ] older · [ newer · ? help · q quit "
     } else if model.older_cursor.is_some() {
-        " ←/→ panes · ↑/↓ scroll · [ older · ? help · q quit "
+        " ←/→ panes · ↑/↓ scroll · ] older · ? help · q quit "
     } else if has_newer_page {
-        " ←/→ panes · ↑/↓ scroll · ] newer · ? help · q quit "
+        " ←/→ panes · ↑/↓ scroll · [ newer · ? help · q quit "
     } else {
         " ←/→ or Tab switch panes · ↑/↓ scroll · ? help · q quit "
     };

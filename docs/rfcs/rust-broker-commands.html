@@ -98,7 +98,7 @@ and both <code>history_identity</code> and <code>snapshot_id</code> from the sam
 Use a fresh snapshot after a restore or when updating an older selection file
 that lacks <code>history_identity</code>. The response labels the text as
 <code>producer_captured_telemetry</code>. A claimed native linkage is a producer
-assertion. In the local or broker cockpit, open Traces with <code>8</code>, press
+assertion. In the local or broker cockpit, open Traces with <code>4</code>, press
 <code>d</code> to select a span, and use Enter to open the private text modal. Escape
 clears the display and returns to the span list.</p>
 <p>Local <code>run</code> supports the same <code>--payload-scope</code> with an explicit
@@ -226,7 +226,7 @@ the clock tick frequency when available. A missing value is <code>null</code> an
 observed zero is <code>0</code>. The response returns up to 64 samples and an <code>older</code>
 position for the same history snapshot. Pass that JSON object to <code>--before</code>
 with the same source filter to continue the traversal.</p>
-<p>From the cockpit's session list, press <code>6</code> for host history. Enter opens the
+<p>From the cockpit's session list, press <code>5</code> for host history. Enter opens the
 selected sample's process list and Enter again opens the selected process's
 history within the loaded page. Escape returns one level. Use <code>]</code> to read
 older samples or <code>r</code> for the latest page. Press <code>H</code> from a local cockpit for
@@ -239,7 +239,7 @@ and inferred session links are absent. Native broker readers browse the
 retained samples.</p>
 <p>Starting the reader gateway with <code>--include-host</code> enables recorded Host history
 for the attached cockpit and HTTP clients. The gateway serves Host sources in
-the dedicated broker reader's allowlist. Use <code>6</code> for the same sample and process
+the dedicated broker reader's allowlist. Use <code>5</code> for the same sample and process
 drill-down over the connection. The gateway's default denies Host access.
 Ordinary session, activity and trace requests exclude Host samples.</p>
 <pre><code class="language-sh">agenturm broker serve-history --broker-config broker.json \

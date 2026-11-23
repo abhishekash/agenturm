@@ -73,7 +73,7 @@ def narrow_cockpit(command, root, uid, gid, viewer_home):
     try:
         output = bytearray()
         read_screen(master, process, output, "Agenturm")
-        os.write(master, b"6")
+        os.write(master, b"5")
         read_screen(master, process, output, "Host history")
         os.write(master, b"\r")
         read_screen(master, process, output, "Host processes")

@@ -1,6 +1,7 @@
 //! Session navigation over immutable history pages supplied by the host.
 
 use super::*;
+use crate::keymap::{self, Destination};
 use crate::workbench::{PromptReceiver, WorkInput, Workbench, prompt_channel};
 use agenturm_kernel::{ReadSnapshot, RelationshipKind};
 use ratatui::buffer::CellWidth;
@@ -63,7 +64,7 @@ pub enum SessionView {
     Traces,
 }
 
-#[derive(Clone, Copy, Debug)]
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum WorkspaceView {
     Overview,
     Activity,
@@ -71,6 +72,7 @@ pub enum WorkspaceView {
     Operations,
     Findings,
     Host,
+    Metrics,
     Usage,
     Traces,
 }
@@ -162,6 +164,7 @@ struct AgentList {
     flat: bool,
     help: bool,
     sort_by_state: bool,
+    paused: bool,
     collapsed: BTreeSet<(String, String)>,
 }
 
@@ -254,6 +257,53 @@ impl AgentList {
                 self.collapsed.insert(identity.clone());
             }
             self.apply_filters(Some(&identity));
+        }
+    }
+
+    fn inspect_relative(&mut self, direction: KeyCode) {
+        if direction == KeyCode::Down || direction == KeyCode::Right {
+            self.expand(true);
+        }
+        let Some(index) = self.selection.selected() else {
+            return;
+        };
+        let Some(current) = self.current() else {
+            return;
+        };
+        let sessions = &self
+            .catalog
+            .as_ref()
+            .expect("selected session has catalog")
+            .sessions;
+        let next = match direction {
+            KeyCode::Up => current.parent_session_id.as_deref().and_then(|parent| {
+                self.visible.iter().position(|row| {
+                    let candidate = &sessions[row.index];
+                    candidate.harness_id == current.harness_id && candidate.session_id == parent
+                })
+            }),
+            KeyCode::Down => self.visible.iter().position(|row| {
+                let candidate = &sessions[row.index];
+                candidate.harness_id == current.harness_id
+                    && candidate.parent_session_id.as_deref() == Some(&current.session_id)
+            }),
+            KeyCode::Right if !self.flat => {
+                let depth = self.visible[index].depth;
+                self.visible
+                    .iter()
+                    .enumerate()
+                    .skip(index + 1)
+                    .take_while(|(_, row)| row.depth > depth)
+                    .find_map(|(position, row)| {
+                        Filter::Attention
+                            .accepts(&sessions[row.index])
+                            .then_some(position)
+                    })
+            }
+            _ => None,
+        };
+        if let Some(next) = next {
+            self.selection.select(Some(next));
         }
     }
 
@@ -389,9 +439,13 @@ struct HistoryView {
 impl HistoryView {
     fn new(selection: HistorySelection, page: HistoryPage) -> Self {
         let in_turn = matches!(selection, HistorySelection::Turn(_));
+        let mut page = PageView::new(page, in_turn);
+        if matches!(selection, HistorySelection::All(WorkspaceView::Metrics)) {
+            page.ui.select_metrics();
+        }
         Self {
             selection,
-            page: PageView::new(page, in_turn),
+            page,
             newer: VecDeque::new(),
         }
     }
@@ -401,7 +455,10 @@ enum Change {
     RefreshSessions,
     OlderSessions,
     Open(HistorySelection),
+    Navigate(HistorySelection),
+    SessionMode(HistorySelection),
     OlderHistory,
+    LatestHistory,
     MarkReviewed(RecordedSession),
     Work(Option<WorkAnchor>),
 }
@@ -527,14 +584,43 @@ impl Workspace {
             (Change::Open(selection), Ok(WorkspaceResponse::History(page))) => {
                 self.history.push(HistoryView::new(selection, page));
             }
-            (Change::OlderHistory, Ok(WorkspaceResponse::History(page))) => {
+            (Change::Navigate(selection), Ok(WorkspaceResponse::History(page))) => {
+                self.history.clear();
+                self.history.push(HistoryView::new(selection, page));
+            }
+            (Change::SessionMode(selection), Ok(WorkspaceResponse::History(page))) => {
+                let next = HistoryView::new(selection, page);
+                if let Some(view) = self.history.last_mut() {
+                    *view = next;
+                } else {
+                    self.history.push(next);
+                }
+            }
+            (
+                change @ (Change::OlderHistory | Change::LatestHistory),
+                Ok(WorkspaceResponse::History(page)),
+            ) => {
                 if let Some(view) = self.history.last_mut() {
                     let mut next =
                         PageView::new(page, matches!(view.selection, HistorySelection::Turn(_)));
                     if let Some(title) = view.page.ui.selected_title() {
-                        next.ui.select_title(title);
+                        if title == "Metrics"
+                            && matches!(
+                                view.selection,
+                                HistorySelection::All(WorkspaceView::Metrics)
+                            )
+                        {
+                            next.ui.select_metrics();
+                        } else {
+                            next.ui.select_title(title);
+                        }
                     }
-                    push_cached(&mut view.newer, std::mem::replace(&mut view.page, next));
+                    if matches!(change, Change::OlderHistory) {
+                        push_cached(&mut view.newer, std::mem::replace(&mut view.page, next));
+                    } else {
+                        view.newer.clear();
+                        view.page = next;
+                    }
                 }
             }
             (Change::MarkReviewed(session), Ok(WorkspaceResponse::ReviewSaved)) => {
@@ -594,6 +680,70 @@ impl Workspace {
         );
     }
 
+    fn navigate(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, destination: Destination) {
+        let view = match destination {
+            Destination::Agents => {
+                if self.pending.is_none() {
+                    self.history.clear();
+                    self.message = None;
+                }
+                return;
+            }
+            Destination::Host => {
+                self.request(
+                    sender,
+                    WorkspaceRequest::Work(WorkCommand::HostHistory(None)),
+                    Change::Work(None),
+                );
+                return;
+            }
+            Destination::Activity => WorkspaceView::Activity,
+            Destination::Mcp => WorkspaceView::Mcp,
+            Destination::Traces => WorkspaceView::Traces,
+            Destination::Metrics => WorkspaceView::Metrics,
+            Destination::Findings => WorkspaceView::Findings,
+            Destination::Operations => WorkspaceView::Operations,
+        };
+        let selection = HistorySelection::All(view);
+        self.request(
+            sender,
+            WorkspaceRequest::History {
+                selection: selection.clone(),
+                before: None,
+            },
+            Change::Navigate(selection),
+        );
+    }
+
+    fn select_session_mode(
+        &mut self,
+        sender: &mpsc::Sender<WorkspaceRequest>,
+        session: RecordedSession,
+        mode: SessionView,
+    ) {
+        let selection = HistorySelection::Session(session, mode);
+        self.request(
+            sender,
+            WorkspaceRequest::History {
+                selection: selection.clone(),
+                before: None,
+            },
+            Change::SessionMode(selection),
+        );
+    }
+
+    fn toggle_pause(&mut self) {
+        self.agents.paused = !self.agents.paused;
+        self.message = Some(
+            if self.agents.paused {
+                "Auto-refresh paused"
+            } else {
+                "Auto-refresh resumed"
+            }
+            .into(),
+        );
+    }
+
     fn reveal(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, entry: PromptEntry) {
         let (delivery, receiver) = prompt_channel();
         self.request(
@@ -605,14 +755,15 @@ impl Workspace {
     }
 
     fn key(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, key: event::KeyEvent) -> bool {
-        if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+        if keymap::interrupt(key) {
             return true;
         }
         if let Some(quit) = self.view_io_key(sender, key) {
             return quit;
         }
+        let code = keymap::plain(key).unwrap_or(KeyCode::Null);
         if let Some(prompt) = &mut self.prompt {
-            match key.code {
+            match code {
                 KeyCode::Esc => {
                     self.redact_then_acknowledge = prompt.acknowledge.take();
                     self.prompt = None;
@@ -629,10 +780,41 @@ impl Workspace {
             return false;
         }
         if let Some(work) = &mut self.work {
-            if key.code == KeyCode::Char('q') && !work.editing() {
+            if code == KeyCode::Char('q') && !work.editing() {
                 return true;
             }
             if self.pending.is_some() && work.editing() {
+                return false;
+            }
+            if code == KeyCode::Char('p') && work.follows_requests() && !work.editing() {
+                self.toggle_pause();
+                return false;
+            }
+            if code == KeyCode::Char('m')
+                && self.pending.is_none()
+                && self.prompt_receiver.is_none()
+                && let Some(owner) = work.prompt_owner()
+            {
+                let session = match self.history.last().map(|view| &view.selection) {
+                    Some(HistorySelection::Session(session, _)) => Some(session),
+                    None => self.agents.current(),
+                    _ => None,
+                };
+                if let Some(session) = session
+                    .filter(|session| {
+                        session.harness_id == owner.source && session.session_id == owner.session
+                    })
+                    .cloned()
+                {
+                    self.work = None;
+                    self.select_session_mode(sender, session, SessionView::Activity);
+                }
+                return false;
+            }
+            let save_edit = work.editing()
+                && key.code == KeyCode::Char('s')
+                && key.modifiers == KeyModifiers::CONTROL;
+            if code == KeyCode::Null && !save_edit {
                 return false;
             }
             match work.key(key) {
@@ -688,15 +870,15 @@ impl Workspace {
             return false;
         }
         if self.history.is_empty() {
-            return self.agent_key(sender, key.code);
+            return self.agent_key(sender, key);
         }
         let view = self.history.last_mut().expect("history exists");
         if view.page.ui.help {
-            return view.page.ui.handle_key(key.code);
+            return view.page.ui.handle_key(code);
         }
         if let Some(picker) = &mut view.page.evaluation_picker {
             let entries = &view.page.evaluation_traces;
-            match key.code {
+            match code {
                 KeyCode::Char('q') => return true,
                 KeyCode::Esc => {
                     view.page.evaluation_picker = None;
@@ -739,7 +921,7 @@ impl Workspace {
                 .operation_details
                 .iter()
                 .filter(|entry| entry.kind == kind);
-            match key.code {
+            match code {
                 KeyCode::Char('q') => return true,
                 KeyCode::Esc => {
                     view.page.operation_picker = None;
@@ -781,7 +963,7 @@ impl Workspace {
             return false;
         }
         if let Some(picker) = &mut view.page.turn_picker {
-            match key.code {
+            match code {
                 KeyCode::Char('q') => return true,
                 KeyCode::Esc => view.page.turn_picker = None,
                 KeyCode::Down | KeyCode::Char('j') => {
@@ -804,17 +986,41 @@ impl Workspace {
             return false;
         }
 
+        if keymap::back(key) {
+            if self.pending.is_none() {
+                self.history.pop();
+                self.message = None;
+            }
+            return false;
+        }
+        if keymap::review(key) {
+            if let HistorySelection::Session(session, _) = &view.selection {
+                let selection = HistorySelection::Session(session.clone(), SessionView::Review);
+                self.open(sender, selection);
+            }
+            return false;
+        }
+        if key.modifiers == KeyModifiers::CONTROL
+            && matches!(key.code, KeyCode::Left | KeyCode::Right)
+        {
+            return view.page.ui.handle_key(key.code);
+        }
+        if let Some(destination) = keymap::destination(code) {
+            self.navigate(sender, destination);
+            return false;
+        }
+
         if let Some(table) = view.page.operation_table.active(&view.page.ui)
-            && table.key(key.code)
+            && table.key(code)
         {
             return false;
         }
-        if key.code == KeyCode::Char('E') && self.pending.is_none() && evaluation_details(view) {
+        if code == KeyCode::Char('E') && self.pending.is_none() && evaluation_details(view) {
             view.page.evaluation_picker = Some(ListState::default().with_selected(Some(0)));
             self.message = None;
             return false;
         }
-        if key.code == KeyCode::Char('d') && self.pending.is_none() && telemetry_details(view) {
+        if code == KeyCode::Char('d') && self.pending.is_none() && telemetry_details(view) {
             self.work = Some(Workbench::new(
                 WorkResult::TelemetrySpans(view.page.telemetry_spans.clone()),
                 None,
@@ -822,8 +1028,31 @@ impl Workspace {
             self.message = None;
             return false;
         }
-        let detail = match key.code {
-            KeyCode::Char('m') => Some(OperationDetailKind::Mcp),
+        if matches!(code, KeyCode::Char('d' | 'D')) {
+            self.navigate(sender, Destination::Findings);
+            return false;
+        }
+        let mcp_pane = view.page.ui.selected_title() == Some("MCP");
+        if code == KeyCode::Char('m')
+            && !mcp_pane
+            && let HistorySelection::Session(session, mode) = &view.selection
+        {
+            if matches!(mode, SessionView::Overview) {
+                let anchor = WorkAnchor::from(session);
+                self.request(
+                    sender,
+                    WorkspaceRequest::Work(WorkCommand::Prompts(anchor.clone())),
+                    Change::Work(Some(anchor)),
+                );
+            } else {
+                let session = session.clone();
+                self.select_session_mode(sender, session, SessionView::Overview);
+            }
+            return false;
+        }
+        let detail = match code {
+            KeyCode::Char('M') => Some(OperationDetailKind::Mcp),
+            KeyCode::Char('m') if mcp_pane => Some(OperationDetailKind::Mcp),
             KeyCode::Char('e') if view.page.reviewing() || view.page.ui.in_turn => {
                 Some(OperationDetailKind::Edit)
             }
@@ -864,13 +1093,14 @@ impl Workspace {
             self.message = None;
             return false;
         }
-        match key.code {
+        match code {
             KeyCode::Esc if self.pending.is_none() => {
                 self.history.pop();
                 self.message = None;
             }
             KeyCode::Esc => {}
-            KeyCode::Char('b' | 'p') => {
+            KeyCode::Char('p') => self.toggle_pause(),
+            KeyCode::Char('b' | 'P') => {
                 let target = match &view.selection {
                     HistorySelection::Session(session, _) => Some(WorkAnchor::from(session)),
                     HistorySelection::Turn(turn) => Some(WorkAnchor {
@@ -881,7 +1111,7 @@ impl Workspace {
                     }),
                     HistorySelection::All(_) => None,
                 };
-                let command = if key.code == KeyCode::Char('b') {
+                let command = if code == KeyCode::Char('b') {
                     Some(WorkCommand::Tasks(None))
                 } else {
                     target.clone().map(|mut anchor| {
@@ -920,7 +1150,7 @@ impl Workspace {
                     );
                 }
             }
-            KeyCode::Char('8') if !view.page.ui.help => {
+            KeyCode::Char('t' | '8') if !view.page.ui.help => {
                 if let HistorySelection::Session(session, kind) = &view.selection
                     && !matches!(kind, SessionView::Traces)
                 {
@@ -928,7 +1158,7 @@ impl Workspace {
                     self.open(sender, selection);
                 }
             }
-            KeyCode::Char('[') if !view.page.ui.help => {
+            keymap::OLDER if !view.page.ui.help => {
                 if let Some(before) = view.page.ui.older_cursor().cloned() {
                     let selection = view.selection.clone();
                     self.request(
@@ -941,12 +1171,23 @@ impl Workspace {
                     );
                 }
             }
-            KeyCode::Char(']') if self.pending.is_none() && !view.page.ui.help => {
+            keymap::NEWER if self.pending.is_none() && !view.page.ui.help => {
                 if let Some(newer) = view.newer.pop_back() {
                     view.page = newer;
                 }
             }
-            KeyCode::Char('t') if view.page.ui.turn_available && !view.page.ui.help => {
+            keymap::LATEST | KeyCode::Char('R') => {
+                let selection = view.selection.clone();
+                self.request(
+                    sender,
+                    WorkspaceRequest::History {
+                        selection,
+                        before: None,
+                    },
+                    Change::LatestHistory,
+                );
+            }
+            KeyCode::Char('T') if view.page.ui.turn_available && !view.page.ui.help => {
                 view.page.turn_picker = Some(ListState::default().with_selected(Some(0)));
             }
             key => return view.page.ui.handle_key(key),
@@ -954,7 +1195,12 @@ impl Workspace {
         false
     }
 
-    fn agent_key(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, key: KeyCode) -> bool {
+    fn agent_key(
+        &mut self,
+        sender: &mpsc::Sender<WorkspaceRequest>,
+        event: event::KeyEvent,
+    ) -> bool {
+        let key = keymap::plain(event).unwrap_or(KeyCode::Null);
         if key == KeyCode::F(1)
             || (self.agents.help && matches!(key, KeyCode::Char('?') | KeyCode::Esc))
         {
@@ -977,31 +1223,55 @@ impl Workspace {
             self.agents.apply_filters(identity.as_ref());
             return false;
         }
+        if event.modifiers == KeyModifiers::ALT
+            && matches!(event.code, KeyCode::Up | KeyCode::Down | KeyCode::Right)
+        {
+            self.agents.inspect_relative(event.code);
+            return false;
+        }
+        if keymap::review(event) {
+            if let Some(session) = self.agents.current().cloned() {
+                self.open(
+                    sender,
+                    HistorySelection::Session(session, SessionView::Review),
+                );
+            }
+            return false;
+        }
+        if let Some(destination) = keymap::destination(key) {
+            self.navigate(sender, destination);
+            return false;
+        }
         match key {
-            KeyCode::Char('q') | KeyCode::Esc => return true,
+            KeyCode::Char('q') => return true,
             KeyCode::Down | KeyCode::Char('j') => self.agents.move_selection(true),
             KeyCode::Up | KeyCode::Char('k') => self.agents.move_selection(false),
             KeyCode::Char('/') => self.agents.editing = true,
-            KeyCode::Char('h') => self.agents.toggle_tree(),
+            KeyCode::Char('f' | 'h') => self.agents.toggle_tree(),
+            KeyCode::Char('d' | 'D') => self.navigate(sender, Destination::Findings),
             KeyCode::Char('?') => self.agents.help = true,
-            KeyCode::Char('s') => {
+            KeyCode::Char('o') => {
                 let identity = self.agents.current().map(session_key);
                 self.agents.sort_by_state = !self.agents.sort_by_state;
                 self.agents.apply_filters(identity.as_ref());
             }
             KeyCode::Left => self.agents.expand(false),
             KeyCode::Right => self.agents.expand(true),
-            KeyCode::Char('x') => {
+            KeyCode::Char('a' | '!') => {
                 let identity = self.agents.current().map(session_key);
                 self.agents.search.clear();
-                self.agents.filter = Filter::All;
+                self.agents.filter = if key == KeyCode::Char('!') {
+                    Filter::Attention
+                } else {
+                    Filter::All
+                };
                 self.agents.apply_filters(identity.as_ref());
             }
-            KeyCode::Char('f') => {
+            KeyCode::Char('F') => {
                 self.agents.filter = self.agents.filter.next();
                 self.agents.apply_filters(None);
             }
-            KeyCode::Char('r' | 'R') => self.request(
+            KeyCode::Char('R') | keymap::LATEST => self.request(
                 sender,
                 WorkspaceRequest::Sessions(None),
                 Change::RefreshSessions,
@@ -1018,45 +1288,39 @@ impl Workspace {
                     Change::Work(self.agents.current().map(WorkAnchor::from)),
                 );
             }
-            KeyCode::Char('p') => {
+            KeyCode::Char('p') => self.toggle_pause(),
+            KeyCode::Char('P') => {
                 if let Some(session) = self.agents.current() {
+                    let anchor = WorkAnchor::from(session);
                     self.request(
                         sender,
-                        WorkspaceRequest::Work(WorkCommand::Prompts(WorkAnchor::from(session))),
-                        Change::Work(None),
+                        WorkspaceRequest::Work(WorkCommand::Prompts(anchor.clone())),
+                        Change::Work(Some(anchor)),
                     );
                 }
             }
-            KeyCode::Char('6') => self.request(
-                sender,
-                WorkspaceRequest::Work(WorkCommand::HostHistory(None)),
-                Change::Work(None),
-            ),
-            KeyCode::Char('g' | 'H' | '2'..='5' | '7' | '8') => {
+            KeyCode::Char('g' | 'H' | 'U' | '8') => {
                 let view = match key {
-                    KeyCode::Char('2') => WorkspaceView::Activity,
-                    KeyCode::Char('3') => WorkspaceView::Mcp,
-                    KeyCode::Char('4') => WorkspaceView::Operations,
-                    KeyCode::Char('5') => WorkspaceView::Findings,
                     KeyCode::Char('H') => WorkspaceView::Host,
-                    KeyCode::Char('7') => WorkspaceView::Usage,
+                    KeyCode::Char('U') => WorkspaceView::Usage,
                     KeyCode::Char('8') => WorkspaceView::Traces,
                     _ => WorkspaceView::Overview,
                 };
                 self.open(sender, HistorySelection::All(view));
             }
-            KeyCode::Enter | KeyCode::Char('e' | 'a' | 'v' | 'u') => {
+            KeyCode::Enter | KeyCode::Char('e' | 'm' | 'A' | 's' | 'v' | 'u' | 't') => {
                 if let Some(session) = self.agents.current().cloned() {
                     let view = match key {
-                        KeyCode::Char('a') => SessionView::Activity,
+                        KeyCode::Char('A' | 's') => SessionView::Activity,
                         KeyCode::Char('v') => SessionView::Review,
                         KeyCode::Char('u') => SessionView::Usage,
+                        KeyCode::Char('t') => SessionView::Traces,
                         _ => SessionView::Overview,
                     };
                     self.open(sender, HistorySelection::Session(session, view));
                 }
             }
-            KeyCode::Char('[') => {
+            keymap::OLDER => {
                 if let Some(cursor) = self
                     .agents
                     .catalog
@@ -1070,7 +1334,7 @@ impl Workspace {
                     );
                 }
             }
-            KeyCode::Char(']') if self.pending.is_none() => {
+            keymap::NEWER if self.pending.is_none() => {
                 if let Some(newer) = self.newer_sessions.pop_back() {
                     self.agents.update(newer);
                     // If the oldest cached page was dropped, a refresh still
@@ -1148,6 +1412,7 @@ pub fn run_workspace(
                     .as_ref()
                     .is_some_and(Workbench::follows_requests)
                     && workspace.pending.is_none()
+                    && !workspace.agents.paused
                     && Instant::now() >= workspace.refresh_after
                 {
                     workspace.refresh_after = Instant::now() + REFRESH_INTERVAL;
@@ -1162,6 +1427,7 @@ pub fn run_workspace(
                     && workspace.work.is_none()
                     && workspace.pending.is_none()
                     && !workspace.browsing_older
+                    && !workspace.agents.paused
                     && Instant::now() >= workspace.refresh_after
                 {
                     workspace.refresh_after = Instant::now() + REFRESH_INTERVAL;
@@ -1326,6 +1592,50 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
             frame.render_widget(Paragraph::new(visible_text(footer)), foot);
             return;
         }
+        if view.page.ui.help && area.width >= MIN_WIDTH && area.height >= MIN_HEIGHT {
+            let primary = keymap::navigation_hints(&keymap::NAVIGATION[..5]);
+            let secondary = keymap::navigation_hints(&keymap::NAVIGATION[5..]);
+            let mut help = format!(
+                "{primary}\n{secondary} · d Recorded diagnostics\n←/→ or Ctrl+←/→ Pane · ↑/↓ Scroll\n[ Newer · ] Older · l Latest · R Refresh · p Pause\nEsc or Alt+← Back · q Quit"
+            );
+            if matches!(view.selection, HistorySelection::Session(_, _)) {
+                help.push_str("\nCtrl+R Review · t Traces · m Inspector mode · P Prompts");
+            }
+            if view.page.ui.turn_available {
+                help.push_str("\nT Select a recorded turn");
+            }
+            let has_kind = |kind| {
+                view.page
+                    .operation_details
+                    .iter()
+                    .any(|entry| entry.kind == kind)
+            };
+            if has_kind(OperationDetailKind::Mcp) {
+                help.push_str("\nM MCP payloads · m on MCP");
+            }
+            if view.page.reviewing() {
+                help.push_str("\ny Mark reviewed · n Review notes");
+            }
+            if telemetry_details(view) || evaluation_details(view) {
+                help.push('\n');
+                if telemetry_details(view) {
+                    help.push_str("d Captured text");
+                }
+                if telemetry_details(view) && evaluation_details(view) {
+                    help.push_str(" · ");
+                }
+                if evaluation_details(view) {
+                    help.push_str("E Evaluations");
+                }
+            }
+            frame.render_widget(
+                Paragraph::new(help)
+                    .wrap(Wrap { trim: false })
+                    .block(panel(HELP_CLOSE_HINT)),
+                area,
+            );
+            return;
+        }
         view.page.ui.set_viewport(area.width, area.height);
         if !view.page.ui.help
             && view.page.turn_picker.is_none()
@@ -1395,30 +1705,30 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
             {
                 if has_details(OperationDetailKind::Edit) {
                     if session.reviewed {
-                        "Reviewed · e edits · n decisions · 8 traces · Esc back"
+                        "Reviewed · e edits · n decisions · t traces · Esc back"
                     } else {
-                        "y review · e edits · n decisions · 8 traces · Esc back"
+                        "y review · e edits · n decisions · t traces · Esc back"
                     }
                 } else if session.reviewed {
-                    "Reviewed · n decisions · 8 traces · Esc back"
+                    "Reviewed · n decisions · t traces · Esc back"
                 } else {
-                    "y mark reviewed · n decisions · 8 traces · Esc back"
+                    "y mark reviewed · n decisions · t traces · Esc back"
                 }
             } else if view.page.ui.in_turn && has_details(OperationDetailKind::Edit) {
                 if has_details(OperationDetailKind::Mcp) {
-                    "e edits · m MCP payloads · Esc back · [ ] pages"
+                    "e edits · M MCP payloads · Esc back · [ ] pages"
                 } else {
                     "e edits · Esc back · [ ] history pages"
                 }
             } else if has_details(OperationDetailKind::Mcp)
                 && matches!(view.selection, HistorySelection::Session(_, kind) if !matches!(kind, SessionView::Traces))
             {
-                "m payloads · 8 traces · Esc back · [ ] pages"
+                "M payloads · t traces · Esc back · [ ] pages"
             } else if has_details(OperationDetailKind::Mcp) {
-                "m MCP payloads · Esc back · [ ] history pages"
+                "M MCP payloads · Esc back · [ ] history pages"
             } else if matches!(view.selection, HistorySelection::Session(_, kind) if !matches!(kind, SessionView::Traces))
             {
-                "8 session traces · Esc back · [ ] history pages"
+                "t session traces · Esc back · [ ] history pages"
             } else {
                 "Esc back · [ ] history pages"
             };
@@ -1537,25 +1847,38 @@ fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message
         Paragraph::new(" Agenturm  /  Agents").style(heading_style()),
         brand,
     );
-    let status = match (agents.catalog.is_some(), pending) {
-        (false, true) => "Loading sessions",
-        (false, false) => "Unavailable · R retry",
-        (true, true) => "Loading…",
-        (true, false) => "History · R refresh",
+    let status = if agents.paused {
+        "Paused · p resume"
+    } else {
+        match (agents.catalog.is_some(), pending) {
+            (false, true) => "Loading sessions",
+            (false, false) => "Unavailable · R retry",
+            (true, true) => "Loading…",
+            (true, false) => "History · R refresh",
+        }
     };
     frame.render_widget(
         Paragraph::new(status).right_aligned().style(label_style()),
         connection,
     );
+    let nav_count = if area.width >= 95 {
+        keymap::NAVIGATION.len()
+    } else if area.width >= 60 {
+        5
+    } else {
+        3
+    };
+    let more = if nav_count < keymap::NAVIGATION.len() {
+        " · F1 more"
+    } else {
+        ""
+    };
     let nav = Line::from(vec![
         Span::styled(" 1 Agents ", selection_style()),
-        Span::raw(if area.width >= 86 {
-            " 2 Activity  3 MCP Calls  4 Operations  5 Findings  6 Host  7 Usage  8 Traces"
-        } else if area.width >= 60 {
-            " 2 Activity  3 MCP Calls  4 Operations  F1 more"
-        } else {
-            " 2 Activity  3 MCP  F1 more"
-        }),
+        Span::raw(format!(
+            " {}{more}",
+            keymap::navigation_hints(&keymap::NAVIGATION[1..nav_count])
+        )),
     ]);
     let filter = agents.filter.label();
     let order = if agents.sort_by_state {
@@ -1589,8 +1912,13 @@ fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message
         [content, Rect::default()]
     };
     if agents.help {
+        let primary = keymap::navigation_hints(&keymap::NAVIGATION[..5]);
+        let secondary = keymap::navigation_hints(&keymap::NAVIGATION[5..]);
+        let help = format!(
+            "{primary}\n{secondary} · H live Host · U workspace Usage\nEnter Overview · Ctrl+R Review · t Traces · u Usage\nm Inspector modes · P Prompts · s Source activity\n/ Search · a Reset · ! Attention · F Filter · o Sort\nf Tree/flat · ←/→ Collapse/expand · p Pause refresh\nAlt+↑/↓ Parent/child · Alt+→ Descendant needing attention\n[ Newer · ] Older · l Latest · R Refresh\nb Tasks · w Workflow · d Diagnostics · g History · q Quit"
+        );
         frame.render_widget(
-            Paragraph::new("Enter Overview · a Activity · v Review · u Usage\n2 Activity · 3 MCP · 4 Operations · 5 Findings\n6 Host history · H Live host · 7 Usage · 8 Traces\ng History · b Tasks · w Workflow · p Prompts\n/ Search · x Clear · f Filter · s Sort · r Refresh\n←/→ Collapse/expand · h Flat/tree · [ ] Page · q Quit")
+            Paragraph::new(help)
                 .wrap(Wrap { trim: false })
                 .block(Block::bordered().title(HELP_CLOSE_HINT)),
             content,
@@ -1668,7 +1996,7 @@ fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message
     let empty = match sessions {
         None if pending => "Waiting for session data…",
         None => "Session history unavailable · r retry",
-        Some([]) => "No sessions collected yet · r refresh",
+        Some([]) => "No sessions collected yet · R refresh",
         Some(_) => "No matches on this page · x clear filters",
     };
     if agents.visible.is_empty() && table_area.height > 1 {
@@ -1734,13 +2062,13 @@ fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message
     let keys = if agents.editing {
         "Enter / Esc done · Backspace edit"
     } else {
-        "Enter overview · a activity · v review · / search"
+        "Enter overview · Ctrl+R review · / search"
     };
     let status = message.map(visible_text).unwrap_or_else(|| {
         if pending {
             "Loading…".into()
         } else {
-            "b tasks · w workflow · p prompts · F1 help · q quit".into()
+            "b tasks · w workflow · P prompts · F1 help · q quit".into()
         }
     });
     frame.render_widget(
@@ -1780,6 +2108,173 @@ mod tests {
             older: None,
             notice: None,
         }
+    }
+
+    fn empty_history_page() -> HistoryPage {
+        HistoryPage {
+            snapshot: Snapshot::default(),
+            turns: Vec::new(),
+            initial_pane: None,
+            review_pane: None,
+            operation_details: Vec::new(),
+            private_telemetry_history: None,
+            operation_tables: Default::default(),
+        }
+    }
+
+    fn press(
+        workspace: &mut Workspace,
+        sender: &mpsc::Sender<WorkspaceRequest>,
+        code: KeyCode,
+    ) -> bool {
+        workspace.key(sender, event::KeyEvent::new(code, KeyModifiers::NONE))
+    }
+
+    #[test]
+    fn numeric_shortcuts_route_recorded_views_and_return_to_the_same_agent() {
+        let mut workspace = Workspace::new();
+        let selected = session("harness.pi", "selected", "completed", None);
+        workspace.agents.update(catalog(vec![
+            session("harness.codex", "other", "running", None),
+            selected.clone(),
+        ]));
+        let (sender, requests) = mpsc::channel();
+        assert!(!press(&mut workspace, &sender, KeyCode::Down));
+        for (key, expected) in [
+            ('2', WorkspaceView::Activity),
+            ('3', WorkspaceView::Mcp),
+            ('4', WorkspaceView::Traces),
+            ('6', WorkspaceView::Metrics),
+            ('7', WorkspaceView::Findings),
+            ('9', WorkspaceView::Operations),
+        ] {
+            assert!(!press(&mut workspace, &sender, KeyCode::Char(key)));
+            let WorkspaceRequest::History {
+                selection: HistorySelection::All(view),
+                before: None,
+            } = requests.try_recv().unwrap()
+            else {
+                panic!("missing workspace destination")
+            };
+            assert_eq!(view, expected);
+            workspace.finish(Ok(WorkspaceResponse::History(empty_history_page())));
+            assert_eq!(
+                workspace.history.len(),
+                1,
+                "tab changes replace the current global view"
+            );
+            if key == '6' {
+                assert_eq!(
+                    workspace.history[0].page.ui.selected_title(),
+                    Some("Metrics")
+                );
+            }
+        }
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('5')));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::Work(WorkCommand::HostHistory(None)))
+        ));
+        workspace.pending = None;
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('1')));
+        assert!(workspace.history.is_empty());
+        assert_eq!(workspace.agents.current(), Some(&selected));
+    }
+
+    #[test]
+    fn text_focus_and_private_modal_precede_global_shortcuts() {
+        let mut workspace = Workspace::new();
+        workspace.agents.update(catalog(vec![session(
+            "harness.codex",
+            "selected",
+            "completed",
+            None,
+        )]));
+        let (sender, requests) = mpsc::channel();
+        let review = event::KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL);
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('/')));
+        for c in ['4', 'p', 'm', 'q'] {
+            assert!(!press(&mut workspace, &sender, KeyCode::Char(c)));
+        }
+        assert!(!workspace.key(&sender, review));
+        assert!(!press(&mut workspace, &sender, KeyCode::F(1)));
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('9')));
+        assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+        assert!(workspace.agents.editing);
+        assert_eq!(workspace.agents.search, "4pmq");
+        assert!(!workspace.agents.paused);
+        assert!(requests.try_recv().is_err());
+        assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('a')));
+
+        let (ack, _) = mpsc::channel();
+        workspace.prompt = Some(PromptScreen {
+            text: "private".into(),
+            title: "Granted test fixture",
+            scroll: 0,
+            acknowledge: Some(ack),
+            active: Arc::new(Mutex::new(true)),
+            expires: Instant::now() + Duration::from_secs(25),
+        });
+        for code in [KeyCode::Char('4'), KeyCode::Char('p'), KeyCode::F(1)] {
+            assert!(!press(&mut workspace, &sender, code));
+        }
+        assert!(!workspace.key(&sender, review));
+        assert!(workspace.prompt.is_some());
+        assert!(!workspace.agents.help && !workspace.agents.paused);
+        assert!(requests.try_recv().is_err());
+        assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+        assert!(workspace.prompt.is_none() && workspace.redact_then_acknowledge.is_some());
+        assert!(!workspace.key(&sender, review));
+        assert!(
+            matches!(requests.try_recv(), Ok(WorkspaceRequest::History { selection: HistorySelection::Session(row, SessionView::Review), before: None }) if row.session_id == "selected")
+        );
+    }
+
+    #[test]
+    fn pause_refresh_and_exact_session_inspector_modes() {
+        let mut workspace = Workspace::new();
+        let selected = session("harness.pi", "selected", "completed", None);
+        workspace.agents.update(catalog(vec![selected]));
+        let (sender, requests) = mpsc::channel();
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('p')));
+        assert!(workspace.agents.paused && requests.try_recv().is_err());
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('R')));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::Sessions(None))
+        ));
+        workspace.pending = None;
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('p')));
+        assert!(!workspace.agents.paused);
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('m')));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::History {
+                selection: HistorySelection::Session(_, SessionView::Overview),
+                ..
+            })
+        ));
+        workspace.finish(Ok(WorkspaceResponse::History(empty_history_page())));
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('m')));
+        assert!(
+            matches!(requests.try_recv(), Ok(WorkspaceRequest::Work(WorkCommand::Prompts(owner))) if owner.source == "harness.pi" && owner.session == "selected")
+        );
+        workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::Prompts(Vec::new()))));
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('m')));
+        assert!(
+            matches!(requests.try_recv(), Ok(WorkspaceRequest::History { selection: HistorySelection::Session(row, SessionView::Activity), .. }) if row.session_id == "selected")
+        );
+        workspace.finish(Ok(WorkspaceResponse::History(empty_history_page())));
+        assert_eq!(workspace.history.len(), 1);
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('m')));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::History {
+                selection: HistorySelection::Session(_, SessionView::Overview),
+                ..
+            })
+        ));
     }
 
     #[test]
@@ -1935,7 +2430,7 @@ mod tests {
         assert!(!press(&mut workspace, KeyCode::Esc));
         assert_eq!(workspace.agents.visible.len(), 2);
         assert_eq!(workspace.agents.current(), Some(&selected));
-        assert!(!press(&mut workspace, KeyCode::Char('x')));
+        assert!(!press(&mut workspace, KeyCode::Char('a')));
         assert_eq!(workspace.agents.visible.len(), 3);
         assert_eq!(workspace.agents.current(), Some(&selected));
         assert!(!press(&mut workspace, KeyCode::Enter));

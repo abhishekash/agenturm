@@ -2217,18 +2217,21 @@ fn load_workspace_history(
                 .then(|| cockpit_host::add_host_pane(&mut snapshot));
             let mut page = inspector_activity::overview_page(snapshot);
             page.operation_tables = ids.tables;
-            page.initial_pane = Some(match view {
-                WorkspaceView::Overview => {
-                    ExtensionId::parse("pane.overview").expect("built-in overview ID is valid")
+            page.initial_pane = match view {
+                WorkspaceView::Overview => Some(
+                    ExtensionId::parse("pane.overview").expect("built-in overview ID is valid"),
+                ),
+                WorkspaceView::Activity => Some(ids.activity),
+                WorkspaceView::Mcp => Some(ids.mcp),
+                WorkspaceView::Operations => Some(ids.operations),
+                WorkspaceView::Findings => Some(ids.findings),
+                WorkspaceView::Host => {
+                    Some(host.ok_or("Host data is unavailable from this receiver")?)
                 }
-                WorkspaceView::Activity => ids.activity,
-                WorkspaceView::Mcp => ids.mcp,
-                WorkspaceView::Operations => ids.operations,
-                WorkspaceView::Findings => ids.findings,
-                WorkspaceView::Host => host.ok_or("Host data is unavailable from this receiver")?,
-                WorkspaceView::Usage => ids.usage,
-                WorkspaceView::Traces => ids.traces,
-            });
+                WorkspaceView::Usage => Some(ids.usage),
+                WorkspaceView::Traces => Some(ids.traces),
+                WorkspaceView::Metrics => None,
+            };
             Ok(page)
         }
     }

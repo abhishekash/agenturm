@@ -61,7 +61,7 @@ def run_cockpit(command, environment, columns, rows):
         os.write(master, b"\r")
         selected = frame("Agenturm / Activity", f"codex / {SESSION}", "approval requested")
         assert "sdk-other" not in selected
-        os.write(master, b"8")
+        os.write(master, b"4")
         frame("Agenturm / Traces", f"codex / {SESSION}")
         os.write(master, b"w")
         selected = frame("Agenturm / Pending", "Awaiting approval")

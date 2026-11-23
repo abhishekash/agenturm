@@ -257,7 +257,7 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
             revoke=None
             try:
                 screen_until(b'private-session')
-                os.write(master,b'p');screen_until(b'prompt-1')
+                os.write(master,b'P');screen_until(b'prompt-1')
                 os.write(master,b'\r');screen_until(b'Review the bounded broker fixture')
                 revoke=subprocess.Popen([APP,'broker','grant','revoke','--binding',binding,'--broker-config',endpoint],preexec_fn=drop(ADMIN),stdout=subprocess.PIPE,stderr=subprocess.PIPE)
                 time.sleep(.3)

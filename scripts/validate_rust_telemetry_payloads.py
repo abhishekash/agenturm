@@ -84,7 +84,7 @@ def cockpit_preview(args, principal, state, *, columns, rows, close):
 
     try:
         assert INPUT.encode() not in until(SESSION.encode())
-        os.write(master, b"8")
+        os.write(master, b"4")
         assert INPUT.encode() not in until(b"d captured text")
         os.write(master, b"d")
         assert INPUT.encode() not in until(b"Enter reveal")

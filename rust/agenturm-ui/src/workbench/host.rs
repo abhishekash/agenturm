@@ -45,7 +45,7 @@ impl HostLevel {
         let index = cursor.selected().unwrap_or_default();
         let (next, selected) = match (&*self, key) {
             (Self::Samples, KeyCode::Esc) => return WorkInput::Close,
-            (Self::Samples, KeyCode::Char('r')) => {
+            (Self::Samples, KeyCode::Char('r' | 'R' | 'l')) => {
                 return WorkInput::Command(WorkCommand::HostHistory(None));
             }
             (Self::Samples, KeyCode::Char(']')) if page.has_more => {
@@ -77,9 +77,9 @@ impl HostLevel {
             Self::Samples => Presentation {
                 title: "Host history",
                 keys: if page.has_more {
-                    "Enter processes · ] older · r latest · Esc back"
+                    "Enter processes · ] older · l latest · Esc back"
                 } else {
-                    "Enter processes · r refresh · Esc back"
+                    "Enter processes · R refresh · Esc back"
                 },
                 options: page
                     .observations

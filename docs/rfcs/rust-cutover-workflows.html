@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Rust 0.3.7 candidate</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">Markdown source ↗</a></nav><h1>Rust cutover workflow inventory</h1>
+</style></head><body><main><nav><strong>Agenturm / Rust 0.3.8 candidate</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">Markdown source ↗</a></nav><h1>Rust cutover workflow inventory</h1>
 <p>Baseline is the Python <code>v0.2.8</code> tag and the published Rust 0.3.1 Linux bundle. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.</p>
 <p>The current implementation scope retains the remaining workflows. Remote
 receiver access, remaining eval views, automatic retention, recorded cost and
@@ -85,6 +85,11 @@ a recorded pull request or file edit. Sessions without title evidence show
 receiver client can label a row from typed activity and trace evidence tied
 to the same service, session, and actor. Legacy task fields can contain
 captured prompts, so the live roster leaves those fields outside its labels.</p>
+<h3>Cockpit keyboard navigation</h3>
+<p><code>1</code> Agents · <code>2</code> Activity · <code>3</code> MCP · <code>4</code> Traces · <code>5</code> Host · <code>6</code> Metrics · <code>7</code> Findings. <code>9</code> opens Operations, <code>U</code> opens workspace Usage, and <code>H</code> opens live local Host information. <code>8</code> remains a trace shortcut. On a selected session, <code>t</code> opens its exact linked Traces and <code>T</code> selects a recorded turn when available.</p>
+<p><code>Ctrl+R</code> opens Review for the selected session. <code>m</code> cycles the session overview, prompt index, and recorded Activity details. <code>P</code> opens the grant-controlled prompt index directly. In MCP, <code>m</code> opens a recorded payload selection when available. <code>M</code> opens that selection from another eligible pane. In Traces, <code>d</code> opens captured text selection when available. Outside that context <code>d</code> opens recorded diagnostics, which are also available with <code>D</code>.</p>
+<p><code>p</code> pauses or resumes automatic refresh. <code>R</code> refreshes on demand. <code>[</code> moves to a loaded newer page, <code>]</code> reads an older page, and <code>l</code> returns to the latest page within the current scope. <code>a</code> resets the roster filters. <code>f</code> switches between tree and flat views, <code>o</code> changes the sort, and <code>!</code> shows sessions needing attention. <code>Esc</code> closes the current overlay or returns to the previous view. <code>F1</code> or <code>?</code> opens keyboard help.</p>
+<p>The Python receiver attachment uses <code>1</code>, <code>2</code>, and <code>4</code> for its live metadata pages. <code>w</code> or <code>!</code> opens Pending.</p>
 <h3>Attach to an existing Python 0.2.8 receiver</h3>
 <p>Use an authenticated Python 0.2.8 receiver already listening on loopback, or
 forward its port over SSH. Supply its URL-safe bearer token in an owner-only
@@ -386,7 +391,7 @@ client's checkout.</p>
 </tr>
 <tr>
 <td>Usage, cost and host history</td>
-<td>Rust shows recorded token counts, Kiro credits and individually reported OTLP costs. <code>host record</code> and <code>broker host record</code> capture optional Linux load, memory and CPU counters with known same-user processes. <code>6</code> opens recorded samples, then Enter opens the process list and exact process history. A v2 collection <code>host</code> block enables scheduled capture for local, broker, and managed Linux collectors. The HTTP reader can expose recorded Host history when started with <code>--include-host</code>. Aggregate cost views remain open. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md#record-and-read-host-history">Host history</a></td>
+<td>Rust shows recorded token counts, Kiro credits and individually reported OTLP costs. <code>host record</code> and <code>broker host record</code> capture optional Linux load, memory and CPU counters with known same-user processes. <code>5</code> opens recorded samples, then Enter opens the process list and exact process history. A v2 collection <code>host</code> block enables scheduled capture for local, broker, and managed Linux collectors. The HTTP reader can expose recorded Host history when started with <code>--include-host</code>. Aggregate cost views remain open. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md#record-and-read-host-history">Host history</a></td>
 </tr>
 </tbody>
 </table></div>
@@ -410,12 +415,12 @@ client's checkout.</p>
 <tr>
 <td>Follow interrupted work</td>
 <td>Agents → Enter → Details and scoped Activity. Open recorded work, then use Back.</td>
-<td>Use Enter and <code>t</code> to select a turn. Check recorded reason, scoped tools and edits, missing reason handling, a separate PR result and a later successful turn. Return to the same run. A6 and B3.</td>
+<td>Use Enter and <code>T</code> to select a turn. Check recorded reason, scoped tools and edits, missing reason handling, a separate PR result and a later successful turn. Return to the same run. A6 and B3.</td>
 </tr>
 <tr>
 <td>Read a retained prompt</td>
 <td>Enter inspector, choose Prompts, navigate index or dropdown, Enter to read, scroll, page older, and return.</td>
-<td>Use <code>p</code> and Enter for exact current-grant evidence. Scroll without changing the request, reopen an older prompt, revoke, and confirm denial while navigation remains usable. B2.</td>
+<td>Use <code>P</code> and Enter for exact current-grant evidence. Scroll without changing the request, reopen an older prompt, revoke, and confirm denial while navigation remains usable. B2.</td>
 </tr>
 <tr>
 <td>Inspect MCP and linked trace</td>
