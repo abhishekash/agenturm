@@ -563,6 +563,7 @@ mod tests {
                 span_id: "22".repeat(8),
                 parent_span_id: None,
                 target_source_id: None,
+                target_operation_id: None,
                 started_at_unix_ns: 9,
                 status: TraceStatus::Ok,
             }),

@@ -8,6 +8,7 @@
 #![forbid(unsafe_code)]
 
 pub mod host;
+pub mod metric;
 pub mod observation;
 
 use std::fmt;

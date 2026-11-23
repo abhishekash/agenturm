@@ -445,7 +445,10 @@ mod tests {
             ],
             false,
         );
-        assert!(!inventory.partial, "fixture inventory was partial: {inventory:?}");
+        assert!(
+            !inventory.partial,
+            "fixture inventory was partial: {inventory:?}"
+        );
         assert_eq!(
             inventory.servers,
             vec![

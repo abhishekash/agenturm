@@ -589,6 +589,9 @@ pub struct TraceSpan {
     /// Explicit harness source for the observation's native session identity.
     #[serde(skip_serializing_if = "Option::is_none")]
     pub target_source_id: Option<String>,
+    /// Explicit native operation anchor; never inferred from a span name or time.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub target_operation_id: Option<String>,
     pub started_at_unix_ns: u64,
     pub status: TraceStatus,
 }
@@ -601,6 +604,14 @@ impl TraceSpan {
                 .parent_span_id
                 .as_deref()
                 .is_none_or(|parent| valid_otlp_id(parent, 8) && parent != self.span_id)
+            && self.target_operation_id.as_deref().is_none_or(|operation| {
+                self.target_source_id.is_some()
+                    && !operation.is_empty()
+                    && operation.len() <= 200
+                    && operation
+                        .bytes()
+                        .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(&byte))
+            })
             && (1..=ended_at_unix_ns).contains(&self.started_at_unix_ns)
             && ended_at_unix_ns <= i64::MAX as u64
     }

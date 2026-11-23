@@ -1166,6 +1166,14 @@ impl Workspace {
             return false;
         }
 
+        if !view.page.ui.help
+            && view
+                .page
+                .active_findings()
+                .is_some_and(|browser| browser.key(code))
+        {
+            return false;
+        }
         if view.page.ui.evidence_key(code) {
             return false;
         }
@@ -1902,7 +1910,27 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
             return;
         }
         view.page.ui.set_viewport(area.width, area.height);
-        if !view.page.ui.help
+        let draw_findings = !view.page.ui.help
+            && view.page.turn_picker.is_none()
+            && area.width >= MIN_WIDTH
+            && area.height >= MIN_HEIGHT
+            && view.page.active_findings().is_some();
+        if draw_findings {
+            let [head, body, keys, _] = Layout::vertical([
+                Constraint::Length(2),
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .areas(area);
+            evidence_view::header(frame, &view.page.ui, head);
+            let browser = view
+                .page
+                .active_findings()
+                .expect("selected findings browser exists");
+            browser.draw(frame, body);
+            frame.render_widget(Paragraph::new(browser.hints()), keys);
+        } else if !view.page.ui.help
             && view.page.turn_picker.is_none()
             && area.width >= MIN_WIDTH
             && area.height >= MIN_HEIGHT
@@ -1931,10 +1959,7 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
                 body,
                 view.page.ui.selected_title().unwrap_or("Operations"),
             );
-            frame.render_widget(
-                Paragraph::new("↑↓ select / scroll · Enter inspect · Esc back · ←→ views"),
-                keys,
-            );
+            frame.render_widget(Paragraph::new(table.key_hint()), keys);
         } else {
             draw(
                 frame,
@@ -2116,6 +2141,7 @@ mod tests {
 
     fn empty_history_page() -> HistoryPage {
         HistoryPage {
+            features: Default::default(),
             history_identity: None,
             snapshot: Snapshot::default(),
             turns: Vec::new(),
@@ -2764,6 +2790,7 @@ mod tests {
                         .collect::<Vec<_>>()
                 };
                 let build_page = |table| HistoryPage {
+                    features: Default::default(),
                     history_identity: None,
                     snapshot: Snapshot {
                         observations_truncated: true,
@@ -2934,6 +2961,7 @@ mod tests {
                 })
                 .collect();
             workspace.finish(Ok(WorkspaceResponse::History(HistoryPage {
+                features: Default::default(),
                 history_identity: None,
                 snapshot: Snapshot {
                     panes,

@@ -83,7 +83,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 17;
+const SCHEMA_VERSION: i64 = 18;
 pub const MAX_HOST_HISTORY_PAGE: usize = 64;
 const MAX_BATCH_EVENTS: usize = 2_048;
 pub const MAX_OTLP_BATCH_SPANS: usize = 1_024;
@@ -100,7 +100,8 @@ const STORE_MARKER_V13: &str = "agenturm.observation-store.v13";
 const STORE_MARKER_V14: &str = "agenturm.observation-store.v14";
 const STORE_MARKER_V15: &str = "agenturm.observation-store.v15";
 const STORE_MARKER_V16: &str = "agenturm.observation-store.v16";
-const STORE_MARKER: &str = "agenturm.observation-store.v17";
+const STORE_MARKER_V17: &str = "agenturm.observation-store.v17";
+const STORE_MARKER: &str = "agenturm.observation-store.v18";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -133,6 +134,7 @@ pub enum ObservationKind {
     TraceSpan(agenturm_kernel::TraceSpan),
     TraceProgress(agenturm_kernel::TraceProgress),
     HostSample(agenturm_kernel::HostSample),
+    MetricPoint(agenturm_kernel::MetricPoint),
     Lifecycle {
         state: String,
         reason_code: Option<String>,
@@ -310,6 +312,9 @@ impl ObservationBatch {
                     }
                     KernelObservationKind::TraceProgress(progress) => {
                         ObservationKind::TraceProgress(progress.clone())
+                    }
+                    KernelObservationKind::MetricPoint(point) => {
+                        ObservationKind::MetricPoint(point.clone())
                     }
                     KernelObservationKind::HostSample(sample) => {
                         ObservationKind::HostSample(sample.clone())
@@ -580,7 +585,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         14 => STORE_MARKER_V14,
         15 => STORE_MARKER_V15,
         16 => STORE_MARKER_V16,
-        17 => STORE_MARKER,
+        17 => STORE_MARKER_V17,
+        18 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -1986,6 +1992,9 @@ impl Store {
                     ObservationKind::TraceProgress(progress) => {
                         KernelObservationKind::TraceProgress(progress)
                     }
+                    ObservationKind::MetricPoint(point) => {
+                        KernelObservationKind::MetricPoint(point)
+                    }
                     ObservationKind::HostSample(sample) => {
                         KernelObservationKind::HostSample(sample)
                     }
@@ -2184,7 +2193,9 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
             StoredScope::Source
                 if matches!(
                     observation.kind,
-                    ObservationKind::Diagnostic { .. } | ObservationKind::HostSample(_)
+                    ObservationKind::Diagnostic { .. }
+                        | ObservationKind::HostSample(_)
+                        | ObservationKind::MetricPoint(_)
                 ) && observation.identity.session_id.is_none()
                     && observation.identity.worker_id.is_none()
                     && observation.identity.turn_id.is_none()
@@ -2214,6 +2225,17 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
         {
             return Err(StoreError::Invalid(
                 "host sample requires a valid host source and source-scoped metrics",
+            ));
+        }
+        if let ObservationKind::MetricPoint(point) = &observation.kind
+            && (observation.identity.scope != StoredScope::Source
+                || observation.revision != 0
+                || !agenturm_kernel::is_metric_source(&batch.source_id)
+                || !point.is_valid_at(observation.observed_at_unix_ns)
+                || !point.matches_event(&observation.event_id, observation.observed_at_unix_ns))
+        {
+            return Err(StoreError::Invalid(
+                "metric point requires a valid OTLP source, event, and source scope",
             ));
         }
         if let ObservationKind::Activity { category } = &observation.kind
@@ -2787,6 +2809,7 @@ mod tests {
                 span_id: trace.span_id.clone(),
                 parent_span_id: None,
                 target_source_id: Some("harness.pi".into()),
+                target_operation_id: None,
                 started_at_unix_ns: 1,
                 status: TraceStatus::Ok,
             }),
@@ -2868,6 +2891,7 @@ mod tests {
                             span_id: span_id.into(),
                             parent_span_id: None,
                             target_source_id: None,
+                            target_operation_id: None,
                             started_at_unix_ns: 1,
                             status: TraceStatus::Error,
                         }),
@@ -3008,6 +3032,7 @@ mod tests {
                         span_id: span_id.into(),
                         parent_span_id: None,
                         target_source_id: None,
+                        target_operation_id: None,
                         started_at_unix_ns: 1,
                         status: TraceStatus::Ok,
                     }),

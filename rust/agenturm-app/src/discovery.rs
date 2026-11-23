@@ -180,6 +180,10 @@ impl FollowDiscovery {
         .filter_map(|(kind, plugin, path, shape)| Some((kind, plugin, path?, shape)))
     }
 
+    pub(crate) fn claude_root(&self) -> Option<&Path> {
+        self.claude_root.as_deref()
+    }
+
     pub(crate) fn codex_home(&self) -> Option<PathBuf> {
         (self.codex_root.file_name()? == "sessions")
             .then(|| self.codex_root.parent().map(Path::to_owned))

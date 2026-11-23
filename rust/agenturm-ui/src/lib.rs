@@ -7,6 +7,7 @@
 #![forbid(unsafe_code)]
 
 mod evidence_view;
+mod findings;
 mod keymap;
 mod live_receiver;
 mod loaded_view;
@@ -15,7 +16,8 @@ mod theme;
 mod workbench;
 mod workspace;
 pub use evidence_view::{EvidenceRow, EvidenceSpec, EvidenceTable, EvidenceTables};
-pub use operation_table::{OperationRow, OperationTables};
+pub use findings::{FindingGroup, FindingOccurrence, FindingsPage};
+pub use operation_table::{ConfiguredMcpServer, McpInventory, OperationRow, OperationTables};
 
 pub use live_receiver::{LiveOwner, LivePage, LiveRow, run_live_receiver};
 pub use loaded_view::LoadedView;
@@ -335,7 +337,14 @@ pub struct RecordedTurn {
     pub lifecycle: Option<(String, Option<String>)>,
 }
 
+#[derive(Default)]
+pub struct HistoryFeatures {
+    pub findings: Option<(ExtensionId, FindingsPage)>,
+    pub mcp_inventory: Option<McpInventory>,
+}
+
 pub struct HistoryPage {
+    pub features: HistoryFeatures,
     pub snapshot: Snapshot,
     pub history_identity: Option<String>,
     pub turns: Vec<RecordedTurn>,
@@ -356,6 +365,7 @@ struct PageView {
     review_pane: Option<ExtensionId>,
     operation_details: Vec<OperationDetailEntry>,
     operation_table: operation_table::Browser,
+    findings: Option<(ExtensionId, findings::Browser)>,
     operation_picker: Option<(OperationDetailKind, ListState)>,
     telemetry_spans: Vec<TelemetrySpanEntry>,
     evaluation_traces: Vec<TraceEvaluationEntry>,
@@ -410,13 +420,28 @@ impl PageView {
             turn_picker: None,
             review_pane: page.review_pane,
             operation_details: page.operation_details,
-            operation_table: operation_table::Browser::new(page.operation_tables),
+            operation_table: operation_table::Browser::new(
+                page.operation_tables,
+                page.features.mcp_inventory,
+            ),
+            findings: page
+                .features
+                .findings
+                .map(|(id, data)| (id, findings::Browser::new(data))),
             operation_picker: None,
             telemetry_spans,
             evaluation_traces,
             evaluation_picker: None,
         }
     }
+    fn active_findings(&mut self) -> Option<&mut findings::Browser> {
+        let selected = self.ui.panes.get(self.ui.selected)?.id.as_ref()?;
+        self.findings
+            .as_mut()
+            .filter(|(id, _)| id == selected)
+            .map(|(_, browser)| browser)
+    }
+
     fn reviewing(&self) -> bool {
         self.review_pane.as_ref().is_some_and(|review| {
             self.ui
@@ -434,6 +459,7 @@ pub fn run_with_history(
     mut load_older: impl FnMut(&ObservationPosition) -> io::Result<Option<Snapshot>>,
 ) -> io::Result<()> {
     let initial = HistoryPage {
+        features: Default::default(),
         history_identity: None,
         snapshot,
         turns: Vec::new(),
@@ -449,6 +475,7 @@ pub fn run_with_history(
             return Ok(None);
         };
         Ok(load_older(cursor)?.map(|snapshot| HistoryPage {
+            features: Default::default(),
             history_identity: None,
             snapshot,
             turns: Vec::new(),

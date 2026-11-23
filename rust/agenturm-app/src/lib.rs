@@ -16,10 +16,12 @@ mod content_preview;
 mod discovery;
 mod eval_detail_cli;
 mod eval_import;
+mod findings;
 mod handoff_export;
 mod host_cli;
 mod inspector_activity;
 mod investigate_cli;
+mod mcp_inventory;
 mod native_session_context;
 #[cfg(target_os = "linux")]
 mod new_window;
@@ -1786,13 +1788,16 @@ pub fn execute_cockpit_with_extensions(
                 startup.prompt(command).map(WorkspaceResponse::Work)
             }
             request => {
-                let native_sources = matches!(request, WorkspaceRequest::Sessions(_))
-                    .then(|| {
-                        startup
-                            .source_authority()
-                            .or_else(|| native_session_context::configured_sources(&startup.db))
-                    })
-                    .flatten();
+                let native_sources = matches!(
+                    request,
+                    WorkspaceRequest::Sessions(_) | WorkspaceRequest::History { .. }
+                )
+                .then(|| {
+                    startup
+                        .source_authority()
+                        .or_else(|| native_session_context::configured_sources(&startup.db))
+                })
+                .flatten();
                 workspace_response_with_sources(
                     &mut app,
                     store,
@@ -1935,6 +1940,16 @@ fn workspace_response_with_sources(
             let mut page = load_workspace_history(app, store, selection, before)?;
             page.history_identity = store.workspace_history_identity();
             page.private_telemetry_history = store.private_telemetry_history();
+            if store.session_title_store().is_some() {
+                let configured;
+                let authority = if native_sources.is_some() {
+                    native_sources
+                } else {
+                    configured = native_session_context::configured_sources(db);
+                    configured.as_ref()
+                };
+                page.features.mcp_inventory = mcp_inventory::configured(authority);
+            }
             Ok(WorkspaceResponse::History(page))
         }
     }
@@ -2359,6 +2374,8 @@ fn load_workspace_history(
                 id
             });
             let mut page = inspector_activity::overview_page(snapshot);
+            page.features.findings =
+                Some((ids.findings.clone(), findings::project(&page.snapshot)));
             page.operation_tables = ids.tables;
             page.evidence_tables = ids.evidence;
             page.initial_pane = match view {
@@ -2550,6 +2567,8 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                     "method":method.as_str(), "duration_ns":duration_ns.map(|nanos| nanos.to_string()),
                     "result":result,
                 }),
+                ObservationKind::MetricPoint(_) => serde_json::to_value(&row.kind)
+                    .expect("typed metric metadata serializes"),
                 ObservationKind::TraceSpan(span) => {
                     let mut evidence = serde_json::json!({
                         "kind":"trace_span", "trace_id":span.trace_id, "span_id":span.span_id,
@@ -2559,6 +2578,9 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                     });
                     if let Some(target) = &span.target_source_id {
                         evidence["target_source_id"] = serde_json::json!(target);
+                    }
+                    if let Some(operation) = &span.target_operation_id {
+                        evidence["target_operation_id"] = serde_json::json!(operation);
                     }
                     evidence
                 }

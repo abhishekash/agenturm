@@ -560,6 +560,7 @@ mod tests {
                 span_id: span_id.into(),
                 parent_span_id: None,
                 target_source_id: None,
+                target_operation_id: None,
                 started_at_unix_ns: 1,
                 status: TraceStatus::Ok,
             }),

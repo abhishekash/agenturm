@@ -244,6 +244,7 @@ pub enum ObservationKind {
     TraceSpan(TraceSpan),
     TraceProgress(TraceProgress),
     HostSample(HostSample),
+    MetricPoint(MetricPoint),
     Lifecycle {
         state: String,
         reason_code: Option<String>,
@@ -306,6 +307,8 @@ pub use agenturm_protocol::host::{
     HostCpu, HostProcess, HostProcessState, HostRuntime, HostSample, MAX_HOST_PROCESSES,
     is_host_source,
 };
+pub use agenturm_protocol::metric;
+pub use agenturm_protocol::metric::{MetricPoint, is_metric_source};
 pub use agenturm_protocol::observation::{
     FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, NANOUNITS_PER_CURRENCY_UNIT, NativeCostBasis,
     RelationshipKind, ReportedCost, SpanTokenUsage, TraceProgress, TraceSpan, TraceSpanIdentity,
@@ -379,6 +382,10 @@ pub fn is_trace_turn_link_valid(
     worker_id: Option<&str>,
     operation_id: Option<&str>,
 ) -> bool {
+    if span.target_operation_id.is_some() && (turn_id.is_none() || span.target_source_id.is_none())
+    {
+        return false;
+    }
     match turn_id {
         Some(_) => {
             span.target_source_id.is_some()
@@ -1428,7 +1435,9 @@ fn validate_raw_observation_slice(
             ObservationScope::Source => {
                 matches!(
                     row.kind,
-                    ObservationKind::Diagnostic { .. } | ObservationKind::HostSample(_)
+                    ObservationKind::Diagnostic { .. }
+                        | ObservationKind::HostSample(_)
+                        | ObservationKind::MetricPoint(_)
                 ) && row.identity.session_id.is_none()
                     && row.identity.worker_id.is_none()
                     && row.identity.turn_id.is_none()
@@ -1461,6 +1470,17 @@ fn validate_raw_observation_slice(
         {
             return Err(
                 "host sample requires a valid host source and source-scoped metrics".into(),
+            );
+        }
+        if let ObservationKind::MetricPoint(point) = &row.kind
+            && (row.identity.scope != ObservationScope::Source
+                || row.revision != 0
+                || !is_metric_source(source.as_str())
+                || !point.is_valid_at(row.observed_at_unix_ns)
+                || !point.matches_event(&row.event_id, row.observed_at_unix_ns))
+        {
+            return Err(
+                "metric point requires a valid OTLP source, event, and source scope".into(),
             );
         }
         if let ObservationKind::Activity { category } = &row.kind

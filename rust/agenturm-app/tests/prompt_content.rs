@@ -44,6 +44,7 @@ fn failure_candidates_page_retained_metadata_at_one_snapshot() {
                 span_id,
                 parent_span_id: None,
                 target_source_id: None,
+                target_operation_id: None,
                 started_at_unix_ns: 3,
                 status,
             }),

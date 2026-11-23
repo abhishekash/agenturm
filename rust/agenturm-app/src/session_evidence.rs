@@ -896,6 +896,15 @@ pub(super) fn describe_observation(kind: &ObservationKind) -> (&'static str, Str
                 progress.trace_id
             ),
         ),
+        ObservationKind::MetricPoint(point) => (
+            "Metric point",
+            format!(
+                "{} · {} · {}",
+                point.series.name,
+                point.series.kind.label(),
+                point.series.unit
+            ),
+        ),
         ObservationKind::TraceSpan(span) => (
             "Trace span",
             format!("{} · trace {}", span_description(span), span.trace_id),
@@ -1027,6 +1036,7 @@ mod tests {
                 span_id: span_id.clone(),
                 parent_span_id: None,
                 target_source_id: None,
+                target_operation_id: None,
                 started_at_unix_ns: 1,
                 status: TraceStatus::Ok,
             }),

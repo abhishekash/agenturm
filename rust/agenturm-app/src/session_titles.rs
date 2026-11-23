@@ -222,6 +222,7 @@ mod tests {
                         trace_id: "1".repeat(32),
                         span_id: "2".repeat(16),
                         target_source_id: Some(codex.as_str().into()),
+                        target_operation_id: None,
                         parent_span_id: None,
                         started_at_unix_ns: 0,
                         status: TraceStatus::Ok,

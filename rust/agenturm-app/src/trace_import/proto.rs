@@ -268,7 +268,10 @@ mod tests {
         span.push(8 << 3 | 1);
         span.extend(20_u64.to_le_bytes());
         span.extend(attribute("session.id", &message(1, b"usage-session")));
-        span.extend(attribute("agenturm.source.id", &message(1, b"harness.codex")));
+        span.extend(attribute(
+            "agenturm.source.id",
+            &message(1, b"harness.codex"),
+        ));
         span.extend(attribute(TURN_KEY, &message(1, b"native-turn")));
         span.extend(attribute(OPERATION_KEY, &message(1, b"native-mcp-call")));
         span.extend(attribute("llm.token_count.prompt", &[3 << 3, 0]));
