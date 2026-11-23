@@ -1,5 +1,6 @@
 //! Findings from one bounded page of typed retained evidence.
 
+use agenturm_kernel::native_review::{InternalReviewState, NativeRequestKind, NativeRequestState};
 use agenturm_kernel::{
     ExtensionId, MetricRow, Observation, ObservationKind, ObservationPosition, ObservationScope,
     Snapshot, TraceStatus,
@@ -232,6 +233,38 @@ fn signal(row: &Observation) -> Option<Signal<'_>> {
             );
             ("Trace", "error", "Reported span error".into(), details)
         }
+        ObservationKind::InternalReview(review)
+            if review.state == InternalReviewState::Interrupted =>
+        {
+            let mut details = vec![metric("Review thread", &review.session_id)];
+            for (label, value) in [
+                ("Review turn", review.turn_id.as_deref()),
+                ("Review worker", review.worker_id.as_deref()),
+                ("Parent thread", review.parent_session_id.as_deref()),
+            ] {
+                details.extend(value.map(|value| metric(label, value)));
+            }
+            (
+                "Review",
+                "warning",
+                "Internal review interrupted".into(),
+                details,
+            )
+        }
+        ObservationKind::NativeRequest(request)
+            if request.state == NativeRequestState::Requested =>
+        {
+            let label = match request.request_kind {
+                NativeRequestKind::Approval => "Approval requested",
+                NativeRequestKind::UserInput => "User input requested",
+            };
+            (
+                "Request",
+                "warning",
+                label.into(),
+                vec![metric("Request ID", &request.request_id)],
+            )
+        }
         _ => return None,
     };
     Some(observed)
@@ -260,6 +293,7 @@ fn metric(label: &str, value: &str) -> MetricRow {
 mod tests {
     use super::*;
     use agenturm_kernel::{McpMethod, ObservationIdentity};
+    use serde_json::json;
 
     fn row(
         source: &str,
@@ -492,5 +526,103 @@ mod tests {
                 && group.kind == "Tool"
                 && group.occurrences[0].position.event_id == "codex:record:10:tool"
         }));
+    }
+
+    #[test]
+    fn review_interruptions_and_request_events_keep_exact_recorded_scope() {
+        let review_source = format!("review.codex.{}", "1".repeat(64));
+        let review = |event_id: &str, state: &str| {
+            Observation {
+            harness_id: ExtensionId::parse(&review_source).unwrap(),
+            event_id: event_id.into(),
+            revision: 3,
+            identity: ObservationIdentity::source(),
+            observed_at_unix_ns: 12,
+            kind: serde_json::from_value(json!({
+                "kind":"internal_review","state":state,"session_id":"review-thread",
+                "turn_id":"review-turn","worker_id":"review-worker","parent_session_id":"parent-thread",
+            })).unwrap(),
+        }
+        };
+        let request = |source, request_kind| {
+            row(
+                source,
+                &format!("{request_kind}-event"),
+                "exact-worker",
+                2,
+                serde_json::from_value(json!({"kind":"native_request","request_id":"a".repeat(64),
+                "state":"requested","request_kind":request_kind}))
+                .unwrap(),
+            )
+        };
+        let page = project(&Snapshot {
+            history_snapshot_id: 42.into(),
+            observations: vec![
+                review("interrupted-review", "interrupted"),
+                review("ordinary-completion", "completed"),
+                request("harness.codex.one", "approval"),
+                request("harness.codex.two", "approval"),
+                request("harness.codex.one", "user_input"),
+            ],
+            ..Snapshot::default()
+        });
+        assert_eq!(page.groups.len(), 4);
+        let review = page
+            .groups
+            .iter()
+            .find(|group| group.kind == "Review")
+            .unwrap();
+        assert_eq!(review.source_id.as_str(), review_source);
+        assert_eq!(review.signal, "Internal review interrupted");
+        assert_eq!(review.severity, "warning");
+        let event = &review.occurrences[0];
+        assert_eq!(event.position.event_id, "interrupted-review");
+        assert_eq!(event.position.revision, 3);
+        assert_eq!(event.identity, ObservationIdentity::source());
+        assert_eq!(
+            event.details,
+            [
+                metric("Review thread", "review-thread"),
+                metric("Review turn", "review-turn"),
+                metric("Review worker", "review-worker"),
+                metric("Parent thread", "parent-thread")
+            ]
+        );
+        let requests = page
+            .groups
+            .iter()
+            .filter(|group| group.kind == "Request")
+            .collect::<Vec<_>>();
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|group| group.signal == "Approval requested")
+                .count(),
+            2
+        );
+        assert_eq!(
+            requests
+                .iter()
+                .filter(|group| group.signal == "User input requested")
+                .count(),
+            1
+        );
+        for group in requests {
+            let [event] = group.occurrences.as_slice() else {
+                panic!("source request group changed")
+            };
+            assert_eq!(event.position.harness_id, group.source_id.as_str());
+            assert_eq!(
+                event.position.event_id,
+                match group.signal.as_str() {
+                    "Approval requested" => "approval-event",
+                    "User input requested" => "user_input-event",
+                    _ => panic!("unexpected request kind"),
+                }
+            );
+            assert_eq!(event.position.revision, 2);
+            assert_eq!(event.position.snapshot_id, 42.into());
+            assert_eq!(event.identity.worker_id.as_deref(), Some("exact-worker"));
+        }
     }
 }
