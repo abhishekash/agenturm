@@ -245,6 +245,8 @@ pub enum ObservationKind {
     TraceProgress(TraceProgress),
     HostSample(HostSample),
     MetricPoint(MetricPoint),
+    InternalReview(agenturm_protocol::native_review::InternalReview),
+    NativeRequest(agenturm_protocol::native_review::NativeRequest),
     Lifecycle {
         state: String,
         reason_code: Option<String>,
@@ -1438,6 +1440,7 @@ fn validate_raw_observation_slice(
                     ObservationKind::Diagnostic { .. }
                         | ObservationKind::HostSample(_)
                         | ObservationKind::MetricPoint(_)
+                        | ObservationKind::InternalReview(_)
                 ) && row.identity.session_id.is_none()
                     && row.identity.worker_id.is_none()
                     && row.identity.turn_id.is_none()
@@ -1482,6 +1485,18 @@ fn validate_raw_observation_slice(
             return Err(
                 "metric point requires a valid OTLP source, event, and source scope".into(),
             );
+        }
+        let review_source = agenturm_protocol::native_review::is_codex_review_source(source.as_str());
+        if review_source && !matches!(row.kind, ObservationKind::InternalReview(_) | ObservationKind::Diagnostic { .. }) {
+            return Err("internal review sources may emit only review metadata".into());
+        }
+        if let ObservationKind::InternalReview(review) = &row.kind
+            && (!review_source || row.identity.scope != ObservationScope::Source || !review.is_valid()) {
+            return Err("internal review metadata requires a valid reserved source".into());
+        }
+        if let ObservationKind::NativeRequest(request) = &row.kind
+            && (row.identity.scope != ObservationScope::Session || row.identity.turn_id.is_none() || !request.is_valid()) {
+            return Err("native requests require a session, turn and opaque request ID".into());
         }
         if let ObservationKind::Activity { category } = &row.kind
             && (category.is_empty()
@@ -2826,3 +2841,5 @@ mod tests {
 }
 
 pub mod retained_history;
+
+pub use agenturm_protocol::native_review;

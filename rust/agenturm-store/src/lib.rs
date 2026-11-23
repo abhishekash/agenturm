@@ -138,6 +138,8 @@ pub enum ObservationKind {
     TraceProgress(agenturm_kernel::TraceProgress),
     HostSample(agenturm_kernel::HostSample),
     MetricPoint(agenturm_kernel::MetricPoint),
+    InternalReview(agenturm_kernel::native_review::InternalReview),
+    NativeRequest(agenturm_kernel::native_review::NativeRequest),
     Lifecycle {
         state: String,
         reason_code: Option<String>,
@@ -316,6 +318,8 @@ impl ObservationBatch {
                     KernelObservationKind::TraceProgress(progress) => {
                         ObservationKind::TraceProgress(progress.clone())
                     }
+                    KernelObservationKind::InternalReview(review) => ObservationKind::InternalReview(review.clone()),
+                    KernelObservationKind::NativeRequest(request) => ObservationKind::NativeRequest(request.clone()),
                     KernelObservationKind::MetricPoint(point) => {
                         ObservationKind::MetricPoint(point.clone())
                     }
@@ -2011,6 +2015,8 @@ impl Store {
                     ObservationKind::TraceProgress(progress) => {
                         KernelObservationKind::TraceProgress(progress)
                     }
+                    ObservationKind::InternalReview(review) => KernelObservationKind::InternalReview(review),
+                    ObservationKind::NativeRequest(request) => KernelObservationKind::NativeRequest(request),
                     ObservationKind::MetricPoint(point) => {
                         KernelObservationKind::MetricPoint(point)
                     }
@@ -2215,6 +2221,7 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
                     ObservationKind::Diagnostic { .. }
                         | ObservationKind::HostSample(_)
                         | ObservationKind::MetricPoint(_)
+                        | ObservationKind::InternalReview(_)
                 ) && observation.identity.session_id.is_none()
                     && observation.identity.worker_id.is_none()
                     && observation.identity.turn_id.is_none()
@@ -2256,6 +2263,18 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
             return Err(StoreError::Invalid(
                 "metric point requires a valid OTLP source, event, and source scope",
             ));
+        }
+        let review_source = agenturm_kernel::native_review::is_codex_review_source(&batch.source_id);
+        if review_source && !matches!(observation.kind, ObservationKind::InternalReview(_) | ObservationKind::Diagnostic { .. }) {
+            return Err(StoreError::Invalid("internal review sources may emit only review metadata"));
+        }
+        if let ObservationKind::InternalReview(review) = &observation.kind
+            && (!review_source || observation.identity.scope != StoredScope::Source || !review.is_valid()) {
+            return Err(StoreError::Invalid("internal review metadata requires a valid reserved source"));
+        }
+        if let ObservationKind::NativeRequest(request) = &observation.kind
+            && (observation.identity.scope != StoredScope::Session || observation.identity.turn_id.is_none() || !request.is_valid()) {
+            return Err(StoreError::Invalid("native requests require a session, turn and opaque request ID"));
         }
         if let ObservationKind::Activity { category } = &observation.kind
             && (category.is_empty()
