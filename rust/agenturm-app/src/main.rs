@@ -27,9 +27,9 @@ fn main() -> ExitCode {
     match command {
         #[cfg(target_os = "linux")]
         Command::InstallAdapter(options) => match agenturm_app::execute_adapter_install(&options) {
-            Ok(path) => println!("{path}"),
+            Ok(output) => println!("{output}"),
             Err(message) => {
-                eprintln!("adapter install failed: {message}");
+                eprintln!("adapter failed: {message}");
                 return ExitCode::FAILURE;
             }
         },

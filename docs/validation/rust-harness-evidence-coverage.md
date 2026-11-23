@@ -170,3 +170,20 @@ Step 3 still requires actual-record collection, reopen and interactive inspectio
 for each supported harness, including missing evidence, subsequent turns, pane
 navigation and narrow terminals. The fixture paths above establish the listed
 adapter or durable behaviors.
+
+## Core development follow-up: neutral native presence
+
+The current source extends existing Codex header discovery to supported Pi and
+Claude Code openings. A Pi exact session header, or supported Claude timestamped
+metadata/user stub with an exact native session identity, emits the existing
+neutral `session_discovered` fact when ordinary session facts are absent.
+A proved existing Pi relationship already supplies that neutral identity and
+is not duplicated. Unbound preludes, unsupported metadata and missing/invalid
+native timestamps do not produce a row. Native file mtime is not substituted.
+
+Verified header-only cursor backfill is idempotent and preserves the committed
+source bytes/offset. Legacy admission omits the new fact. This is presence
+evidence, not current liveness or Working state. Real lifecycle facts remain
+authoritative. Forty-one focused adapter checks and strict Clippy passed;
+actual collection/restart/concurrent roster acceptance remains delegated under
+CF1 in the [core feature test plan](rust-core-feature-test-plan.md).

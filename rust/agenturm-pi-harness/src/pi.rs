@@ -51,6 +51,36 @@ pub(crate) struct Context {
     pub worker_id: String,
     pub turn_id: String,
     fork_parent: Option<String>,
+    header_discovered: bool,
+}
+
+impl Context {
+    fn discovery_checkpoint(&self) -> String {
+        // Pi native IDs are at most 160 bytes. This cannot collide with any
+        // prior cursor's native turn identity.
+        format!("session-discovered:{:0>160}", self.session_id)
+    }
+
+    pub(crate) fn checkpoint(&self) -> String {
+        if self.header_discovered && self.turn_id.is_empty() {
+            self.discovery_checkpoint()
+        } else {
+            self.turn_id.clone()
+        }
+    }
+
+    pub(crate) fn restore(&mut self, checkpoint: &str) {
+        self.header_discovered = checkpoint == self.discovery_checkpoint();
+        self.turn_id = if self.header_discovered {
+            String::new()
+        } else {
+            checkpoint.to_owned()
+        };
+    }
+
+    pub(crate) fn omit_discovery(&mut self) {
+        self.header_discovered = false;
+    }
 }
 
 pub(crate) fn header_context(path: Option<&Path>, raw: &[u8]) -> Result<Context> {
@@ -85,6 +115,7 @@ fn header_from_row(row: &Value) -> Result<Context> {
         worker_id: worker_id.to_owned(),
         turn_id: String::new(),
         fork_parent: None,
+        header_discovered: false,
     })
 }
 
@@ -322,6 +353,72 @@ fn shell_check(command: &str) -> Option<&'static str> {
 
 /// Returns all facts for one source line and the context to checkpoint only
 /// when the caller accepts that entire vector into its poll batch.
+fn header_relationship<'a>(
+    row: &'a Value,
+    context: &'a Context,
+) -> Option<(&'static str, &'a str)> {
+    row.get("parentSessionId")
+        .and_then(Value::as_str)
+        .filter(|parent| identifier(parent) && *parent != context.session_id)
+        .map(|parent| ("delegated", parent))
+        .or_else(|| {
+            context
+                .fork_parent
+                .as_deref()
+                .map(|parent| ("forked", parent))
+        })
+}
+
+fn header_discovery(raw: &[u8], row: &Value, context: &mut Context, origin: &str) -> Option<Value> {
+    #[derive(Deserialize)]
+    #[serde(rename_all = "camelCase")]
+    struct Evidence<'a> {
+        #[serde(rename = "type")]
+        kind: &'a str,
+        id: &'a str,
+        session_id: Option<&'a str>,
+        agent_id: Option<&'a str>,
+        timestamp: &'a str,
+    }
+
+    if context.header_discovered || !context.turn_id.is_empty() {
+        return None;
+    }
+    // Read the fields independently of the general JSON map to reject
+    // duplicate binding keys and malformed optional identities.
+    let evidence: Evidence<'_> = serde_json::from_slice(raw).ok()?;
+    if evidence.kind != "session"
+        || evidence.session_id.unwrap_or(evidence.id) != context.session_id
+        || evidence.agent_id.unwrap_or_default() != context.worker_id
+        || evidence.timestamp.is_empty()
+    {
+        return None;
+    }
+    let time_ns = stamp(row).ok().filter(|value| value != "0")?;
+    context.header_discovered = true;
+    Some(fact(
+        format!("pi:{origin}:0:discovered"),
+        "session_discovered",
+        &time_ns,
+        context,
+        json!({}),
+        None,
+    ))
+}
+
+pub(crate) fn resume_verified_header(
+    raw: &[u8],
+    context: &mut Context,
+    origin: &str,
+) -> Result<Option<Value>> {
+    let row: Value = serde_json::from_slice(raw)?;
+    if header_relationship(&row, context).is_some() {
+        // The original adapter already retained session identity in that edge.
+        return Ok(None);
+    }
+    Ok(header_discovery(raw, &row, context, origin))
+}
+
 pub(crate) fn translate_line(
     raw: &[u8],
     context: &Context,
@@ -339,30 +436,26 @@ pub(crate) fn translate_line(
         if header.session_id != context.session_id || header.worker_id != context.worker_id {
             return Err(invalid("Pi session identity changed inside one file"));
         }
-        let relationship = row
-            .get("parentSessionId")
-            .and_then(Value::as_str)
-            .filter(|parent| identifier(parent) && *parent != header.session_id)
-            .map(|parent| ("delegated", parent))
-            .or_else(|| {
-                context
-                    .fork_parent
-                    .as_deref()
-                    .map(|parent| ("forked", parent))
-            });
-        if offset == 0
-            && let Some((edge, parent)) = relationship
-            && let Ok(time_ns) = stamp(&row)
-        {
+        if offset == 0 {
+            if let Some((edge, parent)) = header_relationship(&row, context)
+                && let Ok(time_ns) = stamp(&row)
+            {
+                return Ok((
+                    vec![fact(
+                        format!("pi:{origin}:{offset}:relationship"),
+                        "relationship",
+                        &time_ns,
+                        &header,
+                        json!({"relationship_kind":edge,"parent_session_id":parent}),
+                        None,
+                    )],
+                    next,
+                ));
+            }
             return Ok((
-                vec![fact(
-                    format!("pi:{origin}:{offset}:relationship"),
-                    "relationship",
-                    &time_ns,
-                    &header,
-                    json!({"relationship_kind":edge,"parent_session_id":parent}),
-                    None,
-                )],
+                header_discovery(raw, &row, &mut next, origin)
+                    .into_iter()
+                    .collect(),
                 next,
             ));
         }
@@ -692,7 +785,10 @@ mod tests {
             raw[field] = json!(value);
             let (facts, _) =
                 translate_line(raw.to_string().as_bytes(), &context, "file", 0).unwrap();
-            assert!(facts.is_empty());
+            assert_eq!(facts.len(), 1);
+            assert_eq!(facts[0]["kind"], "session_discovered");
+            assert_eq!(facts[0]["identity"], json!({"session_id":"child"}));
+            assert_eq!(facts[0]["payload"], json!({}));
         }
     }
 

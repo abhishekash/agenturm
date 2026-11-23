@@ -38,6 +38,11 @@ Do not build different sources concurrently into one Cargo target directory.
 
 ## CF1 — native session presence
 
+**Developer handoff:** Claude/Pi implementation integrated in the development
+branch. Forty-one focused adapter tests and scoped strict Clippy passed. The
+combined app lib/bin compile check also passed with adapter management and log
+investigation changes. These checks do not close the delegated rows below.
+
 **Expected product behavior.** A supported, exact, timestamped native record
 can register a session even when ordinary activity has not arrived. Discovery
 is neutral recorded evidence; it must not create Working, completed, approval
@@ -85,6 +90,11 @@ ordinary metadata, diagnostics and saved decision content unless separately
 explicitly authorized by the existing workflow.
 
 ## CF3 — installed adapter lifecycle
+
+**Developer handoff:** implementation integrated in the development branch.
+Four focused management/installation tests and strict app lib/bin Clippy passed.
+Independent source review found no publication/pin-CAS compatibility blocker.
+The actual packaged command and live collector journeys remain delegated below.
 
 **Expected commands.** `adapter list --root DIR [--json]`,
 `adapter show --root DIR --plugin-id ID [--json]`, and

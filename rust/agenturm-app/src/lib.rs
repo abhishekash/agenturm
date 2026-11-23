@@ -3880,6 +3880,14 @@ fn load_adapter_catalog(
     path: &std::path::Path,
 ) -> Result<BTreeMap<String, ValidatedAdapter>, String> {
     let file = File::open(path).map_err(|_| "cannot open plugin catalog".to_owned())?;
+    decode_adapter_catalog(file, path, false)
+}
+
+fn decode_adapter_catalog(
+    file: File,
+    path: &std::path::Path,
+    allow_empty: bool,
+) -> Result<BTreeMap<String, ValidatedAdapter>, String> {
     let metadata = file
         .metadata()
         .map_err(|_| "cannot inspect plugin catalog".to_owned())?;
@@ -3895,7 +3903,10 @@ fn load_adapter_catalog(
     }
     let catalog: AdapterCatalogFile =
         serde_json::from_slice(&bytes).map_err(|_| "plugin catalog is invalid JSON".to_owned())?;
-    if catalog.version != 1 || catalog.plugins.is_empty() || catalog.plugins.len() > 64 {
+    if catalog.version != 1
+        || (!allow_empty && catalog.plugins.is_empty())
+        || catalog.plugins.len() > 64
+    {
         return Err("unsupported or empty plugin catalog".into());
     }
     let base = path
@@ -4188,7 +4199,10 @@ pub fn render(command: Command) -> String {
             "Agenturm · Rust application (early composition shell)\n",
             "\n",
             "Usage: agenturm [--help|--version|status]\n",
-            "       agenturm adapter install --manifest <local-json> --sha256 <digest> --root <private-directory>\n",
+            "       agenturm adapter install --manifest <local-json> --sha256 <digest> --root <private-directory> [--replace-sha256 <current>]\n",
+            "       agenturm adapter list --root <private-directory> [--json]\n",
+            "       agenturm adapter show --root <private-directory> --plugin-id <id> [--json]\n",
+            "       agenturm adapter remove --root <private-directory> --plugin-id <id> --sha256 <current> [--json]\n",
             "       agenturm broker <collect|query|review|cockpit|task|grant|content|backup|integrity|prune> --broker-config <json> [command options]\n",
             "       agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path> [--include-host]\n",
             "       agenturm cockpit [--new-window] [--db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]]\n",

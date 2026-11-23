@@ -36,6 +36,8 @@ fn digest(value: &str) -> String {
 pub(crate) struct Context {
     pub session_id: String,
     prelude_end: Option<u64>,
+    header_discovered: bool,
+    legacy_admission: bool,
     pub turn_id: String,
     worker_id: String,
     last_usage_key: String,
@@ -62,6 +64,10 @@ impl McpDeclaration {
 }
 
 impl Context {
+    pub(crate) fn use_legacy_admission(&mut self) {
+        self.legacy_admission = true;
+    }
+
     fn mcp_checkpoint_limit(&self) -> usize {
         // The prelude checkpoint adds a length-delimited session ID. Reserve
         // six bytes for its prefix and separators, including a 3-digit length.
@@ -161,9 +167,13 @@ fn verify_binding_fields(raw: &[u8]) -> Result<()> {
 }
 
 fn file_history_prelude(row: &Value) -> bool {
-    row["type"].as_str() == Some("file-history-snapshot")
-        && row.get("sessionId").is_none()
+    row.get("sessionId").is_none()
         && row.get("agentId").is_none()
+        && initial_file_history_snapshot(row)
+}
+
+fn initial_file_history_snapshot(row: &Value) -> bool {
+    row["type"].as_str() == Some("file-history-snapshot")
         && row["isSnapshotUpdate"].as_bool() == Some(false)
         && row["messageId"].as_str().is_some_and(identifier)
         && row["messageId"] == row["snapshot"]["messageId"]
@@ -181,7 +191,8 @@ pub(crate) fn checkpoint(context: &Context) -> String {
     });
     write!(
         checkpoint,
-        "c.{}.{}.{}.{}.{}.{}",
+        "{}.{}.{}.{}.{}.{}.{}",
+        if context.header_discovered { "d" } else { "c" },
         checkpoint_field(&context.turn_id),
         checkpoint_field(&context.last_usage_key),
         number(context.last_usage[0]),
@@ -229,7 +240,7 @@ pub(crate) fn restore(context: &mut Context, checkpoint: &str) -> Result<()> {
         return Err(invalid("invalid Claude MCP checkpoint"));
     }
     let fields: Vec<_> = base.split('.').collect();
-    if fields.len() != 7 || fields[0] != "c" {
+    if fields.len() != 7 || !matches!(fields[0], "c" | "d") {
         return Err(invalid("invalid Claude turn checkpoint"));
     }
     let hash = |value: &str| {
@@ -242,6 +253,7 @@ pub(crate) fn restore(context: &mut Context, checkpoint: &str) -> Result<()> {
     if !hash(fields[1]) || !hash(fields[2]) {
         return Err(invalid("invalid Claude checkpoint identity"));
     }
+    context.header_discovered = fields[0] == "d";
     context.turn_id = if fields[1] == "x" {
         String::new()
     } else {
@@ -500,6 +512,71 @@ fn blocks(content: &Value) -> Result<&[Value]> {
     }
 }
 
+fn header_discovery(
+    raw: &[u8],
+    context: &mut Context,
+    origin: &str,
+    offset: u64,
+    time_ns: &str,
+) -> Option<Value> {
+    #[derive(Deserialize)]
+    struct Evidence<'a> {
+        #[serde(rename = "type")]
+        _kind: &'a str,
+        #[serde(rename = "sessionId")]
+        session: &'a str,
+        #[serde(rename = "agentId")]
+        worker: Option<&'a str>,
+        timestamp: &'a str,
+    }
+
+    if context.header_discovered
+        || context.legacy_admission
+        || !context.turn_id.is_empty()
+        || time_ns == "0"
+        || (offset != 0 && context.prelude_end != Some(offset))
+    {
+        return None;
+    }
+    // A strict second parse prevents conflicting timestamp or owner keys
+    // from being reduced to one field in the general JSON map.
+    let evidence: Evidence<'_> = serde_json::from_slice(raw).ok()?;
+    if evidence.session != context.session_id
+        || evidence.worker.unwrap_or_default() != context.worker_id
+        || evidence.timestamp.is_empty()
+    {
+        return None;
+    }
+    context.header_discovered = true;
+    Some(fact(
+        format!("claude:{origin}:{offset}:discovered"),
+        0,
+        "session_discovered",
+        time_ns,
+        context,
+        None,
+        json!({}),
+    ))
+}
+
+pub(crate) fn resume_verified_header(
+    raw: &[u8],
+    context: &mut Context,
+    origin: &str,
+) -> Result<Option<Value>> {
+    if context.header_discovered || context.session_id.is_empty() || !context.turn_id.is_empty() {
+        return Ok(None);
+    }
+    let (facts, next) = translate_line(raw, context, origin, 0)?;
+    let discovery = facts
+        .into_iter()
+        .find(|row| row["kind"] == "session_discovered");
+    if discovery.is_some() {
+        *context = next;
+    }
+    Ok(discovery)
+}
+
 /// Translate an entire line; the shared runtime commits its cursor only if
 /// every returned fact fits in one acknowledged batch.
 pub(crate) fn translate_line(
@@ -563,6 +640,18 @@ pub(crate) fn translate_line(
     };
     next.worker_id = worker.unwrap_or("").to_owned();
     if !matches!(kind, "user" | "assistant") {
+        let presence_metadata = match kind {
+            "custom-title" => row["customTitle"].is_string(),
+            "agent-name" => row["agentName"].is_string(),
+            "file-history-snapshot" => initial_file_history_snapshot(&row),
+            _ => false,
+        };
+        if presence_metadata
+            && let Some(discovery) = header_discovery(raw, &mut next, origin, offset, &time_ns)
+        {
+            return Ok((vec![discovery], next));
+        }
+
         return Ok((
             vec![json!({"event_id":format!("{base}:unsupported"),
             "revision":revision,"kind":"diagnostic","time_ns":time_ns,
@@ -605,9 +694,17 @@ pub(crate) fn translate_line(
                 json!({"state":"running"}),
             ));
         } else if tool_results.is_empty() {
-            facts.push(json!({"event_id":format!("{base}:unsupported-user"),
+            if message
+                .get("role")
+                .is_none_or(|role| role.as_str() == Some("user"))
+                && let Some(discovery) = header_discovery(raw, &mut next, origin, offset, &time_ns)
+            {
+                facts.push(discovery);
+            } else {
+                facts.push(json!({"event_id":format!("{base}:unsupported-user"),
                 "revision":revision,"kind":"diagnostic","time_ns":time_ns,
                 "payload":{"code":"unsupported_claude_user","severity":"info"}}));
+            }
         }
         for (index, block) in tool_results.iter().enumerate() {
             let operation = block

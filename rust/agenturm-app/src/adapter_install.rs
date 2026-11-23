@@ -1,7 +1,7 @@
-//! Installs a trusted local adapter into an explicit private catalog.
+//! Manages locally installed trusted adapters in an explicit private catalog.
 
 use super::{
-    MAX_PLUGIN_CATALOG_BYTES, load_adapter_catalog, valid_config_path, valid_plugin_feature,
+    MAX_PLUGIN_CATALOG_BYTES, decode_adapter_catalog, valid_config_path, valid_plugin_feature,
 };
 use agenturm_kernel::ExtensionId;
 use agenturm_runtime::ObservationFormat;
@@ -11,7 +11,7 @@ use rustix::fs::{
 };
 use rustix::io::Errno;
 use serde::Deserialize;
-use serde_json::{Value, json};
+use serde_json::json;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeSet;
 use std::ffi::OsStr;
@@ -22,7 +22,12 @@ use std::os::unix::fs::MetadataExt;
 use std::path::{Component, Path, PathBuf};
 use std::sync::atomic::{AtomicU64, Ordering};
 
-const USAGE: &str = "usage: agenturm adapter install --manifest <local-json> --sha256 <expected> --root <private-directory> [--replace-sha256 <current>]";
+const USAGE: &str = concat!(
+    "Usage: agenturm adapter install --manifest <local-json> --sha256 <expected> --root <private-directory> [--replace-sha256 <current>]\n",
+    "       agenturm adapter list --root <private-directory> [--json]\n",
+    "       agenturm adapter show --root <private-directory> --plugin-id <id> [--json]\n",
+    "       agenturm adapter remove --root <private-directory> --plugin-id <id> --sha256 <current> [--json]",
+);
 const CATALOG: &str = "catalog.json";
 const ARTIFACTS: &str = "artifacts";
 const MAX_ARTIFACT: u64 = 256 * 1024 * 1024;
@@ -39,7 +44,28 @@ const PRIVATE_FILE: Mode = Mode::RUSR.union(Mode::WUSR);
 const PRIVATE_EXEC: Mode = Mode::RUSR.union(Mode::XUSR);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
-pub struct Options {
+pub enum Options {
+    Help,
+    Install(InstallOptions),
+    List {
+        root: PathBuf,
+        json: bool,
+    },
+    Show {
+        root: PathBuf,
+        plugin_id: ExtensionId,
+        json: bool,
+    },
+    Remove {
+        root: PathBuf,
+        plugin_id: ExtensionId,
+        sha256: String,
+        json: bool,
+    },
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct InstallOptions {
     manifest: PathBuf,
     sha256: String,
     root: PathBuf,
@@ -63,7 +89,66 @@ pub(super) fn parse(args: &[String]) -> Result<Options, String> {
     let [action, options @ ..] = args else {
         return Err(USAGE.into());
     };
-    if action != "install" || !matches!(options.len(), 6 | 8) {
+    match action.as_str() {
+        "--help" | "-h" | "help" if options.is_empty() => Ok(Options::Help),
+        "install" => parse_install(options).map(Options::Install),
+        "list" | "show" | "remove" => parse_management(action, options),
+        _ => Err(USAGE.into()),
+    }
+}
+
+fn parse_management(action: &str, options: &[String]) -> Result<Options, String> {
+    let (mut root, mut plugin_id, mut sha256, mut json) = (None, None, None, false);
+    let mut args = options.iter();
+    while let Some(key) = args.next() {
+        if key == "--json" {
+            if json {
+                return Err(USAGE.into());
+            }
+            json = true;
+            continue;
+        }
+        let slot = match key.as_str() {
+            "--root" => &mut root,
+            "--plugin-id" if action != "list" => &mut plugin_id,
+            "--sha256" if action == "remove" => &mut sha256,
+            _ => return Err(USAGE.into()),
+        };
+        let value = args
+            .next()
+            .filter(|value| !value.is_empty() && !value.starts_with("--"))
+            .ok_or(USAGE)?;
+        if slot.replace(value.clone()).is_some() {
+            return Err(USAGE.into());
+        }
+    }
+    let root = PathBuf::from(root.ok_or(USAGE)?);
+    if action == "list" {
+        return Ok(Options::List { root, json });
+    }
+    let plugin_id =
+        ExtensionId::parse(plugin_id.ok_or(USAGE)?).map_err(|_| "Invalid adapter plugin ID")?;
+    if action == "show" {
+        return Ok(Options::Show {
+            root,
+            plugin_id,
+            json,
+        });
+    }
+    let sha256 = sha256.ok_or(USAGE)?;
+    if !valid_digest(&sha256) {
+        return Err("Expected SHA-256 must be 64 lower-case hexadecimal characters".into());
+    }
+    Ok(Options::Remove {
+        root,
+        plugin_id,
+        sha256,
+        json,
+    })
+}
+
+fn parse_install(options: &[String]) -> Result<InstallOptions, String> {
+    if !matches!(options.len(), 6 | 8) {
         return Err(USAGE.into());
     }
     let (mut manifest, mut sha256, mut root, mut replace) = (None, None, None, None);
@@ -79,7 +164,7 @@ pub(super) fn parse(args: &[String]) -> Result<Options, String> {
             return Err(USAGE.into());
         }
     }
-    Ok(Options {
+    Ok(InstallOptions {
         manifest: PathBuf::from(manifest.ok_or(USAGE)?),
         sha256: sha256.ok_or(USAGE)?,
         root: PathBuf::from(root.ok_or(USAGE)?),
@@ -88,6 +173,88 @@ pub(super) fn parse(args: &[String]) -> Result<Options, String> {
 }
 
 pub fn execute(options: &Options) -> Result<String, String> {
+    let (path, json) = match options {
+        Options::Help => return Ok(USAGE.into()),
+        Options::Install(options) => return install(options),
+        Options::List { root, json }
+        | Options::Show { root, json, .. }
+        | Options::Remove { root, json, .. } => (absolute(root)?, *json),
+    };
+    let (parent, name) = open_parent(&path)?;
+    let root = open_private_directory(&parent, name)?;
+    let _lock = lock_catalog(&root, false)?;
+    let artifacts = open_private_directory(&root, OsStr::new(ARTIFACTS))?;
+    let mut plugins = existing_plugins(&root, &artifacts)?;
+    let catalog = catalog_result(&root, &path)?;
+    match options {
+        Options::List { .. } if json => to_json(&json!({"catalog": catalog, "plugins": plugins})),
+        Options::List { .. } => {
+            if plugins.is_empty() {
+                return Ok("No adapters registered".into());
+            }
+            let mut lines = vec!["Plugin  SHA-256".into()];
+            lines.extend(
+                plugins
+                    .iter()
+                    .map(|entry| format!("{}  {}", entry.plugin_id, entry.sha256)),
+            );
+            Ok(lines.join("\n"))
+        }
+        Options::Show { plugin_id, .. } => {
+            let entry = &plugins[plugin_index(&plugins, plugin_id)?];
+            if json {
+                return to_json(entry);
+            }
+            Ok(format!(
+                "Plugin  {}\nSHA-256  {}\nArtifact  {}\nProtocol  {}\nObservation format  {}\nFeatures  {}",
+                entry.plugin_id,
+                entry.sha256,
+                path.join(&entry.adapter).display(),
+                entry.protocol,
+                entry.observation_format,
+                entry.features.join(", "),
+            ))
+        }
+        Options::Remove {
+            plugin_id, sha256, ..
+        } => {
+            let index = plugin_index(&plugins, plugin_id)?;
+            let entry = &plugins[index];
+            if entry.sha256 != *sha256 {
+                return Err(
+                    "Current adapter SHA-256 does not match; inspect the selected plugin".into(),
+                );
+            }
+            plugins.remove(index);
+            publish_catalog(&root, &path, &encode_catalog(&plugins)?)?;
+            if json {
+                return to_json(
+                    &json!({"catalog": catalog, "plugin_id": plugin_id, "sha256": sha256}),
+                );
+            }
+            Ok(format!(
+                "Unregistered {} from {catalog}",
+                plugin_id.as_str()
+            ))
+        }
+        Options::Help | Options::Install(_) => {
+            unreachable!("handled before opening the managed catalog")
+        }
+    }
+}
+
+fn plugin_index(plugins: &[ManagedEntry], plugin_id: &ExtensionId) -> Result<usize, String> {
+    plugins
+        .iter()
+        .position(|entry| entry.plugin_id == plugin_id.as_str())
+        .ok_or_else(|| format!("Adapter plugin {} is not registered", plugin_id.as_str()))
+}
+
+fn to_json(value: &impl serde::Serialize) -> Result<String, String> {
+    serde_json::to_string(value).map_err(|_| "Cannot encode adapter catalog output".into())
+}
+
+fn install(options: &InstallOptions) -> Result<String, String> {
     if !valid_digest(&options.sha256)
         || options
             .replace
@@ -119,7 +286,7 @@ pub fn execute(options: &Options) -> Result<String, String> {
 
     let (parent, name) = open_parent(&root_path)?;
     let root = private_directory(&parent, name)?;
-    let _lock = lock_catalog(&root)?;
+    let _lock = lock_catalog(&root, true)?;
     let artifacts = private_directory(&root, OsStr::new(ARTIFACTS))?;
     let mut plugins = existing_plugins(&root, &artifacts)?;
     let new_entry = catalog_entry(
@@ -130,7 +297,7 @@ pub fn execute(options: &Options) -> Result<String, String> {
     );
     if let Some(existing) = plugins
         .iter_mut()
-        .find(|entry| entry["plugin_id"] == manifest.plugin_id)
+        .find(|entry| entry.plugin_id == manifest.plugin_id)
     {
         if existing == &new_entry {
             // Check the input even on an exact retry. The previously installed
@@ -138,7 +305,8 @@ pub fn execute(options: &Options) -> Result<String, String> {
             verify_copy(&mut source, &mut std::io::sink(), &manifest.sha256)?;
             return catalog_result(&root, &root_path);
         }
-        if options.replace.is_none() || existing["sha256"].as_str() != options.replace.as_deref() {
+        if options.replace.is_none() || options.replace.as_deref() != Some(existing.sha256.as_str())
+        {
             return Err("Adapter plugin ID already selects a different package".into());
         }
         *existing = new_entry;
@@ -151,14 +319,8 @@ pub fn execute(options: &Options) -> Result<String, String> {
         }
         plugins.push(new_entry);
     }
-    plugins.sort_unstable_by(|left, right| {
-        left["plugin_id"].as_str().cmp(&right["plugin_id"].as_str())
-    });
-    let catalog = serde_json::to_vec_pretty(&json!({"version":1,"plugins":plugins}))
-        .map_err(|_| "Cannot encode adapter catalog")?;
-    if catalog.len() as u64 > MAX_PLUGIN_CATALOG_BYTES {
-        return Err("Adapter catalog exceeds 64 KiB".into());
-    }
+    plugins.sort_unstable_by(|left, right| left.plugin_id.cmp(&right.plugin_id));
+    let catalog = encode_catalog(&plugins)?;
 
     let mut artifact_temp = StagedFile::new(&artifacts)?;
     verify_copy(&mut source, &mut artifact_temp.file, &manifest.sha256)?;
@@ -186,22 +348,35 @@ pub fn execute(options: &Options) -> Result<String, String> {
         .sync_all()
         .map_err(|_| "Cannot synchronize adapter artifact directory")?;
 
-    let mut catalog_temp = StagedFile::new(&root)?;
+    publish_catalog(&root, &root_path, &catalog)
+}
+
+fn encode_catalog(plugins: &[ManagedEntry]) -> Result<Vec<u8>, String> {
+    let catalog = serde_json::to_vec_pretty(&json!({"version":1,"plugins":plugins}))
+        .map_err(|_| "Cannot encode adapter catalog")?;
+    if catalog.len() as u64 > MAX_PLUGIN_CATALOG_BYTES {
+        return Err("Adapter catalog exceeds 64 KiB".into());
+    }
+    Ok(catalog)
+}
+
+fn publish_catalog(root: &File, path: &Path, catalog: &[u8]) -> Result<String, String> {
+    let mut catalog_temp = StagedFile::new(root)?;
     catalog_temp
         .file
-        .write_all(&catalog)
+        .write_all(catalog)
         .map_err(|_| "Cannot write adapter catalog")?;
     catalog_temp
         .file
         .sync_all()
         .map_err(|_| "Cannot synchronize adapter catalog")?;
-    // A collector only sees the complete old catalog or the complete new
-    // catalog, after every selected artifact has been published.
-    renameat(&root, &catalog_temp.name, &root, CATALOG)
+    // Verify the selected root again before atomically publishing a complete catalog.
+    catalog_result(root, path)?;
+    renameat(root, &catalog_temp.name, root, CATALOG)
         .map_err(|_| "Cannot publish adapter catalog")?;
     root.sync_all()
         .map_err(|_| "Cannot synchronize adapter catalog directory")?;
-    catalog_result(&root, &root_path)
+    catalog_result(root, path)
 }
 
 fn validate_manifest(manifest: &Manifest, expected: &str) -> Result<(), String> {
@@ -335,6 +510,10 @@ fn private_directory(parent: &File, name: &OsStr) -> Result<File, String> {
         Err(Errno::EXIST) => {}
         Err(_) => return Err("Cannot create private adapter directory".into()),
     }
+    open_private_directory(parent, name)
+}
+
+fn open_private_directory(parent: &File, name: &OsStr) -> Result<File, String> {
     let directory = File::from(
         openat(parent, name, DIRECTORY, Mode::empty())
             .map_err(|_| "Cannot open private adapter directory without following links")?,
@@ -366,15 +545,14 @@ fn verify_private_file(file: &File, mode: Mode) -> Result<(), String> {
     Ok(())
 }
 
-fn lock_catalog(root: &File) -> Result<CatalogLock, String> {
+fn lock_catalog(root: &File, create: bool) -> Result<CatalogLock, String> {
+    let mut flags = OFlags::RDWR | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC;
+    if create {
+        flags |= OFlags::CREATE;
+    }
     let lock = File::from(
-        openat(
-            root,
-            ".catalog.lock",
-            OFlags::RDWR | OFlags::CREATE | OFlags::NOFOLLOW | OFlags::NONBLOCK | OFlags::CLOEXEC,
-            PRIVATE_FILE,
-        )
-        .map_err(|_| "Cannot open managed adapter catalog lock")?,
+        openat(root, ".catalog.lock", flags, PRIVATE_FILE)
+            .map_err(|_| "Cannot open managed adapter catalog lock")?,
     );
     verify_private_file(&lock, PRIVATE_FILE)?;
     flock(&lock, FlockOperation::NonBlockingLockExclusive)
@@ -392,7 +570,7 @@ impl Drop for CatalogLock {
     }
 }
 
-fn existing_plugins(root: &File, artifacts: &File) -> Result<Vec<Value>, String> {
+fn existing_plugins(root: &File, artifacts: &File) -> Result<Vec<ManagedEntry>, String> {
     let catalog = match openat(root, CATALOG, READ, Mode::empty()) {
         Ok(file) => File::from(file),
         Err(Errno::NOENT) => return Ok(Vec::new()),
@@ -401,7 +579,7 @@ fn existing_plugins(root: &File, artifacts: &File) -> Result<Vec<Value>, String>
     verify_private_file(&catalog, PRIVATE_FILE)?;
     let root_fd = PathBuf::from(format!("/proc/self/fd/{}", root.as_raw_fd()));
     let mut entries = Vec::new();
-    for (plugin, entry) in load_adapter_catalog(&root_fd.join(CATALOG))? {
+    for (plugin, entry) in decode_adapter_catalog(catalog, &root_fd.join(CATALOG), true)? {
         let installed = read_member(artifacts, OsStr::new(&entry.sha256))?;
         verify_private_file(&installed, PRIVATE_EXEC)?;
         let path = root_fd.join(ARTIFACTS).join(&entry.sha256);
@@ -422,11 +600,25 @@ fn existing_plugins(root: &File, artifacts: &File) -> Result<Vec<Value>, String>
     Ok(entries)
 }
 
-fn catalog_entry(plugin_id: &str, sha256: &str, features: &[String], format: &str) -> Value {
-    json!({
-        "plugin_id":plugin_id,"adapter":format!("{ARTIFACTS}/{sha256}"),"sha256":sha256,
-        "protocol":1,"features":features,"observation_format":format,
-    })
+#[derive(serde::Serialize, PartialEq, Eq)]
+struct ManagedEntry {
+    plugin_id: String,
+    adapter: String,
+    sha256: String,
+    protocol: u32,
+    features: Vec<String>,
+    observation_format: String,
+}
+
+fn catalog_entry(plugin_id: &str, sha256: &str, features: &[String], format: &str) -> ManagedEntry {
+    ManagedEntry {
+        plugin_id: plugin_id.into(),
+        adapter: format!("{ARTIFACTS}/{sha256}"),
+        sha256: sha256.into(),
+        protocol: 1,
+        features: features.to_vec(),
+        observation_format: format.into(),
+    }
 }
 
 fn verify_copy(
@@ -463,15 +655,15 @@ fn catalog_result(root: &File, path: &Path) -> Result<String, String> {
     let (parent, name) = open_parent(path)?;
     let now = File::from(
         openat(&parent, name, DIRECTORY, Mode::empty())
-            .map_err(|_| "Managed adapter directory changed during installation")?,
+            .map_err(|_| "Managed adapter directory changed during the operation")?,
     )
     .metadata()
-    .map_err(|_| "Managed adapter directory changed during installation")?;
+    .map_err(|_| "Managed adapter directory changed during the operation")?;
     let original = root
         .metadata()
         .map_err(|_| "Cannot inspect managed adapter directory")?;
     if now.dev() != original.dev() || now.ino() != original.ino() {
-        return Err("Managed adapter directory changed during installation".into());
+        return Err("Managed adapter directory changed during the operation".into());
     }
     Ok(path.join(CATALOG).display().to_string())
 }
@@ -521,13 +713,15 @@ impl Drop for StagedFile<'_> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::load_adapter_catalog;
+    use serde_json::Value;
     use std::fs;
     use std::os::unix::fs::{PermissionsExt, symlink};
     use std::time::{SystemTime, UNIX_EPOCH};
 
     struct Fixture {
         directory: PathBuf,
-        options: Options,
+        options: InstallOptions,
         manifest: Value,
         source: PathBuf,
     }
@@ -550,7 +744,7 @@ mod tests {
             );
             fs::write(&source, bytes.as_bytes()).unwrap();
             fs::set_permissions(&source, fs::Permissions::from_mode(0o755)).unwrap();
-            let options = Options {
+            let options = InstallOptions {
                 manifest: directory.join("manifest.json"),
                 sha256: format!("{:x}", Sha256::digest(bytes.as_bytes())),
                 root: directory.join("managed"),
@@ -584,6 +778,165 @@ mod tests {
         }
     }
 
+    fn lifecycle(fixture: &Fixture, arguments: &[&str]) -> Result<String, String> {
+        let mut command = vec!["adapter".into()];
+        command.extend(arguments.iter().map(|argument| (*argument).to_owned()));
+        command.extend([
+            "--root".into(),
+            fixture.options.root.to_str().unwrap().into(),
+        ]);
+        let crate::Command::InstallAdapter(options) = crate::parse_command(&command)? else {
+            panic!("expected managed adapter command");
+        };
+        execute(&options)
+    }
+
+    #[test]
+    fn lifecycle_registrations_preserve_artifacts_and_other_plugins() {
+        let fixture = Fixture::new();
+        assert!(lifecycle(&fixture, &["list", "--json"]).is_err());
+        assert!(!fixture.options.root.exists());
+        install(&fixture.options).unwrap();
+        let shared = fixture
+            .options
+            .root
+            .join(ARTIFACTS)
+            .join(&fixture.options.sha256);
+        let original_pin = fixture.options.sha256.as_str();
+        let original_artifact = fs::read(&shared).unwrap();
+        let catalog = fixture.options.root.join(CATALOG);
+        let sidecar = fixture.options.root.join("history.sqlite");
+        fs::write(&sidecar, b"retained history and grants").unwrap();
+
+        let mut other = fixture.manifest.clone();
+        other["plugin_id"] = json!("fixture.other");
+        fixture.write_manifest(&other);
+        install(&fixture.options).unwrap();
+        let before = fs::read(&catalog).unwrap();
+        let listed: Value =
+            serde_json::from_str(&lifecycle(&fixture, &["list", "--json"]).unwrap()).unwrap();
+        let reported = listed["plugins"].as_array().unwrap();
+        let ids: Vec<_> = reported
+            .iter()
+            .map(|entry| entry["plugin_id"].as_str().unwrap())
+            .collect();
+        assert_eq!(ids, ["fixture.local", "fixture.other"]);
+        let shown: Value = serde_json::from_str(
+            &lifecycle(
+                &fixture,
+                &["show", "--plugin-id", "fixture.local", "--json"],
+            )
+            .unwrap(),
+        )
+        .unwrap();
+        assert_eq!(shown, reported[0]);
+        assert_eq!(shown["sha256"], original_pin);
+        assert_eq!(shown["adapter"], format!("artifacts/{original_pin}"));
+        assert_eq!(fs::read(&catalog).unwrap(), before);
+        assert!(lifecycle(&fixture, &["remove", "--plugin-id", "fixture.local"]).is_err());
+
+        // A held installation lock and an invalid pin both leave the exact
+        // validated catalog intact, even with a shared artifact.
+        let root = File::open(&fixture.options.root).unwrap();
+        let lock = lock_catalog(&root, false).unwrap();
+        let remove = |id: &str, pin: &str| {
+            lifecycle(
+                &fixture,
+                &["remove", "--plugin-id", id, "--sha256", pin, "--json"],
+            )
+        };
+        assert!(
+            remove("fixture.local", original_pin)
+                .unwrap_err()
+                .contains("busy")
+        );
+        assert_eq!(fs::read(&catalog).unwrap(), before);
+        drop(lock);
+        assert!(
+            remove("fixture.local", &"0".repeat(64))
+                .unwrap_err()
+                .contains("does not match")
+        );
+        assert_eq!(fs::read(&catalog).unwrap(), before);
+        let replacement_source = b"#!/bin/sh\nexit 0\n";
+        let mut replacement_manifest = fixture.manifest.clone();
+        let replacement = InstallOptions {
+            sha256: format!("{:x}", Sha256::digest(replacement_source)),
+            replace: Some(original_pin.into()),
+            ..fixture.options.clone()
+        };
+        fs::write(&fixture.source, replacement_source).unwrap();
+        replacement_manifest["sha256"] = json!(replacement.sha256);
+        fixture.write_manifest(&replacement_manifest);
+        install(&replacement).unwrap();
+        let replaced_catalog = fs::read(&catalog).unwrap();
+        assert!(
+            remove("fixture.local", original_pin)
+                .unwrap_err()
+                .contains("does not match")
+        );
+        assert_eq!(fs::read(&catalog).unwrap(), replaced_catalog);
+        let removed: Value =
+            serde_json::from_str(&remove("fixture.local", &replacement.sha256).unwrap()).unwrap();
+        assert_eq!(removed["plugin_id"], "fixture.local");
+        assert_eq!(removed["sha256"], replacement.sha256);
+        assert_eq!(
+            load_adapter_catalog(&catalog).unwrap()["fixture.other"].sha256,
+            original_pin
+        );
+        assert!(lifecycle(&fixture, &["show", "--plugin-id", "fixture.local"]).is_err());
+        assert!(remove("fixture.local", original_pin).is_err());
+        remove("fixture.other", original_pin).unwrap();
+        let empty: Value = serde_json::from_slice(&fs::read(&catalog).unwrap()).unwrap();
+        assert_eq!(empty, json!({"version":1,"plugins":[]}));
+        assert_eq!(
+            lifecycle(&fixture, &["list"]).unwrap(),
+            "No adapters registered"
+        );
+        assert!(load_adapter_catalog(&catalog).is_err());
+        assert_eq!(fs::read(&shared).unwrap(), original_artifact);
+        assert_eq!(fs::read(&sidecar).unwrap(), b"retained history and grants");
+        assert!(!fixture.directory.join("unexpected-child").exists());
+
+        fs::write(&fixture.source, original_artifact).unwrap();
+        fixture.write_manifest(&fixture.manifest);
+        install(&fixture.options).unwrap();
+        assert!(
+            load_adapter_catalog(&catalog)
+                .unwrap()
+                .contains_key("fixture.local")
+        );
+    }
+
+    #[test]
+    fn publication_refuses_a_replaced_root_without_changing_either_catalog() {
+        let fixture = Fixture::new();
+        install(&fixture.options).unwrap();
+        let root = File::open(&fixture.options.root).unwrap();
+        let _lock = lock_catalog(&root, false).unwrap();
+        let original = fs::read(fixture.options.root.join(CATALOG)).unwrap();
+        let relocated = fixture.directory.join("original-root");
+        fs::rename(&fixture.options.root, &relocated).unwrap();
+        fs::create_dir(&fixture.options.root).unwrap();
+        let unrelated = fixture.options.root.join(CATALOG);
+        fs::write(&unrelated, b"unrelated catalog").unwrap();
+        assert!(
+            publish_catalog(&root, &fixture.options.root, &encode_catalog(&[]).unwrap())
+                .unwrap_err()
+                .contains("changed")
+        );
+        assert_eq!(fs::read(relocated.join(CATALOG)).unwrap(), original);
+        assert_eq!(fs::read(unrelated).unwrap(), b"unrelated catalog");
+        assert!(fs::read_dir(relocated).unwrap().all(|entry| {
+            !entry
+                .unwrap()
+                .file_name()
+                .to_str()
+                .unwrap()
+                .starts_with(".install-")
+        }));
+    }
+
     #[test]
     fn validates_manifest_and_refuses_links_and_unsafe_destinations_before_install() {
         let mut fixture = Fixture::new();
@@ -599,7 +952,7 @@ mod tests {
             fixture.manifest = original.clone();
             fixture.manifest[field] = wrong;
             fixture.write_manifest(&fixture.manifest);
-            assert!(execute(&fixture.options).is_err(), "{field}");
+            assert!(install(&fixture.options).is_err(), "{field}");
             assert!(!fixture.options.root.exists(), "{field}");
         }
         let link = fixture.directory.join("linked-adapter");
@@ -607,12 +960,12 @@ mod tests {
         fixture.manifest = original.clone();
         fixture.manifest["adapter"] = json!("linked-adapter");
         fixture.write_manifest(&fixture.manifest);
-        assert!(execute(&fixture.options).is_err());
+        assert!(install(&fixture.options).is_err());
         assert!(!fixture.options.root.exists());
         fixture.write_manifest(&original);
         fs::create_dir(&fixture.options.root).unwrap();
         fs::set_permissions(&fixture.options.root, fs::Permissions::from_mode(0o755)).unwrap();
-        assert!(execute(&fixture.options).unwrap_err().contains("mode 0700"));
+        assert!(install(&fixture.options).unwrap_err().contains("mode 0700"));
         assert!(!fixture.options.root.join(CATALOG).exists());
     }
 
@@ -621,11 +974,11 @@ mod tests {
         let mut fixture = Fixture::new();
         let catalog = fixture.options.root.join(CATALOG);
         assert_eq!(
-            execute(&fixture.options).unwrap(),
+            install(&fixture.options).unwrap(),
             catalog.display().to_string()
         );
         assert_eq!(
-            execute(&fixture.options).unwrap(),
+            install(&fixture.options).unwrap(),
             catalog.display().to_string()
         );
         let original = fs::read(&catalog).unwrap();
@@ -646,11 +999,11 @@ mod tests {
         assert!(!fixture.directory.join("unexpected-child").exists());
 
         fs::write(&fixture.source, b"changed").unwrap();
-        assert!(execute(&fixture.options).unwrap_err().contains("bytes"));
+        assert!(install(&fixture.options).unwrap_err().contains("bytes"));
         fixture.options.sha256 = format!("{:x}", Sha256::digest(b"changed"));
         fixture.manifest["sha256"] = json!(fixture.options.sha256);
         fixture.write_manifest(&fixture.manifest);
-        assert!(execute(&fixture.options).unwrap_err().contains("plugin ID"));
+        assert!(install(&fixture.options).unwrap_err().contains("plugin ID"));
         assert!(
             !fixture
                 .options
@@ -661,11 +1014,11 @@ mod tests {
         );
 
         let root = File::open(&fixture.options.root).unwrap();
-        let lock = lock_catalog(&root).unwrap();
+        let lock = lock_catalog(&root, false).unwrap();
         let mut unpublished = StagedFile::new(&root).unwrap();
         unpublished.file.write_all(b"partial catalog").unwrap();
         unpublished.file.sync_all().unwrap();
-        assert!(execute(&fixture.options).unwrap_err().contains("busy"));
+        assert!(install(&fixture.options).unwrap_err().contains("busy"));
         assert_eq!(fs::read(&catalog).unwrap(), original);
         let inherited_descriptor = lock.0.try_clone().unwrap();
         drop(unpublished);
@@ -674,7 +1027,7 @@ mod tests {
 
         fixture.options.replace = Some(plugin.sha256.clone());
         assert_eq!(
-            execute(&fixture.options).unwrap(),
+            install(&fixture.options).unwrap(),
             catalog.display().to_string()
         );
         assert_eq!(

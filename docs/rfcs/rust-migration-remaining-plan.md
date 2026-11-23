@@ -73,8 +73,9 @@ invent check results, parent relationships, current liveness or cost totals.
   rather than treating every missing field as a decoder bug.
 - Header-only native recordings: Codex already admits neutral SessionDiscovered
   from verified headers. Claude/Pi metadata-only presence needs the remaining
-  provider-specific support. Define and implement an evidence-backed
-  placeholder if the running-session roster must include it. Preserve exact
+  provider-specific support, now implemented in the current development branch
+  for exact timestamped supported openings (CF1); installed acceptance is
+  delegated to the test owner. Preserve exact
   source identity and neutral status; an open file must not invent a Working
   lifecycle. This is an open behavior gap, not only an archive rerun.
 - Kiro: native-format process fixtures cover failure, delegation and fractional
@@ -128,7 +129,8 @@ default-off internal-review visibility; an internal review is not an approval.
 
 Trusted local manifest installation, expected-pin verification, atomic catalog
 publication, explicit selection/replacement and independent capability loading
-already exist. CF3 adds installed-adapter list/show and pin-CAS removal. Remote
+already exist. CF3 now implements installed-adapter list/show and pin-CAS removal; four
+focused developer checks passed, with actual installed acceptance delegated. Remote
 automatic package discovery/download and new decoder formats remain separate;
 do not reimplement the existing supported local installer. Changed artifacts and unsupported formats
 must fail closed. Do not equate a checksum with an OS sandbox.

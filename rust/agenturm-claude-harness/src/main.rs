@@ -15,7 +15,11 @@ impl<const LEGACY: bool> SourceFormat for ClaudeFormat<LEGACY> {
     const GAP_EVENT_PREFIX: &'static str = "claude-gap";
 
     fn header_identity(_path: &std::path::Path, raw: &[u8]) -> Result<Self::Context> {
-        claude::header_identity(raw)
+        let mut context = claude::header_identity(raw)?;
+        if LEGACY {
+            context.use_legacy_admission();
+        }
+        Ok(context)
     }
 
     fn checkpoint(context: &Self::Context) -> String {
@@ -24,6 +28,18 @@ impl<const LEGACY: bool> SourceFormat for ClaudeFormat<LEGACY> {
 
     fn restore(context: &mut Self::Context, checkpoint: &str) -> Result<()> {
         claude::restore(context, checkpoint)
+    }
+
+    fn resume_verified_header(
+        raw: &[u8],
+        context: &mut Self::Context,
+        origin: &str,
+    ) -> Result<Option<Value>> {
+        if LEGACY {
+            Ok(None)
+        } else {
+            claude::resume_verified_header(raw, context, origin)
+        }
     }
 
     fn translate_line(
@@ -75,6 +91,90 @@ mod tests {
             event["sessionId"] = json!(session);
         }
         format!("{event}\n")
+    }
+
+    #[test]
+    fn timestamped_claude_metadata_backfills_only_verified_header_and_preserves_legacy() {
+        const HEADER: &str = concat!(
+            r#"{"type":"custom-title","sessionId":"claude-native","timestamp":"1970-01-01T00:00:01.000000009Z","customTitle":"private caption","cwd":"/private/root"}"#,
+            "\n"
+        );
+        let path = std::env::temp_dir().join(format!(
+            "agenturm-claude-presence-{}.jsonl",
+            std::process::id(),
+        ));
+        fs::write(&path, HEADER).unwrap();
+        let read = |cursor| {
+            poll::<ClaudeFormat<false>>(
+                &path,
+                "harness.claude.fixture",
+                cursor,
+                4,
+                max_frame_bytes(),
+            )
+        };
+        let prior =
+            poll::<ClaudeFormat<true>>(&path, "harness.claude.fixture", "", 4, max_frame_bytes())
+                .unwrap();
+        assert_eq!(prior["records"].as_array().unwrap().len(), 1);
+        assert_eq!(prior["records"][0]["kind"], "diagnostic");
+        let committed_before = prior["cursor"].as_str().unwrap();
+        let output = read(committed_before).unwrap();
+        assert_eq!(read("").unwrap(), output);
+        assert_eq!(read(committed_before).unwrap(), output);
+        assert_eq!(output["records"].as_array().unwrap().len(), 1);
+        let row = &output["records"][0];
+        assert_eq!(row["kind"], "session_discovered");
+        assert_eq!(row["revision"], 0);
+        assert_eq!(row["time_ns"], "1000000009");
+        assert_eq!(row["identity"], json!({"session_id":"claude-native"}));
+        assert_eq!(row["payload"], json!({}));
+        assert!(!output.to_string().contains("private caption"));
+        assert!(!output.to_string().contains("/private/root"));
+        let committed = output["cursor"].as_str().unwrap();
+        let proof = cursor_proof(committed).unwrap().unwrap();
+        assert_eq!(proof.offset, HEADER.len() as u64);
+        assert_eq!(
+            proof.digest,
+            format!("{:x}", Sha256::digest(HEADER.as_bytes()))
+        );
+        assert_ne!(committed_before, committed);
+        assert_eq!(read(committed).unwrap()["records"], json!([]));
+        fs::remove_file(path).unwrap();
+    }
+
+    #[test]
+    fn claude_user_stub_is_neutral_but_a_real_request_keeps_its_existing_facts() {
+        for (raw, kinds) in [
+            (
+                br#"{"type":"user","sessionId":"claude-native","timestamp":"1970-01-01T00:00:02Z","message":{"content":[]}}"#.as_slice(),
+                &["session_discovered"][..],
+            ),
+            (
+                br#"{"type":"user","sessionId":"claude-native","timestamp":"1970-01-01T00:00:02Z","message":{"content":"private request"}}"#.as_slice(),
+                &["message", "lifecycle"][..],
+            ),
+            (
+                br#"{"type":"agent-name","sessionId":"claude-native","agentName":"private"}"#.as_slice(),
+                &["diagnostic"][..],
+            ),
+            (
+                br#"{"type":"agent-name","sessionId":"claude-native","timestamp":"1970-01-01T00:00:01Z","timestamp":"1970-01-01T00:00:02Z","agentName":"private"}"#.as_slice(),
+                &["diagnostic"][..],
+            ),
+        ] {
+            let context = claude::header_identity(raw).unwrap();
+            let (facts, _) = claude::translate_line(raw, &context, "fixture", 0).unwrap();
+            assert_eq!(facts.iter().map(|row| row["kind"].as_str().unwrap()).collect::<Vec<_>>(), kinds);
+        }
+
+        let prelude = claude::header_identity(PRELUDE.as_bytes()).unwrap();
+        let raw = br#"{"type":"user","sessionId":"claude-native","timestamp":"1970-01-01T00:00:02Z","message":{"content":[]}}"#;
+        let (facts, next) =
+            claude::translate_line(raw, &prelude, "fixture", PRELUDE.len() as u64).unwrap();
+        assert_eq!(facts[0]["kind"], "session_discovered");
+        assert_eq!(facts[0]["identity"], json!({"session_id":"claude-native"}));
+        assert!(claude::checkpoint(&next).starts_with("p13:claude-native:d."));
     }
 
     #[test]

@@ -69,6 +69,35 @@ launched. The operator decides which package and digest to trust. Remote
 package downloads, signature provisioning, new decoder formats, garbage
 collection, and untrusted activation remain separate. [Process extension trust boundary](rust-process-extension-plugins.md)
 
+## Inspect and unregister installed adapters
+
+Use the same explicit private root to inspect the catalog. These commands do
+not run an executable or create a missing root:
+
+```sh
+agenturm adapter list --root "$HOME/.local/state/agenturm-adapters"
+agenturm adapter show --root "$HOME/.local/state/agenturm-adapters" \
+  --plugin-id example.my-adapter --json
+agenturm adapter remove --root "$HOME/.local/state/agenturm-adapters" \
+  --plugin-id example.my-adapter --sha256 "$current_sha256"
+```
+
+`list` is ordered by plugin ID. `show` reports the registered pin, artifact,
+protocol, features and format. Add `--json` to any management command for
+machine-readable output.
+
+Removal compares the supplied current pin while holding the installation lock.
+A stale pin fails without unregistering a concurrent replacement. The catalog
+is published atomically and unrelated registrations remain. Removing the last
+entry leaves a valid empty managed catalog; new collection still requires a
+nonempty catalog with the selected plugin registered. Reinstall into that root
+to add entries again.
+
+Unregistering preserves artifacts, retained history and content approvals. It
+changes future configuration selection; it does not stop an already running
+collector or revoke its grants. Restart collection to apply a new selection.
+Symlink, ownership and private-directory checks still apply to management.
+
 ## Verification
 
 On Ubuntu 24.04.5 x86-64 with Rust 1.100.0, the independently built fixture
@@ -79,3 +108,9 @@ Changing the managed executable failed its pin check before a history file
 was opened. Installer tests cover manifest bounds, symlinks, a held catalog
 lock, staged partial files, and pin replacement with the original artifact
 retained.
+
+The list/show/remove follow-up passed four focused development tests and strict
+app library/binary Clippy. These checks include current-pin replacement races,
+held locks, path substitution, empty-catalog reinstall and artifact/history
+preservation. Shipped-binary and live collection acceptance is delegated in the
+[core feature test plan](../validation/rust-core-feature-test-plan.md#cf3--installed-adapter-lifecycle).
