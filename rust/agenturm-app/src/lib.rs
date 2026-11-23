@@ -1967,6 +1967,7 @@ fn load_session_catalog(
                     .as_ref()
                     .map(|_| ProjectOrigin::OperatorTaskWorkspace),
                 project_path,
+                native_context: None,
                 task_title: titles.remove(&session_key).map(String::into_boxed_str),
                 pending_requests: pending
                     .remove(&(

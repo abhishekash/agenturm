@@ -22,6 +22,7 @@ pub struct RecordedSession {
     pub harness_id: String,
     pub session_id: String,
     pub task_title: Option<Box<str>>,
+    pub native_context: Option<Box<NativeSessionContext>>,
     /// Explicit public project metadata; never inferred from prompts or local cwd.
     pub project_path: Option<Box<str>>,
     pub project_origin: Option<ProjectOrigin>,
@@ -38,10 +39,21 @@ pub struct RecordedSession {
     pub pending_requests: Vec<RequestEntry>,
 }
 
+/// Explicit display metadata, separate from stable source/session identity.
+#[derive(Clone, Debug, Default, Eq, PartialEq)]
+pub struct NativeSessionContext {
+    pub agent_name: Option<Box<str>>,
+    pub agent_role: Option<Box<str>>,
+    pub agent_path: Option<Box<str>>,
+    pub model_provider: Option<Box<str>>,
+    pub last_activity: Option<Box<str>>,
+}
+
 /// Authority for a public project heading; never inferred from captured text.
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum ProjectOrigin {
     OperatorTaskWorkspace,
+    NativeRecordedWorkspace,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -2043,6 +2055,7 @@ mod tests {
             harness_id: source.into(),
             session_id: id.into(),
             task_title: None,
+            native_context: None,
             project_path: None,
             project_origin: None,
             updated_at_unix_ns: 1,
