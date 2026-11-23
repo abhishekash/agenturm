@@ -48,7 +48,8 @@ pub use eval_outcome::{
     EvalImportReport, EvalOutcome, EvalPage, EvalQuery, EvalScore, MAX_EVAL_OUTCOMES,
     RetainedEvalOutcome, SelectedEvalPage, SelectedEvalQuery, deserialize_eval_batch,
 };
-pub use linked_trace::{ResolvedTraceReview, ResolvedTraceTurn, TraceReviewQuery, TraceTurnQuery};
+use linked_trace::TraceLink;
+pub use linked_trace::{McpTraceQuery, ResolvedTraceReview, ResolvedTraceTurn, TraceReviewQuery, TraceTurnQuery};
 #[cfg(target_os = "linux")]
 pub use native_codex_metadata::{CodexThreadMetadata, read_codex_thread_metadata};
 pub use private_text::bounded_text_preview;
@@ -1677,7 +1678,7 @@ impl Store {
             query,
             None,
             None,
-            false,
+            TraceLink::Unlinked,
             allowed_sources,
             true,
         )
@@ -1776,7 +1777,7 @@ impl Store {
             query,
             turn_id,
             worker_filter,
-            linked_traces,
+            if linked_traces { TraceLink::Session } else { TraceLink::Unlinked },
             allowed_sources,
             false,
         )
@@ -1787,10 +1788,15 @@ impl Store {
         query: &ObservationQuery,
         turn_id: Option<&str>,
         worker_filter: Option<Option<&str>>,
-        linked_traces: bool,
+        trace_link: TraceLink<'_>,
         allowed_sources: Option<&BTreeSet<ExtensionId>>,
         host_history: bool,
     ) -> Result<ObservationPage> {
+        let linked_traces = !matches!(trace_link, TraceLink::Unlinked);
+        let operation = match trace_link {
+            TraceLink::McpOperation(operation) => Some(operation),
+            TraceLink::Unlinked | TraceLink::Session => None,
+        };
         if query.limit == 0 || query.limit > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
             return Err(StoreError::Invalid("observation page limit is invalid"));
         }
@@ -1862,6 +1868,9 @@ impl Store {
                ))
                AND (?9 IS NULL OR observation.turn_id=?9)
                AND (?10 = 0 OR observation.worker_id IS ?11)
+               AND (?15 IS NULL OR (observation.scope='session'
+                    AND json_extract(observation.kind_json,'$.kind')='trace_span'
+                    AND json_extract(observation.kind_json,'$.target_operation_id')=?15))
                AND (?13 IS NULL OR observation.source_id IN (SELECT value FROM json_each(?13)))
                AND ((?14 = 1 AND substr(observation.source_id,1,5)='host.'
                      AND json_extract(observation.kind_json,'$.kind')='host_sample')
@@ -1894,6 +1903,7 @@ impl Store {
                 linked_traces,
                 allowed_sources.map(serde_json::to_string).transpose()?,
                 host_history,
+                operation,
             ],
             |row| {
                 let revision: i64 = row.get(2)?;
