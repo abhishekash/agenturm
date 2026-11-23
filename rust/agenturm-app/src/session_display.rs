@@ -44,6 +44,11 @@ pub(super) fn add_context(snapshot: &mut Snapshot, pane: &ExtensionId, session: 
             .into(),
         });
     }
-    rows.append(&mut pane.rows);
-    pane.rows = rows;
+    // Keep exact identity reachable even when a long display name wraps at 60 columns.
+    let position = pane
+        .rows
+        .iter()
+        .position(|row| row.label == "Session")
+        .map_or(0, |index| index + 1);
+    pane.rows.splice(position..position, rows);
 }
