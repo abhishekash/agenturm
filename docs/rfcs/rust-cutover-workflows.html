@@ -2,11 +2,12 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 0.3.4</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">Markdown source ↗</a></nav><h1>Rust cutover workflow inventory</h1>
+</style></head><body><main><nav><strong>Agenturm / Rust 0.3.5 candidate</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">Markdown source ↗</a></nav><h1>Rust cutover workflow inventory</h1>
 <p>Baseline is the Python <code>v0.2.8</code> tag and the published Rust 0.3.1 Linux bundle. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.</p>
 <p>The current implementation scope retains the remaining workflows. Remote
 receiver access, remaining eval views, automatic retention, recorded cost and
-historical host views remain required gaps. The default entry-point switch
+historical host views are retained requirements. Their implemented paths and
+remaining gaps are listed below. The default entry-point switch
 stays gated while they and the paired keyboard journeys are incomplete.
 Rust supports explicit structural span imports into Rust history. Automatic
 migration of Python-era databases remains outside the Rust-only product scope.</p>
@@ -45,7 +46,7 @@ migration of Python-era databases remains outside the Rust-only product scope.</
 </tr>
 <tr>
 <td><code>prune</code></td>
-<td>Keep explicit age-based retention. Rust <code>prune --before-unix-ns</code> exists. Verify equivalent retained history and checkpoint behavior. Automatic retention remains a scope decision.</td>
+<td>Keep explicit age-based retention. Rust <code>prune --before-unix-ns</code> and persisted <code>retention set|disable|run|status</code> are available. New default cockpit histories use 14 days; existing histories retain their policy. Collector, cockpit, local receiver and broker writer ticks apply it, while receipts and checkpoints survive cleanup. Broker policy changes require maintenance authority.</td>
 </tr>
 <tr>
 <td><code>attention status</code>, <code>attention watch</code></td>
@@ -82,12 +83,33 @@ migration of Python-era databases remains outside the Rust-only product scope.</
 <p>A span needs an exact session ID from its <code>attributes</code> or the explicit <code>--session-id</code> argument. Span-level session aliases must agree, including <code>session.id</code>, <code>gen_ai.conversation.id</code>, and the legacy session, conversation and thread aliases. The argument fills missing session IDs and must match any IDs carried by the file. A native turn link requires <code>agenturm.source.id</code> and <code>agenturm.turn.id</code>. A worker link adds <code>agenturm.worker.id</code>.</p>
 <p>Imports retain trace structure, timing, status and exact scope. Import discards span names, payloads, events, links, token usage, cost, and eval results. Those legacy fields and workflows have separate cutover coverage. Exact structural replays deduplicate across JSONL and OTLP JSON under the same source ID. Conflicting retained identities reject the entire import.</p>
 <h3>Import evaluation results</h3>
-<p>Import the spans first, then select their exact OTLP source for the outcome import and lookup. These commands also support <code>--broker-config</code> in place of <code>--db</code>. A broker collector can import only into an allowlisted source. Collectors and readers can read the outcome for an allowlisted source.</p>
-<pre><code>agenturm import-evals --file results.json --db history.sqlite --source-id otlp.exported
+<p>Import the spans first, then select their exact OTLP source for the outcome
+import and lookup. These commands also support <code>--broker-config</code> in place
+of <code>--db</code>. A broker collector can import only into an allowlisted source.
+Collectors and readers can read the outcome for an allowlisted source.</p>
+<pre><code class="language-sh">agenturm import-evals --file results.json --db history.sqlite --source-id otlp.exported
 agenturm evals --db history.sqlite --source-id otlp.exported \
-  --trace-id 11111111111111111111111111111111 --json</code></pre>
-<p>The importer accepts a regular <code>results.json</code> file or stdin (<code>--file -</code>) up to 4 MiB. The top-level <code>results</code> array accepts up to 1,024 outcomes. Each outcome requires a 32-character hexadecimal <code>trace_id</code> and a boolean <code>passed</code>. Optional fields include <code>task_id</code>, <code>provider_model</code> and up to 32 scores. Each score supplies a <code>scorer</code> plus a boolean <code>passed</code>, a numeric <code>score</code>, or both. Metadata labels allow up to 128 ASCII characters. They start with a letter or digit and can also contain <code>._:/@+-</code>. The importer rejects recognized credential prefixes and discards producer errors, score detail text, inputs, outputs, and other result fields.</p>
-<p>Every result must match a retained trace under the selected source ID. Duplicate trace IDs within a batch or a missing match reject the whole batch. Evaluation pass/fail is independent of the execution status of the spans. Corrected metadata advances the outcome revision. An exact replay of any previous revision leaves the latest outcome unchanged. Plain <code>evals</code> prints the current outcome and <code>--json</code> returns its metadata or <code>null</code>. SQLite backups preserve outcomes. Pruning removes the outcome and its revisions when the trace loses its last retained span in that source. Aggregate evaluation views, revision browsing, and private result detail remain outside this implementation.</p>
+  --trace-id 11111111111111111111111111111111 --json
+</code></pre>
+<p>The importer accepts a regular <code>results.json</code> file or stdin (<code>--file -</code>)
+up to 4 MiB. The top-level <code>results</code> array accepts up to 1,024 outcomes.
+Each outcome requires a 32-character hexadecimal <code>trace_id</code> and a boolean
+<code>passed</code>. Optional fields include <code>task_id</code>, <code>provider_model</code> and up to 32
+scores. Each score supplies a <code>scorer</code> plus a boolean <code>passed</code>, a numeric
+<code>score</code>, or both. Metadata labels allow up to 128 ASCII characters. They
+start with a letter or digit and can also contain <code>._:/@+-</code>. The importer
+rejects recognized credential prefixes and discards producer errors, score
+detail text, inputs, outputs, and other result fields.</p>
+<p>Every result must match a retained trace under the selected source ID.
+Duplicate trace IDs within a batch or a missing match reject the whole batch.
+Evaluation pass/fail is independent of the execution status of the spans.
+Corrected metadata advances the outcome revision. An exact replay of any
+previous revision leaves the latest outcome unchanged. Plain <code>evals</code>
+prints the current outcome and <code>--json</code> returns its metadata or <code>null</code>.
+SQLite backups preserve outcomes. Pruning removes the outcome and its
+revisions when the trace loses its last retained span in that source.
+Aggregate evaluation views, revision browsing, and private result detail
+remain outside this implementation.</p>
 <h3>Task Git patches</h3>
 <p>Save a patch from the Linux checkout attached to a task. The optional revision
 checks which version of the task receives the capture. The command reports
@@ -142,7 +164,7 @@ client's checkout.</p>
 </tr>
 </tbody>
 </table></div>
-<p>The vendor fixture matrix records the actual SDK paths and pending checks. <a href="../validation/rust-vendor-sdk-producers.html">Rust OTLP vendor producer qualification</a></p>
+<p>The vendor fixture matrix records the actual SDK paths and pending checks. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-vendor-sdk-producers.md">Rust OTLP vendor producer qualification</a></p>
 <h2>Required keyboard journeys</h2>
 <p>Run each journey at 120×32 and 60×18 in both installed applications. Record the exact archive or wheel digest, fixture, terminal, focused control and visible evidence. After each drilldown verify return to the same selected row or run. Record shortcut and layout changes in the result.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>

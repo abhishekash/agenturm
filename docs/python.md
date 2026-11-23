@@ -61,9 +61,9 @@ into your agent's environment. From that checkout, run:
 
 ```bash
 .venv/bin/python -m pip install .
-# Include optional automatic instrumentation when needed:
-.venv/bin/python -m pip install '.[auto]'
 ```
+
+For automatic instrumentation, select `'.[auto]'` in that installation.
 
 Set `rust_agenturm` to the executable extracted from the Rust archive. Use
 that path for the outer launcher when the producer environment also contains

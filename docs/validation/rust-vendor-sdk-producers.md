@@ -7,12 +7,14 @@ The fixture runs real SDK and framework code with loopback model responses or ea
 | OpenAI Python | OpenInference automatic capture of synchronous, streamed and rejected SDK requests | Passed locally with OpenAI 2.53.0 and OpenInference OpenAI 0.1.65 |
 | LangChain | OpenInference automatic capture of a runnable sequence and the OpenAI SDK call it makes | Passed locally with LangChain Core 1.5.3, LangChain OpenAI 1.4.2 and OpenInference LangChain 0.1.79 |
 | LangGraph | Agenturm callback handler on an actual state graph that invokes the model | Passed locally with LangGraph 1.2.10 |
-| Anthropic Python | Automatic capture around an actual Messages SDK call | Pending in Automatic SDK capture through CLI |
-| OpenAI Agents SDK | Agent and tool loop with the SDK's scripted model, processor and normalized span IDs | Pending in OpenAI Agents SDK local tracing |
-| Pydantic AI | Native agent, model and tool instrumentation with the SDK's offline model | Pending in Pydantic AI native instrumentation |
-| Google ADK | Native agent, model and tool instrumentation with the SDK's offline model | Pending in Google ADK OTLP interoperability |
+| Anthropic Python | Automatic capture around an actual Messages SDK call | Passed in Automatic SDK capture through CLI |
+| OpenAI Agents SDK | Agent and tool loop with the SDK's scripted model, processor and normalized span IDs | Passed in OpenAI Agents SDK local tracing |
+| Pydantic AI | Native agent, model and tool instrumentation with the SDK's offline model | Passed in Pydantic AI native instrumentation |
+| Google ADK | Native agent, model and tool instrumentation with the SDK's offline model | Passed in Google ADK OTLP interoperability |
 
-Local runs used Python 3.12, OpenTelemetry SDK 1.45.1 and the Rust 0.3.4 Linux x86-64 bundle. Its archive SHA-256 is `74f85b9d0b1f0c9c2afc9dbcc9e97119087777b03deed1203a0072e28878a18c`. The remaining SDKs are installed by the listed CI jobs. Each job receives the Rust app built from the same source revision and runs its named tests with skips disabled.
+Local runs used Python 3.12, OpenTelemetry SDK 1.45.1 and the Rust 0.3.4 Linux x86-64 bundle. Its archive SHA-256 is `74f85b9d0b1f0c9c2afc9dbcc9e97119087777b03deed1203a0072e28878a18c`. The three locally available SDKs also passed authenticated broker launch, with a separate Linux reader reopening their retained traces.
+
+All seven cases passed their mandatory steps in [CI run 45087820065](https://github.com/abhishekash/agenturm/actions/runs/45087820065) at `603d71ec44be82500599d9711dd85a0419131f98`. Each SDK job received the Rust app built from that same revision and ran its selected cases with skips disabled. The broader CI run still had independent Python suite jobs in progress when this qualification was recorded.
 
 The verified transport carries structural span evidence. Provider payloads, span links across traces, progress, usage and recorded cost have separate coverage requirements. Parent checks reflect recorded ancestry within each SDK trace.
 

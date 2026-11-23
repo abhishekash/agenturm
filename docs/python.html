@@ -39,9 +39,8 @@ trace evidence to Rust.</p>
 <p>Install the producer from the source checkout for the chosen Rust release
 into your agent's environment. From that checkout, run:</p>
 <pre><code class="language-bash">.venv/bin/python -m pip install .
-# Include optional automatic instrumentation when needed:
-.venv/bin/python -m pip install '.[auto]'
 </code></pre>
+<p>For automatic instrumentation, select <code>'.[auto]'</code> in that installation.</p>
 <p>Set <code>rust_agenturm</code> to the executable extracted from the Rust archive. Use
 that path for the outer launcher when the producer environment also contains
 the Python CLI.</p>
