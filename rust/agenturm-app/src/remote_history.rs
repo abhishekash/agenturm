@@ -23,12 +23,13 @@ use std::sync::atomic::{AtomicBool, Ordering};
 use std::time::Instant;
 
 const VERSION: u8 = 1;
-const SERVER_USAGE: &str = "agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path>";
+const SERVER_USAGE: &str = "agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path> [--include-host]";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(super) struct ReadServerOptions {
     listen: SocketAddr,
     token_file: PathBuf,
+    include_host: bool,
 }
 
 #[derive(Deserialize, Serialize)]
@@ -48,9 +49,23 @@ struct Reply {
 }
 
 pub(super) fn parse_server(args: &[String]) -> Result<ReadServerOptions, String> {
-    let (listen, token_file) = parse_address_and_token(args, "--listen", SERVER_USAGE)?;
+    let mut args = args.to_vec();
+    let include_host = if let Some(index) = args.iter().position(|arg| arg == "--include-host") {
+        if index % 2 != 0 {
+            return Err(SERVER_USAGE.into());
+        }
+        args.remove(index);
+        true
+    } else {
+        false
+    };
+    let (listen, token_file) = parse_address_and_token(&args, "--listen", SERVER_USAGE)?;
     let listen = loopback_address(listen, true)?;
-    Ok(ReadServerOptions { listen, token_file })
+    Ok(ReadServerOptions {
+        listen,
+        token_file,
+        include_host,
+    })
 }
 
 fn parse_address_and_token<'a>(
@@ -113,12 +128,19 @@ pub(super) fn execute_server(
     let stop = Arc::new(AtomicBool::new(false));
     let _signals = WatchSignalRegistrations::new(Arc::clone(&stop))?;
     println!("Listening for history reads at http://{address}");
-    serve(listener, &stop, &token, binding, |request| {
-        store.reader_history(request).map_err(|error| match error {
-            NativeClientError::Read(failure) => failure,
-            _ => ReadFailure::Unavailable,
-        })
-    })
+    serve(
+        listener,
+        &stop,
+        &token,
+        binding,
+        options.include_host,
+        |request| {
+            store.reader_history(request).map_err(|error| match error {
+                NativeClientError::Read(failure) => failure,
+                _ => ReadFailure::Unavailable,
+            })
+        },
+    )
 }
 
 fn serve(
@@ -126,11 +148,14 @@ fn serve(
     stop: &AtomicBool,
     token: &ProducerToken,
     binding: &str,
+    include_host: bool,
     read: impl Fn(ReaderHistoryRequest) -> Result<ReaderHistoryReply, ReadFailure>,
 ) -> Result<(), String> {
     while !stop.load(Ordering::Relaxed) {
         match listener.accept() {
-            Ok((stream, peer)) if peer.ip().is_loopback() => handle(&stream, token, binding, &read),
+            Ok((stream, peer)) if peer.ip().is_loopback() => {
+                handle(&stream, token, binding, include_host, &read)
+            }
             Ok(_) => {}
             Err(error) if error.kind() == std::io::ErrorKind::WouldBlock => {
                 std::thread::sleep(std::time::Duration::from_millis(25));
@@ -145,8 +170,15 @@ fn handle(
     stream: &TcpStream,
     token: &ProducerToken,
     binding: &str,
+    include_host: bool,
     read: &impl Fn(ReaderHistoryRequest) -> Result<ReaderHistoryReply, ReadFailure>,
 ) {
+    let read = |request| {
+        if !include_host && matches!(&request, ReaderHistoryRequest::HostHistory { .. }) {
+            return Err(ReadFailure::HostHistoryDisabled);
+        }
+        read(request)
+    };
     let request_deadline = Instant::now() + http::IO_BUDGET;
     let mut reader = BufReader::new(stream);
     let response = (|| {
@@ -189,9 +221,9 @@ fn handle(
                 }
             }
             let result = rest
-                .execute(binding, read)
+                .execute(binding, &read)
                 .map_err(|failure| match failure {
-                    ReadFailure::Unauthorized => "403 Forbidden",
+                    ReadFailure::Unauthorized | ReadFailure::HostHistoryDisabled => "403 Forbidden",
                     ReadFailure::InvalidRequest => "400 Bad Request",
                     ReadFailure::HistoryReplaced
                     | ReadFailure::SnapshotReplaced
@@ -261,6 +293,22 @@ mod http_api_tests {
     use std::sync::atomic::AtomicUsize;
 
     #[test]
+    fn host_history_flag_requires_an_explicit_standalone_opt_in() {
+        let options = ["--listen", "127.0.0.1:4318", "--token-file", "token"].map(str::to_owned);
+        assert!(!parse_server(&options).unwrap().include_host);
+        for index in [0, 2, 4] {
+            let mut opted_in = options.to_vec();
+            opted_in.insert(index, "--include-host".into());
+            assert!(parse_server(&opted_in).unwrap().include_host);
+            opted_in.push("--include-host".into());
+            assert!(parse_server(&opted_in).is_err());
+        }
+        let mut misplaced = options.to_vec();
+        misplaced.insert(3, "--include-host".into());
+        assert!(parse_server(&misplaced).is_err());
+    }
+
+    #[test]
     fn metadata_get_requires_bearer_and_current_binding_without_bodies_or_writes() {
         let root = std::env::temp_dir().join(format!("agenturm-get-api-{}", std::process::id()));
         std::fs::create_dir(&root).unwrap();
@@ -277,7 +325,7 @@ mod http_api_tests {
             std::thread::scope(|scope| {
                 scope.spawn(|| {
                     let (stream, _) = listener.accept().unwrap();
-                    handle(&stream, &token, &binding, &|request| {
+                    handle(&stream, &token, &binding, false, &|request| {
                         calls.fetch_add(1, Ordering::Relaxed);
                         match request {
                             ReaderHistoryRequest::Identity => {
@@ -314,6 +362,9 @@ mod http_api_tests {
         let current = format!("{authorization}X-Agenturm-History-Binding: {binding}\r\n");
         assert!(round_trip("/api/sessions?limit=1", &current).starts_with("HTTP/1.1 200"));
         let read_count = calls.load(Ordering::Relaxed);
+        assert!(round_trip("/api/host", "").starts_with("HTTP/1.1 401"));
+        assert!(round_trip("/api/host", &authorization).starts_with("HTTP/1.1 428"));
+        assert!(round_trip("/api/host", &current).starts_with("HTTP/1.1 403"));
         for extra in [
             "Content-Length: 1\r\n",
             "Origin: http://untrusted.example\r\n",

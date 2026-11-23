@@ -3488,7 +3488,7 @@ pub fn render(command: Command) -> String {
             "Usage: agenturm [--help|--version|status]\n",
             "       agenturm adapter install --manifest <local-json> --sha256 <digest> --root <private-directory>\n",
             "       agenturm broker <collect|query|review|cockpit|task|grant|content|backup|integrity|prune> --broker-config <json> [command options]\n",
-            "       agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path>\n",
+            "       agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path> [--include-host]\n",
             "       agenturm cockpit [--new-window] [--db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]]\n",
             "       agenturm cockpit --once [--db <path>] [--json] [--limit <1..256>]\n",
             "       agenturm cockpit --endpoint http://<loopback-IP:port> --token-file <path> [--new-window]\n",

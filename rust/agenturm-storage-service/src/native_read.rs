@@ -52,6 +52,7 @@ pub enum ReadFailure {
     ExpiredSnapshot { minimum_snapshot_id: ReadSnapshot },
     TraceScopeTooLarge { max_rows: usize },
     EvalTraceNotRetained,
+    HostHistoryDisabled,
     Unavailable,
 }
 

@@ -214,6 +214,10 @@ fn read_error(error: ReadFailure) -> String {
         }
         ReadFailure::Unavailable => "History receiver is unavailable".into(),
         ReadFailure::EvalTraceNotRetained => "Evaluation trace is no longer retained".into(),
+        ReadFailure::HostHistoryDisabled => {
+            "Recorded Host history is disabled. The receiver can enable it with --include-host."
+                .into()
+        }
     }
 }
 
@@ -289,6 +293,15 @@ impl HistoryReader for RemoteStore {
 
     fn local_host_data(&self) -> bool {
         false
+    }
+
+    fn query_host_history(&self, query: &ObservationQuery) -> Result<ObservationPage, String> {
+        match self.request(ReaderHistoryRequest::HostHistory {
+            query: query.clone(),
+        })? {
+            ReaderHistoryReply::HostHistory(page) => Ok(page),
+            _ => Err("History receiver sent an unexpected Host page".into()),
+        }
     }
 
     fn workspace_ledger(&self, marker: &Path) -> Result<WorkspaceLedger, String> {

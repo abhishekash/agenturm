@@ -23,6 +23,9 @@ pub enum ReaderHistoryRequest {
         query: ObservationQuery,
         selection: NativeSelection,
     },
+    HostHistory {
+        query: ObservationQuery,
+    },
     TraceReview {
         query: TraceReviewQuery,
     },
@@ -51,6 +54,7 @@ pub enum ReaderHistoryReply {
     Identity(String),
     Sessions(SessionPage),
     History(ObservationPage),
+    HostHistory(ObservationPage),
     TraceReview(Option<ResolvedTraceReview>),
     SelectedEvals(Option<SelectedEvalPage>),
     Contains(bool),
@@ -73,9 +77,10 @@ pub(crate) fn dispatch(
         }
         None => {}
     }
+    let host_history = matches!(&request, ReaderHistoryRequest::HostHistory { .. });
     let allowed = &allowed
         .iter()
-        .filter(|source| !is_host_source(source.as_str()))
+        .filter(|source| is_host_source(source.as_str()) == host_history)
         .cloned()
         .collect();
     match request {
@@ -99,6 +104,10 @@ pub(crate) fn dispatch(
                     Ok(page)
                 })
                 .map(ReaderHistoryReply::History)
+        }
+        ReaderHistoryRequest::HostHistory { query } => {
+            native_read::query_host_history(store, allowed, &query)
+                .map(ReaderHistoryReply::HostHistory)
         }
         ReaderHistoryRequest::TraceReview { query } => {
             native_read::review_trace_turn(store, allowed, query)

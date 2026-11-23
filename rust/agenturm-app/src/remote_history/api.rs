@@ -2,10 +2,11 @@
 
 use agenturm_kernel::{
     ExtensionId, ObservationKind, ObservationPosition, ObservationQuery, ReadSnapshot,
+    is_host_source,
 };
 use agenturm_storage_service::native_read::ReadFailure;
 use agenturm_storage_service::{NativeSelection, ReaderHistoryReply, ReaderHistoryRequest};
-use agenturm_store::{SessionPosition, SessionQuery};
+use agenturm_store::{MAX_HOST_HISTORY_PAGE, SessionPosition, SessionQuery};
 use serde_json::{Value, json};
 use std::collections::BTreeMap;
 
@@ -21,6 +22,7 @@ pub(super) enum View {
 pub(super) enum Request {
     Health,
     Sessions(SessionQuery),
+    HostHistory(ObservationQuery),
     History {
         query: ObservationQuery,
         view: View,
@@ -42,8 +44,9 @@ impl Request {
                 Err("400 Bad Request")
             };
         }
+        let host_history = path == "/api/host";
         let view = match path {
-            "/api/sessions" => None,
+            "/api/sessions" | "/api/host" => None,
             "/api/activity" => Some(View::Activity),
             "/api/traces" => Some(View::Traces),
             "/api/mcp" => Some(View::Mcp),
@@ -57,7 +60,12 @@ impl Request {
             .map(|text| text.parse::<usize>().map_err(|_| "400 Bad Request"))
             .transpose()?
             .unwrap_or(64);
-        if !(1..=256).contains(&limit) {
+        let maximum = if host_history {
+            MAX_HOST_HISTORY_PAGE
+        } else {
+            256
+        };
+        if !(1..=maximum).contains(&limit) {
             return Err("400 Bad Request");
         }
         let source = fields.remove("source_id");
@@ -76,7 +84,7 @@ impl Request {
             })
             .transpose()?;
         let before = fields.remove("cursor");
-        if view.is_none() {
+        if view.is_none() && !host_history {
             let before = before
                 .map(|value| {
                     serde_json::from_str::<SessionPosition>(&value).map_err(|_| "400 Bad Request")
@@ -118,6 +126,28 @@ impl Request {
         {
             return Err("400 Bad Request");
         }
+        let query = ObservationQuery {
+            harness_id: source,
+            session_id,
+            before,
+            snapshot_id,
+            limit,
+        };
+        if host_history {
+            if query.session_id.is_some()
+                || query
+                    .harness_id
+                    .as_deref()
+                    .is_some_and(|id| !is_host_source(id))
+                || query
+                    .before
+                    .as_ref()
+                    .is_some_and(|cursor| !is_host_source(&cursor.harness_id))
+            {
+                return Err("400 Bad Request");
+            }
+            return Ok(Self::HostHistory(query));
+        }
         let trace_id = if let Some(id) = path
             .strip_prefix("/api/traces/")
             .and_then(|path| path.strip_suffix("/spans"))
@@ -125,7 +155,8 @@ impl Request {
             if id.len() != 32
                 || !id.bytes().all(|ch| ch.is_ascii_hexdigit())
                 || id.bytes().all(|ch| ch == b'0')
-                || !source
+                || !query
+                    .harness_id
                     .as_deref()
                     .is_some_and(|source| source.starts_with("otlp."))
             {
@@ -136,13 +167,7 @@ impl Request {
             None
         };
         Ok(Self::History {
-            query: ObservationQuery {
-                harness_id: source,
-                session_id,
-                before,
-                snapshot_id,
-                limit,
-            },
+            query,
             view: view.expect("history view"),
             trace_id,
         })
@@ -183,6 +208,21 @@ impl Request {
                     .remove("next_before");
                 value["next_cursor"] = json!(next);
                 value
+            }
+            Self::HostHistory(query) => {
+                let ReaderHistoryReply::HostHistory(page) =
+                    read(ReaderHistoryRequest::HostHistory { query })?
+                else {
+                    return Err(ReadFailure::Unavailable);
+                };
+                let next = page
+                    .older_position()
+                    .as_ref()
+                    .map(serde_json::to_string)
+                    .transpose()
+                    .map_err(|_| ReadFailure::Unavailable)?;
+                json!({ "snapshot_id":page.snapshot_id, "samples":page.observations,
+                    "coverage":"bounded recorded Host page", "has_more":page.has_more, "next_cursor":next })
             }
             Self::History {
                 query,
@@ -235,10 +275,19 @@ fn exact_integers(value: &mut Value) {
     match value {
         Value::Object(fields) => {
             for (key, value) in fields {
-                let exact = matches!(key.as_str(), "snapshot_id" | "nanounits" | "nanocredits")
-                    || ["_unix_ns", "_unix_nano", "_tokens", "_bytes", "_ticks"]
-                        .iter()
-                        .any(|suffix| key.ends_with(suffix));
+                let exact = matches!(
+                    key.as_str(),
+                    "snapshot_id" | "nanounits" | "nanocredits" | "clock_ticks_per_second"
+                ) || [
+                    "_unix_ns",
+                    "_unix_nano",
+                    "_tokens",
+                    "_bytes",
+                    "_ticks",
+                    "_milli",
+                ]
+                .iter()
+                .any(|suffix| key.ends_with(suffix));
                 if exact && value.is_number() {
                     *value = Value::String(value.to_string());
                 } else {
@@ -314,11 +363,36 @@ mod tests {
             "/api/activity?session_id=%ff",
             "/api/traces/11111111111111111111111111111111/spans",
             "/api/activity?source_id=",
-            "/api/host",
+            "/api/host?session_id=not-host-scoped",
+            "/api/host?source_id=otlp.other",
+            "/api/host?limit=65",
             "/api/spans",
         ] {
             assert!(Request::parse(target).is_err(), "{target}");
         }
+    }
+
+    #[test]
+    fn host_history_get_uses_the_separate_recorded_host_request() {
+        let value = Request::parse("/api/host?source_id=host.receiver&limit=2&snapshot_id=5")
+            .unwrap()
+            .execute("binding", &|request| {
+                let ReaderHistoryRequest::HostHistory { query } = request else {
+                    panic!("Host history must use a dedicated request");
+                };
+                assert_eq!(query.harness_id.as_deref(), Some("host.receiver"));
+                assert!(query.session_id.is_none());
+                assert_eq!(query.limit, 2);
+                assert_eq!(query.snapshot_id, Some(5.into()));
+                Ok(ReaderHistoryReply::HostHistory(ObservationPage {
+                    snapshot_id: 5.into(),
+                    ..Default::default()
+                }))
+            })
+            .unwrap();
+        assert_eq!(value["snapshot_id"], "5");
+        assert_eq!(value["samples"], json!([]));
+        assert!(value.get("observations").is_none());
     }
 
     #[test]

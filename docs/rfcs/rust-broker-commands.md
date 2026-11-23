@@ -214,7 +214,7 @@ the selected revision or trace intact. The disposable Linux fixture is
 `python3 scripts/validate_rust_eval_cockpit.py --bin-dir /opt/agenturm/bin`.
 
 Protected content, broker administration and observation admission use
-their own native broker commands. Receiver host inspection and native
+their own native broker commands. Live Host inspection and native
 terminal routing are unavailable from the attached cockpit. Direct TLS and
 compatibility with the Python `/api/*` connection, metrics and Review
 endpoints remain open cutover work.
@@ -287,11 +287,31 @@ effective user. It includes source, Linux boot ID, PID and process start ticks
 for exact process history. The view marks scan or row truncation as partial.
 Processes that exit during sampling can be absent. Argument strings, environment variables, working paths
 and inferred session links are absent. Native broker readers browse the
-retained samples. The HTTP history gateway omits Host sources and samples.
+retained samples.
+
+Starting the reader gateway with `--include-host` enables recorded Host history
+for the attached cockpit and HTTP clients. The gateway serves Host sources in
+the dedicated broker reader's allowlist. Use `6` for the same sample and process
+drill-down over the connection. The gateway's default denies Host access.
+Ordinary session, activity and trace requests exclude Host samples.
+
+```sh
+agenturm broker serve-history --broker-config broker.json \
+  --listen 127.0.0.1:14319 --token-file reader-token --include-host
+```
+
+The enabled `GET /api/host` route uses the normal bearer token and
+`X-Agenturm-History-Binding` header. Optional `source_id` chooses an exact
+allowed `host.<label>` source. Use `limit` from 1 to 64 and pass the returned
+`next_cursor` as a URL-encoded `cursor` to continue at the same snapshot.
+The `samples` entries carry recorded metadata, with exact decimal strings for
+wide numeric counters. The gateway rejects prior bindings and snapshots
+following a restore.
 
 Run `python3 scripts/validate_rust_host_history.py --bin-dir /opt/agenturm/bin`
 in a disposable Linux guest to verify process ownership, each broker role and
-the 60-column terminal drill-down.
+the 60-column terminal drill-down. Use `validate_rust_remote_host_history.py`
+with the same arguments to exercise HTTP authorization and restore handling.
 
 ## Grant administration
 

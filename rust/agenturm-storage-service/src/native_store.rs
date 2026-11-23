@@ -674,6 +674,9 @@ impl Display for NativeClientError {
             ),
             Self::Read(ReadFailure::EvalTraceNotRetained) => formatter
                 .write_str("an evaluation trace is absent from the selected retained source"),
+            Self::Read(ReadFailure::HostHistoryDisabled) => {
+                formatter.write_str("recorded Host history is disabled on the receiver")
+            }
             Self::Admission(AdmissionFailure::Unavailable)
             | Self::Read(ReadFailure::Unavailable)
             | Self::Admin(AdminFailure::Unavailable) => {
