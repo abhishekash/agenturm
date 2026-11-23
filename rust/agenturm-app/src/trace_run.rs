@@ -214,7 +214,7 @@ fn traced_command(
         }
     }
     child
-        .env("OTEL_EXPORTER_OTLP_ENDPOINT", base)
+        .env("OTEL_EXPORTER_OTLP_ENDPOINT", &base)
         .env("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT", endpoint)
         .env("OTEL_EXPORTER_OTLP_PROTOCOL", "http/protobuf")
         .env("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/protobuf")
@@ -222,12 +222,16 @@ fn traced_command(
         .env("OTEL_EXPORTER_OTLP_TRACES_COMPRESSION", "none")
         .env("OTEL_SDK_DISABLED", "false")
         .env("OTEL_TRACES_EXPORTER", "otlp")
-        .env("OTEL_METRICS_EXPORTER", "none")
+        .env("OTEL_METRICS_EXPORTER", "otlp")
+        .env("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT", format!("{base}/v1/metrics"))
+        .env("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL", "http/protobuf")
+        .env("OTEL_EXPORTER_OTLP_METRICS_COMPRESSION", "none")
         .env("OTEL_LOGS_EXPORTER", "none");
     let no_proxy = loopback_exclusion();
     child.env("NO_PROXY", &no_proxy).env("no_proxy", &no_proxy);
     if let Some(token) = token {
-        child.env("OTEL_EXPORTER_OTLP_TRACES_HEADERS", token.otel_header());
+        child.env("OTEL_EXPORTER_OTLP_TRACES_HEADERS", token.otel_header())
+            .env("OTEL_EXPORTER_OTLP_METRICS_HEADERS", token.otel_header());
     }
     child
 }

@@ -54,8 +54,7 @@ fn launcher(db: &std::path::Path, mode: &str, source: Option<&str>) -> Command {
             "https://invalid.example/traces",
         )
         .env(
-            "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
-            "https://invalid.example/metrics",
+                "https://invalid.example/metrics",
         )
         .env("OTEL_EXPORTER_OTLP_PROTOCOL", "grpc")
         .env("OTEL_EXPORTER_OTLP_TRACES_PROTOCOL", "http/json")
@@ -240,15 +239,16 @@ fn native_otlp_producer() {
     for key in [
         "OTEL_EXPORTER_OTLP_HEADERS",
         "OTEL_EXPORTER_OTLP_TRACES_HEADERS",
-        "OTEL_EXPORTER_OTLP_METRICS_ENDPOINT",
         "OTEL_CONFIG_FILE",
         "OTEL_EXPERIMENTAL_CONFIG_FILE",
     ] {
         assert!(std::env::var_os(key).is_none());
     }
+    assert_eq!(std::env::var("OTEL_EXPORTER_OTLP_METRICS_ENDPOINT").unwrap(), format!("http://{address}/v1/metrics"));
+    assert_eq!(std::env::var("OTEL_EXPORTER_OTLP_METRICS_PROTOCOL").unwrap(), "http/protobuf");
     assert_eq!(std::env::var("OTEL_SDK_DISABLED").unwrap(), "false");
     assert_eq!(std::env::var("OTEL_TRACES_EXPORTER").unwrap(), "otlp");
-    assert_eq!(std::env::var("OTEL_METRICS_EXPORTER").unwrap(), "none");
+    assert_eq!(std::env::var("OTEL_METRICS_EXPORTER").unwrap(), "otlp");
     assert_eq!(std::env::var("OTEL_LOGS_EXPORTER").unwrap(), "none");
     for key in ["NO_PROXY", "no_proxy"] {
         let value = std::env::var(key).unwrap();
