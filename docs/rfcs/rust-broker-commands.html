@@ -444,7 +444,7 @@ before Escape, quit and Ctrl-C return control to the terminal.</p>
 <h2>Read source-aware metadata with HTTP GET</h2>
 <p>The dedicated <code>broker serve-history</code> listener also provides these authenticated
 metadata routes: <code>/api/health</code>, <code>/api/sessions</code>, <code>/api/activity</code>, <code>/api/traces</code>,
-<code>/api/traces/&lt;trace-id&gt;/spans</code>, <code>/api/mcp</code>, <code>/api/metrics</code>, and <code>/api/hierarchy</code>.
+<code>/api/traces/&lt;trace-id&gt;/spans</code>, <code>/api/traces/&lt;trace-id&gt;/progress</code>, <code>/api/mcp</code>, <code>/api/metrics</code>, and <code>/api/hierarchy</code>.
 The response format is <code>agenturm.http-history/1</code>. It exposes Rust evidence
 and coverage rather than a Python receiver compatibility layer.</p>
 <p>First read <code>/api/health</code> with the listener's bearer credential. Preserve its
@@ -453,8 +453,8 @@ GET. Missing binding returns 428; a replaced history or branch returns 409.
 The reader's current source allowlist still applies. This is the same trusted
 loopback/SSH-forward endpoint described above, without direct public TLS.</p>
 <p>Queries accept <code>source_id</code>, <code>limit</code> (1–256), an opaque <code>cursor</code>, and optional
-<code>snapshot_id</code>. Evidence routes also accept <code>session_id</code>. A trace's <code>/spans</code>
-route requires an exact <code>otlp.*</code> source ID. Percent-encode query values;
+<code>snapshot_id</code>. Evidence routes also accept <code>session_id</code>. A trace's <code>/spans</code> and <code>/progress</code>
+routes require an exact <code>otlp.*</code> source ID. Percent-encode query values;
 duplicate, unknown, malformed and over-limit selectors reject the request.</p>
 <p><code>next_cursor</code> is an opaque JSON string: pass it unchanged as the next query's
 <code>cursor</code>. Page filters report how many metadata rows were inspected, so a

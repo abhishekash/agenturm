@@ -557,7 +557,7 @@ before Escape, quit and Ctrl-C return control to the terminal.
 
 The dedicated `broker serve-history` listener also provides these authenticated
 metadata routes: `/api/health`, `/api/sessions`, `/api/activity`, `/api/traces`,
-`/api/traces/<trace-id>/spans`, `/api/mcp`, `/api/metrics`, and `/api/hierarchy`.
+`/api/traces/<trace-id>/spans`, `/api/traces/<trace-id>/progress`, `/api/mcp`, `/api/metrics`, and `/api/hierarchy`.
 The response format is `agenturm.http-history/1`. It exposes Rust evidence
 and coverage rather than a Python receiver compatibility layer.
 
@@ -568,8 +568,8 @@ The reader's current source allowlist still applies. This is the same trusted
 loopback/SSH-forward endpoint described above, without direct public TLS.
 
 Queries accept `source_id`, `limit` (1–256), an opaque `cursor`, and optional
-`snapshot_id`. Evidence routes also accept `session_id`. A trace's `/spans`
-route requires an exact `otlp.*` source ID. Percent-encode query values;
+`snapshot_id`. Evidence routes also accept `session_id`. A trace's `/spans` and `/progress`
+routes require an exact `otlp.*` source ID. Percent-encode query values;
 duplicate, unknown, malformed and over-limit selectors reject the request.
 
 `next_cursor` is an opaque JSON string: pass it unchanged as the next query's

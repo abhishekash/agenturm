@@ -14,6 +14,7 @@ use std::collections::BTreeMap;
 pub(super) enum View {
     Activity,
     Traces,
+    Progress,
     Mcp,
     Usage,
     Relationships,
@@ -53,6 +54,9 @@ impl Request {
             "/api/metrics" => Some(View::Usage),
             "/api/hierarchy" => Some(View::Relationships),
             _ if path.starts_with("/api/traces/") && path.ends_with("/spans") => Some(View::Traces),
+            _ if path.starts_with("/api/traces/") && path.ends_with("/progress") => {
+                Some(View::Progress)
+            }
             _ => return Err("404 Not Found"),
         };
         let limit = fields
@@ -148,10 +152,10 @@ impl Request {
             }
             return Ok(Self::HostHistory(query));
         }
-        let trace_id = if let Some(id) = path
-            .strip_prefix("/api/traces/")
-            .and_then(|path| path.strip_suffix("/spans"))
-        {
+        let trace_id = if let Some(id) = path.strip_prefix("/api/traces/").and_then(|path| {
+            path.strip_suffix("/spans")
+                .or_else(|| path.strip_suffix("/progress"))
+        }) {
             if id.len() != 32
                 || !id.bytes().all(|ch| ch.is_ascii_hexdigit())
                 || id.bytes().all(|ch| ch == b'0')
@@ -248,6 +252,10 @@ impl Request {
                     (_, View::Activity) => true,
                     (ObservationKind::TraceSpan(span), View::Traces) => {
                         trace_id.as_ref().is_none_or(|id| id == &span.trace_id)
+                    }
+                    (ObservationKind::TraceProgress(_), View::Traces) if trace_id.is_none() => true,
+                    (ObservationKind::TraceProgress(progress), View::Progress) => {
+                        trace_id.as_ref().is_none_or(|id| id == &progress.trace_id)
                     }
                     (ObservationKind::TraceProgress(_), View::Traces) => trace_id.is_none(),
                     (ObservationKind::McpCall { .. }, View::Mcp) => true,
