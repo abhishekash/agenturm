@@ -589,10 +589,14 @@ mod tests {
         let backup_snapshot = detached.observation_page(10).unwrap().snapshot_id;
         assert_eq!(backup_snapshot.watermark(), snapshot.watermark());
         assert_ne!(backup_snapshot.incarnation(), snapshot.incarnation());
-        assert!(detached.query_observations(&ObservationQuery {
-            snapshot_id: Some(snapshot),
-            ..ObservationQuery::latest(10)
-        }).is_err());
+        assert!(
+            detached
+                .query_observations(&ObservationQuery {
+                    snapshot_id: Some(snapshot),
+                    ..ObservationQuery::latest(10)
+                })
+                .is_err()
+        );
         assert!(
             detached
                 .current_content_grant(&approved.scope())
