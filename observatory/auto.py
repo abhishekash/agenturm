@@ -93,11 +93,13 @@ class _Connection:
 
 def run_agent(target, arguments=(), *, endpoint=None, service="my-agent",
               module=False, capture_content=False, transport="agenturm",
-              session_id=None, harness_id=None, turn_id=None, worker_id=None):
+              session_id=None, harness_id=None, turn_id=None, worker_id=None, managed_launcher=False):
     """Instrument installed SDKs, then run a script or module in this interpreter."""
     if transport not in {"agenturm", "otlp"}:
         raise SetupError("Unknown trace transport")
     legacy = transport == "agenturm"
+    if managed_launcher and (legacy or session_id is None):
+        raise SetupError("The Rust launcher requires OTLP and an exact launch session")
     native_scope = dict(session_id=session_id, harness_id=harness_id, turn_id=turn_id, worker_id=worker_id)
     if legacy:
         if any(value is not None for value in native_scope.values()):
@@ -216,7 +218,7 @@ def run_agent(target, arguments=(), *, endpoint=None, service="my-agent",
                 instrumentors.append(instrumentor)
                 enabled.append(name)
             except Exception as exc:
-                failures.append(f"{name}: {exc}")
+                failures.append(name if managed_launcher else f"{name}: {exc}")
         if not enabled:
             hint = " ".join(failures) if failures else "No supported SDK found."
             raise SetupError("Automatic capture needs the OpenAI SDK, Anthropic SDK, or LangChain in this same Python environment. " + hint)
@@ -234,7 +236,7 @@ def run_agent(target, arguments=(), *, endpoint=None, service="my-agent",
             runpy.run_module(target, run_name="__main__", alter_sys=True)
         else:
             sys.path.insert(0, str(path.parent))
-            runpy.run_path(str(path), run_name="__main__")
+            runpy.run_path(target if managed_launcher else str(path), run_name="__main__")
     finally:
         # Finished streaming calls are exported before the connection is marked stopped.
         provider.shutdown()

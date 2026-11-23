@@ -1,4 +1,8 @@
-//! Launch an already instrumented process with a local OTLP trace receiver.
+//! Run a program with a local OTLP receiver and optional Python instrumentation.
+
+mod python;
+
+use python::PythonInstrumentation;
 
 use crate::trace_import::{commit, commit_payloads, parse_source_id};
 use crate::trace_receiver::{ProducerToken, TraceReceiver, parse_payload_scope};
@@ -15,9 +19,9 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "agenturm run --db <path> [--source-id otlp.<id>] [--payload-scope <standalone|harness-id>] -- <program> [args...]";
+const USAGE: &str = "agenturm run --db <path> [--source-id otlp.<id>] [--payload-scope <standalone|harness-id>] [--instrument python [--service <name>] [--capture-content]] -- <program> [args...]";
 #[cfg(target_os = "linux")]
-const BROKER_USAGE: &str = "agenturm broker run --broker-config <json> --source-id otlp.<id> [--payload-scope <standalone|harness-id>] -- <program> [args...]";
+const BROKER_USAGE: &str = "agenturm broker run --broker-config <json> --source-id otlp.<id> [--payload-scope <standalone|harness-id>] [--instrument python [--service <name>] [--capture-content]] -- <program> [args...]";
 const SIGNAL_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -32,6 +36,7 @@ pub(super) struct TraceInvocation {
     pub payload_binding: Option<TelemetryBinding>,
     program: OsString,
     arguments: Vec<OsString>,
+    instrument_python: Option<PythonInstrumentation>,
 }
 
 pub(super) fn parse_trace_run(args: &[OsString]) -> Result<TraceRunOptions, String> {
@@ -57,13 +62,16 @@ fn parse_invocation(
     if program.is_empty() {
         return Err(usage.into());
     }
-    let (flags, extras) = args[..delimiter].as_chunks::<2>();
-    if !extras.is_empty() {
-        return Err(usage.into());
-    }
+    let mut flags = args[..delimiter].iter();
     let (mut db, mut source) = (None, None);
-    let mut payload_scope = None;
-    for [flag, value] in flags {
+    let (mut payload_scope, mut service) = (None, None);
+    let (mut instrument_python, mut capture_content) = (false, false);
+    while let Some(flag) = flags.next() {
+        if flag == "--capture-content" && !capture_content {
+            capture_content = true;
+            continue;
+        }
+        let value = flags.next().ok_or(usage)?;
         if value.is_empty() || value.as_encoded_bytes().starts_with(b"--") {
             return Err(usage.into());
         }
@@ -76,6 +84,12 @@ fn parse_invocation(
             }
             Some("--payload-scope") if payload_scope.is_none() => {
                 payload_scope = Some(value.to_str().ok_or(usage)?)
+            }
+            Some("--instrument") if !instrument_python && value == "python" => {
+                instrument_python = true;
+            }
+            Some("--service") if service.is_none() => {
+                service = Some(value.to_str().ok_or(usage)?.to_owned());
             }
             _ => return Err(usage.into()),
         }
@@ -90,12 +104,25 @@ fn parse_invocation(
     let payload_binding = payload_scope
         .map(|scope| parse_payload_scope(&source, scope))
         .transpose()?;
+    if !instrument_python && (service.is_some() || capture_content) {
+        return Err("--service and --capture-content require --instrument python".into());
+    }
+    if capture_content && payload_scope != Some("standalone") {
+        return Err("Automatic Python capture requires --payload-scope standalone".into());
+    }
+    if instrument_python && payload_scope.is_some_and(|scope| scope != "standalone") {
+        return Err("Automatic Python instrumentation uses a standalone launch session".into());
+    }
+    let instrument_python = instrument_python
+        .then(|| PythonInstrumentation::parse(program, arguments, service, capture_content))
+        .transpose()?;
     Ok((
         TraceInvocation {
             source,
             payload_binding,
             program: program.clone(),
             arguments: arguments.to_vec(),
+            instrument_python,
         },
         db,
     ))
@@ -167,12 +194,17 @@ fn execute_with_maintenance(
     let launch_session = format!("launch-{}-{launch_time}", std::process::id());
     let receiver = TraceReceiver::bind_ephemeral(
         invocation.source.clone(),
-        launch_session,
+        launch_session.clone(),
         token.clone(),
         invocation.payload_binding.clone(),
     )?
     .with_local_maintenance(maintenance_db);
-    let mut command = traced_command(invocation, receiver.address(), token.as_ref());
+    let mut command = traced_command(
+        invocation,
+        receiver.address(),
+        token.as_ref(),
+        &launch_session,
+    );
     let isolated = configure_process_group(&mut command);
     let receiver = ReceiverTask::start(receiver, commit)?;
     let mut child = command
@@ -194,12 +226,17 @@ fn traced_command(
     invocation: &TraceInvocation,
     address: SocketAddr,
     token: Option<&ProducerToken>,
+    launch_session: &str,
 ) -> Command {
     let base = format!("http://{address}");
     let endpoint = format!("{base}/v1/traces");
     let mut child = Command::new(&invocation.program);
+    if let Some(instrumentation) = &invocation.instrument_python {
+        instrumentation.configure(&mut child, &invocation.arguments, launch_session);
+    } else {
+        child.args(&invocation.arguments);
+    }
     child
-        .args(&invocation.arguments)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
