@@ -37,7 +37,7 @@ impl RemoteHistoryOptions {
     pub(crate) fn is_python(&self) -> bool {
         self.python_receiver
     }
-    pub(super) fn endpoint(&self) -> SocketAddr {
+    pub(crate) fn endpoint(&self) -> SocketAddr {
         self.endpoint
     }
     pub(super) fn token_file(&self) -> &Path {
@@ -146,6 +146,22 @@ impl RemoteStore {
             identity,
             read_binding: reply.history_identity,
         })
+    }
+
+    pub(crate) fn read_binding(&self) -> &str {
+        &self.read_binding
+    }
+
+    pub(crate) fn query_native_attention(
+        &self,
+        query: &agenturm_store::native_attention::NativeAttentionQuery,
+    ) -> Result<agenturm_store::native_attention::NativeAttentionPage, String> {
+        match self.request(ReaderHistoryRequest::NativeAttention {
+            query: query.clone(),
+        })? {
+            ReaderHistoryReply::NativeAttention(page) => Ok(page),
+            _ => Err("History receiver sent an unexpected native attention page".into()),
+        }
     }
 
     fn request(&self, request: ReaderHistoryRequest) -> Result<ReaderHistoryReply, String> {

@@ -7,6 +7,7 @@ use agenturm_kernel::retained_history::{
 use agenturm_kernel::{
     ExtensionId, MAX_DURABLE_SNAPSHOT_OBSERVATIONS, ObservationPage, ObservationQuery,
 };
+use agenturm_store::native_attention::{NativeAttentionPage, NativeAttentionQuery};
 use agenturm_store::{
     EvalInventory, EvalInventoryQuery, McpTraceQuery, ResolvedTraceReview, SessionPage,
     SessionQuery, StandaloneTraceQuery, Store, StoreError, TraceReviewQuery,
@@ -225,6 +226,20 @@ pub fn query_metric_history(
     }
     store
         .query_metric_history(query, Some(allowed_sources))
+        .map_err(failure)
+}
+
+pub fn query_native_attention(
+    store: &Store,
+    allowed_sources: &BTreeSet<ExtensionId>,
+    query: &NativeAttentionQuery,
+) -> Result<NativeAttentionPage, ReadFailure> {
+    authorize(
+        allowed_sources,
+        query.source_id.as_ref().map(ExtensionId::as_str),
+    )?;
+    store
+        .query_native_attention(query, Some(allowed_sources))
         .map_err(failure)
 }
 

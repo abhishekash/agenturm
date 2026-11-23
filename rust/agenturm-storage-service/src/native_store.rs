@@ -18,6 +18,10 @@ use agenturm_kernel::{
 };
 use agenturm_kernel::{ReadIncarnation, ReadSnapshot};
 use agenturm_storage_service_contract::{ContractError, ServerPolicy, native};
+use agenturm_store::native_attention::{
+    NativeAttentionCapture, NativeAttentionPage, NativeAttentionQuery, NativeAttentionReceipt,
+    canonical_event_id, is_attention_event_id,
+};
 use agenturm_store::{
     AutomaticRetentionPolicy, AutomaticRetentionStatus, EvalDetailRecord, EvalDetailSelection,
     EvalImportReport, EvalInventory, EvalInventoryQuery, EvalOutcome, EvalPage, EvalQuery,
@@ -87,6 +91,14 @@ pub(crate) enum NativeOperation {
     },
     QueryUsageHistory {
         query: UsageHistoryQuery,
+        expected_history_identity: String,
+    },
+    AdmitNativeAttention {
+        collector: ExtensionId,
+        capture: NativeAttentionCapture,
+    },
+    QueryNativeAttention {
+        query: NativeAttentionQuery,
         expected_history_identity: String,
     },
     ImportEvalOutcomes {
@@ -217,6 +229,8 @@ pub(crate) enum NativeReply {
     McpTraces(Result<Option<ObservationPage>, ReadFailure>),
     MetricHistory(Result<MetricHistoryPage, ReadFailure>),
     UsageHistory(Result<Box<UsageHistoryPage>, ReadFailure>),
+    NativeAttentionAdmission(Result<NativeAttentionReceipt, AdmissionFailure>),
+    NativeAttention(Result<NativeAttentionPage, ReadFailure>),
     EvalImported(Result<EvalImportReport, ReadFailure>),
     EvalOutcome(Result<Option<RetainedEvalOutcome>, ReadFailure>),
     EvalPage(Result<EvalPage, ReadFailure>),
@@ -467,6 +481,20 @@ pub(crate) fn dispatch(
                     .and_then(|()| native_read::query_metric_history(store, allowed, &query)),
             );
         }
+        NativeOperation::AdmitNativeAttention { collector, capture } => {
+            return NativeReply::NativeAttentionAdmission(admit_native_attention(
+                store, allowed, role, &collector, &capture,
+            ));
+        }
+        NativeOperation::QueryNativeAttention {
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::NativeAttention(
+                authorize_read(store, role, Some(&expected_history_identity))
+                    .and_then(|()| native_read::query_native_attention(store, allowed, &query)),
+            );
+        }
         NativeOperation::QueryUsageHistory {
             query,
             expected_history_identity,
@@ -665,6 +693,36 @@ fn authorize_private(
     })
 }
 
+fn admit_native_attention(
+    store: &mut Store,
+    allowed: &BTreeSet<ExtensionId>,
+    role: Role,
+    collector: &ExtensionId,
+    capture: &NativeAttentionCapture,
+) -> Result<NativeAttentionReceipt, AdmissionFailure> {
+    if role != Role::Collector || !allowed.contains(collector) {
+        return Err(AdmissionFailure::Unauthorized);
+    }
+    let target = ExtensionId::parse(&capture.scope.source_id)
+        .map_err(|_| AdmissionFailure::InvalidRequest)?;
+    if !allowed.contains(&target) {
+        return Err(AdmissionFailure::Unauthorized);
+    }
+    if !capture.is_valid() {
+        return Err(AdmissionFailure::InvalidRequest);
+    }
+    if verify_read_binding(store, &capture.history_binding).is_err() {
+        return Err(AdmissionFailure::Conflict);
+    }
+    store
+        .admit_native_attention(collector, capture, Some(allowed))
+        .map_err(|error| match error {
+            agenturm_store::StoreError::Invalid(_) => AdmissionFailure::InvalidRequest,
+            agenturm_store::StoreError::RequestConflict => AdmissionFailure::Conflict,
+            _ => AdmissionFailure::Unavailable,
+        })
+}
+
 fn check_workspace(
     store: &Store,
     allowed: &BTreeSet<ExtensionId>,
@@ -679,6 +737,11 @@ fn check_workspace(
     authorize_read(store, role, Some(identity))?;
     match selection {
         WorkspaceSelection::Anchor {} => store.contains_anchor(anchor),
+        WorkspaceSelection::Event { event_id, revision } if is_attention_event_id(&event_id) => {
+            return store
+                .contains_native_attention_event(anchor, &event_id, revision, Some(allowed))
+                .map_err(|_| ReadFailure::Unavailable);
+        }
         WorkspaceSelection::Event { event_id, revision } => {
             store.contains_event(anchor, &event_id, revision)
         }
@@ -1475,6 +1538,40 @@ impl NativeStore {
     ) -> Result<MetricHistoryPage, NativeClientError> {
         self.exchange::<Result<MetricHistoryPage, ReadFailure>>(
             NativeOperation::QueryMetricHistory {
+                query: query.clone(),
+                expected_history_identity: self.require_read_binding()?,
+            },
+        )?
+        .map_err(NativeClientError::Read)
+    }
+
+    pub fn admit_native_attention(
+        &self,
+        collector: &ExtensionId,
+        capture: &NativeAttentionCapture,
+    ) -> Result<NativeAttentionReceipt, NativeClientError> {
+        let result = self
+            .exchange::<Result<NativeAttentionReceipt, AdmissionFailure>>(
+                NativeOperation::AdmitNativeAttention {
+                    collector: collector.clone(),
+                    capture: capture.clone(),
+                },
+            )?
+            .map_err(NativeClientError::Admission)?;
+        if result.history_binding != capture.history_binding
+            || result.event_id != canonical_event_id(collector, capture)
+        {
+            return Err(NativeClientError::InvalidReply);
+        }
+        Ok(result)
+    }
+
+    pub fn query_native_attention(
+        &self,
+        query: &NativeAttentionQuery,
+    ) -> Result<NativeAttentionPage, NativeClientError> {
+        self.exchange::<Result<NativeAttentionPage, ReadFailure>>(
+            NativeOperation::QueryNativeAttention {
                 query: query.clone(),
                 expected_history_identity: self.require_read_binding()?,
             },

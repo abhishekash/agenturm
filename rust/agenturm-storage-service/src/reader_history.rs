@@ -8,6 +8,9 @@ use agenturm_kernel::retained_history::{
 };
 use agenturm_kernel::{ExtensionId, ObservationPage, ObservationQuery};
 use agenturm_kernel::{ObservationKind, is_host_source};
+use agenturm_store::native_attention::{
+    NativeAttentionPage, NativeAttentionQuery, is_attention_event_id,
+};
 use agenturm_store::{
     EvalInventory, EvalInventoryQuery, McpTraceQuery, ResolvedTraceReview, SelectedEvalPage,
     SelectedEvalQuery, SessionPage, SessionQuery, StandaloneTraceQuery, Store, TraceReviewQuery,
@@ -45,6 +48,9 @@ pub enum ReaderHistoryRequest {
     UsageHistory {
         query: UsageHistoryQuery,
     },
+    NativeAttention {
+        query: NativeAttentionQuery,
+    },
     SelectedEvals {
         source_id: ExtensionId,
         query: SelectedEvalQuery,
@@ -79,6 +85,7 @@ pub enum ReaderHistoryReply {
     McpTraces(Option<ObservationPage>),
     MetricHistory(MetricHistoryPage),
     UsageHistory(Box<UsageHistoryPage>),
+    NativeAttention(NativeAttentionPage),
     SelectedEvals(Option<SelectedEvalPage>),
     EvalInventory(EvalInventory),
     Contains(bool),
@@ -153,6 +160,10 @@ pub(crate) fn dispatch(
                 .map(Box::new)
                 .map(ReaderHistoryReply::UsageHistory)
         }
+        ReaderHistoryRequest::NativeAttention { query } => {
+            native_read::query_native_attention(store, allowed, &query)
+                .map(ReaderHistoryReply::NativeAttention)
+        }
         ReaderHistoryRequest::SelectedEvals { source_id, query } => {
             native_read::query_selected_evals(store, allowed, &source_id, &query)
                 .map(ReaderHistoryReply::SelectedEvals)
@@ -174,6 +185,12 @@ pub(crate) fn dispatch(
             revision,
         } => {
             allow_anchor(allowed, &anchor)?;
+            if is_attention_event_id(&event_id) {
+                return store
+                    .contains_native_attention_event(&anchor, &event_id, revision, Some(allowed))
+                    .map(ReaderHistoryReply::Contains)
+                    .map_err(|_| ReadFailure::Unavailable);
+            }
             store
                 .contains_event(&anchor, &event_id, revision)
                 .map(ReaderHistoryReply::Contains)
@@ -241,6 +258,14 @@ mod tests {
                 end_unix_ns: 7 * 86_400_000_000_000,
             },
         };
+        let attention = |source_id| ReaderHistoryRequest::NativeAttention {
+            query: NativeAttentionQuery {
+                source_id,
+                session_id: None,
+                snapshot_id: Some(snapshot),
+                limit: 1,
+            },
+        };
         let trace = |source_id, snapshot_id| ReaderHistoryRequest::StandaloneTrace {
             query: StandaloneTraceQuery {
                 source_id,
@@ -269,6 +294,9 @@ mod tests {
             Ok(ReaderHistoryReply::StandaloneTrace(page)) if page.snapshot_id == snapshot && page.observations.is_empty())
         );
 
+        assert!(matches!(dispatch_reader(attention(Some(native.clone()))),
+            Ok(ReaderHistoryReply::NativeAttention(page)) if page.snapshot_id == snapshot && page.pending.is_empty()));
+
         let outside_cursor = MetricSeriesPosition {
             series: MetricSeriesKey {
                 source_id: denied.clone(),
@@ -281,6 +309,7 @@ mod tests {
             metrics(Some(denied.clone()), Some(snapshot), None),
             metrics(None, Some(snapshot), Some(outside_cursor)),
             usage(Some(denied.clone())),
+            attention(Some(denied.clone())),
             trace(denied, Some(snapshot)),
         ] {
             assert!(matches!(
@@ -292,6 +321,7 @@ mod tests {
             mcp(native.clone()),
             metrics(None, Some(snapshot), None),
             usage(None),
+            attention(None),
             trace(source.clone(), Some(snapshot)),
         ] {
             assert!(matches!(
