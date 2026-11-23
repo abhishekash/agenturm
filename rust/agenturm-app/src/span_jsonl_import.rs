@@ -24,27 +24,28 @@ pub(super) const USAGE: &str = concat!(
     "[--payload-scope <standalone|harness-id> [--payload-format agent-harness]]"
 );
 const COMMIT_ERROR: &str = "Cannot commit span JSONL. Check the Rust history, source ownership, and retained span identities.";
+pub(super) const PAYLOAD_BUDGET_ERROR: &str = "Span JSONL payload exceeds 64 KiB";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct SpanJsonlImportOptions {
-    file: PathBuf,
-    db: PathBuf,
-    source_id: ExtensionId,
-    session_id: Option<String>,
-    payload_binding: Option<TelemetryBinding>,
-    payload_format: PayloadFormat,
+    pub(super) file: PathBuf,
+    pub(super) db: PathBuf,
+    pub(super) source_id: ExtensionId,
+    pub(super) session_id: Option<String>,
+    pub(super) payload_binding: Option<TelemetryBinding>,
+    pub(super) payload_format: PayloadFormat,
 }
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
-enum PayloadFormat {
+pub(super) enum PayloadFormat {
     #[default]
     Telemetry,
     AgentHarness,
 }
 
-struct PreparedImport {
-    observations: Vec<Observation>,
-    payloads: Vec<TelemetryPayloadRecord>,
+pub(super) struct PreparedImport {
+    pub(super) observations: Vec<Observation>,
+    pub(super) payloads: Vec<TelemetryPayloadRecord>,
 }
 
 pub(super) fn parse(args: &[String]) -> Result<SpanJsonlImportOptions, String> {
@@ -167,6 +168,13 @@ fn decode(reader: impl Read, options: &SpanJsonlImportOptions) -> Result<Prepare
         .take(MAX_EXPORT_BYTES + 1)
         .read_to_end(&mut bytes)
         .map_err(|_| "Cannot read span JSONL input")?;
+    decode_bytes(&bytes, options)
+}
+
+pub(super) fn decode_bytes(
+    bytes: &[u8],
+    options: &SpanJsonlImportOptions,
+) -> Result<PreparedImport, String> {
     if bytes.len() as u64 > MAX_EXPORT_BYTES {
         return Err("Span JSONL input exceeds 4 MiB".into());
     }
@@ -202,6 +210,7 @@ fn decode(reader: impl Read, options: &SpanJsonlImportOptions) -> Result<Prepare
     if unscoped != 0 {
         return Err("Every span needs an explicit session identity or --session-id".into());
     }
+    validate_ancestry(&observations)?;
     let payload_bytes: usize = payloads
         .iter()
         .flat_map(|record| [&record.payload.input, &record.payload.output])
@@ -209,9 +218,8 @@ fn decode(reader: impl Read, options: &SpanJsonlImportOptions) -> Result<Prepare
         .map(String::len)
         .sum();
     if payload_bytes > MAX_TELEMETRY_PAYLOAD_BATCH_BYTES {
-        return Err("Span JSONL payload exceeds 64 KiB".into());
+        return Err(PAYLOAD_BUDGET_ERROR.into());
     }
-    validate_ancestry(&observations)?;
     Ok(PreparedImport {
         observations,
         payloads,
