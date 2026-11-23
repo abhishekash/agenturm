@@ -117,7 +117,9 @@ The grant administrator approves the binding and the dedicated broker reader
 runs preview. The selection JSON names `binding` with `source_id` and
 `native_source_id` (null for a standalone session), the exact `trace_id`,
 `span_id`, `session_id`, `turn_id`, and `worker_id` (null when absent),
-and the returned `snapshot_id`. The response labels the text as
+and both `history_identity` and `snapshot_id` from the same snapshot reply.
+Use a fresh snapshot after a restore or when updating an older selection file
+that lacks `history_identity`. The response labels the text as
 `producer_captured_telemetry`. A claimed native linkage is a producer
 assertion. In the local or broker cockpit, open Traces with `8`, press
 `d` to select a span, and use Enter to open the private text modal. Escape

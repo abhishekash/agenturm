@@ -154,6 +154,10 @@ window. The cockpit exits in the new window.</p>
 </code></pre>
 <p>Add <code>--payload-format agent-harness</code> to select the legacy agent-harness fields instead. For <code>agent.run</code>, <code>agent.task</code> and <code>agent.summary</code> fill Input and Output. For <code>tool.call</code>, the exported executed <code>tool.arguments</code> and <code>tool.result</code> fill those slots. Empty legacy slots are omitted. The format excludes proposed arguments, approval rationales, exceptions, other attributes, and event bodies. Agent-harness exports without a session ID need the explicit <code>--session-id</code> option.</p>
 <p>Text is stored with its exact span occurrence in the private telemetry vault. A <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md#preview-opted-in-telemetry-text">telemetry text grant</a> is required to view it. Select capture on the first import. Replaying the same text deduplicates, changing the text or adding it to a metadata-only occurrence conflicts, and reimporting pruned text leaves it retired. Metadata queries and import output omit text.</p>
+<p>The input JSONL remains a caller-managed file. Keep private exports in a
+directory accessible to the collector and use owner-only read permissions
+on the file, such as mode <code>0600</code>. The vault grant controls access to the
+imported copy.</p>
 <h3>Publish live progress</h3>
 <p>The Python and Node manual SDKs publish <code>Run.progress</code> immediately to the
 Rust trace receiver. The progress route uses the same loopback authority

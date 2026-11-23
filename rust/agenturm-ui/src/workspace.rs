@@ -1650,7 +1650,7 @@ mod tests {
                 initial_pane: None,
                 review_pane: None,
                 operation_details: Vec::new(),
-                private_telemetry: false,
+                private_telemetry_history: None,
             })));
             let _ = frame(&mut workspace);
             assert!(!press(&mut workspace, KeyCode::Right));

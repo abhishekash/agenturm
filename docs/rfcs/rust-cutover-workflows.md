@@ -140,6 +140,11 @@ Add `--payload-format agent-harness` to select the legacy agent-harness fields i
 
 Text is stored with its exact span occurrence in the private telemetry vault. A [telemetry text grant](rust-broker-commands.md#preview-opted-in-telemetry-text) is required to view it. Select capture on the first import. Replaying the same text deduplicates, changing the text or adding it to a metadata-only occurrence conflicts, and reimporting pruned text leaves it retired. Metadata queries and import output omit text.
 
+The input JSONL remains a caller-managed file. Keep private exports in a
+directory accessible to the collector and use owner-only read permissions
+on the file, such as mode `0600`. The vault grant controls access to the
+imported copy.
+
 ### Publish live progress
 
 The Python and Node manual SDKs publish `Run.progress` immediately to the

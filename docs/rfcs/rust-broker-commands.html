@@ -94,7 +94,9 @@ agenturm broker trace-payload preview --broker-config broker.json --selection pa
 runs preview. The selection JSON names <code>binding</code> with <code>source_id</code> and
 <code>native_source_id</code> (null for a standalone session), the exact <code>trace_id</code>,
 <code>span_id</code>, <code>session_id</code>, <code>turn_id</code>, and <code>worker_id</code> (null when absent),
-and the returned <code>snapshot_id</code>. The response labels the text as
+and both <code>history_identity</code> and <code>snapshot_id</code> from the same snapshot reply.
+Use a fresh snapshot after a restore or when updating an older selection file
+that lacks <code>history_identity</code>. The response labels the text as
 <code>producer_captured_telemetry</code>. A claimed native linkage is a producer
 assertion. In the local or broker cockpit, open Traces with <code>8</code>, press
 <code>d</code> to select a span, and use Enter to open the private text modal. Escape

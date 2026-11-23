@@ -1885,7 +1885,7 @@ fn workspace_response(
         }
         WorkspaceRequest::History { selection, before } => {
             let mut page = load_workspace_history(app, store, selection, before)?;
-            page.private_telemetry = store.allows_private_capture();
+            page.private_telemetry_history = store.private_telemetry_history();
             Ok(WorkspaceResponse::History(page))
         }
     }
@@ -1972,6 +1972,9 @@ trait HistoryReader: ObservationStore {
     fn allows_private_capture(&self) -> bool {
         cfg!(target_os = "linux")
     }
+    fn private_telemetry_history(&self) -> Option<String> {
+        None
+    }
 
     fn local_host_data(&self) -> bool {
         true
@@ -2004,6 +2007,10 @@ trait HistoryReader: ObservationStore {
 }
 
 impl HistoryReader for Store {
+    #[cfg(target_os = "linux")]
+    fn private_telemetry_history(&self) -> Option<String> {
+        self.history_identity().ok()
+    }
     fn query_selected_evals(
         &self,
         source: &ExtensionId,
@@ -2052,6 +2059,11 @@ impl HistoryReader for Store {
 
 #[cfg(target_os = "linux")]
 impl HistoryReader for agenturm_storage_service::NativeStore {
+    fn private_telemetry_history(&self) -> Option<String> {
+        self.read_binding()
+            .and_then(agenturm_storage_service::logical_read_identity)
+            .map(str::to_owned)
+    }
     fn query_selected_evals(
         &self,
         source: &ExtensionId,

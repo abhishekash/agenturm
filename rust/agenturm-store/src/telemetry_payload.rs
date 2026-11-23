@@ -96,6 +96,7 @@ pub struct TelemetryPayloadRecord {
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct TelemetryPayloadSelection {
+    pub history_identity: String,
     pub binding: TelemetryBinding,
     pub trace_id: String,
     pub span_id: String,
@@ -285,6 +286,9 @@ impl Store {
             if store.current_content_grant(&scope)?.is_none() {
                 return Err(StoreError::StaleContentGrant);
             }
+            if store.history_identity()? != selected.history_identity {
+                return Err(StoreError::SnapshotReplaced);
+            }
             let (_, watermark) =
                 retention::resolve_read_snapshot(&store.connection, Some(selected.snapshot_id))?;
             let event_id = format!("otlp:{}:{}", selected.trace_id, selected.span_id);
@@ -445,6 +449,7 @@ mod tests {
             .unwrap();
         let scope = binding.grant_scope().unwrap();
         let mut selected = TelemetryPayloadSelection {
+            history_identity: store.history_identity().unwrap(),
             binding,
             trace_id: TRACE.into(),
             span_id: SPAN.into(),

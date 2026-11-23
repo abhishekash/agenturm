@@ -68,7 +68,7 @@ class RustTelemetryPayloadTests(unittest.TestCase):
     def snapshot(self, session):
         result = self.invoke("trace-payload", "snapshot", "--db", self.db,
                              "--source-id", SOURCE, "--session-id", session)
-        return json.loads(result.stdout)["snapshot_id"]
+        return json.loads(result.stdout)
 
     def preview(self, selection, *, code=0):
         self.selector.write_text(json.dumps(selection))
@@ -113,7 +113,7 @@ assert client._post_spans([span])
         selection = {
             "binding": {"source_id": SOURCE, "native_source_id": None},
             "trace_id": TRACE, "span_id": SPAN, "session_id": SESSION,
-            "turn_id": None, "worker_id": None, "snapshot_id": self.snapshot(SESSION),
+            "turn_id": None, "worker_id": None, **self.snapshot(SESSION),
         }
         self.preview(selection, code=1)
         self.action("grant", "harness.codex")
@@ -154,7 +154,7 @@ assert client._post_spans([span])
                 "binding": {"source_id": SOURCE, "native_source_id": source_scope},
                 "trace_id": span["trace_id"], "span_id": span["span_id"],
                 "session_id": session, "turn_id": "turn.fixture", "worker_id": "worker/fixture",
-                "snapshot_id": self.snapshot(session),
+                **self.snapshot(session),
             }
             self.preview({**selection, "turn_id": "another-turn"}, code=1)
             receipt = self.preview(selection)
@@ -180,7 +180,7 @@ assert client._post_spans([span])
             "--", *arguments, PRODUCER, vendor, code=23,
         )
         self.assertNotIn("export failed", result.stderr)
-        snapshot_id = self.snapshot(session)
+        snapshot = self.snapshot(session)
         self.action("grant", harness)
         outputs = []
         for row in self.metadata():
@@ -189,7 +189,7 @@ assert client._post_spans([span])
                 "binding": {"source_id": SOURCE, "native_source_id": harness},
                 "trace_id": span["trace_id"], "span_id": span["span_id"],
                 "session_id": session, "turn_id": "turn.fixture", "worker_id": "worker/fixture",
-                "snapshot_id": snapshot_id,
+                **snapshot,
             }))
             read = subprocess.run([APP, "trace-payload", "preview", "--db", self.db,
                                    "--selection", self.selector], text=True, capture_output=True,
@@ -251,7 +251,7 @@ await client.trace({{sessionId:{SESSION!r}, attributes: {{
         self.assertEqual(self.preview({
             "binding": {"source_id": SOURCE, "native_source_id": None},
             "trace_id": span["trace_id"], "span_id": span["span_id"], "session_id": SESSION,
-            "turn_id": None, "worker_id": None, "snapshot_id": self.snapshot(SESSION),
+            "turn_id": None, "worker_id": None, **self.snapshot(SESSION),
         })["payload"], {"input": INPUT, "output": OUTPUT})
         self.assertNotIn(UNRELATED.encode(), self.db.read_bytes())
 

@@ -558,6 +558,67 @@ fn opted_in_payloads_use_an_exact_grant_and_keep_replay_retirement() {
 }
 
 #[test]
+fn payload_selection_rejects_other_fresh_history_and_requires_refresh_after_restore() {
+    let scratch = Scratch::new();
+    let original = scratch.0.join("original.sqlite");
+    let unrelated = scratch.0.join("unrelated.sqlite");
+    let restored = scratch.0.join("restored.sqlite");
+    let file = scratch.0.join("spans.jsonl");
+    for (db, body) in [
+        (&original, "Captured original text"),
+        (&unrelated, "Captured unrelated text"),
+    ] {
+        let mut row = span(ROOT, None, "OK");
+        row["attributes"]["agenturm.payload.input"] = json!(body);
+        write_jsonl(&file, &[row]);
+        check(import_file(db, &file, &["--payload-scope", HARNESS]));
+        grant_payloads(db, HARNESS);
+    }
+    let original_selection = payload_selection(&original, ROOT, Some(HARNESS));
+    let unrelated_selection = payload_selection(&unrelated, ROOT, Some(HARNESS));
+    assert_eq!(
+        original_selection["snapshot_id"],
+        unrelated_selection["snapshot_id"]
+    );
+    assert_ne!(
+        original_selection["history_identity"],
+        unrelated_selection["history_identity"]
+    );
+    let error = failure(preview_payload(&unrelated, &scratch, &original_selection));
+    assert!(error.contains("restored or replaced"));
+    assert!(
+        check(preview_payload(&unrelated, &scratch, &unrelated_selection))
+            .contains("Captured unrelated text")
+    );
+
+    let mut legacy = original_selection.clone();
+    legacy.as_object_mut().unwrap().remove("history_identity");
+    let error = failure(preview_payload(&original, &scratch, &legacy));
+    assert!(error.contains("Refresh it with trace-payload snapshot"));
+    assert!(
+        check(preview_payload(&original, &scratch, &original_selection))
+            .contains("Captured original text")
+    );
+
+    check(run(
+        &original,
+        &["backup", "--output", restored.to_str().unwrap()],
+    ));
+    grant_payloads(&restored, HARNESS);
+    let error = failure(preview_payload(&restored, &scratch, &original_selection));
+    assert!(error.contains("restored or replaced"));
+    let refreshed = payload_selection(&restored, ROOT, Some(HARNESS));
+    assert_eq!(
+        refreshed["history_identity"],
+        original_selection["history_identity"]
+    );
+    assert_ne!(refreshed["snapshot_id"], original_selection["snapshot_id"]);
+    assert!(
+        check(preview_payload(&restored, &scratch, &refreshed)).contains("Captured original text")
+    );
+}
+
+#[test]
 fn agent_harness_profile_maps_only_selected_payload_slots() {
     let scratch = Scratch::new();
     let file = scratch.0.join("agent-harness.jsonl");
@@ -707,6 +768,7 @@ fn payload_selection(db: &Path, span_id: &str, native_source_id: Option<&str>) -
     ));
     let snapshot: Value = serde_json::from_str(&snapshot).unwrap();
     json!({
+        "history_identity": snapshot["history_identity"],
         "binding": {"source_id": SOURCE, "native_source_id": native_source_id},
         "trace_id": TRACE, "span_id": span_id, "session_id": SESSION,
         "turn_id": native_source_id.map(|_| TURN), "worker_id": native_source_id.map(|_| WORKER),
