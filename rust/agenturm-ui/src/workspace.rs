@@ -2300,6 +2300,33 @@ mod tests {
     }
 
     #[test]
+    fn fully_hidden_review_page_keeps_exact_older_continuation() {
+        let (sender, requests) = mpsc::channel();
+        let mut workspace = Workspace::new();
+        let mut page = empty_history_page();
+        page.snapshot.observations_truncated = true;
+        page.snapshot.history_snapshot_id = 8.into();
+        let continuation = ObservationPosition {
+            observed_at_unix_ns: 50,
+            harness_id: "harness.codex.review-1".into(),
+            event_id: "internal-review-1".into(),
+            revision: 0,
+            snapshot_id: page.snapshot.history_snapshot_id,
+        };
+        page.features.continuation = Some(Box::new(continuation.clone()));
+        workspace.history.push(HistoryView::new(
+            HistorySelection::All(WorkspaceView::Activity),
+            page,
+        ));
+        press(&mut workspace, &sender, keymap::OLDER);
+        assert!(matches!(requests.try_recv(), Ok(WorkspaceRequest::History {
+            selection: HistorySelection::All(WorkspaceView::Activity),
+            before: Some(cursor),
+            include_reviews: false,
+        }) if cursor == continuation));
+    }
+
+    #[test]
     fn internal_review_visibility_is_explicit_and_does_not_change_selected_agent() {
         let (sender, requests) = mpsc::channel();
         let mut workspace = Workspace::new();

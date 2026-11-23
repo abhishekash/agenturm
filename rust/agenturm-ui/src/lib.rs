@@ -341,6 +341,8 @@ pub struct RecordedTurn {
 
 #[derive(Default)]
 pub struct HistoryFeatures {
+    /// Ordered continuation of the unfiltered history page.
+    pub continuation: Option<Box<ObservationPosition>>,
     pub metric_history: Option<Box<agenturm_kernel::retained_history::MetricHistoryPage>>,
     pub usage_history: Option<Box<usage_chart::UsageChartData>>,
     pub findings: Option<(ExtensionId, FindingsPage)>,
@@ -410,6 +412,12 @@ impl PageView {
         let evaluation_traces = workbench::evaluation::trace_entries(&page.snapshot);
         let snapshot_id = page.snapshot.history_snapshot_id;
         let mut ui = UiModel::from_snapshot(page.snapshot);
+        if ui.truncated
+            && let Some(continuation) = page.features.continuation
+            && continuation.snapshot_id == snapshot_id
+        {
+            ui.older_cursor = Some(*continuation);
+        }
         ui.evidence = page.evidence_tables;
         if let Some(selected) = selected {
             ui.selected = selected;
