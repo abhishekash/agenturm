@@ -16,6 +16,8 @@ pub(super) const USAGE: &str = concat!(
     "agenturm investigate failures [--source-id <id>] [--session-id <id>] ",
     "[--kind lifecycle|tool|mcp|check|trace] [--limit 1..100] [--cursor <token>] --db <path>\n",
     "agenturm investigate source <event-id> --reference <token> --db <path> --config <json>\n",
+    "Python receivers use --receiver-protocol python-v0.2.8 --endpoint <loopback-http-url> --token-file <path>.\n",
+    "Python searches accept --service, --pages 1..5, --cursor and --format text|json.\n",
     "For broker history use agenturm broker investigate with --broker-config <json> in place of --db and --config."
 );
 
@@ -38,6 +40,8 @@ enum Action {
     Failures(failures::FailureSearch),
     Search(Search),
     Source(SourceReference),
+    #[cfg(target_os = "linux")]
+    Legacy(Box<crate::remote_history::legacy_investigation::Options>),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -143,6 +147,29 @@ fn pinned_snapshot(
 }
 
 pub(super) fn parse(args: &[String], broker: bool) -> Result<InvestigationOptions, String> {
+    if args.iter().skip(2).any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--receiver-protocol" | "--endpoint" | "--token-file"
+        )
+    }) {
+        if broker {
+            return Err(
+                "Python investigation uses an explicit receiver, without broker history flags"
+                    .into(),
+            );
+        }
+        #[cfg(target_os = "linux")]
+        return crate::remote_history::legacy_investigation::parse(args).map(|options| {
+            InvestigationOptions {
+                db: None,
+                config: None,
+                action: Action::Legacy(Box::new(options)),
+            }
+        });
+        #[cfg(not(target_os = "linux"))]
+        return Err("Python receiver investigation requires Linux".into());
+    }
     if let [verb, rest @ ..] = args
         && verb == "failures"
     {
@@ -283,6 +310,9 @@ pub fn execute_investigation(
 ) -> Result<(), String> {
     #[cfg(target_os = "linux")]
     {
+        if let Action::Legacy(options) = &options.action {
+            return crate::remote_history::legacy_investigation::execute(options, output);
+        }
         linux::execute_local(options, output)
     }
     #[cfg(not(target_os = "linux"))]
@@ -609,6 +639,7 @@ mod linux {
             }
             Action::Search(search) => search_page(search, &authority, history, &mut output),
             Action::Source(reference) => source(reference, &authority, history, &mut output),
+            Action::Legacy(_) => Err("Python investigation needs an explicit receiver".into()),
         }
     }
 

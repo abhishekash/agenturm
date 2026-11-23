@@ -22,6 +22,7 @@ pub(crate) const PROTOCOL: &str = "python-v0.2.8";
 enum ReadError {
     Protocol(&'static str),
     Unavailable,
+    ResponseBudget,
 }
 
 impl From<ReadError> for String {
@@ -29,6 +30,7 @@ impl From<ReadError> for String {
         match error {
             ReadError::Protocol(message) => message,
             ReadError::Unavailable => "Python receiver metadata is temporarily unavailable",
+            ReadError::ResponseBudget => "Python receiver response exceeds its bounded read budget",
         }
         .into()
     }
@@ -105,6 +107,26 @@ impl LegacyReceiver {
             REVIEW_REPLY_LIMIT,
         )?;
         Ok(value)
+    }
+
+    pub(super) fn get_for_investigation<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        deadline: Instant,
+        remaining_bytes: usize,
+    ) -> Result<Option<(T, usize)>, String> {
+        match get_with_size(
+            self.endpoint,
+            &self.token,
+            path,
+            Some(&self.identity),
+            deadline,
+            remaining_bytes,
+        ) {
+            Ok((_, value, size)) => Ok(Some((value, size))),
+            Err(ReadError::ResponseBudget) => Ok(None),
+            Err(error) => Err(error.into()),
+        }
     }
 
     pub(crate) fn native_identity(&self) -> &str {
@@ -323,6 +345,18 @@ fn get<T: DeserializeOwned>(
     deadline: Instant,
     max_reply: usize,
 ) -> Result<(String, T), ReadError> {
+    get_with_size(endpoint, token, path, expected, deadline, max_reply)
+        .map(|(identity, value, _)| (identity, value))
+}
+
+fn get_with_size<T: DeserializeOwned>(
+    endpoint: SocketAddr,
+    token: &ProducerToken,
+    path: &str,
+    expected: Option<&str>,
+    deadline: Instant,
+    max_reply: usize,
+) -> Result<(String, T, usize), ReadError> {
     let budget = deadline
         .checked_duration_since(Instant::now())
         .filter(|budget| !budget.is_zero())
@@ -335,7 +369,7 @@ fn get<T: DeserializeOwned>(
     );
     http::write(&stream, deadline, &head, &[]).map_err(wire_error)?;
     let mut reader = BufReader::new(&stream);
-    let head = http::read_python_head(&mut reader, deadline, max_reply).map_err(wire_error)?;
+    let head = http::read_python_head(&mut reader, deadline, MAX_REPLY).map_err(wire_error)?;
     let status = head.start.split_whitespace().collect::<Vec<_>>();
     match status.as_slice() {
         ["HTTP/1.0" | "HTTP/1.1", "200", ..] => {}
@@ -374,6 +408,9 @@ fn get<T: DeserializeOwned>(
             "Python receiver identity changed. Reopen the cockpit or watcher.",
         ));
     }
+    if head.length > max_reply {
+        return Err(ReadError::ResponseBudget);
+    }
     let body = http::read_body(&mut reader, deadline, head.length).map_err(wire_error)?;
     let declared: BodyIdentity = serde_json::from_slice(&body)
         .map_err(|_| ReadError::Protocol("Python receiver metadata is invalid"))?;
@@ -387,7 +424,7 @@ fn get<T: DeserializeOwned>(
     }
     let value = serde_json::from_slice(&body)
         .map_err(|_| ReadError::Protocol("Python receiver metadata is invalid"))?;
-    Ok((identity, value))
+    Ok((identity, value, body.len()))
 }
 
 #[derive(Deserialize)]

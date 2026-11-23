@@ -123,7 +123,7 @@ struct Security {
 }
 
 #[derive(Default, Deserialize)]
-struct LocalPolicy {
+pub(super) struct LocalPolicy {
     capture_content: Option<bool>,
     capture_policy_schema: Option<u64>,
     capture_global_revision: Option<u64>,
@@ -153,7 +153,7 @@ enum Revision {
 }
 
 #[derive(Clone, Debug, PartialEq)]
-struct CapturePolicy {
+pub(super) struct CapturePolicy {
     denied: bool,
     global: Option<bool>,
     schema: Option<u64>,
@@ -172,6 +172,47 @@ struct PolicyWitness {
 }
 
 impl LocalPolicy {
+    pub(super) fn for_investigation(
+        &self,
+        service: &str,
+        agent: Option<&str>,
+        session: Option<&str>,
+    ) -> Result<CapturePolicy, String> {
+        let scope = Scope {
+            receiver: String::new(),
+            producer: service.into(),
+            agent_id: agent.unwrap_or_default().into(),
+            session_id: session.unwrap_or_default().into(),
+            run_id: String::new(),
+            run_start_ns: None,
+            kind: "investigation",
+            endpoint_fallback: false,
+            run_end_ns: None,
+            turn_id: String::new(),
+        };
+        let policy = self.for_scope(&scope)?;
+        // Tagged investigation references have no capture-safety generation.
+        // They cannot authorize a source after its safety generation changes.
+        let revised = policy.schema == Some(1)
+            && (policy.global_revision.is_some_and(|revision| revision > 0)
+                || policy.identities.iter().any(|witness| {
+                    witness
+                        .capture_safety_revision
+                        .is_some_and(|revision| revision > 0)
+                }));
+        if policy.denied || revised {
+            return Err("Python receiver capture policy forbids investigation evidence".into());
+        }
+        Ok(policy)
+    }
+
+    pub(super) fn investigation_ready(&self) -> bool {
+        self.capture_content != Some(false)
+            && self
+                .capture_global_revision
+                .is_none_or(|revision| revision == 0)
+    }
+
     fn for_scope(&self, scope: &Scope) -> Result<CapturePolicy, String> {
         if self.sessions.len() > MAX_ROWS || self.capture_policy_revisions.len() > MAX_ROWS {
             return Err("Python receiver capture policy exceeds its bounded inventory".into());
@@ -625,7 +666,7 @@ fn unsafe_display(ch: char) -> bool {
             | '\u{fff9}'..='\u{fffb}' | '\u{e0001}'..='\u{e007f}')
 }
 
-fn encode_query(value: &str) -> String {
+pub(super) fn encode_query(value: &str) -> String {
     use std::fmt::Write as _;
     let mut encoded = String::new();
     for byte in value.bytes() {
