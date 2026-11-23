@@ -2362,7 +2362,7 @@ mod tests {
         };
         let mut page = empty_history_page();
         page.snapshot.history_snapshot_id = snapshot;
-        page.features.metric_history = Some(MetricHistoryPage::Series {
+        page.features.metric_history = Some(Box::new(MetricHistoryPage::Series {
             snapshot_id: snapshot,
             rows: vec![MetricSeriesEntry {
                 key: key.clone(),
@@ -2370,7 +2370,7 @@ mod tests {
                 latest_unix_ns: 20,
             }],
             next: None,
-        });
+        }));
         let mut workspace = Workspace::new();
         workspace.history.push(HistoryView::new(
             HistorySelection::All(WorkspaceView::Metrics),
@@ -3595,7 +3595,7 @@ mod tests {
                 "c Copy",
                 "x Export",
                 "q Quit",
-                "Capture availability",
+                "Internal reviews",
             ] {
                 assert!(text.contains(key), "missing {key} at {width}: {text}");
             }

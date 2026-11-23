@@ -341,7 +341,7 @@ pub struct RecordedTurn {
 
 #[derive(Default)]
 pub struct HistoryFeatures {
-    pub metric_history: Option<agenturm_kernel::retained_history::MetricHistoryPage>,
+    pub metric_history: Option<Box<agenturm_kernel::retained_history::MetricHistoryPage>>,
     pub usage_history: Option<Box<usage_chart::UsageChartData>>,
     pub findings: Option<(ExtensionId, FindingsPage)>,
     pub mcp_inventory: Option<McpInventory>,

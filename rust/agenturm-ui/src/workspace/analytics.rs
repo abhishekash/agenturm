@@ -16,11 +16,11 @@ impl HistoryAnalytics {
         match selection {
             HistorySelection::All(WorkspaceView::Metrics) => {
                 let series = page.features.metric_history.take()?;
-                if !matches!(&series, MetricHistoryPage::Series { snapshot_id, .. } if *snapshot_id == snapshot)
+                if !matches!(series.as_ref(), MetricHistoryPage::Series { snapshot_id, .. } if *snapshot_id == snapshot)
                 {
                     return None;
                 }
-                MetricBrowser::new(series).map(|browser| Self::Metrics(Box::new(browser)))
+                MetricBrowser::new(*series).map(|browser| Self::Metrics(Box::new(browser)))
             }
             HistorySelection::All(WorkspaceView::Usage)
             | HistorySelection::Session(_, SessionView::Usage) => {
