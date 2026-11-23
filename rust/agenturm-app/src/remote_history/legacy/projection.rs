@@ -14,6 +14,7 @@ pub(super) struct Session {
     service: Option<String>,
     #[serde(default, deserialize_with = "capped")]
     services: Vec<String>,
+    review: Option<bool>,
     agent_id: Option<String>,
     session_id: Option<String>,
     parent_agent_id: Option<String>,
@@ -66,6 +67,7 @@ pub(super) struct Trace {
     service: Option<String>,
     #[serde(default, deserialize_with = "capped")]
     services: Vec<String>,
+    review: Option<bool>,
     agent_id: Option<String>,
     session_id: Option<String>,
     turn_id: Option<String>,
@@ -112,6 +114,8 @@ impl Owner {
 
 #[derive(Serialize)]
 struct Agent {
+    #[serde(skip)]
+    internal_review: bool,
     #[serde(flatten)]
     owner: Owner,
     parent_agent_id: Option<String>,
@@ -129,6 +133,8 @@ struct ConnectionMetadata {
 
 #[derive(Serialize)]
 struct ActivityMetadata {
+    #[serde(skip)]
+    internal_review: bool,
     service: String,
     session_id: Option<String>,
     agent_id: Option<String>,
@@ -142,6 +148,8 @@ struct ActivityMetadata {
 
 #[derive(Serialize)]
 struct TraceMetadata {
+    #[serde(skip)]
+    internal_review: bool,
     service: Option<String>,
     agent_id: Option<String>,
     session_id: Option<String>,
@@ -278,12 +286,51 @@ impl Report {
         output
     }
 
+    pub(super) fn hide_internal_reviews(&mut self) {
+        self.sessions.retain(|row| !row.internal_review);
+        self.activity.retain(|row| !row.internal_review);
+        self.traces.retain(|row| !row.internal_review);
+        self.connections.retain(|row| row.service != "codex-review");
+        if let Some(attention) = &mut self.attention {
+            attention
+                .pending
+                .retain(|row| row.service != "codex-review");
+        }
+    }
+
     pub(super) fn into_live_page(self) -> LivePage {
+        // The Python sessions API can derive its free-form task fields from
+        // captured prompts. Use only authenticated structural evidence here.
+        let mut roster_evidence = BTreeMap::new();
+        for row in &self.activity {
+            let label = match row.domain {
+                "file" => "Recorded file activity",
+                "shell" => "Recorded shell activity",
+                "mcp" => "Recorded MCP operation",
+                "tool" => "Recorded tool activity",
+                _ => continue,
+            };
+            if let Some(session) = row.session_id.as_deref()
+                && let Some(owner) = Owner::new(&row.service, session, row.agent_id.clone())
+            {
+                roster_evidence.entry(owner).or_insert(label);
+            }
+        }
+        for row in &self.traces {
+            if let Some((service, session)) = row.service.as_deref().zip(row.session_id.as_deref())
+                && let Some(owner) = Owner::new(service, session, row.agent_id.clone())
+            {
+                roster_evidence.entry(owner).or_insert("Recorded trace");
+            }
+        }
         let sessions = self
             .sessions
             .iter()
             .map(|agent| {
-                let title = format!("{} · {}", agent.owner.label(), agent.state);
+                let mut title = format!("{} · {}", agent.owner.label(), agent.state);
+                if let Some(label) = roster_evidence.get(&agent.owner) {
+                    let _ = write!(title, " · {label}");
+                }
                 let detail = agent
                     .owner
                     .agent_id
@@ -291,6 +338,7 @@ impl Report {
                     .map(|actor| format!("Actor {actor}"));
                 LiveRow {
                     owner: Some(agent.owner.live()),
+                    internal_review: agent.internal_review,
                     title,
                     detail,
                 }
@@ -308,6 +356,7 @@ impl Report {
                 let detail = row.trace_id.map(|trace| format!("Trace {trace}"));
                 LiveRow {
                     owner,
+                    internal_review: row.internal_review,
                     title: format!(
                         "{} · {} / {} · {}",
                         row.service, row.domain, row.action, row.result
@@ -328,6 +377,7 @@ impl Report {
                     .map(|owner| owner.live());
                 LiveRow {
                     owner,
+                    internal_review: row.internal_review,
                     title: format!("{} · {}", row.trace_id, row.status),
                     detail: row
                         .span_count
@@ -345,6 +395,7 @@ impl Report {
                     .map(|owner| owner.live());
                 LiveRow {
                     owner,
+                    internal_review: row.service == "codex-review",
                     title: format!(
                         "{} / {} · {}",
                         row.service,
@@ -373,6 +424,7 @@ impl Report {
 
 impl Session {
     fn project(self) -> Option<Agent> {
+        let internal_review = internal_review(self.service.as_deref(), &self.services, self.review);
         let producer = one_service(self.service.as_deref(), &self.services)?;
         let owner = Owner::new(
             producer,
@@ -380,6 +432,7 @@ impl Session {
             normalize(self.agent_id),
         )?;
         Some(Agent {
+            internal_review,
             owner,
             parent_agent_id: self.parent_agent_id.filter(|actor| agent_id(actor)),
             state: state(self.run_state.as_deref().or(self.latest_status.as_deref())),
@@ -419,6 +472,7 @@ impl Activity {
             return None;
         }
         Some(ActivityMetadata {
+            internal_review: self.service == "codex-review",
             service: self.service,
             session_id: normalize(self.session_id),
             agent_id: normalize(self.agent_id),
@@ -448,6 +502,7 @@ impl Trace {
         }
         let service = one_service(self.service.as_deref(), &self.services).map(str::to_owned);
         Some(TraceMetadata {
+            internal_review: internal_review(self.service.as_deref(), &self.services, self.review),
             service,
             agent_id: normalize(self.agent_id),
             session_id: normalize(self.session_id),
@@ -472,6 +527,12 @@ fn project_rows<T, R>(
             projected
         })
         .collect()
+}
+
+fn internal_review(service: Option<&str>, services: &[String], flag: Option<bool>) -> bool {
+    flag == Some(true)
+        || service == Some("codex-review")
+        || services.iter().any(|service| service == "codex-review")
 }
 
 fn one_service<'a>(service: Option<&'a str>, services: &'a [String]) -> Option<&'a str> {
@@ -550,5 +611,53 @@ fn action(value: &str) -> &'static str {
         "request_resolved" => "request resolved",
         "progress" => "progress",
         _ => "reported",
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn legacy_roster_uses_only_exact_structural_evidence_for_its_labels() {
+        let make_session = |service: &str, actor: &str| {
+            serde_json::from_value::<Session>(serde_json::json!({
+                "service": service, "session_id": "shared", "agent_id": actor,
+                "initial_task": "Captured native prompt text",
+                "task": "Captured provider message body",
+            }))
+            .unwrap()
+            .project()
+            .unwrap()
+        };
+        let actor = format!("ag1_{}", "1".repeat(32));
+        let sibling = format!("ag1_{}", "2".repeat(32));
+        let mut report = Report::new("receiver".into());
+        report.sessions = vec![
+            make_session("codex", &actor),
+            make_session("codex", &sibling),
+            make_session("pi", &actor),
+        ];
+        report.activity.push(ActivityMetadata {
+            internal_review: false,
+            service: "codex".into(),
+            session_id: Some("shared".into()),
+            agent_id: Some(actor),
+            trace_id: None,
+            turn_id: None,
+            observed_at_unix_ns: "1".into(),
+            domain: "file",
+            action: "edit",
+            result: "ok",
+        });
+        let live = report.into_live_page();
+        assert!(live.sessions[0].title.contains("Recorded file activity"));
+        assert!(!live.sessions[1].title.contains("Recorded file activity"));
+        assert!(!live.sessions[2].title.contains("Recorded file activity"));
+        assert!(
+            live.sessions
+                .iter()
+                .all(|row| !row.title.contains("Captured"))
+        );
     }
 }

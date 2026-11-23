@@ -1,4 +1,5 @@
 use agenturm_kernel::{ExtensionId, MetricRow, Snapshot};
+use agenturm_ui::{EvidenceRow, EvidenceSpec, EvidenceTable};
 #[cfg(target_os = "linux")]
 mod capture;
 #[cfg(target_os = "linux")]
@@ -19,7 +20,7 @@ const PROCESS_SCAN_BUDGET: Duration = Duration::from_millis(40);
 #[cfg(target_os = "linux")]
 const PROCESS_SAMPLE_AGE: Duration = Duration::from_secs(2);
 
-pub(super) fn add_host_pane(snapshot: &mut Snapshot) -> ExtensionId {
+pub(super) fn add_host_pane(snapshot: &mut Snapshot) -> (ExtensionId, EvidenceTable) {
     let mut rows = current_host_rows();
     if rows.is_empty() {
         rows.push(MetricRow {
@@ -27,7 +28,29 @@ pub(super) fn add_host_pane(snapshot: &mut Snapshot) -> ExtensionId {
             value: "Current host metrics are unavailable".into(),
         });
     }
-    super::session_evidence::insert_pane(snapshot, "app.cockpit-host", "Host now", rows)
+    let projection = EvidenceSpec {
+        title: "Host now",
+        inspector: "Collection status",
+        columns: &[("Metric", 5), ("Current sample", 4)],
+        empty: "Current host metrics are unavailable.",
+    };
+    let mut table = projection.table(Vec::new());
+    if let Some(coverage) = rows
+        .iter()
+        .find(|row| row.label == "Process sample" || row.label == "Host metrics")
+    {
+        table.context.push(coverage.clone());
+    }
+    table.rows = rows
+        .iter()
+        .filter(|row| !matches!(row.label.as_str(), "Process sample" | "Host metrics"))
+        .map(|row| EvidenceRow {
+            cells: vec![row.label.clone(), row.value.clone()],
+            details: vec![row.clone()],
+        })
+        .collect();
+    let id = super::session_evidence::insert_pane(snapshot, "app.cockpit-host", "Host now", rows);
+    (id, table)
 }
 
 #[cfg(target_os = "linux")]

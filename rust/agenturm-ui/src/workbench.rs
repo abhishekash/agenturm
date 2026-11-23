@@ -43,7 +43,7 @@ pub struct HandoffEntry {
     pub note: String,
 }
 
-#[derive(Clone, Debug)]
+#[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RequestEntry {
     pub owner: WorkAnchor,
     pub event_id: String,
@@ -51,6 +51,13 @@ pub struct RequestEntry {
     pub timestamp: u64,
     pub reason: String,
     pub seen: bool,
+    pub proof: RequestProof,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct RequestProof {
+    pub snapshot_id: agenturm_kernel::ReadSnapshot,
+    pub history_identity: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -106,10 +113,33 @@ pub(super) struct PromptReceiver {
     pub(super) frames: mpsc::Receiver<Vec<u8>>,
     pub(super) acknowledgement: mpsc::Sender<()>,
     pub(super) active: Arc<Mutex<bool>>,
-    pub(super) title: &'static str,
+    pub(super) kind: PromptKind,
 }
 
-pub(super) fn prompt_channel() -> (PromptDelivery, PromptReceiver) {
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub(super) enum PromptKind {
+    User,
+    Mcp,
+    Edit,
+    Telemetry,
+    Evaluation,
+    Investigation,
+}
+
+impl PromptKind {
+    pub(super) fn title(self) -> &'static str {
+        match self {
+            Self::User => "Granted prompt",
+            Self::Mcp => "Granted MCP payload",
+            Self::Edit => "Granted file edit",
+            Self::Telemetry => "Producer-captured text",
+            Self::Evaluation => "Imported evaluation text",
+            Self::Investigation => "Verified source evidence",
+        }
+    }
+}
+
+pub(super) fn prompt_channel(kind: PromptKind) -> (PromptDelivery, PromptReceiver) {
     let (frames, received) = mpsc::channel();
     let (acknowledgement, ack) = mpsc::channel();
     let active = Arc::new(Mutex::new(true));
@@ -124,7 +154,7 @@ pub(super) fn prompt_channel() -> (PromptDelivery, PromptReceiver) {
             frames: received,
             acknowledgement,
             active,
-            title: "Granted prompt",
+            kind,
         },
     )
 }
@@ -165,8 +195,19 @@ impl io::Write for PromptDelivery {
 
 pub(crate) mod evaluation;
 mod host;
+pub(crate) mod investigation;
 
 pub enum WorkCommand {
+    Investigate(Box<investigation::InvestigationRead>),
+    RevealInvestigation {
+        reference: String,
+        history_identity: Option<String>,
+        delivery: PromptDelivery,
+    },
+    ExportView {
+        document: crate::LoadedView,
+        directory: String,
+    },
     Evaluations(Box<evaluation::EvaluationRead>),
     HostHistory(Option<agenturm_kernel::ObservationPosition>),
     ReviewNotes(RecordedSession),
@@ -212,6 +253,7 @@ pub enum WorkCommand {
         note: String,
     },
     Workflow,
+    SessionAttention(RecordedSession),
     Seen(RequestEntry),
     Locate(RequestEntry),
     Prompts(WorkAnchor),
@@ -228,6 +270,7 @@ pub struct ReviewNoteEntry {
 }
 
 pub enum WorkResult {
+    Investigation(Box<investigation::InvestigationPage>),
     Evaluations(Box<evaluation::EvaluationPage>),
     HostHistory(agenturm_kernel::ObservationPage),
     ReviewNotes {
@@ -255,6 +298,7 @@ pub enum WorkResult {
         items: Vec<RequestEntry>,
         partial: bool,
     },
+    AttentionRequests(Vec<RequestEntry>),
     Prompts(Vec<PromptEntry>),
     TelemetrySpans(Vec<TelemetrySpanEntry>),
     Seen(RequestEntry),
@@ -376,12 +420,21 @@ impl Workbench {
         }
     }
 
+    pub(super) fn prompt_owner(&self) -> Option<&WorkAnchor> {
+        if matches!(self.data, WorkResult::Prompts(_)) && !self.help && !self.editing() {
+            self.target.as_ref()
+        } else {
+            None
+        }
+    }
+
     pub(super) fn follows_requests(&self) -> bool {
         matches!(self.data, WorkResult::Workflow { .. }) && !self.help
     }
 
     pub(super) fn note_seen(&mut self, recorded: &RequestEntry) {
-        if let WorkResult::Workflow { items, .. } = &mut self.data
+        if let WorkResult::Workflow { items, .. } | WorkResult::AttentionRequests(items) =
+            &mut self.data
             && let Some(entry) = items.iter_mut().find(|entry| {
                 entry.owner == recorded.owner
                     && entry.event_id == recorded.event_id
@@ -406,10 +459,12 @@ impl Workbench {
             WorkResult::Handoffs { items, .. } => items.len(),
             WorkResult::TaskLinks { items, .. } => items.len(),
             WorkResult::TaskWorkspace { .. } => 0,
-            WorkResult::Workflow { items, .. } => items.len(),
+            WorkResult::Workflow { items, .. } | WorkResult::AttentionRequests(items) => {
+                items.len()
+            }
             WorkResult::Prompts(items) => items.len(),
             WorkResult::TelemetrySpans(spans) => spans.len(),
-            WorkResult::Seen(_) | WorkResult::Status(_) => 0,
+            WorkResult::Investigation(_) | WorkResult::Seen(_) | WorkResult::Status(_) => 0,
         }
     }
 
@@ -615,25 +670,30 @@ impl Workbench {
                     older: Some(before),
                     ..
                 },
-                KeyCode::Char('['),
+                crate::keymap::OLDER,
             ) => return WorkInput::Command(WorkCommand::Tasks(Some(*before))),
             (
                 WorkResult::Handoffs {
                     older: Some(before),
                     ..
                 },
-                KeyCode::Char('['),
+                crate::keymap::OLDER,
             ) => return WorkInput::Command(WorkCommand::Handoffs(Some(*before))),
-            (WorkResult::Tasks { .. }, KeyCode::Char(']')) => {
+            (WorkResult::Tasks { .. }, crate::keymap::NEWER | crate::keymap::LATEST) => {
                 return WorkInput::Command(WorkCommand::Tasks(None));
             }
-            (WorkResult::Handoffs { .. }, KeyCode::Char(']')) => {
+            (WorkResult::Handoffs { .. }, crate::keymap::NEWER | crate::keymap::LATEST) => {
                 return WorkInput::Command(WorkCommand::Handoffs(None));
             }
-            (WorkResult::Workflow { .. }, KeyCode::Char('r')) => {
+            (WorkResult::AttentionRequests(items), KeyCode::Enter | KeyCode::Char('X'))
+                if let Some(item) = items.get(selected).filter(|item| !item.seen) =>
+            {
+                return WorkInput::Command(WorkCommand::Seen(item.clone()));
+            }
+            (WorkResult::Workflow { .. }, KeyCode::Char('R')) => {
                 return WorkInput::Command(WorkCommand::Workflow);
             }
-            (WorkResult::Workflow { items, .. }, KeyCode::Char('s'))
+            (WorkResult::Workflow { items, .. }, KeyCode::Char('r' | 's' | 'X'))
                 if let Some(item) = items.get(selected) =>
             {
                 return WorkInput::Command(WorkCommand::Seen(item.clone()));
@@ -782,7 +842,7 @@ impl Workbench {
         if self.help {
             frame.render_widget(Paragraph::new(" Workbench keys"), header);
             frame.render_widget(
-                Paragraph::new("Tasks · n new linked · N blank · e edit · c done\nl link selected session or turn · r links · Del delete\nG capture Git · g saved Git · h new handoff · o handoffs\nHandoffs · e edit · x export MD+HTML · Del delete · b tasks\nWorkflow · s seen · l locate · r refresh\nPrompts · Enter reveal · ↑↓ scroll · Esc close\nHost history · Enter drill down · ] older · Esc back")
+                Paragraph::new("Tasks · n new linked · N blank · e edit · c done\nl link selected session or turn · r links · Del delete\nG capture Git · g saved Git · h new handoff · o handoffs\nHandoffs · e edit · x export MD+HTML · Del delete · b tasks\nWorkflow · r seen · l locate · R refresh · p pause\nPrompts · Enter reveal · m activity details · Esc close\nHost history · Enter drill down · ] older · Esc back")
                     .wrap(Wrap { trim: false }).block(Block::bordered()),
                 body,
             );
@@ -837,6 +897,17 @@ impl Workbench {
             return;
         }
         let selected = self.cursor.selected().unwrap_or_default();
+        if let WorkResult::HostHistory(page) = &self.data {
+            let view = self.host_level.present(page);
+            frame.render_widget(
+                Paragraph::new(format!(" Agenturm / {}", view.table.spec.title))
+                    .style(heading_style()),
+                header,
+            );
+            view.table.draw(frame, body, selected);
+            draw_footer(frame, footer, view.keys, pending, status);
+            return;
+        }
         let (title, keys, options, details, empty) = match &self.data {
             WorkResult::Evaluations(page) => (
                 page.title(),
@@ -845,16 +916,6 @@ impl Workbench {
                 page.details(selected),
                 page.empty(),
             ),
-            WorkResult::HostHistory(page) => {
-                let view = self.host_level.present(page, selected);
-                (
-                    view.title,
-                    view.keys,
-                    view.options,
-                    view.details,
-                    view.empty,
-                )
-            }
             WorkResult::ReviewNotes { session, items } => (
                 "Review decisions",
                 "e new · ↑↓ select · PgUp/PgDn read · Esc review",
@@ -930,13 +991,44 @@ impl Workbench {
                 "No additional links",
             ),
             WorkResult::TaskWorkspace { .. } => return,
+            WorkResult::AttentionRequests(items) => (
+                "Mark one pending request seen",
+                "Enter mark seen · ↑↓ select · Esc back",
+                items
+                    .iter()
+                    .map(|item| {
+                        format!(
+                            "{} · worker {} · turn {}",
+                            if item.seen {
+                                "Pending · seen"
+                            } else {
+                                "Pending"
+                            },
+                            item.owner
+                                .worker
+                                .as_deref()
+                                .map(visible_text)
+                                .as_deref()
+                                .unwrap_or("session"),
+                            item.owner
+                                .turn
+                                .as_deref()
+                                .map(visible_text)
+                                .as_deref()
+                                .unwrap_or("unscoped"),
+                        )
+                    })
+                    .collect(),
+                items.get(selected).map(request_details).unwrap_or_default(),
+                "No eligible pending requests",
+            ),
             WorkResult::Workflow { items, partial } => (
                 if *partial {
                     "Workflow · recent history"
                 } else {
                     "Workflow"
                 },
-                "s seen · l locate terminal · r refresh · Esc back",
+                "r seen · l locate terminal · R refresh · Esc back",
                 items
                     .iter()
                     .map(|item| {
@@ -1001,7 +1093,10 @@ impl Workbench {
                     .unwrap_or_default(),
                 "No spans in the loaded trace page",
             ),
-            WorkResult::Seen(_) | WorkResult::Status(_) => return,
+            WorkResult::HostHistory(_)
+            | WorkResult::Investigation(_)
+            | WorkResult::Seen(_)
+            | WorkResult::Status(_) => return,
         };
         frame.render_widget(Paragraph::new(format!(" Agenturm / {title}")), header);
         let [list, detail] =

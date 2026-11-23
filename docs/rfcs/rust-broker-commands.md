@@ -121,7 +121,7 @@ and both `history_identity` and `snapshot_id` from the same snapshot reply.
 Use a fresh snapshot after a restore or when updating an older selection file
 that lacks `history_identity`. The response labels the text as
 `producer_captured_telemetry`. A claimed native linkage is a producer
-assertion. In the local or broker cockpit, open Traces with `8`, press
+assertion. In the local or broker cockpit, open Traces with `4`, press
 `d` to select a span, and use Enter to open the private text modal. Escape
 clears the display and returns to the span list.
 
@@ -283,7 +283,7 @@ observed zero is `0`. The response returns up to 64 samples and an `older`
 position for the same history snapshot. Pass that JSON object to `--before`
 with the same source filter to continue the traversal.
 
-From the cockpit's session list, press `6` for host history. Enter opens the
+From the cockpit's session list, press `5` for host history. Enter opens the
 selected sample's process list and Enter again opens the selected process's
 history within the loaded page. Escape returns one level. Use `]` to read
 older samples or `r` for the latest page. Press `H` from a local cockpit for
@@ -298,7 +298,7 @@ retained samples.
 
 Starting the reader gateway with `--include-host` enables recorded Host history
 for the attached cockpit and HTTP clients. The gateway serves Host sources in
-the dedicated broker reader's allowlist. Use `6` for the same sample and process
+the dedicated broker reader's allowlist. Use `5` for the same sample and process
 drill-down over the connection. The gateway's default denies Host access.
 Ordinary session, activity and trace requests exclude Host samples.
 

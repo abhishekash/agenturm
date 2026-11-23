@@ -28,6 +28,8 @@ mod remote_history;
 mod retention_cli;
 mod review_receipt;
 mod session_evidence;
+mod session_projects;
+mod session_titles;
 mod span_jsonl_import;
 mod summary_cli;
 mod task_cli;
@@ -37,6 +39,7 @@ mod trace_import;
 mod trace_progress;
 mod trace_receiver;
 mod trace_run;
+mod view_export;
 mod workflow_route;
 
 #[cfg(target_os = "linux")]
@@ -88,8 +91,8 @@ use agenturm_store::{
     SessionPosition, SessionQuery, Store, TraceReviewQuery,
 };
 use agenturm_ui::{
-    HistorySelection, RecordedSession, ReviewVersion, SessionCatalog, SessionCursor, SessionView,
-    WorkspaceRequest, WorkspaceResponse, WorkspaceView,
+    HistorySelection, ProjectOrigin, RecordedSession, ReviewVersion, SessionCatalog, SessionCursor,
+    SessionView, WorkspaceRequest, WorkspaceResponse, WorkspaceView,
 };
 use serde::Deserialize;
 use std::collections::{BTreeMap, BTreeSet};
@@ -1885,6 +1888,7 @@ fn workspace_response(
         }
         WorkspaceRequest::History { selection, before } => {
             let mut page = load_workspace_history(app, store, selection, before)?;
+            page.history_identity = store.workspace_history_identity();
             page.private_telemetry_history = store.private_telemetry_history();
             Ok(WorkspaceResponse::History(page))
         }
@@ -1907,6 +1911,8 @@ fn load_session_catalog(
     let page = store
         .query_sessions(&query)
         .map_err(|error| format!("Read sessions failed: {error}"))?;
+    let mut titles = session_titles::load(store, db, &page);
+    let mut projects = session_projects::load(store.session_title_store(), db, &page);
     let keys = page
         .sessions
         .iter()
@@ -1915,7 +1921,7 @@ fn load_session_catalog(
             session_id: session.session_id.clone(),
         })
         .collect::<Vec<_>>();
-    let (reviewed, notice) = match ReviewLedger::open(db)
+    let (reviewed, mut notice) = match ReviewLedger::open(db)
         .and_then(|ledger| ledger.reviewed_in(&keys, page.snapshot_id.incarnation()))
     {
         Ok(reviewed) => (reviewed, None),
@@ -1924,6 +1930,27 @@ fn load_session_catalog(
             Some(format!("Review status unavailable: {error}")),
         ),
     };
+    let history_identity = store.workspace_history_identity();
+    let mut pending = std::collections::HashMap::<_, Vec<_>>::new();
+    if !page.sessions.is_empty() {
+        match cockpit_workflows::roster_pending(store, db, page.snapshot_id) {
+            Ok((requests, partial)) => {
+                for item in requests {
+                    pending
+                        .entry((item.owner.source.clone(), item.owner.session.clone()))
+                        .or_default()
+                        .push(item);
+                }
+                if partial && notice.is_none() {
+                    notice = Some("Pending request coverage is partial".into());
+                }
+            }
+            Err(_) if notice.is_none() => {
+                notice = Some("Pending request status unavailable".into())
+            }
+            Err(_) => {}
+        }
+    }
     let sessions = page
         .sessions
         .into_iter()
@@ -1932,8 +1959,22 @@ fn load_session_catalog(
             let (state, reason, turn_id) = session.lifecycle.map_or((None, None, None), |life| {
                 (Some(life.state), life.reason_code, life.turn_id)
             });
+            let session_key = (session.harness_id.clone(), session.session_id.clone());
+            let project_path = projects.remove(&session_key).map(String::into_boxed_str);
             RecordedSession {
                 harness_id: session.harness_id.as_str().to_owned(),
+                project_origin: project_path
+                    .as_ref()
+                    .map(|_| ProjectOrigin::OperatorTaskWorkspace),
+                project_path,
+                task_title: titles.remove(&session_key).map(String::into_boxed_str),
+                pending_requests: pending
+                    .remove(&(
+                        session.harness_id.as_str().to_owned(),
+                        session.session_id.clone(),
+                    ))
+                    .unwrap_or_default(),
+                history_identity: history_identity.clone(),
                 session_id: session.session_id,
                 updated_at_unix_ns: session.observed_at_unix_ns,
                 snapshot_id: page.snapshot_id,
@@ -1975,6 +2016,9 @@ trait HistoryReader: ObservationStore {
     fn private_telemetry_history(&self) -> Option<String> {
         None
     }
+    fn workspace_history_identity(&self) -> Option<String> {
+        self.private_telemetry_history()
+    }
 
     fn local_host_data(&self) -> bool {
         true
@@ -1989,6 +2033,9 @@ trait HistoryReader: ObservationStore {
         &self,
         marker: &std::path::Path,
     ) -> Result<agenturm_store::WorkspaceLedger, String>;
+    fn session_title_store(&self) -> Option<&Store> {
+        None
+    }
     fn query_sessions(&self, query: &SessionQuery) -> Result<agenturm_store::SessionPage, String>;
     fn query_linked_traces(
         &self,
@@ -2007,6 +2054,12 @@ trait HistoryReader: ObservationStore {
 }
 
 impl HistoryReader for Store {
+    fn workspace_history_identity(&self) -> Option<String> {
+        Store::history_identity(self).ok()
+    }
+    fn session_title_store(&self) -> Option<&Store> {
+        Some(self)
+    }
     #[cfg(target_os = "linux")]
     fn private_telemetry_history(&self) -> Option<String> {
         self.history_identity().ok()
@@ -2173,18 +2226,19 @@ fn load_workspace_history(
                         history_snapshot_id: page.snapshot_id,
                         ..Snapshot::default()
                     };
-                    let pane = session_evidence::add_session_trace_pane(
+                    let (pane, evidence) = session_evidence::add_session_trace_pane(
                         &mut snapshot,
                         &session.harness_id,
                         &session.session_id,
                     );
                     let mut page = inspector_activity::overview_page(snapshot);
+                    page.evidence_tables.insert(pane.clone(), evidence);
                     page.initial_pane = Some(pane);
                     return Ok(page);
                 }
             };
-            let mut snapshot = app.refresh_history_query(store, query);
-            let panes = session_evidence::add_session_panes(
+            let mut snapshot = workspace_history_snapshot(app.refresh_history_query(store, query))?;
+            let mut panes = session_evidence::add_session_panes(
                 &mut snapshot,
                 &session.harness_id,
                 &session.session_id,
@@ -2193,31 +2247,50 @@ fn load_workspace_history(
             if !page.snapshot.observations.is_empty() {
                 page.review_pane = Some(panes.review.clone());
             }
+            page.operation_tables = std::mem::take(&mut panes.tables);
+            page.evidence_tables = std::mem::take(&mut panes.evidence);
             page.initial_pane = Some(select_pane(panes));
             Ok(page)
         }
         HistorySelection::All(view) => {
-            let mut snapshot = app.refresh_history_query(store, query);
-            let ids = session_evidence::add_workspace_panes(&mut snapshot);
-            let host = store
-                .local_host_data()
-                .then(|| cockpit_host::add_host_pane(&mut snapshot));
-            let mut page = inspector_activity::overview_page(snapshot);
-            page.initial_pane = Some(match view {
-                WorkspaceView::Overview => {
-                    ExtensionId::parse("pane.overview").expect("built-in overview ID is valid")
-                }
-                WorkspaceView::Activity => ids.activity,
-                WorkspaceView::Mcp => ids.mcp,
-                WorkspaceView::Operations => ids.operations,
-                WorkspaceView::Findings => ids.findings,
-                WorkspaceView::Host => host.ok_or("Host data is unavailable from this receiver")?,
-                WorkspaceView::Usage => ids.usage,
-                WorkspaceView::Traces => ids.traces,
+            let mut snapshot = workspace_history_snapshot(app.refresh_history_query(store, query))?;
+            let mut ids = session_evidence::add_workspace_panes(&mut snapshot);
+            let host = store.local_host_data().then(|| {
+                let (id, evidence) = cockpit_host::add_host_pane(&mut snapshot);
+                ids.evidence.insert(id.clone(), evidence);
+                id
             });
+            let mut page = inspector_activity::overview_page(snapshot);
+            page.operation_tables = ids.tables;
+            page.evidence_tables = ids.evidence;
+            page.initial_pane = match view {
+                WorkspaceView::Overview => Some(
+                    ExtensionId::parse("pane.overview").expect("built-in overview ID is valid"),
+                ),
+                WorkspaceView::Activity => Some(ids.activity),
+                WorkspaceView::Mcp => Some(ids.mcp),
+                WorkspaceView::Operations => Some(ids.operations),
+                WorkspaceView::Findings => Some(ids.findings),
+                WorkspaceView::Host => {
+                    Some(host.ok_or("Host data is unavailable from this receiver")?)
+                }
+                WorkspaceView::Usage => Some(ids.usage),
+                WorkspaceView::Traces => Some(ids.traces),
+                WorkspaceView::Metrics => None,
+            };
             Ok(page)
         }
     }
+}
+
+fn workspace_history_snapshot(snapshot: Snapshot) -> Result<Snapshot, String> {
+    if let Some(failure) = snapshot.failures.iter().find(|failure| {
+        failure.extension_id.as_str() == "kernel.store"
+            && failure.stage == agenturm_kernel::ExtensionStage::AdmissionRead
+    }) {
+        return Err(format!("History unavailable · {}", failure.message));
+    }
+    Ok(snapshot)
 }
 
 /// Executes one bounded read-only history query and returns a stable cursor

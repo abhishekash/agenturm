@@ -1,6 +1,6 @@
 # Rust cutover workflow inventory
 
-Baseline is the Python `v0.2.8` tag and the published Rust 0.3.1 Linux bundle. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.
+Baseline is the Python `v0.2.8` tag and the published Rust 0.3.7 Linux bundle. Rust 0.3.8 UI changes below are a candidate pending integrated qualification. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.
 
 The current implementation scope retains the remaining workflows. Remote
 receiver access, remaining eval views, automatic retention, recorded cost and
@@ -30,6 +30,53 @@ migration of Python-era databases remains outside the Rust-only product scope.
 
 The CLI maintainer owns implementation and installed scenarios for the retained commands. Any later retirement requires an explicit product decision. [Python command source](https://github.com/abhishekash/agenturm/blob/v0.2.8/observatory/__main__.py) · [Rust workflow coverage](rust-cockpit-workflow-coverage.md)
 
+### Session task labels
+
+The Rust Agents roster uses a saved task title when a session-level link
+matches the exact history, source, and session. If the bounded title read
+cannot resolve a single title, the roster can use a structural label such as
+a recorded pull request or file edit. Sessions without title evidence show
+**Untitled session**. The source and session ID remain visible separately.
+
+Prompt and payload text stays in explicit private views. The live Python
+receiver client can label a row from typed activity and trace evidence tied
+to the same service, session, and actor. Legacy task fields can contain
+captured prompts, so the live roster leaves those fields outside its labels.
+
+
+### Command-center first screen
+
+The Rust 0.3.8 candidate opens with a full-width task table, aligned status
+and updated columns, and project path headings with counts. `Tab` and
+`Shift+Tab` select All, Needs you, Working, Ready or Inactive; counts apply to
+the loaded evidence page and unknown states remain explicit. `G` cycles
+project, source and ungrouped views. Project headings use the exact linked
+operator task workspace when available; missing paths stay **Project unavailable**.
+No path is inferred from prompt text or process cwd. `Enter` opens the
+selected inspector; `Esc` preserves the group, filter and exact source/session.
+Use `Show more` or `]` for the next recorded page.
+
+`c` requests clipboard copy of bounded loaded metadata. Terminal support and
+permission determine whether it reaches the clipboard. `x` opens a directory
+form, then writes Markdown, HTML and JSON into a new private directory. It
+never overwrites a destination, reads additional source content or exports a
+private modal body. Query and form inputs own printable keys.
+
+### Cockpit keyboard navigation
+
+`1` Agents · `2` Activity · `3` MCP · `4` Traces · `5` Host · `6` Metrics · `7` Findings. `9` opens Operations, `U` opens workspace Usage, and `H` opens live local Host information. `8` remains a trace shortcut. On a selected session, `t` opens its exact linked Traces and `T` selects a recorded turn when available.
+
+`Ctrl+R` opens Review for the selected session. `m` cycles the session overview, prompt index, and recorded Activity details. `P` opens the grant-controlled prompt index directly. In MCP, `m` opens a recorded payload selection when available. `M` opens that selection from another eligible pane. In Traces, `d` opens captured text selection when available. Outside that context `d` opens recorded diagnostics, which are also available with `D`.
+
+`Ctrl+F` opens Investigate from the Agents roster or a retained history view. Use `Tab` to choose Failures, Instruction, Path, Command, or Failed command. From a selected session or turn, `s` lets Failures search all authorized sources. `Enter` searches and `PgDn` continues at the same snapshot. The results show occurrence metadata and page coverage. `Enter` on a result with source evidence opens a protected view after checking the current grant and exact retained source. `Esc` closes that view, then returns from Investigate to the same selection. An attached Rust HTTP receiver supports Failures metadata. Protected searches and evidence require local or broker history. The legacy Python receiver attachment supplies live metadata and has no retained investigation view.
+
+`z` switches an open user prompt between Readable and original captured layout; both use the same already granted text and fixed 25-second display lifetime. Original layout preserves captured newlines and tab stops and allows horizontal scrolling. This does not reveal uncaptured source envelopes or affect other private viewers.
+
+`p` pauses or resumes automatic refresh. `R` refreshes on demand. `[` moves to a loaded newer page, `]` reads an older page, and `l` returns to the latest page within the current scope. `a` resets the roster filters. `f` switches between tree and flat views, `o` changes the sort, and `!` shows sessions needing attention. `Esc` closes the current overlay or returns to the previous view. `F1` or `?` opens keyboard help.
+
+On the Rust roster, `X` marks one exact pending request seen. When several current worker or turn requests match the session, the chooser lets you select one. The request stays pending until its source records a state change. A newly recorded request revision can need attention again. `Ctrl+R` or `V` opens Review for the selected session.
+
+The authenticated Python receiver view uses `v` to include or hide captured internal approval reviews. Local Rust capture currently excludes these internal review sessions. Python receiver attachment uses `1`, `2`, and `4` for its live metadata pages. `w` or `!` opens Pending, where the receiver's recorded requests can be inspected.
 
 ### Attach to an existing Python 0.2.8 receiver
 
@@ -383,7 +430,7 @@ client's checkout.
 | OpenAI, Anthropic, LangChain and LangGraph | Python 0.2.8 instruments OpenAI and Anthropic calls and LangChain automatically, with explicit callbacks also available for LangChain and LangGraph. Inventory producer-side exporters and test selected integrations against Rust before claiming equivalent coverage. Python Agenturm bootstrap remains a product decision. SDK integration maintainer and release owner. |
 | OpenAI Agents SDK, Pydantic AI, Google ADK, Node.js | Python 0.2.8 supplies an Agents SDK adapter and exercises vendor OTLP exporters and a Node.js client. Test native OTLP producers independently. Decide which producer-side integrations stay required and which old Agenturm client ingestion routes to retire. SDK integration maintainer and release owner. |
 | Prompt and MCP payloads | Preserve the recorded operation and current scope when opening content. Unavailable, revoked and over-limit evidence needs a visible outcome. B2 and B4 own the prompt and MCP detail gaps. |
-| Usage, cost and host history | Rust shows recorded token counts, Kiro credits and individually reported OTLP costs. `host record` and `broker host record` capture optional Linux load, memory and CPU counters with known same-user processes. `6` opens recorded samples, then Enter opens the process list and exact process history. A v2 collection `host` block enables scheduled capture for local, broker, and managed Linux collectors. The HTTP reader can expose recorded Host history when started with `--include-host`. Aggregate cost views remain open. [Host history](rust-broker-commands.md#record-and-read-host-history) |
+| Usage, cost and host history | Rust shows recorded token counts, Kiro credits and individually reported OTLP costs. `host record` and `broker host record` capture optional Linux load, memory and CPU counters with known same-user processes. `5` opens recorded samples, then Enter opens the process list and exact process history. A v2 collection `host` block enables scheduled capture for local, broker, and managed Linux collectors. The HTTP reader can expose recorded Host history when started with `--include-host`. Aggregate cost views remain open. [Host history](rust-broker-commands.md#record-and-read-host-history) |
 
 The vendor fixture matrix records the actual SDK paths and pending checks. [Rust OTLP vendor producer qualification](../validation/rust-vendor-sdk-producers.md)
 
@@ -394,8 +441,8 @@ Run each journey at 120×32 and 60×18 in both installed applications. Record th
 | Journey | Python 0.2.8 reference | Rust candidate evidence |
 | --- | --- | --- |
 | Discover and select a session | Bare launch, Agents, `/` search, arrow selection and Enter. Expand a native child with Right. | Empty-to-populated discovery, stable search selection, explicit parentage when recorded, and Escape restoring the original selection. |
-| Follow interrupted work | Agents → Enter → Details and scoped Activity. Open recorded work, then use Back. | Use Enter and `t` to select a turn. Check recorded reason, scoped tools and edits, missing reason handling, a separate PR result and a later successful turn. Return to the same run. A6 and B3. |
-| Read a retained prompt | Enter inspector, choose Prompts, navigate index or dropdown, Enter to read, scroll, page older, and return. | Use `p` and Enter for exact current-grant evidence. Scroll without changing the request, reopen an older prompt, revoke, and confirm denial while navigation remains usable. B2. |
+| Follow interrupted work | Agents → Enter → Details and scoped Activity. Open recorded work, then use Back. | Use Enter and `T` to select a turn. Check recorded reason, scoped tools and edits, missing reason handling, a separate PR result and a later successful turn. Return to the same run. A6 and B3. |
+| Read a retained prompt | Enter inspector, choose Prompts, navigate index or dropdown, Enter to read, scroll, page older, and return. | Use `P` and Enter for exact current-grant evidence. Scroll without changing the request, reopen an older prompt, revoke, and confirm denial while navigation remains usable. B2. |
 | Inspect MCP and linked trace | Keys `3` and `4`, Enter for details, use related evidence links, and return. | Open MCP and Traces, match native operation or span identity, show only scoped granted payload and distinguish missing data. B4 and B5. |
 | Review, decide and hand off | Ctrl+R opens Review, then saved task, Decisions and Handoff. | Use Review and `b` for a task with an exact run link, record an evidence-version note, export Markdown and HTML, and reopen the same decision. B3 and B6. |
 | Triage a request | `w`, immediately select and open a request, then use the verified route and come back. | Read a pending request, persist seen state, verify the same run and route or a clear unavailable status, then return with selection intact. |

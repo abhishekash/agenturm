@@ -1,7 +1,6 @@
 //! Read-only attention snapshots and bounded change notifications.
 
 use crate::{WatchSignalRegistrations, cockpit_workflows::pending_requests_with_seen};
-use agenturm_kernel::ObservationStore;
 use agenturm_store::{Store, WorkspaceLedger};
 use serde::Serialize;
 use std::io::{self, Write};
@@ -242,7 +241,7 @@ fn read_snapshot(db: &Path) -> Result<Snapshot, String> {
 }
 
 fn snapshot_from(
-    store: &impl ObservationStore,
+    store: &impl crate::HistoryReader,
     ledger: &WorkspaceLedger,
 ) -> Result<Snapshot, String> {
     let (requests, partial) = pending_requests_with_seen(store, ledger)?;

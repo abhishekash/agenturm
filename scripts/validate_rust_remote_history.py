@@ -24,6 +24,7 @@ import time
 from urllib.parse import urlencode, urlsplit
 
 
+
 CODEX = "harness.codex"
 PI = "harness.pi"
 OTLP = "otlp.remote"
@@ -104,26 +105,34 @@ def request_get(endpoint, token, path, binding=None):
 
 
 def assert_seen_in_cockpit(command, drop, env, root):
+    from validate_rust_private_eval_details import TerminalCells
+
     master, slave = pty.openpty()
     fcntl.ioctl(slave, termios.TIOCSWINSZ, struct.pack("HHHH", 18, 60, 0, 0))
     original = termios.tcgetattr(slave)
     process = subprocess.Popen(command, cwd=root, env=env, preexec_fn=drop,
                                stdin=slave, stdout=slave, stderr=slave)
 
+    terminal = TerminalCells(60, 18)
+    raw = bytearray()
+
     def screen_until(needle):
-        screen = bytearray()
         deadline = time.monotonic() + 8
         while time.monotonic() < deadline:
             if select.select([master], [], [], 0.1)[0]:
-                screen.extend(os.read(master, 8192))
-            assert PROMPT.encode() not in screen
-            if needle in screen:
+                chunk = os.read(master, 8192)
+                raw.extend(chunk)
+                terminal.feed(chunk)
+            assert PROMPT.encode() not in raw
+            if needle.decode() in terminal.contents():
                 return
-            assert process.poll() is None, screen
-        raise AssertionError((needle, screen))
+            assert process.poll() is None, terminal.contents()
+        raise AssertionError((needle, terminal.contents()))
 
     try:
-        screen_until(SESSION.encode())
+        screen_until(b"Agenturm command center")
+        os.write(master, b"/" + SESSION.encode() + b"\r")
+        screen_until((CODEX + " / " + SESSION).encode())
         os.write(master, b"w")
         screen_until(b"Pending")
         os.write(master, b"s")

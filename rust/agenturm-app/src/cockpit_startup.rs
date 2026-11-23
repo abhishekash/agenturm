@@ -32,7 +32,10 @@ impl CockpitStartup {
             .requests
             .as_ref()
             .ok_or("Cockpit collector stopped")?
-            .send(CollectorRequest::Prompt { command, reply })
+            .send(CollectorRequest::Prompt {
+                command: Box::new(command),
+                reply,
+            })
             .map_err(|_| "Cockpit collector stopped")?;
         result.recv().map_err(|_| "Cockpit collector stopped")?
     }
@@ -54,7 +57,7 @@ impl CockpitStartup {
 
 enum CollectorRequest {
     Prompt {
-        command: WorkCommand,
+        command: Box<WorkCommand>,
         reply: mpsc::SyncSender<Result<WorkResult, String>>,
     },
     Trace {
@@ -96,7 +99,7 @@ impl ActiveCollector {
                             let result = super::cockpit_workflows::execute_prompt(
                                 &collector.database,
                                 Some(&collector.store),
-                                command,
+                                *command,
                             );
                             let _ = reply.send(result);
                         }

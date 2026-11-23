@@ -317,6 +317,10 @@ impl ObservationStore for RemoteStore {
 }
 
 impl HistoryReader for RemoteStore {
+    fn workspace_history_identity(&self) -> Option<String> {
+        Some(self.identity.clone())
+    }
+
     fn query_selected_evals(
         &self,
         source: &ExtensionId,

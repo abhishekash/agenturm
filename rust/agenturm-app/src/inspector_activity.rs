@@ -40,8 +40,11 @@ pub(super) fn overview_page(snapshot: Snapshot) -> HistoryPage {
         }
     }
     HistoryPage {
+        history_identity: None,
         operation_details: operation_details(&snapshot),
         private_telemetry_history: None,
+        operation_tables: Default::default(),
+        evidence_tables: Default::default(),
         snapshot,
         turns,
         initial_pane: None,
@@ -137,8 +140,11 @@ pub(super) fn turn_page(mut snapshot: Snapshot, turn: &RecordedTurn) -> HistoryP
         rows,
     );
     HistoryPage {
+        history_identity: None,
         operation_details: operation_details(&snapshot),
         private_telemetry_history: None,
+        operation_tables: Default::default(),
+        evidence_tables: Default::default(),
         snapshot,
         turns: Vec::new(),
         initial_pane: Some(pane_id),

@@ -1,18 +1,25 @@
 use agenturm_kernel::{
     ExtensionId, MetricRow, Observation, ObservationKind, ObservationScope, PaneModel, Snapshot,
-    TraceProgress, TraceSpan, format_credits, format_reported_cost,
+    SpanTokenUsage, TraceProgress, TraceSpan, format_credits, format_reported_cost,
 };
+use agenturm_ui::{EvidenceTable, EvidenceTables, OperationRow, OperationTables};
+
+mod table;
 use std::collections::{BTreeMap, BTreeSet};
 
 pub(super) struct SessionPaneIds {
     pub(super) overview: ExtensionId,
     pub(super) activity: ExtensionId,
+    pub(super) tables: OperationTables,
+    pub(super) evidence: EvidenceTables,
     pub(super) review: ExtensionId,
     pub(super) usage: ExtensionId,
 }
 
 pub(super) struct WorkspacePaneIds {
     pub(super) activity: ExtensionId,
+    pub(super) tables: OperationTables,
+    pub(super) evidence: EvidenceTables,
     pub(super) mcp: ExtensionId,
     pub(super) findings: ExtensionId,
     pub(super) operations: ExtensionId,
@@ -30,7 +37,7 @@ pub(super) fn add_session_trace_pane(
     snapshot: &mut Snapshot,
     source_id: &str,
     session_id: &str,
-) -> ExtensionId {
+) -> (ExtensionId, EvidenceTable) {
     let own_trace_source = source_id.starts_with("otlp.");
     let evidence: Vec<_> = snapshot
         .observations
@@ -39,6 +46,7 @@ pub(super) fn add_session_trace_pane(
             let target = match &row.kind {
                 ObservationKind::TraceSpan(span) => span.target_source_id.as_deref(),
                 ObservationKind::TraceProgress(progress) => progress.target_source_id.as_deref(),
+                ObservationKind::SpanTokenUsage(usage) => usage.target_source_id.as_deref(),
                 _ => return false,
             };
             row.identity.session_id.as_deref() == Some(session_id)
@@ -50,15 +58,23 @@ pub(super) fn add_session_trace_pane(
         })
         .collect();
     let mut rows = vec![metric("Source", source_id), metric("Session", session_id)];
+    let (trace_rows, mut table) = trace_presentation(&evidence, ViewScope::Workspace);
+    table.context = rows.clone();
+    if !own_trace_source {
+        table.spec.empty = "No trace evidence explicitly linked to this session.";
+    }
     rows.extend(rows_or_empty(
-        trace_rows(&evidence, ViewScope::Workspace),
+        trace_rows,
         if own_trace_source {
             "No trace evidence recorded for this session"
         } else {
             "No trace evidence explicitly linked to this session"
         },
     ));
-    insert_pane(snapshot, "app.session-traces", "Traces", rows)
+    (
+        insert_pane(snapshot, "app.session-traces", "Traces", rows),
+        table,
+    )
 }
 
 pub(super) fn add_workspace_panes(snapshot: &mut Snapshot) -> WorkspacePaneIds {
@@ -72,10 +88,8 @@ pub(super) fn add_workspace_panes(snapshot: &mut Snapshot) -> WorkspacePaneIds {
             .collect(),
         "No recorded activity on this page",
     );
-    let mcp = rows_or_empty(
-        mcp_rows(&evidence, scope),
-        "No recorded MCP tool observations on this page",
-    );
+    let (mcp, calls) = mcp_rows(&evidence, scope);
+    let mcp = rows_or_empty(mcp, "No recorded MCP tool observations on this page");
     let findings = rows_or_empty(
         evidence
             .iter()
@@ -84,27 +98,40 @@ pub(super) fn add_workspace_panes(snapshot: &mut Snapshot) -> WorkspacePaneIds {
             .collect(),
         "No recorded diagnostics on this page",
     );
-    let operations = rows_or_empty(
-        operation_rows(&evidence, scope),
-        "No recorded operation identities on this page",
-    );
+    let (operations, groups) = operation_rows(&evidence, scope);
+    let operations = rows_or_empty(operations, "No recorded operation identities on this page");
     let usage = usage_rows(&evidence, scope);
-    let traces = rows_or_empty(
-        trace_rows(&evidence, scope),
-        "No trace evidence on this page",
+    let (traces, trace_table) = trace_presentation(&evidence, scope);
+    let traces = rows_or_empty(traces, "No trace evidence on this page");
+    let activity_table = table::activity(&evidence);
+    let findings_table = table::findings(&evidence);
+    let usage_table = table::usage(&evidence);
+    let mcp = insert_pane(snapshot, "app.workspace-mcp", "MCP", mcp);
+    let operations = insert_pane(
+        snapshot,
+        "app.workspace-operations",
+        "Operations",
+        operations,
     );
+    let activity = insert_pane(snapshot, "app.workspace-activity", "Activity", activity);
+    let findings = insert_pane(snapshot, "app.workspace-findings", "Findings", findings);
+    let usage = insert_pane(snapshot, "app.workspace-usage", "Usage", usage);
+    let traces = insert_pane(snapshot, "app.workspace-traces", "Traces", traces);
     WorkspacePaneIds {
-        activity: insert_pane(snapshot, "app.workspace-activity", "Activity", activity),
-        mcp: insert_pane(snapshot, "app.workspace-mcp", "MCP", mcp),
-        findings: insert_pane(snapshot, "app.workspace-findings", "Findings", findings),
-        operations: insert_pane(
-            snapshot,
-            "app.workspace-operations",
-            "Operations",
-            operations,
-        ),
-        usage: insert_pane(snapshot, "app.workspace-usage", "Usage", usage),
-        traces: insert_pane(snapshot, "app.workspace-traces", "Traces", traces),
+        tables: [(mcp.clone(), calls), (operations.clone(), groups)].into(),
+        evidence: [
+            (activity.clone(), activity_table),
+            (findings.clone(), findings_table),
+            (usage.clone(), usage_table),
+            (traces.clone(), trace_table),
+        ]
+        .into(),
+        activity,
+        mcp,
+        findings,
+        operations,
+        usage,
+        traces,
     }
 }
 
@@ -168,29 +195,45 @@ pub(super) fn add_session_panes(
         "No observations for this session on this page",
     );
     let review = review_rows(&evidence, &turn_endings);
-    let mcp = mcp_rows(&evidence, ViewScope::Session);
-    let operations = operation_rows(&evidence, ViewScope::Session);
+    let (mcp, calls) = mcp_rows(&evidence, ViewScope::Session);
+    let mut tables = OperationTables::new();
+    let (operations, groups) = operation_rows(&evidence, ViewScope::Session);
     let usage = usage_rows(&evidence, ViewScope::Session);
-    let traces = trace_rows(&evidence, ViewScope::Session);
+    let (traces, trace_table) = trace_presentation(&evidence, ViewScope::Session);
+    let mut activity_table = table::activity(&evidence);
+    activity_table.spec.empty = "No observations for this session on this page.";
+    let usage_table = table::usage(&evidence);
     if !mcp.is_empty() {
-        insert_pane(snapshot, "app.session-mcp", "MCP", mcp);
+        tables.insert(insert_pane(snapshot, "app.session-mcp", "MCP", mcp), calls);
     }
     if !operations.is_empty() {
-        insert_pane(snapshot, "app.session-operations", "Operations", operations);
+        tables.insert(
+            insert_pane(snapshot, "app.session-operations", "Operations", operations),
+            groups,
+        );
     }
+    let activity = insert_pane(snapshot, "app.session-activity", "Activity", activity);
+    let usage = insert_pane(snapshot, "app.session-usage", "Usage", usage);
+    let mut evidence = EvidenceTables::from([
+        (activity.clone(), activity_table),
+        (usage.clone(), usage_table),
+    ]);
     if !traces.is_empty() {
-        insert_pane(snapshot, "app.session-traces", "Traces", traces);
+        let id = insert_pane(snapshot, "app.session-traces", "Traces", traces);
+        evidence.insert(id, trace_table);
     }
     SessionPaneIds {
+        tables,
+        evidence,
         overview: insert_pane(
             snapshot,
             "app.session-overview",
             "Session overview",
             overview,
         ),
-        activity: insert_pane(snapshot, "app.session-activity", "Activity", activity),
+        activity,
         review: insert_pane(snapshot, "app.session-review", "Review", review),
-        usage: insert_pane(snapshot, "app.session-usage", "Usage", usage),
+        usage,
     }
 }
 
@@ -309,7 +352,7 @@ fn review_rows(evidence: &[&Observation], turn_endings: &TurnEndings<'_>) -> Vec
     )
 }
 
-fn mcp_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
+fn mcp_rows(evidence: &[&Observation], scope: ViewScope) -> (Vec<MetricRow>, Vec<OperationRow>) {
     let detailed: BTreeSet<_> = evidence
         .iter()
         .filter_map(|row| match &row.kind {
@@ -327,8 +370,8 @@ fn mcp_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
             }
             _ => false,
         })
-        .map(|row| activity_row(row, scope))
-        .collect()
+        .map(|row| (activity_row(row, scope), operation_summary(row, &[row])))
+        .unzip()
 }
 
 type OperationOccurrence<'a> = (
@@ -380,10 +423,14 @@ type ProgressScope<'a> = (Option<&'a str>, Option<&'a str>, Option<&'a str>);
 #[derive(Default)]
 struct TraceEvidence<'a> {
     spans: Vec<(&'a Observation, &'a TraceSpan)>,
+    usage: Vec<(&'a Observation, &'a SpanTokenUsage)>,
     progress: BTreeMap<ProgressScope<'a>, (&'a Observation, &'a TraceProgress)>,
 }
 
-fn trace_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
+fn trace_presentation(
+    evidence: &[&Observation],
+    scope: ViewScope,
+) -> (Vec<MetricRow>, EvidenceTable) {
     let mut traces = BTreeMap::<_, TraceEvidence<'_>>::new();
     for &row in evidence {
         let Some(session) = row.identity.session_id.as_deref() else {
@@ -396,6 +443,11 @@ fn trace_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
                 .or_default()
                 .spans
                 .push((row, span)),
+            ObservationKind::SpanTokenUsage(usage) => traces
+                .entry((source, session, usage.span.trace_id.as_str()))
+                .or_default()
+                .usage
+                .push((row, usage)),
             ObservationKind::TraceProgress(progress) => {
                 let owner = (
                     progress.target_source_id.as_deref(),
@@ -415,7 +467,10 @@ fn trace_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
             _ => {}
         }
     }
-    let mut groups: Vec<_> = traces.into_iter().collect();
+    let mut groups: Vec<_> = traces
+        .into_iter()
+        .filter(|(_, evidence)| !evidence.spans.is_empty() || !evidence.progress.is_empty())
+        .collect();
     for (_, evidence) in &mut groups {
         evidence
             .spans
@@ -439,7 +494,9 @@ fn trace_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
     });
 
     let mut rows = Vec::new();
+    let mut trace_rows = Vec::with_capacity(groups.len());
     for ((source, session, trace), evidence) in groups {
+        trace_rows.push(table::trace(source, session, trace, &evidence));
         let label = match scope {
             ViewScope::Workspace => format!("{trace} · {source} · session {session}"),
             ViewScope::Session => trace.to_owned(),
@@ -470,7 +527,7 @@ fn trace_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
             ));
         }
     }
-    rows
+    (rows, table::TRACES.table(trace_rows))
 }
 
 fn progress_description(progress: &TraceProgress) -> String {
@@ -486,7 +543,10 @@ fn progress_description(progress: &TraceProgress) -> String {
     value
 }
 
-fn operation_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
+fn operation_rows(
+    evidence: &[&Observation],
+    scope: ViewScope,
+) -> (Vec<MetricRow>, Vec<OperationRow>) {
     let mut operations: BTreeMap<_, Vec<_>> = BTreeMap::new();
     for row in evidence {
         if let (Some(session), Some(operation)) = (
@@ -530,7 +590,14 @@ fn operation_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow>
     }
     groups.sort_unstable_by_key(|(_, _, _, _, rows)| observation_order(rows[0]));
 
-    groups
+    let summaries = groups
+        .iter()
+        .map(|(_, _, _, _, rows)| {
+            let latest = rows.last().expect("operation group has observations");
+            operation_summary(latest, rows)
+        })
+        .collect();
+    let metrics = groups
         .into_iter()
         .flat_map(|(source, session, worker, operation, rows)| {
             let mut label = worker.map_or_else(
@@ -545,7 +612,75 @@ fn operation_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow>
                 metric(label, with_time(row, with_turn(row, value)))
             }))
         })
-        .collect()
+        .collect();
+    (metrics, summaries)
+}
+
+fn operation_summary(row: &Observation, group: &[&Observation]) -> OperationRow {
+    let mut result = None;
+    let mut name = None;
+    let mut server = None;
+    let mut duration = None;
+    let mut details = vec![metric("Source", row.harness_id.as_str())];
+    for (label, value) in [
+        ("Session", &row.identity.session_id),
+        ("Worker", &row.identity.worker_id),
+        ("Operation ID", &row.identity.operation_id),
+    ] {
+        if let Some(value) = value {
+            details.push(metric(label, value));
+        }
+    }
+    for turn in group
+        .iter()
+        .filter_map(|r| r.identity.turn_id.as_deref())
+        .collect::<BTreeSet<_>>()
+    {
+        details.push(metric("Turn", turn));
+    }
+    let mut mcp_event = None;
+    for observation in group {
+        match &observation.kind {
+            ObservationKind::McpCall {
+                server: host,
+                tool,
+                method,
+                duration_ns,
+                result: state,
+            } => {
+                mcp_event = Some((
+                    observation.harness_id.as_str().to_owned(),
+                    observation.event_id.clone(),
+                    observation.revision,
+                ));
+                name = Some(tool.as_deref().unwrap_or(method.as_str()));
+                server = host.as_deref();
+                duration = duration_ns.map(duration_millis);
+                result = Some(state.as_str());
+            }
+            ObservationKind::Tool {
+                category,
+                result: state,
+            } => {
+                name.get_or_insert(category.as_str());
+                result = Some(state.as_str());
+            }
+            _ => {}
+        }
+        let (label, description) = describe_observation(&observation.kind);
+        details.push(metric(label, with_time(observation, description)));
+    }
+    OperationRow {
+        time: timestamp(row),
+        tool: name
+            .unwrap_or_else(|| describe_observation(&row.kind).0)
+            .into(),
+        server: server.map(str::to_owned),
+        result: result.map(str::to_owned),
+        latency: duration,
+        evidence: details,
+        mcp_event,
+    }
 }
 
 fn activity_row(row: &Observation, scope: ViewScope) -> MetricRow {
@@ -809,7 +944,7 @@ mod tests {
         };
         let mut other_source = coarse.clone();
         other_source.harness_id = ExtensionId::parse("harness.pi").unwrap();
-        let rows = mcp_rows(
+        let (rows, calls) = mcp_rows(
             &[
                 &coarse,
                 &other_source,
@@ -819,6 +954,8 @@ mod tests {
             ViewScope::Workspace,
         );
         assert_eq!(rows.len(), 3);
+        assert_eq!(calls[1].tool, "search_code");
+        assert_eq!(calls[1].server.as_deref(), Some("github"));
         assert_eq!(rows[0].label, "Tool");
         assert_eq!(rows[1].label, "MCP call");
         assert!(rows[1].value.contains("tools/call · failed"));
@@ -863,7 +1000,7 @@ mod tests {
         let old = progress(1, "worker-one", "first-stage", Some(0));
         let latest = progress(3, "worker-one", "new-stage", None);
         let sibling = progress(2, "worker-two", "sibling-stage", Some(0));
-        let rows = trace_rows(&[&latest, &old, &sibling], ViewScope::Workspace);
+        let (rows, _) = trace_presentation(&[&latest, &old, &sibling], ViewScope::Workspace);
         assert_eq!(rows.len(), 3);
         assert_eq!(rows[0].label, "Trace");
         assert_eq!(rows[1].label, "Latest progress");
@@ -876,6 +1013,59 @@ mod tests {
                 .value
                 .contains("first-stage · 0%")
         );
+    }
+
+    #[test]
+    fn trace_table_reports_only_an_exact_root_spans_recorded_tokens() {
+        use agenturm_kernel::{TraceSpanIdentity, TraceStatus};
+        let trace_id = "11".repeat(16);
+        let span_id = "22".repeat(8);
+        let root = observation(
+            1,
+            ObservationKind::TraceSpan(TraceSpan {
+                trace_id: trace_id.clone(),
+                span_id: span_id.clone(),
+                parent_span_id: None,
+                target_source_id: None,
+                started_at_unix_ns: 1,
+                status: TraceStatus::Ok,
+            }),
+            Some("root-turn"),
+        );
+        let usage = |sequence, turn, input| {
+            observation(
+                sequence,
+                ObservationKind::SpanTokenUsage(SpanTokenUsage {
+                    span: TraceSpanIdentity {
+                        trace_id: trace_id.clone(),
+                        span_id: span_id.clone(),
+                    },
+                    target_source_id: None,
+                    input_tokens: Some(input),
+                    output_tokens: None,
+                    cache_read_input_tokens: None,
+                    cache_write_input_tokens: None,
+                    reasoning_output_tokens: None,
+                    total_tokens: None,
+                }),
+                turn,
+            )
+        };
+        let different_turn = usage(2, Some("sibling-turn"), 99);
+        let matching = usage(3, Some("root-turn"), 0);
+        let mut different_source = matching.clone();
+        different_source.harness_id = ExtensionId::parse("otlp.sibling").unwrap();
+        let (_, table) = trace_presentation(
+            &[&root, &matching, &different_turn, &different_source],
+            ViewScope::Workspace,
+        );
+        assert_eq!(table.rows.len(), 1);
+        assert_eq!(table.rows[0].cells, ["ok", &trace_id, "1", "0 / —"]);
+        let (_, table) = trace_presentation(&[&root, &different_turn], ViewScope::Workspace);
+        assert_eq!(table.rows[0].cells[3], "Unavailable");
+        let duplicate = usage(4, Some("root-turn"), 9999);
+        let (_, table) = trace_presentation(&[&root, &matching, &duplicate], ViewScope::Workspace);
+        assert_eq!(table.rows[0].cells[3], "Unavailable");
     }
 
     fn tool(sequence: u64, category: &str, result: &str, turn: Option<&str>) -> Observation {
@@ -1169,6 +1359,25 @@ mod tests {
                 "call-1 · harness.pi · session session-a",
                 "call-1 · harness.codex · session session-b",
             ]
+        );
+        let table = &panes.evidence[&panes.usage];
+        assert_eq!(
+            table
+                .rows
+                .iter()
+                .map(|row| row.cells[3].as_str())
+                .collect::<Vec<_>>(),
+            ["tokens", "credits", "USD", "EUR"]
+        );
+        assert_eq!(table.rows[0].cells[2], "input 0");
+        assert_eq!(table.rows[2].cells[2], "0 USD");
+        let diagnostic = &panes.evidence[&panes.findings].rows[0];
+        assert_eq!(&diagnostic.cells[..2], ["warning", "possible_source_gap"]);
+        assert!(
+            diagnostic
+                .details
+                .iter()
+                .any(|row| row == &metric("Event", "event-4"))
         );
         let usage = &snapshot.panes[&panes.usage].rows;
         assert_eq!(usage.len(), 4);

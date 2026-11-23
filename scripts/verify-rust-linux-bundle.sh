@@ -131,7 +131,7 @@ inspect_history() {
         sleep 1
         printf g
         sleep 0.3
-        printf t
+        printf T
         sleep 0.3
         printf '\033[B'
         sleep 0.3
@@ -233,45 +233,32 @@ verify_default_cockpit() {
     local cockpit_db="$cockpit_home/.local/state/agenturm-rust/history.sqlite"
     local cockpit_config="$state/cockpit-sources.json"
     local transcript="$state/cockpit.txt"
-    local keyboard="$state/cockpit-keys" keyboard_fd status=0
+    local helper
+    helper="$(dirname -- "${BASH_SOURCE[0]}")/validate_rust_default_cockpit.py"
     local -a cockpit_isolated=(env -i HOME="$cockpit_home" PATH="$empty_path" "$agenturm")
     mkdir -p -- "$cockpit_codex" "$cockpit_pi"
-    mkfifo -- "$keyboard"
-    : > "$transcript"
-    exec {keyboard_fd}<>"$keyboard"
-    AGENTURM_TEST_HOME="$cockpit_home" AGENTURM_TEST_PATH="$empty_path" AGENTURM_TEST_BIN="$agenturm" \
-        timeout --foreground --kill-after=5s 70s script -efq -c '
-            stty rows 18 cols 60
-            exec env -i HOME="$AGENTURM_TEST_HOME" PATH="$AGENTURM_TEST_PATH" TERM=xterm-256color "$AGENTURM_TEST_BIN"
-        ' "$transcript" < "$keyboard" > /dev/null &
-    watch_pid=$!
-    if ! wait_for_live_check grep -aFq 'Agenturm  /  Agents' "$transcript" ||
-        ! wait_for_live_check query_empty_history "$cockpit_db"; then
-        echo "Bare cockpit did not open the empty Agents workspace" >&2
+    if ! python3 "$helper" --agenturm "$agenturm" --home "$cockpit_home" \
+        --empty-path "$empty_path" --history "$cockpit_db" --transcript "$transcript" \
+        --codex "$codex/session.jsonl" "$cockpit_codex" --pi "$pi/session.jsonl" "$cockpit_pi"; then
+        echo "Bare cockpit PTY verification failed" >&2
         return 1
     fi
-
-    publish_fixture_files "$cockpit_codex" "$cockpit_pi"
-    if ! wait_for_live_check query_fixture_usage "$cockpit_db"; then
-        echo "Bare cockpit did not collect both newly arrived sessions" >&2
+    if ! "${cockpit_isolated[@]}" discover --sessions-per-harness 1 > "$cockpit_config"; then
+        echo "Bare cockpit fixtures were not discoverable after quit" >&2
         return 1
     fi
-    printf r >&"$keyboard_fd"
-    wait_for_live_check grep -aFq 'bundle-codex-session' "$transcript"
-    wait_for_live_check grep -aFq 'bundle-pi-session' "$transcript"
-    printf q >&"$keyboard_fd"
-    wait "$watch_pid" || status=$?
-    watch_pid=
-    exec {keyboard_fd}>&-
-    if ((status != 0)); then
-        echo "Bare cockpit did not quit cleanly" >&2
+    local replay="$state/cockpit-replay.log"
+    if ! "${cockpit_isolated[@]}" collect --config "$cockpit_config" --db "$cockpit_db" > "$replay" 2>&1 ||
+        ! expect_replay "$replay"; then
+        echo "Bare cockpit history did not reopen with both source cursors acknowledged" >&2
+        cat -- "$replay" >&2
         return 1
     fi
-
-    "${cockpit_isolated[@]}" discover --sessions-per-harness 1 > "$cockpit_config"
-    "${cockpit_isolated[@]}" collect --config "$cockpit_config" --db "$cockpit_db" > "$state/cockpit-replay.log"
-    expect_replay "$state/cockpit-replay.log"
-    query_fixture_usage "$cockpit_db"
+    if ! query_fixture_usage "$cockpit_db"; then
+        echo "Bare cockpit history lost or duplicated fixture usage after reopen" >&2
+        "${cockpit_isolated[@]}" query --db "$cockpit_db" >&2 || true
+        return 1
+    fi
     echo "Verified bare cockpit opened empty, collected both sessions, and released the writer on quit"
 }
 verify_default_cockpit

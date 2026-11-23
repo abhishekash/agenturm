@@ -680,7 +680,7 @@ pub fn execute(options: &BrokerOptions) -> Result<ExitCode, BrokerExecutionError
             agenturm_ui::run_workspace(move |request| {
                 if matches!(&request, WorkspaceRequest::Work(command) if cockpit_workflows::is_prompt_command(command))
                     && let WorkspaceRequest::Work(command) = request {
-                    return execute_private_cockpit(&store, command).map(WorkspaceResponse::Work);
+                    return execute_private_cockpit(&store, &workspace, command).map(WorkspaceResponse::Work);
                 }
                 workspace_response(&mut app, &store, &workspace, request, || None)
             }).map_err(|error| error.to_string())?;
@@ -731,11 +731,15 @@ fn trace_commit(
 
 fn execute_private_cockpit(
     store: &NativeStore,
+    workspace: &Path,
     command: agenturm_ui::WorkCommand,
 ) -> Result<agenturm_ui::WorkResult, String> {
     use agenturm_storage_service::{PrivateEvidenceKind, PrivateEvidenceSelection};
     use agenturm_ui::{OperationDetailKind, PromptEntry, WorkCommand, WorkResult};
     match command {
+        command @ (WorkCommand::Investigate(_) | WorkCommand::RevealInvestigation { .. }) => {
+            investigate_cli::cockpit::broker(command, store, workspace)
+        }
         WorkCommand::Prompts(owner) => {
             let source = ExtensionId::parse(&owner.source).map_err(|error| error.to_string())?;
             let prompts = store

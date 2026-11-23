@@ -6,26 +6,36 @@
 
 #![forbid(unsafe_code)]
 
+mod evidence_view;
+mod keymap;
 mod live_receiver;
+mod loaded_view;
+mod operation_table;
 mod workbench;
 mod workspace;
+pub use evidence_view::{EvidenceRow, EvidenceSpec, EvidenceTable, EvidenceTables};
+pub use operation_table::{OperationRow, OperationTables};
 
 pub use live_receiver::{LiveOwner, LivePage, LiveRow, run_live_receiver};
+pub use loaded_view::LoadedView;
 
 pub use workbench::evaluation::{
     EvaluationDetailEntry, EvaluationPage, EvaluationRead, EvaluationRow, EvaluationView,
     TraceEvaluationEntry,
 };
+pub use workbench::investigation::{
+    InvestigationKind, InvestigationMatch, InvestigationPage, InvestigationRead,
+};
 
 pub use workbench::{
     HandoffEntry, OperationDetailEntry, OperationDetailKind, PromptDelivery, PromptEntry,
-    RequestEntry, ReviewNoteEntry, TaskEntry, TelemetrySpanEntry, WorkAnchor, WorkCommand,
-    WorkResult,
+    RequestEntry, RequestProof, ReviewNoteEntry, TaskEntry, TelemetrySpanEntry, WorkAnchor,
+    WorkCommand, WorkResult,
 };
 
 pub use workspace::{
-    HistorySelection, RecordedSession, ReviewVersion, SessionCatalog, SessionCursor, SessionView,
-    WorkspaceRequest, WorkspaceResponse, WorkspaceView, run_workspace,
+    HistorySelection, ProjectOrigin, RecordedSession, ReviewVersion, SessionCatalog, SessionCursor,
+    SessionView, WorkspaceRequest, WorkspaceResponse, WorkspaceView, run_workspace,
 };
 
 use agenturm_kernel::ReadSnapshot;
@@ -53,6 +63,8 @@ struct Pane {
 #[derive(Clone, Debug, Default, Eq, PartialEq)]
 pub struct UiModel {
     panes: Vec<Pane>,
+    evidence: EvidenceTables,
+    evidence_inspection: Option<evidence_view::Inspection>,
     selected: usize,
     scroll: usize,
     scroll_limit: usize,
@@ -123,6 +135,8 @@ impl UiModel {
         }
         Self {
             panes,
+            evidence: EvidenceTables::new(),
+            evidence_inspection: None,
             selected: 0,
             scroll: 0,
             scroll_limit: 0,
@@ -150,6 +164,7 @@ impl UiModel {
     fn select_title(&mut self, title: &str) {
         if let Some(index) = self.panes.iter().position(|pane| pane.title == title) {
             self.selected = index;
+            self.evidence_inspection = None;
             self.scroll = 0;
             self.update_scroll_limit();
         }
@@ -158,6 +173,7 @@ impl UiModel {
     pub fn select_next(&mut self) {
         if !self.panes.is_empty() {
             self.selected = (self.selected + 1) % self.panes.len();
+            self.evidence_inspection = None;
             self.scroll = 0;
             self.update_scroll_limit();
         }
@@ -166,30 +182,77 @@ impl UiModel {
     pub fn select_previous(&mut self) {
         if !self.panes.is_empty() {
             self.selected = self.selected.checked_sub(1).unwrap_or(self.panes.len() - 1);
+            self.evidence_inspection = None;
             self.scroll = 0;
             self.update_scroll_limit();
         }
     }
 
     pub fn set_viewport(&mut self, width: u16, height: u16) {
+        let resized = (width, height) != (self.viewport_width, self.viewport_height);
         self.viewport_width = width;
         self.viewport_height = height;
         self.update_scroll_limit();
+        if resized && self.evidence_inspection.is_some() {
+            let (_, limit) = self.evidence_inspection_bounds();
+            if let Some(inspection) = &mut self.evidence_inspection {
+                inspection.clamp(limit);
+            }
+        }
+    }
+
+    fn selected_evidence(&self) -> Option<&EvidenceTable> {
+        let id = self.panes.get(self.selected)?.id.as_ref()?;
+        self.evidence.get(id)
+    }
+
+    /// Routes input to the active metadata inspector before regular history keys.
+    fn evidence_key(&mut self, key: KeyCode) -> bool {
+        if self.help {
+            return false;
+        }
+        if self.evidence_inspection.is_none() {
+            if key == KeyCode::Enter {
+                self.evidence_inspection = self
+                    .selected_evidence()
+                    .and_then(|table| table.open_inspection(self.scroll));
+            }
+            return self.evidence_inspection.is_some();
+        }
+        match key {
+            KeyCode::Esc => self.evidence_inspection = None,
+            KeyCode::Char('q' | '?') | KeyCode::F(1) => return false,
+            _ => {
+                let (page, limit) = self.evidence_inspection_bounds();
+                if let Some(inspection) = &mut self.evidence_inspection {
+                    inspection.key(key, page, limit);
+                }
+            }
+        }
+        true
+    }
+
+    fn evidence_inspection_bounds(&self) -> (usize, usize) {
+        let page = usize::from(self.viewport_height.saturating_sub(6).max(1));
+        let limit = self.selected_evidence().map_or(0, |table| {
+            table.inspection_limit(self.scroll, self.viewport_width, page)
+        });
+        (page, limit)
     }
 
     fn update_scroll_limit(&mut self) {
+        if let Some(table) = self.selected_evidence() {
+            self.scroll_limit = table.rows.len().saturating_sub(1);
+            self.scroll = self.scroll.min(self.scroll_limit);
+            return;
+        }
         let Some(pane) = self.panes.get(self.selected) else {
             self.scroll = 0;
             self.scroll_limit = 0;
             return;
         };
-        let visible_lines = usize::from(self.viewport_height.saturating_sub(7).max(1));
-        let pane_width = if self.viewport_width < 64 {
-            self.viewport_width
-        } else {
-            self.viewport_width.saturating_sub(22)
-        };
-        self.scroll_limit = pane_lines(pane, pane_width.saturating_sub(2))
+        let visible_lines = usize::from(self.viewport_height.saturating_sub(8).max(1));
+        self.scroll_limit = pane_lines(pane, self.viewport_width.saturating_sub(2))
             .len()
             .saturating_sub(visible_lines)
             .min(usize::from(u16::MAX));
@@ -204,9 +267,26 @@ impl UiModel {
         self.scroll = self.scroll.saturating_sub(1);
     }
 
+    fn select_metrics(&mut self) {
+        self.selected = self
+            .panes
+            .iter()
+            .position(|pane| pane.id.is_none() && pane.title == "Metrics")
+            .unwrap_or_else(|| {
+                self.panes.push(Pane {
+                    id: None,
+                    title: "Metrics".into(),
+                    rows: Vec::new(),
+                });
+                self.panes.len() - 1
+            });
+        self.scroll = 0;
+        self.update_scroll_limit();
+    }
+
     /// Applies one key press. Returns true when the user requests exit.
     pub fn handle_key(&mut self, key: KeyCode) -> bool {
-        if matches!(key, KeyCode::F(1) | KeyCode::Char('?')) || (self.help && key == KeyCode::Esc) {
+        if keymap::is_help(key) || (self.help && key == KeyCode::Esc) {
             self.help = !self.help;
             return false;
         }
@@ -255,19 +335,25 @@ pub struct RecordedTurn {
 
 pub struct HistoryPage {
     pub snapshot: Snapshot,
+    pub history_identity: Option<String>,
     pub turns: Vec<RecordedTurn>,
     pub initial_pane: Option<ExtensionId>,
     pub review_pane: Option<ExtensionId>,
     pub operation_details: Vec<OperationDetailEntry>,
     pub private_telemetry_history: Option<String>,
+    pub operation_tables: OperationTables,
+    pub evidence_tables: EvidenceTables,
 }
 
 struct PageView {
+    snapshot_id: ReadSnapshot,
+    history_identity: Option<String>,
     ui: UiModel,
     turns: Vec<RecordedTurn>,
     turn_picker: Option<ListState>,
     review_pane: Option<ExtensionId>,
     operation_details: Vec<OperationDetailEntry>,
+    operation_table: operation_table::Browser,
     operation_picker: Option<(OperationDetailKind, ListState)>,
     telemetry_spans: Vec<TelemetrySpanEntry>,
     evaluation_traces: Vec<TraceEvaluationEntry>,
@@ -306,18 +392,23 @@ impl PageView {
             Vec::new()
         };
         let evaluation_traces = workbench::evaluation::trace_entries(&page.snapshot);
+        let snapshot_id = page.snapshot.history_snapshot_id;
         let mut ui = UiModel::from_snapshot(page.snapshot);
+        ui.evidence = page.evidence_tables;
         if let Some(selected) = selected {
             ui.selected = selected;
         }
         ui.in_turn = in_turn;
         ui.turn_available = !in_turn && !page.turns.is_empty();
         Self {
+            snapshot_id,
+            history_identity: page.history_identity,
             ui,
             turns: page.turns,
             turn_picker: None,
             review_pane: page.review_pane,
             operation_details: page.operation_details,
+            operation_table: operation_table::Browser::new(page.operation_tables),
             operation_picker: None,
             telemetry_spans,
             evaluation_traces,
@@ -341,24 +432,30 @@ pub fn run_with_history(
     mut load_older: impl FnMut(&ObservationPosition) -> io::Result<Option<Snapshot>>,
 ) -> io::Result<()> {
     let initial = HistoryPage {
+        history_identity: None,
         snapshot,
         turns: Vec::new(),
         initial_pane: None,
         review_pane: None,
         operation_details: Vec::new(),
         private_telemetry_history: None,
+        operation_tables: Default::default(),
+        evidence_tables: Default::default(),
     };
     run_with_turn_activity(initial, |_, before| {
         let Some(cursor) = before else {
             return Ok(None);
         };
         Ok(load_older(cursor)?.map(|snapshot| HistoryPage {
+            history_identity: None,
             snapshot,
             turns: Vec::new(),
             initial_pane: None,
             review_pane: None,
             operation_details: Vec::new(),
             private_telemetry_history: None,
+            operation_tables: Default::default(),
+            evidence_tables: Default::default(),
         }))
     })
 }
@@ -393,11 +490,18 @@ pub fn run_with_turn_activity(
             if let Event::Key(key) = event::read()?
                 && key.kind == KeyEventKind::Press
             {
-                if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
+                if keymap::interrupt(key) {
                     break Ok(());
                 }
+                let code = keymap::plain(key).unwrap_or_else(|| {
+                    if keymap::back(key) {
+                        KeyCode::Esc
+                    } else {
+                        KeyCode::Null
+                    }
+                });
                 if let Some(selection) = &mut page.turn_picker {
-                    match key.code {
+                    match code {
                         KeyCode::Char('q') => break Ok(()),
                         KeyCode::Esc => page.turn_picker = None,
                         KeyCode::Down | KeyCode::Char('j') => {
@@ -426,8 +530,11 @@ pub fn run_with_turn_activity(
                     }
                     continue;
                 }
-                match key.code {
-                    KeyCode::Char('[') if !page.ui.help => {
+                if page.ui.evidence_key(code) {
+                    continue;
+                }
+                match code {
+                    keymap::OLDER if !page.ui.help => {
                         if let Some(cursor) = page.ui.older_cursor()
                             && let Some(next) = load_page(active_turn.as_ref(), Some(cursor))?
                         {
@@ -441,12 +548,22 @@ pub fn run_with_turn_activity(
                             newer_pages.push(previous);
                         }
                     }
-                    KeyCode::Char(']') if !page.ui.help => {
+                    keymap::NEWER if !page.ui.help => {
                         if let Some(newer) = newer_pages.pop() {
                             page = newer;
                         }
                     }
-                    KeyCode::Char('t') if page.ui.turn_available && !page.ui.help => {
+                    keymap::LATEST if !page.ui.help => {
+                        if let Some(latest) = load_page(active_turn.as_ref(), None)? {
+                            let mut next = PageView::new(latest, active_turn.is_some());
+                            if let Some(title) = page.ui.selected_title() {
+                                next.ui.select_title(title);
+                            }
+                            page = next;
+                            newer_pages.clear();
+                        }
+                    }
+                    KeyCode::Char('t' | 'T') if page.ui.turn_available && !page.ui.help => {
                         page.turn_picker = Some(ListState::default().with_selected(Some(0)));
                     }
                     KeyCode::Esc if active_turn.is_some() && !page.ui.help => {
@@ -483,6 +600,29 @@ fn draw(
         return;
     }
 
+    if !model.help
+        && turn_picker.is_none()
+        && let Some(table) = model.selected_evidence()
+    {
+        let [head, body, foot] = Layout::vertical([
+            Constraint::Length(2),
+            Constraint::Min(1),
+            Constraint::Length(2),
+        ])
+        .areas(area);
+        frame.render_widget(Block::default().style(surface(CANVAS)), area);
+        evidence_view::header(frame, model, head);
+        let keys = if let Some(inspection) = &model.evidence_inspection {
+            table.draw_expanded(frame, body, model.scroll, inspection);
+            "↑↓ scroll · PgUp/PgDn page · Esc back"
+        } else {
+            table.draw_with_inspector(frame, body, model.scroll, true);
+            "↑↓ select · Enter inspect · ←/→ panes · ? help"
+        };
+        frame.render_widget(Paragraph::new(keys), foot);
+        return;
+    }
+
     let rows = Layout::default()
         .direction(Direction::Vertical)
         .constraints([
@@ -503,7 +643,7 @@ fn draw(
     } else if model.in_turn {
         header.push(Span::raw(" · Esc back"));
     } else if model.turn_available {
-        header.push(Span::raw(" · t Turns"));
+        header.push(Span::raw(" · T Turns"));
     }
     if model.truncated {
         header.push(Span::styled(
@@ -532,16 +672,8 @@ fn draw(
 
     let footer = if picking_turn {
         "↑/↓ select · Enter open · Esc back"
-    } else if model.help {
-        HELP_CLOSE_HINT
-    } else if model.older_cursor.is_some() && has_newer_page {
-        " ←/→ panes · ↑/↓ scroll · [ older · ] newer · ? help · q quit "
-    } else if model.older_cursor.is_some() {
-        " ←/→ panes · ↑/↓ scroll · [ older · ? help · q quit "
-    } else if has_newer_page {
-        " ←/→ panes · ↑/↓ scroll · ] newer · ? help · q quit "
     } else {
-        " ←/→ or Tab switch panes · ↑/↓ scroll · ? help · q quit "
+        history_keys(model, has_newer_page)
     };
     frame.render_widget(
         Paragraph::new(footer)
@@ -549,6 +681,20 @@ fn draw(
             .centered(),
         rows[2],
     );
+}
+
+fn history_keys(model: &UiModel, has_newer_page: bool) -> &'static str {
+    if model.help {
+        HELP_CLOSE_HINT
+    } else if model.older_cursor.is_some() && has_newer_page {
+        " ←/→ panes · ↑/↓ scroll · ] older · [ newer · ? help · q quit "
+    } else if model.older_cursor.is_some() {
+        " ←/→ panes · ↑/↓ scroll · ] older · ? help · q quit "
+    } else if has_newer_page {
+        " ←/→ panes · ↑/↓ scroll · [ newer · ? help · q quit "
+    } else {
+        " ←/→ or Tab switch panes · ↑/↓ scroll · ? help · q quit "
+    }
 }
 
 fn render_turn_picker(
@@ -591,31 +737,29 @@ fn render_turn_picker(
 }
 
 fn render_panes(frame: &mut Frame, model: &UiModel, area: Rect) {
-    if area.width < 64 {
-        render_selected_pane(frame, model, area);
-        return;
-    }
-    let columns = Layout::default()
-        .direction(Direction::Horizontal)
-        .constraints([Constraint::Length(22), Constraint::Min(1)])
-        .split(area);
-    let items = model
-        .panes
-        .iter()
-        .map(|pane| ListItem::new(pane.title.as_str()))
-        .collect::<Vec<_>>();
-    let list = List::new(items)
-        .block(Block::bordered().title("Views"))
-        .highlight_style(
+    let [bar, body] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(area);
+    draw_view_bar(frame, model, bar);
+    render_selected_pane(frame, model, body);
+}
+
+fn draw_view_bar(frame: &mut Frame, model: &UiModel, area: Rect) {
+    // Scroll the strip just enough to keep the active pane visible on a split terminal.
+    let mut tabs = Vec::new();
+    let mut used = 0;
+    for (index, pane) in model.panes.iter().enumerate() {
+        let style = if index == model.selected {
+            selection_style()
+        } else {
             Style::default()
-                .fg(Color::Cyan)
-                .add_modifier(Modifier::BOLD),
-        )
-        .highlight_symbol("› ");
-    let mut state = ListState::default();
-    state.select(Some(model.selected));
-    frame.render_stateful_widget(list, columns[0], &mut state);
-    render_selected_pane(frame, model, columns[1]);
+        };
+        let tab = Span::styled(format!(" {} ", pane.title), style);
+        used += tab.width();
+        tabs.push(tab);
+        while index <= model.selected && used > usize::from(area.width) && tabs.len() > 1 {
+            used -= tabs.remove(0).width();
+        }
+    }
+    frame.render_widget(Paragraph::new(Line::from(tabs)), area);
 }
 
 fn render_selected_pane(frame: &mut Frame, model: &UiModel, area: Rect) {
@@ -623,7 +767,7 @@ fn render_selected_pane(frame: &mut Frame, model: &UiModel, area: Rect) {
     let content_width = area.width.saturating_sub(2);
     frame.render_widget(
         Paragraph::new(pane_lines(pane, content_width))
-            .block(Block::bordered().title(pane.title.as_str()))
+            .block(panel(pane.title.as_str()))
             .scroll((model.scroll as u16, 0)),
         area,
     );
@@ -640,18 +784,67 @@ fn pane_lines(pane: &Pane, width: u16) -> Vec<Line<'static>> {
     let mut output = Vec::new();
     for row in &pane.rows {
         let text = format!("{}  {}", visible_text(&row.label), visible_text(&row.value));
-        for (index, chunk) in wrap_display_width(&text, width).into_iter().enumerate() {
-            if index == 0 {
-                output.push(Line::from(Span::styled(
-                    chunk,
-                    Style::default().fg(Color::Magenta),
-                )));
-            } else {
-                output.push(Line::from(chunk));
-            }
-        }
+        output.extend(wrap_display_width(&text, width).into_iter().map(Line::from));
     }
     output
+}
+
+// Color roles from the Python 0.2.8 Current theme.
+const CANVAS: Color = Color::Rgb(14, 14, 20);
+const SURFACE: Color = Color::Rgb(21, 21, 30);
+const PANEL: Color = Color::Rgb(30, 30, 42);
+const TEXT: Color = Color::Rgb(243, 241, 237);
+const BORDER: Color = Color::Rgb(57, 55, 70);
+const ACCENT: Color = Color::Rgb(255, 189, 105);
+const SECONDARY: Color = Color::Rgb(197, 173, 255);
+
+fn colors() -> bool {
+    static ENABLED: std::sync::LazyLock<bool> =
+        std::sync::LazyLock::new(|| std::env::var_os("NO_COLOR").is_none());
+    *ENABLED
+}
+
+fn surface(background: Color) -> Style {
+    if colors() {
+        Style::default().fg(TEXT).bg(background)
+    } else {
+        Style::default()
+    }
+}
+
+fn heading_style() -> Style {
+    surface(PANEL).add_modifier(Modifier::BOLD)
+}
+
+fn label_style() -> Style {
+    if colors() {
+        Style::default().fg(SECONDARY)
+    } else {
+        Style::default()
+    }
+}
+
+fn selection_style() -> Style {
+    if colors() {
+        Style::default()
+            .fg(ACCENT)
+            .bg(Color::Rgb(48, 41, 30))
+            .add_modifier(Modifier::BOLD)
+    } else {
+        Style::default().add_modifier(Modifier::REVERSED | Modifier::BOLD)
+    }
+}
+
+fn panel<'a>(title: impl Into<Line<'a>>) -> Block<'a> {
+    let block = Block::bordered()
+        .title(title)
+        .style(surface(SURFACE))
+        .title_style(heading_style());
+    if colors() {
+        block.border_style(Style::default().fg(BORDER))
+    } else {
+        block
+    }
 }
 
 fn visible_text(text: &str) -> String {

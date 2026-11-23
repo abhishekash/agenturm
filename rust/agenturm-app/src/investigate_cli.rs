@@ -23,6 +23,8 @@ const MAX_QUERY_BYTES: usize = 4_096;
 const MAX_TOKEN_BYTES: usize = 4_096;
 const MAX_ID_BYTES: usize = 256;
 const MAX_PAGE: usize = 100;
+#[cfg(target_os = "linux")]
+const COCKPIT_PAGE_LIMIT: usize = 30;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct InvestigationOptions {
@@ -46,6 +48,7 @@ struct Search {
     limit: usize,
     failed: bool,
     cursor: Option<SearchCursor>,
+    snapshot_id: Option<ReadSnapshot>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -113,6 +116,32 @@ fn required<'a>(flags: &mut BTreeMap<&str, &'a str>, name: &str) -> Result<&'a s
         .ok_or_else(|| format!("Supply {name}\n{USAGE}"))
 }
 
+fn validate_query(kind: EvidenceKind, query: &str) -> Result<(), String> {
+    if query.trim().is_empty()
+        || query.len() > MAX_QUERY_BYTES
+        || query.chars().any(char::is_control)
+        || (kind != EvidenceKind::Path && !query.chars().any(char::is_alphanumeric))
+        || (kind == EvidenceKind::Path && query.len() > 512)
+    {
+        return Err("Supply a bounded, single-line investigation query".into());
+    }
+    Ok(())
+}
+
+#[cfg(target_os = "linux")]
+fn pinned_snapshot(
+    selected: Option<ReadSnapshot>,
+    before: Option<&ObservationPosition>,
+) -> Result<Option<ReadSnapshot>, String> {
+    if let Some(cursor) = before {
+        if selected.is_some_and(|snapshot| snapshot != cursor.snapshot_id) {
+            return Err("Investigation cursor differs from the selected history snapshot".into());
+        }
+        return Ok(Some(cursor.snapshot_id));
+    }
+    Ok(selected)
+}
+
 pub(super) fn parse(args: &[String], broker: bool) -> Result<InvestigationOptions, String> {
     if let [verb, rest @ ..] = args
         && verb == "failures"
@@ -163,14 +192,7 @@ pub(super) fn parse(args: &[String], broker: bool) -> Result<InvestigationOption
             "command" => EvidenceKind::Command,
             _ => return Err(USAGE.into()),
         };
-        if query.trim().is_empty()
-            || query.len() > MAX_QUERY_BYTES
-            || query.chars().any(char::is_control)
-            || (kind != EvidenceKind::Path && !query.chars().any(char::is_alphanumeric))
-            || (kind == EvidenceKind::Path && query.len() > 512)
-        {
-            return Err("Supply a bounded, single-line investigation query".into());
-        }
+        validate_query(kind, query)?;
         let source_id = ExtensionId::parse(required(&mut options, "--source-id")?)
             .map_err(|_| "Invalid investigation source")?;
         let session_id = required(&mut options, "--session-id")?;
@@ -212,6 +234,7 @@ pub(super) fn parse(args: &[String], broker: bool) -> Result<InvestigationOption
             limit,
             failed,
             cursor,
+            snapshot_id: None,
         })
     };
     if !options.is_empty() {
@@ -224,9 +247,13 @@ impl SourceReference {
     fn valid(&self) -> bool {
         let version_valid = match self.version {
             1 => digest(&self.grant_sha256),
-            2 => {
+            2 | 3 => {
                 self.kind == EvidenceKind::Command
-                    && self.grant_sha256.is_empty()
+                    && (if self.version == 2 {
+                        self.grant_sha256.is_empty()
+                    } else {
+                        digest(&self.grant_sha256)
+                    })
                     && self.position.event_id.starts_with("codex:")
                     && self.position.event_id.ends_with(":tool")
             }
@@ -266,10 +293,12 @@ pub fn execute_investigation(
 }
 
 #[cfg(target_os = "linux")]
-pub(super) use linux::execute_broker;
+pub(super) use linux::{cockpit, execute_broker};
 
 #[cfg(target_os = "linux")]
 mod linux {
+    pub(crate) mod cockpit;
+
     use super::*;
     use agenturm_content::{SourceResolver, VerifiedCommand, VerifiedEdit, VerifiedPrompt};
     use agenturm_kernel::{
@@ -520,6 +549,9 @@ mod linux {
         if !retained {
             return Err(ProofError::Unavailable);
         }
+        store.verify_content_writer().map_err(|_| {
+            ProofError::Failed("Investigation history changed during source proof".into())
+        })?;
         consume().map_err(ProofError::Failed)
     }
 
@@ -584,9 +616,10 @@ mod linux {
         authority: &Authority<'_>,
         scope: &Scope,
         before: Option<ObservationPosition>,
+        selected: Option<ReadSnapshot>,
         limit: usize,
     ) -> Result<ObservationPage, String> {
-        let snapshot_id = before.as_ref().map(|key| key.snapshot_id);
+        let snapshot_id = pinned_snapshot(selected, before.as_ref())?;
         let query = ObservationQuery {
             harness_id: Some(scope.source_id.as_str().into()),
             session_id: Some(scope.session_id.clone()),
@@ -607,12 +640,21 @@ mod linux {
         text.unicode_words().map(str::to_lowercase).collect()
     }
 
-    fn search_page(
+    struct SearchCoverage {
+        snapshot_id: ReadSnapshot,
+        examined: usize,
+        matched: usize,
+        verified: usize,
+        unavailable: usize,
+        next: Option<String>,
+    }
+
+    fn scan_search(
         search: &Search,
         authority: &Authority<'_>,
         history: &str,
-        output: &mut dyn Write,
-    ) -> Result<(), String> {
+        mut visit: impl FnMut(&Observation, &SourceReference, Proven<'_>) -> Result<(), String>,
+    ) -> Result<SearchCoverage, String> {
         let identity = if search.failed {
             hash((2, history, search.kind, &search.scope, &search.query))?
         } else {
@@ -626,7 +668,13 @@ mod linux {
             );
         }
         let before = search.cursor.as_ref().map(|cursor| cursor.before.clone());
-        let page = page(authority, &search.scope, before, search.limit)?;
+        let page = page(
+            authority,
+            &search.scope,
+            before,
+            search.snapshot_id,
+            search.limit,
+        )?;
         let phrase = words(&search.query);
         if search.kind != EvidenceKind::Path && phrase.is_empty() {
             return Err("Phrase queries require a word or number".into());
@@ -656,25 +704,7 @@ mod linux {
                 if !proof.matches(&search.query, &phrase) {
                     return Ok(Some(false));
                 }
-                let bound = SourceReference {
-                    grant_sha256: proof.grant(),
-                    ..target.clone()
-                };
-                let reference = encoded(&bound)?;
-                let mut record = json!({
-                    "type": "match", "kind": target.kind, "event_id": row.event_id, "scope": target.scope,
-                    "revision": row.revision, "observed_at_unix_ns": row.observed_at_unix_ns,
-                    "source_reference": reference
-                });
-                if search.failed {
-                    record["confirmed_failure"] = json!(true);
-                }
-                match proof {
-                    Proven::Prompt(prompt) => record["excerpt"] = json!(prompt.text),
-                    Proven::Edit(_) => record["excerpt"] = json!(search.query),
-                    Proven::Command(command) => record["recorded_invocation"] = json!(command.recorded_invocation),
-                };
-                emit(output, record)?;
+                visit(row, &target, proof)?;
                 Ok(Some(true))
             }) {
                 Ok(Some(true)) => matched += 1,
@@ -695,16 +725,93 @@ mod linux {
         } else {
             None
         };
+        Ok(SearchCoverage {
+            snapshot_id: page.snapshot_id,
+            examined,
+            matched,
+            verified: attempted - unavailable,
+            unavailable,
+            next,
+        })
+    }
+
+    fn search_page(
+        search: &Search,
+        authority: &Authority<'_>,
+        history: &str,
+        output: &mut dyn Write,
+    ) -> Result<(), String> {
+        let coverage = scan_search(search, authority, history, |row, target, proof| {
+            let bound = bind_verified_reference(target, &proof, search.failed);
+            let reference = encoded(&bound)?;
+            let mut record = json!({
+                "type": "match", "kind": target.kind, "event_id": row.event_id, "scope": target.scope,
+                "revision": row.revision, "observed_at_unix_ns": row.observed_at_unix_ns,
+                "source_reference": reference
+            });
+            if search.failed {
+                record["confirmed_failure"] = json!(true);
+            }
+            match proof {
+                Proven::Prompt(prompt) => record["excerpt"] = json!(prompt.text),
+                Proven::Edit(_) => record["excerpt"] = json!(search.query),
+                Proven::Command(command) => {
+                    record["recorded_invocation"] = json!(command.recorded_invocation)
+                }
+            };
+            emit(output, record)?;
+            Ok(())
+        })?;
         emit(
             output,
             json!({
                 "type": "coverage", "kind": search.kind, "format": "agenturm-investigation/1",
-                "snapshot_id": page.snapshot_id, "observations_examined": examined,
-                "matched": matched, "verified_candidates": attempted - unavailable,
-                "unavailable_candidates": unavailable, "next_cursor": next,
-                "scope_exhausted": !more, "retained_native_evidence_only": true,
+                "snapshot_id": coverage.snapshot_id, "observations_examined": coverage.examined,
+                "matched": coverage.matched, "verified_candidates": coverage.verified,
+                "unavailable_candidates": coverage.unavailable, "next_cursor": coverage.next,
+                "scope_exhausted": coverage.next.is_none(), "retained_native_evidence_only": true,
             }),
         )
+    }
+
+    fn bind_verified_reference(
+        target: &SourceReference,
+        proof: &Proven<'_>,
+        failed: bool,
+    ) -> SourceReference {
+        SourceReference {
+            version: if failed { 3 } else { 1 },
+            grant_sha256: proof.grant(),
+            ..target.clone()
+        }
+    }
+
+    fn verify_reference(
+        reference: &SourceReference,
+        authority: &Authority<'_>,
+        history: &str,
+        consume: impl FnOnce(Proven<'_>, bool) -> Result<(), String>,
+    ) -> Result<(), String> {
+        if reference.history_sha256 != history {
+            return Err("Source reference belongs to another history".into());
+        }
+        // The shared proof binds the exact native occurrence, and its fenced
+        // snapshot check requires that row at the original receipt watermark.
+        let failed = matches!(reference.version, 2 | 3);
+        let disclosed = authority.prove(reference, failed, |proof| {
+            if !proof.confirms(reference)
+                || (reference.version != 2 && proof.grant() != reference.grant_sha256)
+            {
+                return Ok(false);
+            }
+            consume(proof, failed)?;
+            Ok(true)
+        });
+        match disclosed {
+            Ok(true) => Ok(()),
+            Ok(false) | Err(ProofError::Unavailable) => Err(WITHHELD.into()),
+            Err(ProofError::Failed(error)) => Err(error),
+        }
     }
 
     fn source(
@@ -713,16 +820,7 @@ mod linux {
         history: &str,
         output: &mut dyn Write,
     ) -> Result<(), String> {
-        if reference.history_sha256 != history {
-            return Err("Source reference belongs to another history".into());
-        }
-        // The shared proof binds the exact native occurrence, and its fenced
-        // snapshot check requires that row at the original receipt watermark.
-        let failed = reference.version == 2;
-        let disclosed = authority.prove(reference, failed, |proof| {
-            if !proof.confirms(reference) || (!failed && proof.grant() != reference.grant_sha256) {
-                return Ok(false);
-            }
+        verify_reference(reference, authority, history, |proof, failed| {
             let evidence = match proof {
                 Proven::Prompt(prompt) => json!({"text": prompt.text}),
                 Proven::Edit(edit) => json!({"changes": edit.changes}),
@@ -739,14 +837,8 @@ mod linux {
             if failed {
                 record["confirmed_failure"] = json!(true);
             }
-            emit(output, record)?;
-            Ok(true)
-        });
-        match disclosed {
-            Ok(true) => Ok(()),
-            Ok(false) | Err(ProofError::Unavailable) => Err(WITHHELD.into()),
-            Err(ProofError::Failed(error)) => Err(error),
-        }
+            emit(output, record)
+        })
     }
 
     pub(super) fn candidate(
