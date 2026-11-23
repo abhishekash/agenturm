@@ -547,8 +547,10 @@ filtered empty page can still have more evidence. Counts cover the current
 page. Token counters, cost/credit units, nanosecond times and snapshot tokens
 are strings to preserve exact integers in JavaScript clients.
 
-These endpoints never return prompt or SDK message bodies, private operation
-payloads, or Host samples. They cannot admit observations, change policy or
-invoke a live sampler. The typed `/v1/history/read` protocol remains available
+Ordinary metadata endpoints exclude Host samples as well as private content.
+An explicitly enabled `/api/host` route returns recorded Host samples under the
+reader's source allowlist. None of these routes returns prompt or SDK message
+bodies, private operation payloads, admits observations, changes policy, or
+invokes a live sampler. The typed `/v1/history/read` protocol remains available
 to the native cockpit. Private views and other receiver APIs retain their
 separate implementation requirements.
