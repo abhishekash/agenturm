@@ -1,6 +1,7 @@
 //! Closed, metadata-only projections of producer-reported OTLP activity.
 
 use serde::{Deserialize, Serialize};
+use crate::observation::valid_otlp_id;
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -13,8 +14,7 @@ pub struct TraceSpanSummary {
 
 impl TraceSpanSummary {
     pub fn is_valid(&self) -> bool {
-        (self.agent_run || self.reported_error)
-            && valid_otlp_id(&self.trace_id, 16)
+        valid_otlp_id(&self.trace_id, 16)
             && valid_otlp_id(&self.span_id, 8)
     }
 
@@ -25,14 +25,6 @@ impl TraceSpanSummary {
             .and_then(|ids| ids.split_once(':'))
             == Some((self.trace_id.as_str(), self.span_id.as_str()))
     }
-}
-
-fn valid_otlp_id(value: &str, bytes: usize) -> bool {
-    value.len() == bytes * 2
-        && value
-            .bytes()
-            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-        && value.bytes().any(|byte| byte != b'0')
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]

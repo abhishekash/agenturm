@@ -2639,7 +2639,7 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                     "method":method.as_str(), "duration_ns":duration_ns.map(|nanos| nanos.to_string()),
                     "result":result,
                 }),
-                ObservationKind::InternalReview(_) | ObservationKind::NativeRequest(_) | ObservationKind::MetricPoint(_) => serde_json::to_value(&row.kind)
+                ObservationKind::TraceSpanSummary(_) | ObservationKind::OtlpActivityLog(_) | ObservationKind::InternalReview(_) | ObservationKind::NativeRequest(_) | ObservationKind::MetricPoint(_) => serde_json::to_value(&row.kind)
                     .expect("typed metric metadata serializes"),
                 ObservationKind::TraceSpan(span) => {
                     let mut evidence = serde_json::json!({

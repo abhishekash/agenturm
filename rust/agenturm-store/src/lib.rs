@@ -138,6 +138,8 @@ pub enum ObservationKind {
     TraceProgress(agenturm_kernel::TraceProgress),
     HostSample(agenturm_kernel::HostSample),
     MetricPoint(agenturm_kernel::MetricPoint),
+    TraceSpanSummary(agenturm_kernel::telemetry_summary::TraceSpanSummary),
+    OtlpActivityLog(agenturm_kernel::telemetry_summary::OtlpActivityLog),
     InternalReview(agenturm_kernel::native_review::InternalReview),
     NativeRequest(agenturm_kernel::native_review::NativeRequest),
     Lifecycle {
@@ -320,6 +322,8 @@ impl ObservationBatch {
                     }
                     KernelObservationKind::InternalReview(review) => ObservationKind::InternalReview(review.clone()),
                     KernelObservationKind::NativeRequest(request) => ObservationKind::NativeRequest(request.clone()),
+                    KernelObservationKind::TraceSpanSummary(summary) => ObservationKind::TraceSpanSummary(summary.clone()),
+                    KernelObservationKind::OtlpActivityLog(log) => ObservationKind::OtlpActivityLog(log.clone()),
                     KernelObservationKind::MetricPoint(point) => {
                         ObservationKind::MetricPoint(point.clone())
                     }
@@ -2023,6 +2027,8 @@ impl Store {
                     }
                     ObservationKind::InternalReview(review) => KernelObservationKind::InternalReview(review),
                     ObservationKind::NativeRequest(request) => KernelObservationKind::NativeRequest(request),
+                    ObservationKind::TraceSpanSummary(summary) => KernelObservationKind::TraceSpanSummary(summary),
+                    ObservationKind::OtlpActivityLog(log) => KernelObservationKind::OtlpActivityLog(log),
                     ObservationKind::MetricPoint(point) => {
                         KernelObservationKind::MetricPoint(point)
                     }
@@ -2270,6 +2276,18 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
                 "metric point requires a valid OTLP source, event, and source scope",
             ));
         }
+        if let ObservationKind::TraceSpanSummary(summary) = &observation.kind
+            && (observation.identity.scope != StoredScope::Session || !batch.source_id.starts_with("otlp.") || observation.revision != 0 || !summary.is_valid() || !summary.matches_event(&observation.event_id) || !batch.observations.iter().any(|anchor| {
+                matches!(&anchor.kind, ObservationKind::TraceSpan(span) if span.trace_id == summary.trace_id && span.span_id == summary.span_id)
+                && anchor.identity == observation.identity && anchor.observed_at_unix_ns == observation.observed_at_unix_ns && anchor.revision == observation.revision
+            })) {
+            return Err(StoreError::Invalid("trace summary requires its exact structural span in the same batch"));
+        }
+        if let ObservationKind::OtlpActivityLog(log) = &observation.kind
+            && (observation.identity.scope != StoredScope::Session || !batch.source_id.starts_with("otlp.") || observation.revision != 0 || observation.identity.operation_id.is_some() || !log.is_valid() || !log.matches_event(&observation.event_id)
+                || (observation.identity.turn_id.is_some() && log.target_source_id.is_none()) || (observation.identity.worker_id.is_some() && observation.identity.turn_id.is_none())) {
+            return Err(StoreError::Invalid("activity log requires exact OTLP session scope and safe metadata"));
+        }
         let review_source = agenturm_kernel::native_review::is_codex_review_source(&batch.source_id);
         if review_source && !matches!(observation.kind, ObservationKind::InternalReview(_) | ObservationKind::Diagnostic { .. }) {
             return Err(StoreError::Invalid("internal review sources may emit only review metadata"));
@@ -2479,7 +2497,7 @@ fn validate_native_cost_anchors(rows: &[StoredObservation]) -> Result<()> {
 
 fn validate_otlp_metadata_batch(batch: &ObservationBatch) -> Result<()> {
     let rows = &batch.observations;
-    if rows.len() > MAX_OTLP_BATCH_SPANS * 3 {
+    if rows.len() > MAX_OTLP_BATCH_SPANS * 4 {
         return Err(StoreError::Invalid("batch exceeds event count limit"));
     }
     if !batch.source_id.starts_with("otlp.") || ExtensionId::parse(&batch.source_id).is_err() {
@@ -2525,7 +2543,7 @@ fn validate_otlp_metadata_batch(batch: &ObservationBatch) -> Result<()> {
     };
     for row in rows {
         match &row.kind {
-            ObservationKind::TraceSpan(_) => {}
+            ObservationKind::TraceSpan(_) | ObservationKind::TraceSpanSummary(_) => {}
             ObservationKind::ReportedCost(cost) => {
                 if !cost.matches_event(&row.event_id)
                     || !cost

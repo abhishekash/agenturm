@@ -706,7 +706,7 @@ fn valid_progress_stage(stage: &str) -> bool {
         })
 }
 
-fn valid_otlp_id(value: &str, bytes: usize) -> bool {
+pub(crate) fn valid_otlp_id(value: &str, bytes: usize) -> bool {
     value.len() == bytes * 2
         && value
             .bytes()

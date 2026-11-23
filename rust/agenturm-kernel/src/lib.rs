@@ -245,6 +245,8 @@ pub enum ObservationKind {
     TraceProgress(TraceProgress),
     HostSample(HostSample),
     MetricPoint(MetricPoint),
+    TraceSpanSummary(telemetry_summary::TraceSpanSummary),
+    OtlpActivityLog(telemetry_summary::OtlpActivityLog),
     InternalReview(agenturm_protocol::native_review::InternalReview),
     NativeRequest(agenturm_protocol::native_review::NativeRequest),
     Lifecycle {
@@ -1485,6 +1487,18 @@ fn validate_raw_observation_slice(
             return Err(
                 "metric point requires a valid OTLP source, event, and source scope".into(),
             );
+        }
+        if let ObservationKind::TraceSpanSummary(summary) = &row.kind
+            && (row.identity.scope != ObservationScope::Session || !source.as_str().starts_with("otlp.") || row.revision != 0 || !summary.is_valid() || !summary.matches_event(&row.event_id) || !rows.iter().any(|anchor| {
+                matches!(&anchor.kind, ObservationKind::TraceSpan(span) if span.trace_id == summary.trace_id && span.span_id == summary.span_id)
+                && anchor.identity == row.identity && anchor.observed_at_unix_ns == row.observed_at_unix_ns && anchor.revision == row.revision
+            })) {
+            return Err("trace summary requires its exact structural span in the same batch".into());
+        }
+        if let ObservationKind::OtlpActivityLog(log) = &row.kind
+            && (row.identity.scope != ObservationScope::Session || !source.as_str().starts_with("otlp.") || row.revision != 0 || row.identity.operation_id.is_some() || !log.is_valid() || !log.matches_event(&row.event_id)
+                || (row.identity.turn_id.is_some() && log.target_source_id.is_none()) || (row.identity.worker_id.is_some() && row.identity.turn_id.is_none())) {
+            return Err("activity log requires exact OTLP session scope and safe metadata".into());
         }
         let review_source = agenturm_protocol::native_review::is_codex_review_source(source.as_str());
         if review_source && !matches!(row.kind, ObservationKind::InternalReview(_) | ObservationKind::Diagnostic { .. }) {
@@ -2843,3 +2857,5 @@ mod tests {
 pub mod retained_history;
 
 pub use agenturm_protocol::native_review;
+
+pub use agenturm_protocol::telemetry_summary;

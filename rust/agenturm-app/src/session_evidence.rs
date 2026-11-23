@@ -898,6 +898,8 @@ pub(super) fn describe_observation(kind: &ObservationKind) -> (&'static str, Str
         ),
         ObservationKind::InternalReview(review) => ("Internal review", format!("{} · review {}", review.state.as_str(), review.session_id)),
         ObservationKind::NativeRequest(request) => ("Native request", format!("{} · {}", request.request_kind.as_str(), request.state.as_str())),
+        ObservationKind::TraceSpanSummary(summary) => ("Span classification", format!("Agent run {} · reported error {}", summary.agent_run, summary.reported_error)),
+        ObservationKind::OtlpActivityLog(log) => ("Activity log", if log.reported_error { "Reported error".into() } else { "Recorded activity".into() }),
         ObservationKind::MetricPoint(point) => (
             "Metric point",
             format!(

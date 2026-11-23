@@ -565,6 +565,8 @@ fn kind_name(kind: &ObservationKind) -> &'static str {
         ObservationKind::TraceSpan(_) => "trace-span",
         ObservationKind::InternalReview(_) => "internal-review",
         ObservationKind::NativeRequest(_) => "native-request",
+        ObservationKind::TraceSpanSummary(_) => "trace-span-summary",
+        ObservationKind::OtlpActivityLog(_) => "otlp-activity-log",
         ObservationKind::MetricPoint(_) => "metric-point",
         ObservationKind::TraceProgress(_) => "trace-progress",
         ObservationKind::Lifecycle { .. } => "lifecycle",
