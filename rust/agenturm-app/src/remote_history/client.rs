@@ -195,6 +195,7 @@ fn read_error(error: ReadFailure) -> String {
             format!("Trace exceeds the {max_rows}-row turn-resolution limit")
         }
         ReadFailure::Unavailable => "History receiver is unavailable".into(),
+        ReadFailure::EvalTraceNotRetained => "Evaluation trace is no longer retained".into(),
     }
 }
 
