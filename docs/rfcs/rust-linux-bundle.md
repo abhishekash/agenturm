@@ -10,10 +10,25 @@ collection is available on Linux systems without a user manager.
 | Platform | Build | Collector |
 | --- | --- | --- |
 | Ubuntu 24.04 x86-64 | Local bundle and CI artifact | Foreground and systemd user service verified |
-| Other Linux releases and architectures | Host build script available | Qualification open |
+| Ubuntu 24.04 ARM64 / aarch64 | Native tagged bundle | Foreground, prior-release upgrade and systemd user service verified |
+| Other Linux releases | Host build script available | Distribution qualification open |
 | macOS and Windows | Bundle qualification open | Service integration open |
 
 ## Build and install
+
+The source checkout includes an opt-in verified installer candidate:
+
+~~~sh
+bash scripts/install-rust.sh install --version 0.3.6
+~~~
+
+It installs the complete versioned bundle and an agenturm-rust launcher,
+preserving the existing agenturm command and leaving services and history
+unchanged. Use an exact version; there is no automatic latest selection.
+The hosted bootstrap is not published. See the
+[installation assessment](rust-distribution-installation.md) for update,
+offline verification, uninstall, supported runtime and integrity details.
+Manual archive installation remains available below.
 
 From a source checkout on Linux with the pinned Rust toolchain and a native C
 build toolchain, run `scripts/build-rust-linux-bundle.sh ./dist`. The script
