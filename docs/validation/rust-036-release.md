@@ -11,6 +11,7 @@ fixture update identified below.
 | --- | --- |
 | Runtime and fixture source | `1be53d651dae6bf94e5b0fe006df588651078e32` |
 | `agenturm-0.3.6-linux-x86_64.tar.gz` | `5a325704855774dbdaa333daba48dcbe9935a178aacb94c57f72086c3f27a693` |
+| Published Linux ARM64 archive | `74e1c6e20ac6427bf2c7c57268643254676bd2c17e3651f617da594c1dcae71b` |
 | `bin/agenturm` | `8819045e3f09fe1669cdcdaa0331d16283f1b8d0579c6ee5fda86762882fba17` |
 | `bin/agenturm-storage-service` | `1d0e188bb14f6825bc53d58b86842dc3805140708048e0e1e18848d1e3e888f5` |
 
@@ -54,7 +55,17 @@ The logs are retained under `/tmp` on the qualification host. The prior
 | Gate | Evidence to record |
 | --- | --- |
 | Broader compatibility CI | Python-version jobs remain active in the broader run. Rust protocol, vendor jobs, Node and OTLP jobs have passed. [CI run 45105188826](https://github.com/abhishekash/agenturm/actions/runs/45105188826) |
-| Linux ARM64 release asset | Verify the tag build's archive and checksum attachment. Native candidate qualification has passed. |
+
+## Published artifacts
+
+[Rust 0.3.6](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.6)
+was published from merged commit `67eb65056c23c7490b5b0c235bedecc3c73fb617`.
+The [tagged bundle run](https://github.com/abhishekash/agenturm/actions/runs/45105969055)
+passed both architectures, including the native ARM64 prior-release upgrade and
+systemd user-service qualification, and attached its ARM64 archive and checksum.
+GitHub's published asset digests match the recorded archive hashes. The x86-64
+asset is the exact locally qualified archive; subsequent source edits changed
+only documentation and validation fixtures.
 
 ## Rust cutover scope
 
