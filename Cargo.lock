@@ -52,6 +52,7 @@ dependencies = [
 name = "agenturm-codex-harness"
 version = "0.1.0"
 dependencies = [
+ "serde",
  "agenturm-directory-source",
  "agenturm-jsonl-source",
  "agenturm-protocol",

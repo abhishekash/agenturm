@@ -18,6 +18,8 @@ mod eval_detail;
 mod eval_inventory;
 mod eval_outcome;
 mod linked_trace;
+pub mod metric_history;
+pub mod usage_history;
 #[cfg(target_os = "linux")]
 mod native_codex_metadata;
 mod private_text;
@@ -1065,6 +1067,8 @@ impl Store {
             eval_outcome::create_schema(&transaction)?;
             telemetry_payload::create_schema(&transaction)?;
             eval_detail::create_schema(&transaction)?;
+            metric_history::create_index(&transaction)?;
+            usage_history::create_index(&transaction)?;
             initialize_history_identity(&transaction)?;
             transaction.commit()?;
         } else if schema_version == 2 {
@@ -1328,16 +1332,21 @@ impl Store {
             transaction.commit()?;
             validate_marked_shape(&connection, 16)?;
         }
-        if (2..SCHEMA_VERSION).contains(&schema_version) {
-            let transaction =
-                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            content_grant::migrate_grant_schema(&transaction, SCHEMA_VERSION)?;
+        if (2..17).contains(&schema_version) {
+            let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            content_grant::migrate_grant_schema(&transaction, 17)?;
             eval_detail::create_schema(&transaction)?;
             initialize_history_identity(&transaction)?;
-            transaction.execute(
-                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
-                [STORE_MARKER],
-            )?;
+            transaction.execute("UPDATE agenturm_store_meta SET value=?1 WHERE key='format'", [STORE_MARKER_V17])?;
+            transaction.pragma_update(None, "user_version", 17)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 17)?;
+        }
+        if (2..18).contains(&schema_version) {
+            let transaction = connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            metric_history::create_index(&transaction)?;
+            usage_history::create_index(&transaction)?;
+            transaction.execute("UPDATE agenturm_store_meta SET value=?1 WHERE key='format'", [STORE_MARKER])?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
             transaction.commit()?;
             validate_marked_shape(&connection, SCHEMA_VERSION)?;

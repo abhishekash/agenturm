@@ -2824,3 +2824,5 @@ mod tests {
         assert!(snapshot.failures[1].message.contains("metric row text"));
     }
 }
+
+pub mod retained_history;
