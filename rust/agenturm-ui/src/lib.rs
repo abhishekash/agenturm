@@ -11,8 +11,10 @@ mod findings;
 mod keymap;
 mod live_receiver;
 mod loaded_view;
+pub mod metric_history;
 mod operation_table;
 mod theme;
+pub mod usage_chart;
 mod workbench;
 mod workspace;
 pub use evidence_view::{EvidenceRow, EvidenceSpec, EvidenceTable, EvidenceTables};
@@ -339,6 +341,8 @@ pub struct RecordedTurn {
 
 #[derive(Default)]
 pub struct HistoryFeatures {
+    pub metric_history: Option<agenturm_kernel::retained_history::MetricHistoryPage>,
+    pub usage_history: Option<Box<usage_chart::UsageChartData>>,
     pub findings: Option<(ExtensionId, FindingsPage)>,
     pub mcp_inventory: Option<McpInventory>,
 }

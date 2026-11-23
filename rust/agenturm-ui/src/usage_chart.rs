@@ -1,6 +1,9 @@
 //! Seven UTC calendar-day totals for one authorized retained history window.
 
-use super::{Frame, KeyCode, Rect, label_style, panel, theme, visible_text, wrap_display_width};
+use super::{
+    Frame, KeyCode, LoadedView, MetricRow, Rect, label_style, panel, theme, visible_text,
+    wrap_display_width,
+};
 use agenturm_kernel::retained_history::{USAGE_DAYS, UsageHistoryPage, UsageTotals};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::Paragraph;
@@ -83,6 +86,53 @@ impl UsageChart {
             _ => return false,
         }
         true
+    }
+
+    pub(super) fn loaded_view(&self) -> LoadedView {
+        let mode = if self.span {
+            "Span reports may overlap"
+        } else {
+            "Native usage reports"
+        };
+        let mut truncated = false;
+        let rows = self
+            .data
+            .page
+            .days
+            .iter()
+            .zip(&self.data.dates)
+            .enumerate()
+            .map(|(index, (day, date))| {
+                let totals = if self.span { &day.span } else { &day.native };
+                let mut value = self
+                    .counter
+                    .value(totals)
+                    .map_or_else(|| "Unreported".into(), |value| value.to_string());
+                if index + 1 == USAGE_DAYS {
+                    value.push_str(" · Today to capture time");
+                }
+                if day.retention_partial {
+                    value.push_str(" · Retention cutoff");
+                }
+                if day.scan_partial {
+                    value.push_str(" · Scan limit");
+                }
+                truncated |= day.retention_partial || day.scan_partial;
+                MetricRow {
+                    label: date.clone(),
+                    value,
+                }
+            })
+            .collect();
+        LoadedView {
+            title: format!("Usage · 7 UTC days · {}", self.counter.label()),
+            scope: format!(
+                "{} · {mode} · Snapshot {}",
+                self.data.scope, self.data.page.snapshot_id
+            ),
+            rows,
+            truncated,
+        }
     }
 
     pub fn draw(&self, frame: &mut Frame, area: Rect) {

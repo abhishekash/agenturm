@@ -1,8 +1,8 @@
 //! Snapshot-pinned metric catalog, chronological points, and explicit exemplars.
 
 use super::{
-    Frame, KeyCode, Layout, Rect, label_style, panel, selection_style, theme, visible_text,
-    wrap_display_width,
+    Frame, KeyCode, Layout, LoadedView, MetricRow, Rect, label_style, panel, selection_style,
+    theme, visible_text, wrap_display_width,
 };
 use agenturm_kernel::ReadSnapshot;
 use agenturm_kernel::metric::{ExponentialBuckets, MetricData, MetricPoint, MetricSeries};
@@ -424,10 +424,92 @@ impl MetricBrowser {
         MetricInput::Read(Box::new(query))
     }
 
+    pub(super) fn loaded_view(&self) -> LoadedView {
+        let snapshot = format!("Retained metric metadata · Snapshot {}", self.snapshot_id);
+        if let Some(trace) = &self.trace {
+            let scope = self.point().map_or(snapshot.clone(), |row| {
+                format!(
+                    "{} / {} / {}",
+                    row.position.series.source_id.as_str(),
+                    row.position.event_id,
+                    snapshot
+                )
+            });
+            return LoadedView {
+                title: "Metric exemplar trace".into(),
+                scope,
+                rows: detail_rows(trace_lines(trace.evidence.as_deref())),
+                truncated: false,
+            };
+        }
+        if let Some(detail) = &self.detail
+            && let Some(point) = self.point()
+        {
+            return LoadedView {
+                title: "Metric point".into(),
+                scope: format!(
+                    "{} / {} / {snapshot}",
+                    point.position.series.source_id.as_str(),
+                    point.position.event_id
+                ),
+                rows: detail_rows(point_lines(point, detail.exemplar, true)),
+                truncated: point.point.exemplars.len() > 1,
+            };
+        }
+        if let Some(history) = &self.history {
+            let rows = history
+                .pages
+                .current
+                .rows
+                .iter()
+                .map(|row| MetricRow {
+                    label: timestamp(row.position.observed_at_unix_ns),
+                    value: point_summary(&row.point),
+                })
+                .collect();
+            return LoadedView {
+                title: "Metric points".into(),
+                scope: format!(
+                    "{} / {} / {snapshot}",
+                    history.series.source_id.as_str(),
+                    history.series.series_id
+                ),
+                rows,
+                truncated: !history.pages.previous.is_empty()
+                    || history.pages.current.next.is_some(),
+            };
+        }
+        LoadedView {
+            title: "Metrics · OTLP series".into(),
+            scope: snapshot,
+            rows: self
+                .catalog
+                .current
+                .rows
+                .iter()
+                .map(|row| MetricRow {
+                    label: row.series.name.clone(),
+                    value: format!(
+                        "{} · {} · {} · series {}",
+                        row.key.source_id.as_str(),
+                        row.series.kind.label(),
+                        if row.series.unit.is_empty() {
+                            "unit unreported"
+                        } else {
+                            &row.series.unit
+                        },
+                        row.series.id
+                    ),
+                })
+                .collect(),
+            truncated: !self.catalog.previous.is_empty() || self.catalog.current.next.is_some(),
+        }
+    }
+
     pub fn draw(&mut self, frame: &mut Frame, pending: bool, status: Option<&str>) {
         let area = frame.area();
         let [body, footer] =
-            Layout::vertical([Constraint::Min(1), Constraint::Length(2)]).areas(area);
+            Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(area);
         let hint = self.hint();
         let status = status.map(visible_text);
         frame.render_widget(
@@ -437,29 +519,15 @@ impl MetricBrowser {
                     if pending || self.pending.is_some() {
                         "Reading pinned metric history…".into()
                     } else {
-                        format!("Snapshot {}   q quit", self.snapshot_id)
+                        format!("Snapshot {}", self.snapshot_id)
                     }
                 })),
+                Line::from("B evidence · c copy · x export · q quit").style(label_style()),
             ]),
             footer,
         );
         if let Some(trace) = &mut self.trace {
-            let lines = match &trace.evidence {
-                Some(trace) => vec![
-                    format!("Trace {}", trace.span.trace_id),
-                    format!("Span {}", trace.span.span_id),
-                    format!("Source {}", trace.source_id.as_str()),
-                    format!("Session {}", trace.session_id),
-                    format!("Turn {}", present(trace.turn_id.as_deref())),
-                    format!("Worker {}", present(trace.worker_id.as_deref())),
-                    format!("Started {}", timestamp(trace.span.started_at_unix_ns)),
-                    format!("Status {:?}", trace.span.status),
-                ],
-                None => vec![
-                    "No exact retained trace span for this exemplar.".into(),
-                    "Both IDs must match a span in the same source and snapshot.".into(),
-                ],
-            };
+            let lines = trace_lines(trace.evidence.as_deref());
             render_lines(
                 frame,
                 body,
@@ -575,6 +643,41 @@ impl MetricBrowser {
                 self.catalog.paging_hint()
             )
         }
+    }
+}
+
+fn detail_rows(lines: Vec<String>) -> Vec<MetricRow> {
+    lines
+        .into_iter()
+        .map(|line| {
+            let (label, value) = line
+                .trim()
+                .split_once(' ')
+                .map_or(("Detail", line.trim()), |(label, value)| (label, value));
+            MetricRow {
+                label: label.into(),
+                value: value.into(),
+            }
+        })
+        .collect()
+}
+
+fn trace_lines(trace: Option<&MetricExemplarTrace>) -> Vec<String> {
+    match trace {
+        Some(trace) => vec![
+            format!("Trace {}", trace.span.trace_id),
+            format!("Span {}", trace.span.span_id),
+            format!("Source {}", trace.source_id.as_str()),
+            format!("Session {}", trace.session_id),
+            format!("Turn {}", present(trace.turn_id.as_deref())),
+            format!("Worker {}", present(trace.worker_id.as_deref())),
+            format!("Started {}", timestamp(trace.span.started_at_unix_ns)),
+            format!("Status {:?}", trace.span.status),
+        ],
+        None => vec![
+            "No exact retained trace span for this exemplar.".into(),
+            "Both IDs must match a span in the same source and snapshot.".into(),
+        ],
     }
 }
 

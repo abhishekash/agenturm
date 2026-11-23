@@ -14,7 +14,7 @@ pub(super) struct ExportForm {
 }
 
 impl Workspace {
-    fn loaded_view(&self) -> Option<LoadedView> {
+    pub(super) fn loaded_view(&self) -> Option<LoadedView> {
         if self.prompt.is_some()
             || self.prompt_receiver.is_some()
             || self.work.is_some()
@@ -31,12 +31,27 @@ impl Workspace {
             {
                 return None;
             }
+            if let Some(analytics) = view.active_analytics() {
+                return Some(analytics.loaded_view());
+            }
             let pane = page.ui.panes.get(page.ui.selected)?;
             let scope = match &view.selection {
                 HistorySelection::All(_) => "Workspace · loaded metadata page".into(),
                 HistorySelection::Session(session, _) => {
                     format!("{} / {}", session.harness_id, session.session_id)
                 }
+                HistorySelection::McpTraces {
+                    source_id,
+                    event_id,
+                    revision,
+                    snapshot_id,
+                } => format!(
+                    "{} / MCP call {} r{} / snapshot {}",
+                    source_id.as_str(),
+                    event_id,
+                    revision,
+                    snapshot_id
+                ),
                 HistorySelection::Turn(turn) => format!(
                     "{} / {} / turn {}",
                     turn.harness_id, turn.session_id, turn.turn_id

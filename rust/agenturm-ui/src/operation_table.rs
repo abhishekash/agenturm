@@ -94,6 +94,10 @@ impl Browser {
 }
 
 impl OperationList {
+    pub(super) fn is_mcp(&self) -> bool {
+        self.inventory.is_some()
+    }
+
     pub(super) fn selected_row(&self) -> Option<&OperationRow> {
         if self.inventory_open {
             return None;

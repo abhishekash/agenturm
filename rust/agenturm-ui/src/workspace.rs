@@ -11,8 +11,10 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod analytics;
 mod command_center;
 mod prompt;
+mod review_visibility;
 mod view_io;
 
 use prompt::PromptScreen;
@@ -81,6 +83,12 @@ pub enum HistorySelection {
     All(WorkspaceView),
     Session(RecordedSession, SessionView),
     Turn(RecordedTurn),
+    McpTraces {
+        source_id: ExtensionId,
+        event_id: String,
+        revision: u32,
+        snapshot_id: ReadSnapshot,
+    },
 }
 
 #[derive(Clone, Copy, Debug)]
@@ -109,9 +117,12 @@ pub enum WorkspaceRequest {
     Sessions(Option<SessionCursor>),
     MarkReviewed(RecordedSession),
     Work(WorkCommand),
+    MetricHistory(Box<agenturm_kernel::retained_history::MetricHistoryQuery>),
+    ReviewVisibility(bool),
     History {
         selection: HistorySelection,
         before: Option<ObservationPosition>,
+        include_reviews: bool,
     },
 }
 
@@ -119,6 +130,8 @@ pub enum WorkspaceResponse {
     Sessions(SessionCatalog),
     ReviewSaved,
     Work(WorkResult),
+    MetricHistory(agenturm_kernel::retained_history::MetricHistoryPage),
+    ReviewVisibility(bool),
     History(HistoryPage),
 }
 
@@ -536,10 +549,13 @@ struct HistoryView {
     selection: HistorySelection,
     page: PageView,
     newer: VecDeque<PageView>,
+    analytics: Option<analytics::HistoryAnalytics>,
+    show_evidence: bool,
 }
 
 impl HistoryView {
-    fn new(selection: HistorySelection, page: HistoryPage) -> Self {
+    fn new(selection: HistorySelection, mut page: HistoryPage) -> Self {
+        let analytics = analytics::HistoryAnalytics::take(&selection, &mut page);
         let in_turn = matches!(selection, HistorySelection::Turn(_));
         let mut page = PageView::new(page, in_turn);
         if matches!(selection, HistorySelection::All(WorkspaceView::Metrics)) {
@@ -549,7 +565,17 @@ impl HistoryView {
             selection,
             page,
             newer: VecDeque::new(),
+            analytics,
+            show_evidence: false,
         }
+    }
+
+    fn active_analytics(&self) -> Option<&analytics::HistoryAnalytics> {
+        self.analytics.as_ref().filter(|_| !self.show_evidence)
+    }
+
+    fn active_analytics_mut(&mut self) -> Option<&mut analytics::HistoryAnalytics> {
+        self.analytics.as_mut().filter(|_| !self.show_evidence)
     }
 }
 
@@ -561,6 +587,8 @@ enum Change {
     SessionMode(HistorySelection),
     OlderHistory,
     LatestHistory,
+    MetricHistory { cancelled: bool },
+    ReviewVisibility,
     MarkReviewed(RecordedSession),
     Work(Option<WorkAnchor>),
     Investigation,
@@ -571,6 +599,7 @@ struct Workspace {
     agents: AgentList,
     newer_sessions: VecDeque<SessionCatalog>,
     browsing_older: bool,
+    include_reviews: bool,
     history: Vec<HistoryView>,
     work: Option<Workbench>,
     investigation: Option<Investigation>,
@@ -592,6 +621,7 @@ impl Workspace {
             agents: AgentList::default(),
             newer_sessions: VecDeque::new(),
             browsing_older: false,
+            include_reviews: false,
             history: Vec::new(),
             work: None,
             investigation: None,
@@ -637,6 +667,12 @@ impl Workspace {
         if matches!(change, Change::Work(_)) && std::mem::take(&mut self.discard_work_result) {
             return;
         }
+        if let Change::MetricHistory { cancelled } = change {
+            if !cancelled {
+                self.finish_metric_read(result);
+            }
+            return;
+        }
         if matches!(change, Change::Investigation) && self.investigation.is_none() {
             return;
         }
@@ -644,6 +680,24 @@ impl Workspace {
             (_, Err(error)) => {
                 self.prompt_receiver = None;
                 self.message = Some(error);
+            }
+            (
+                Change::ReviewVisibility,
+                Ok(WorkspaceResponse::ReviewVisibility(include_reviews)),
+            ) => {
+                self.include_reviews = include_reviews;
+                if let Some(current) = self.history.last().map(|view| view.selection.clone()) {
+                    self.history.clear();
+                    self.deferred_request = Some((
+                        self.history_request(current.clone(), None),
+                        Change::Open(current),
+                    ));
+                }
+                self.message = Some(if include_reviews {
+                    "Showing captured internal review metadata in history".into()
+                } else {
+                    "Internal review metadata hidden".into()
+                });
             }
             (Change::RefreshSessions, Ok(WorkspaceResponse::Sessions(catalog))) => {
                 self.agents.update(catalog);
@@ -674,9 +728,14 @@ impl Workspace {
             }
             (
                 change @ (Change::OlderHistory | Change::LatestHistory),
-                Ok(WorkspaceResponse::History(page)),
+                Ok(WorkspaceResponse::History(mut page)),
             ) => {
                 if let Some(view) = self.history.last_mut() {
+                    if matches!(change, Change::LatestHistory) {
+                        view.analytics =
+                            analytics::HistoryAnalytics::take(&view.selection, &mut page);
+                        view.show_evidence &= view.analytics.is_some();
+                    }
                     let mut next =
                         PageView::new(page, matches!(view.selection, HistorySelection::Turn(_)));
                     if let Some(title) = view.page.ui.selected_title() {
@@ -773,13 +832,30 @@ impl Workspace {
         }
     }
 
+    fn history_request(
+        &self,
+        selection: HistorySelection,
+        before: Option<ObservationPosition>,
+    ) -> WorkspaceRequest {
+        WorkspaceRequest::History {
+            selection,
+            before,
+            include_reviews: self.include_reviews,
+        }
+    }
+
+    fn toggle_review_visibility(&mut self, sender: &mpsc::Sender<WorkspaceRequest>) {
+        self.request(
+            sender,
+            WorkspaceRequest::ReviewVisibility(!self.include_reviews),
+            Change::ReviewVisibility,
+        );
+    }
+
     fn open(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, selection: HistorySelection) {
         self.request(
             sender,
-            WorkspaceRequest::History {
-                selection: selection.clone(),
-                before: None,
-            },
+            self.history_request(selection.clone(), None),
             Change::Open(selection),
         );
     }
@@ -811,10 +887,7 @@ impl Workspace {
         let selection = HistorySelection::All(view);
         self.request(
             sender,
-            WorkspaceRequest::History {
-                selection: selection.clone(),
-                before: None,
-            },
+            self.history_request(selection.clone(), None),
             Change::Navigate(selection),
         );
     }
@@ -828,10 +901,7 @@ impl Workspace {
         let selection = HistorySelection::Session(session, mode);
         self.request(
             sender,
-            WorkspaceRequest::History {
-                selection: selection.clone(),
-                before: None,
-            },
+            self.history_request(selection.clone(), None),
             Change::SessionMode(selection),
         );
     }
@@ -1142,6 +1212,10 @@ impl Workspace {
             return false;
         }
 
+        if self.analytics_key(sender, key, code) {
+            return false;
+        }
+        let view = self.history.last_mut().expect("history exists");
         if keymap::back(key) {
             if self.pending.is_none() {
                 self.history.pop();
@@ -1177,9 +1251,32 @@ impl Workspace {
         if view.page.ui.evidence_key(code) {
             return false;
         }
-        if let Some(table) = view.page.operation_table.active(&view.page.ui)
-            && table.key(code)
-        {
+        if let Some(table) = view.page.operation_table.active(&view.page.ui) {
+            if code == KeyCode::Char('t') && table.is_mcp() {
+                if self.pending.is_none() {
+                    if let Some((source, event_id, revision)) =
+                        table.selected_row().and_then(|row| row.mcp_event.as_ref())
+                        && let Ok(source_id) = ExtensionId::parse(source.clone())
+                    {
+                        let selection = HistorySelection::McpTraces {
+                            source_id,
+                            event_id: event_id.clone(),
+                            revision: *revision,
+                            snapshot_id: view.page.snapshot_id,
+                        };
+                        self.open(sender, selection);
+                    } else {
+                        self.message = Some("Select a retained MCP call to open its traces".into());
+                    }
+                }
+                return false;
+            }
+            if table.key(code) {
+                return false;
+            }
+        }
+        if code == KeyCode::Char('v') && view.active_analytics().is_none() {
+            self.toggle_review_visibility(sender);
             return false;
         }
         if code == KeyCode::Char('E') && self.pending.is_none() && evaluation_details(view) {
@@ -1276,7 +1373,7 @@ impl Workspace {
                         worker: turn.worker_id.clone(),
                         turn: Some(turn.turn_id.clone()),
                     }),
-                    HistorySelection::All(_) => None,
+                    HistorySelection::All(_) | HistorySelection::McpTraces { .. } => None,
                 };
                 let command = if code == KeyCode::Char('b') {
                     Some(WorkCommand::Tasks(None))
@@ -1330,10 +1427,7 @@ impl Workspace {
                     let selection = view.selection.clone();
                     self.request(
                         sender,
-                        WorkspaceRequest::History {
-                            selection,
-                            before: Some(before),
-                        },
+                        self.history_request(selection, Some(before)),
                         Change::OlderHistory,
                     );
                 }
@@ -1347,10 +1441,7 @@ impl Workspace {
                 let selection = view.selection.clone();
                 self.request(
                     sender,
-                    WorkspaceRequest::History {
-                        selection,
-                        before: None,
-                    },
+                    self.history_request(selection, None),
                     Change::LatestHistory,
                 );
             }
@@ -1376,7 +1467,7 @@ impl Workspace {
                     return;
                 }
                 let owner = match &view.selection {
-                    HistorySelection::All(_) => None,
+                    HistorySelection::All(_) | HistorySelection::McpTraces { .. } => None,
                     HistorySelection::Session(row, _) => Some(WorkAnchor::from(row)),
                     HistorySelection::Turn(row) => Some(WorkAnchor {
                         source: row.harness_id.clone(),
@@ -1513,10 +1604,14 @@ impl Workspace {
                     Change::Work(self.agents.current().map(WorkAnchor::from)),
                 );
             }
-            KeyCode::Char('v') => self.message = Some("Internal approval reviews are outside Rust capture. Available in Python receiver mode.".into()),
+            KeyCode::Char('v') => self.toggle_review_visibility(sender),
             KeyCode::Char('X') => {
                 if let Some(session) = self.agents.current().cloned() {
-                    self.request(sender, WorkspaceRequest::Work(WorkCommand::SessionAttention(session)), Change::Work(None));
+                    self.request(
+                        sender,
+                        WorkspaceRequest::Work(WorkCommand::SessionAttention(session)),
+                        Change::Work(None),
+                    );
                 }
             }
             KeyCode::Char('p') => self.toggle_pause(),
@@ -1600,18 +1695,30 @@ fn push_cached<T>(cache: &mut VecDeque<T>, page: T) {
 pub fn run_workspace(
     mut load: impl FnMut(WorkspaceRequest) -> Result<WorkspaceResponse, String> + Send,
 ) -> io::Result<()> {
+    let review_preferences = review_visibility::path();
+    let include_reviews = review_preferences
+        .as_deref()
+        .is_some_and(review_visibility::read);
     std::thread::scope(|scope| {
         let (request, requests) = mpsc::channel();
         let (send, results) = mpsc::channel();
         scope.spawn(move || {
             while let Ok(request) = requests.recv() {
-                if send.send(load(request)).is_err() {
+                let result = match request {
+                    WorkspaceRequest::ReviewVisibility(include) => {
+                        review_visibility::update(review_preferences.as_deref(), include)
+                            .map(|()| WorkspaceResponse::ReviewVisibility(include))
+                    }
+                    request => load(request),
+                };
+                if send.send(result).is_err() {
                     break;
                 }
             }
         });
         let terminal_result = ratatui::run(|terminal| {
             let mut workspace = Workspace::new();
+            workspace.include_reviews = include_reviews;
             let mut appearance = theme::Picker::new();
             let mut dirty = true;
             loop {
@@ -1749,7 +1856,8 @@ fn pending_evidence_titles(selection: &HistorySelection) -> Option<(&'static str
         HistorySelection::All(WorkspaceView::Usage)
         | HistorySelection::Session(_, SessionView::Usage) => Some(("Usage", "Metric inspector")),
         HistorySelection::All(WorkspaceView::Traces)
-        | HistorySelection::Session(_, SessionView::Traces) => Some(("Traces", "Execution tree")),
+        | HistorySelection::Session(_, SessionView::Traces)
+        | HistorySelection::McpTraces { .. } => Some(("Traces", "Execution tree")),
         _ => None,
     }
 }
@@ -1866,10 +1974,19 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
             return;
         }
         if view.page.ui.help && area.width >= MIN_WIDTH && area.height >= MIN_HEIGHT {
+            if let Some(analytics) = view.active_analytics() {
+                frame.render_widget(
+                    Paragraph::new(analytics.help())
+                        .wrap(Wrap { trim: false })
+                        .block(panel(HELP_CLOSE_HINT)),
+                    area,
+                );
+                return;
+            }
             let primary = keymap::navigation_hints(&keymap::NAVIGATION[..5]);
             let secondary = keymap::navigation_hints(&keymap::NAVIGATION[5..]);
             let mut help = format!(
-                "{primary}\n{secondary} · d Recorded diagnostics\n←/→ or Ctrl+←/→ Pane · ↑/↓ Scroll\n[ Newer · ] Older · l Latest · R Refresh · p Pause\nCtrl+F Investigate · Esc or Alt+← Back · q Quit"
+                "{primary}\n{secondary} · d Recorded diagnostics\n←/→ or Ctrl+←/→ Pane · ↑/↓ Scroll\n[ Newer · ] Older · l Latest · R Refresh · p Pause\nCtrl+F Investigate · v Internal reviews · Esc Back · q Quit"
             );
             if matches!(view.selection, HistorySelection::Session(_, _)) {
                 help.push_str("\nCtrl+R Review · t Traces · m Inspector mode · P Prompts");
@@ -1907,6 +2024,18 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
                     .block(panel(HELP_CLOSE_HINT)),
                 area,
             );
+            return;
+        }
+        if area.width >= MIN_WIDTH
+            && area.height >= MIN_HEIGHT
+            && view.page.turn_picker.is_none()
+            && let Some(analytics) = view.active_analytics_mut()
+        {
+            let loading = workspace
+                .pending
+                .as_ref()
+                .is_some_and(|change| !matches!(change, Change::MetricHistory { cancelled: true }));
+            analytics.draw(frame, loading, workspace.message.as_deref());
             return;
         }
         view.page.ui.set_viewport(area.width, area.height);
@@ -2025,7 +2154,14 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
                 "Esc back · [ ] history pages"
             };
             let footer = Rect::new(0, area.height.saturating_sub(1), area.width, 1);
-            frame.render_widget(Paragraph::new(visible_text(status)), footer);
+            let status =
+                if view.show_evidence && workspace.message.is_none() && workspace.pending.is_none()
+                {
+                    format!("B chart / series · {status}")
+                } else {
+                    visible_text(status)
+                };
+            frame.render_widget(Paragraph::new(status), footer);
         }
         return;
     }
@@ -2094,6 +2230,7 @@ fn is_trace_view(view: &HistoryView) -> bool {
         view.selection,
         HistorySelection::All(WorkspaceView::Traces)
             | HistorySelection::Session(_, SessionView::Traces)
+            | HistorySelection::McpTraces { .. }
     )
 }
 
@@ -2163,6 +2300,163 @@ mod tests {
     }
 
     #[test]
+    fn internal_review_visibility_is_explicit_and_does_not_change_selected_agent() {
+        let (sender, requests) = mpsc::channel();
+        let mut workspace = Workspace::new();
+        let selected = session("harness.codex", "selected", "waiting", None);
+        workspace.agents.update(catalog(vec![selected.clone()]));
+        press(&mut workspace, &sender, KeyCode::Char('2'));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::History {
+                include_reviews: false,
+                ..
+            })
+        ));
+        workspace.finish(Ok(WorkspaceResponse::History(empty_history_page())));
+        press(&mut workspace, &sender, KeyCode::Char('v'));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::ReviewVisibility(true))
+        ));
+        assert!(!workspace.include_reviews);
+        workspace.finish(Ok(WorkspaceResponse::ReviewVisibility(true)));
+        let (reload, change) = workspace.deferred_request.take().unwrap();
+        assert!(matches!(
+            reload,
+            WorkspaceRequest::History {
+                include_reviews: true,
+                selection: HistorySelection::All(WorkspaceView::Activity),
+                ..
+            }
+        ));
+        assert!(workspace.history.is_empty());
+        assert_eq!(workspace.agents.current(), Some(&selected));
+        workspace.request(&sender, reload, change);
+        workspace.finish(Ok(WorkspaceResponse::History(empty_history_page())));
+        assert!(workspace.include_reviews);
+    }
+
+    #[test]
+    fn metric_read_cancellation_and_export_keep_the_current_scope() {
+        use agenturm_kernel::metric::{MetricKind, MetricSeries, MetricTemporality};
+        use agenturm_kernel::retained_history::{
+            MetricHistoryPage, MetricHistoryQuery, MetricSeriesEntry, MetricSeriesKey,
+        };
+        let (sender, requests) = mpsc::channel();
+        let snapshot = 5.into();
+        let source = ExtensionId::parse("otlp.fixture").unwrap();
+        let key = MetricSeriesKey {
+            source_id: source,
+            series_id: "1".repeat(64),
+        };
+        let series = MetricSeries {
+            id: key.series_id.clone(),
+            name: "fixture.latency".into(),
+            unit: "ms".into(),
+            service: None,
+            scope: None,
+            kind: MetricKind::Gauge,
+            temporality: MetricTemporality::Unspecified,
+            monotonic: None,
+        };
+        let mut page = empty_history_page();
+        page.snapshot.history_snapshot_id = snapshot;
+        page.features.metric_history = Some(MetricHistoryPage::Series {
+            snapshot_id: snapshot,
+            rows: vec![MetricSeriesEntry {
+                key: key.clone(),
+                series,
+                latest_unix_ns: 20,
+            }],
+            next: None,
+        });
+        let mut workspace = Workspace::new();
+        workspace.history.push(HistoryView::new(
+            HistorySelection::All(WorkspaceView::Metrics),
+            page,
+        ));
+        assert_eq!(
+            workspace.loaded_view().unwrap().rows[0].label,
+            "fixture.latency"
+        );
+        press(&mut workspace, &sender, KeyCode::Enter);
+        assert!(
+            matches!(requests.try_recv(), Ok(WorkspaceRequest::MetricHistory(query))
+            if matches!(query.as_ref(), MetricHistoryQuery::Points { series, snapshot_id, .. } if series == &key && *snapshot_id == snapshot))
+        );
+        press(&mut workspace, &sender, KeyCode::Esc);
+        assert_eq!(workspace.history.len(), 1);
+        workspace.finish(Err("Cancelled read must not replace the view".into()));
+        assert!(workspace.message.is_none());
+        assert_eq!(
+            workspace.loaded_view().unwrap().title,
+            "Metrics · OTLP series"
+        );
+        press(&mut workspace, &sender, KeyCode::Char('B'));
+        assert_eq!(workspace.loaded_view().unwrap().title, "Metrics");
+        press(&mut workspace, &sender, KeyCode::Char('B'));
+        assert_eq!(
+            workspace.loaded_view().unwrap().rows[0].label,
+            "fixture.latency"
+        );
+    }
+
+    #[test]
+    fn mcp_trace_open_pins_the_selected_call_and_returns_to_it() {
+        let (sender, requests) = mpsc::channel();
+        let source = "harness.codex";
+        let pane = ExtensionId::parse("app.workspace-mcp").unwrap();
+        let snapshot = 8.into();
+        let mut page = empty_history_page();
+        page.snapshot.history_snapshot_id = snapshot;
+        page.snapshot.panes.insert(
+            pane.clone(),
+            agenturm_kernel::PaneModel {
+                title: "MCP".into(),
+                rows: Vec::new(),
+            },
+        );
+        page.initial_pane = Some(pane.clone());
+        page.operation_tables.insert(
+            pane,
+            [("event-1", 13), ("event-2", 5)]
+                .into_iter()
+                .map(|(event, revision)| OperationRow {
+                    time: "Recorded".into(),
+                    server: Some("fixture".into()),
+                    tool: "call".into(),
+                    result: None,
+                    latency: None,
+                    evidence: Vec::new(),
+                    mcp_event: Some((source.into(), event.into(), revision)),
+                })
+                .collect(),
+        );
+        let mut workspace = Workspace::new();
+        workspace.history.push(HistoryView::new(
+            HistorySelection::All(WorkspaceView::Mcp),
+            page,
+        ));
+        press(&mut workspace, &sender, KeyCode::Down);
+        press(&mut workspace, &sender, KeyCode::Char('t'));
+        let WorkspaceRequest::History { selection, .. } = requests.try_recv().unwrap() else {
+            panic!("MCP traces query")
+        };
+        assert!(
+            matches!(&selection, HistorySelection::McpTraces { source_id, event_id, revision: 13, snapshot_id }
+            if source_id.as_str() == source && event_id == "event-1" && *snapshot_id == snapshot)
+        );
+        workspace.finish(Ok(WorkspaceResponse::History(empty_history_page())));
+        assert_eq!(workspace.history.len(), 2);
+        press(&mut workspace, &sender, KeyCode::Esc);
+        press(&mut workspace, &sender, KeyCode::Char('t'));
+        assert!(
+            matches!(requests.try_recv(), Ok(WorkspaceRequest::History { selection: HistorySelection::McpTraces { event_id, revision: 13, .. }, .. }) if event_id == "event-1")
+        );
+    }
+
+    #[test]
     fn attention_shortcut_pins_the_selected_source_and_seen_does_not_resolve() {
         let mut workspace = Workspace::new();
         let mut selected = session("harness.pi", "same", "paused", None);
@@ -2186,14 +2480,6 @@ mod tests {
         ]));
         let (sender, requests) = mpsc::channel();
         assert!(!press(&mut workspace, &sender, KeyCode::Down));
-        assert!(!press(&mut workspace, &sender, KeyCode::Char('v')));
-        assert!(requests.try_recv().is_err());
-        assert!(
-            workspace
-                .message
-                .as_deref()
-                .is_some_and(|line| line.contains("outside Rust capture"))
-        );
         assert!(!press(&mut workspace, &sender, KeyCode::Char('X')));
         assert!(
             matches!(requests.try_recv(), Ok(WorkspaceRequest::Work(WorkCommand::SessionAttention(row))) if row.harness_id == "harness.pi" && row.session_id == "same")
@@ -2375,6 +2661,7 @@ mod tests {
             let WorkspaceRequest::History {
                 selection: HistorySelection::All(view),
                 before: None,
+                ..
             } = requests.try_recv().unwrap()
             else {
                 panic!("missing workspace destination")
@@ -2447,7 +2734,7 @@ mod tests {
         assert!(workspace.prompt.is_none() && workspace.redact_then_acknowledge.is_some());
         assert!(!workspace.key(&sender, review));
         assert!(
-            matches!(requests.try_recv(), Ok(WorkspaceRequest::History { selection: HistorySelection::Session(row, SessionView::Review), before: None }) if row.session_id == "selected")
+            matches!(requests.try_recv(), Ok(WorkspaceRequest::History { selection: HistorySelection::Session(row, SessionView::Review), before: None, .. }) if row.session_id == "selected")
         );
     }
 
@@ -2935,7 +3222,9 @@ mod tests {
             assert_eq!(frame(&mut workspace), agents);
 
             assert!(!press(&mut workspace, KeyCode::Enter));
-            let WorkspaceRequest::History { selection, before } = requests.try_recv().unwrap()
+            let WorkspaceRequest::History {
+                selection, before, ..
+            } = requests.try_recv().unwrap()
             else {
                 panic!("expected selected session history");
             };
@@ -3026,7 +3315,7 @@ mod tests {
         assert!(!press(&mut workspace, KeyCode::Enter));
         assert!(
             matches!(requests.try_recv().unwrap(), WorkspaceRequest::History {
-            selection: HistorySelection::Session(ref session, _), before: None,
+            selection: HistorySelection::Session(ref session, _), before: None, ..
         } if session == &selected)
         );
     }
