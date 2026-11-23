@@ -55,7 +55,7 @@ The coverage below concerns workflow behavior and recorded evidence.
 <tr>
 <td>Check usage or host health</td>
 <td>Metrics include run usage and host and process data when the producer supplies it.</td>
-<td>Usage shows recorded tokens, native Kiro credits, and individual OTLP, Pi and OpenCode cost reports with provenance. Host reads recorded Linux samples and exact known-process history; live sampling requires a collector. Remote recorded Host access is explicitly opt-in. Combined cost and usage totals remain open where sources can repeat the same report.</td>
+<td>Usage shows recorded tokens, native Kiro credits, and individual OTLP, Pi and OpenCode cost reports with provenance. Host reads recorded Linux samples and exact known-process history; live sampling requires a collector. Remote recorded Host access is explicitly opt-in. Combined usage now deduplicates reports overlapping at exact source/session identity and discloses the exclusions; unattributed cross-layer overlap and fork-copyable native cost records stay outside combined totals.</td>
 </tr>
 <tr>
 <td>Handle requests and preserve follow-up work</td>

@@ -1,7 +1,10 @@
 //! Read the bounded retained trace and activity-log inputs under one snapshot.
 
 use super::trace_graph::{Classification, DayTraceReports, TraceMember, summarize};
-use super::{ActivityLogTotals, CostCounters, Counters, DAY_NS, USAGE_DAYS, UsageHistoryQuery};
+use super::{
+    ActivityLogTotals, CostCounters, Counters, DAY_NS, DayCombined, NativeEvidence, USAGE_DAYS,
+    UsageHistoryQuery,
+};
 use crate::{ObservationKind, Result, StoreError};
 use agenturm_kernel::ExtensionId;
 use rusqlite::{Connection, params};
@@ -41,6 +44,8 @@ pub(super) struct Window<'a> {
     pub cutoff: u64,
     pub watermark: i64,
     pub allowed: Option<&'a BTreeSet<ExtensionId>>,
+    /// Per-day native usage evidence for exact source/session overlap checks.
+    pub native: &'a [NativeEvidence; USAGE_DAYS],
 }
 
 #[derive(Default)]
@@ -70,6 +75,7 @@ impl DayLogReports {
 pub(super) struct DailyTelemetry {
     pub traces: [DayTraceReports; USAGE_DAYS],
     pub logs: [DayLogReports; USAGE_DAYS],
+    pub combined: [DayCombined; USAGE_DAYS],
     pub partial_before_day: Option<usize>,
     pub membership_limited: bool,
 }
@@ -80,6 +86,7 @@ impl Window<'_> {
         let mut totals = DailyTelemetry {
             traces: std::array::from_fn(|_| DayTraceReports::default()),
             logs: std::array::from_fn(|_| DayLogReports::default()),
+            combined: std::array::from_fn(|_| DayCombined::default()),
             partial_before_day: None,
             membership_limited: false,
         };
@@ -137,7 +144,8 @@ impl Window<'_> {
         let members_sql = format!(
             "SELECT o.kind_json, CASE WHEN sb.sequence<=?3 THEN s.kind_json END,
                     CASE WHEN ub.sequence<=?3 THEN u.kind_json END,
-                    CASE WHEN cb.sequence<=?3 THEN c.kind_json END
+                    CASE WHEN cb.sequence<=?3 THEN c.kind_json END,
+                    o.session_id
              FROM agenturm_observations o JOIN agenturm_history_batches b ON b.request_id=o.request_id
              LEFT JOIN agenturm_observations s ON s.source_id=o.source_id AND s.revision=0
                  AND s.event_id=o.event_id || ':summary' AND s.observed_at_unix_ns=o.observed_at_unix_ns
@@ -202,14 +210,20 @@ impl Window<'_> {
             };
             remaining -= group_members.len();
             totals.membership_limited |= !complete;
-            summarize(&group_members, complete, &mut totals.traces[day]);
+            summarize(
+                &group_members,
+                complete,
+                &mut totals.traces[day],
+                &mut totals.combined[day],
+                &self.native[day],
+            );
         }
         Ok(())
     }
 
     fn logs(&self, allowed: &Option<String>, totals: &mut DailyTelemetry) -> Result<()> {
         let sql = format!(
-            "SELECT o.observed_at_unix_ns, o.kind_json
+            "SELECT o.observed_at_unix_ns, o.session_id, o.kind_json
              FROM agenturm_observations o JOIN agenturm_history_batches b USING (request_id)
              WHERE o.scope='session' AND json_extract(o.kind_json,'$.kind')='otlp_activity_log'
                AND o.revision=0 AND substr(o.source_id,1,5)='otlp.'
@@ -246,26 +260,56 @@ impl Window<'_> {
                 );
                 break;
             }
+            let session: Option<String> = row.get(1)?;
             let ObservationKind::OtlpActivityLog(log) =
-                serde_json::from_str(&row.get::<_, String>(1)?)?
+                serde_json::from_str(&row.get::<_, String>(2)?)?
             else {
                 return Err(StoreError::Invalid("unexpected retained activity log kind"));
             };
             let bucket = &mut totals.logs[day];
             bucket.count += 1;
             bucket.errors += usize::from(log.reported_error);
+            let combined = &mut totals.combined[day];
+            // An attributed usage-bearing log claims the same native
+            // source/session identity as the native reports it may duplicate.
+            let identity = log
+                .target_source_id
+                .as_deref()
+                .zip(session.as_deref())
+                .filter(|_| log.usage.is_some());
+            if let Some((target, session)) = identity {
+                combined
+                    .claims
+                    .insert((target.to_owned(), session.to_owned()));
+            }
+            let overlaps = identity.is_some_and(|(target, session)| {
+                self.native[day]
+                    .rows
+                    .contains_key(&(target.to_owned(), session.to_owned()))
+            });
             if let Some(usage) = log.usage {
-                bucket.tokens.add([
+                let values = [
                     usage.input_tokens,
                     usage.output_tokens,
                     usage.cache_read_input_tokens,
                     usage.cache_write_input_tokens,
                     usage.reasoning_output_tokens,
                     usage.total_tokens,
-                ]);
+                ];
+                bucket.tokens.add(values);
+                if values.iter().any(Option::is_some) {
+                    if overlaps {
+                        combined.excluded += 1;
+                    } else {
+                        combined.tokens.add(values);
+                    }
+                }
             }
             if let Some(cost) = log.cost {
                 bucket.costs.add(&cost.currency, cost.nanounits);
+                // Native reports carry no cost, so log cost evidence has no
+                // native overlap to exclude.
+                combined.costs.add(&cost.currency, cost.nanounits);
             }
         }
         Ok(())
@@ -313,6 +357,7 @@ fn member(row: &rusqlite::Row<'_>) -> Result<TraceMember> {
     };
     Ok(TraceMember {
         span,
+        session: row.get(4)?,
         classification,
         usage,
         cost,

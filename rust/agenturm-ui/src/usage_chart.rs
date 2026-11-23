@@ -28,7 +28,10 @@ pub struct UsageChart {
 
 #[derive(Clone, Copy, Default)]
 enum Mode {
+    /// Nonduplicated evidence: overlapping producer reports at the same exact
+    /// source/session identity are excluded and counted, never summed.
     #[default]
+    Combined,
     Native,
     RawSpan,
     Traces,
@@ -38,15 +41,17 @@ enum Mode {
 impl Mode {
     fn next(self) -> Self {
         match self {
+            Self::Combined => Self::Native,
             Self::Native => Self::RawSpan,
             Self::RawSpan => Self::Traces,
             Self::Traces => Self::ActivityLogs,
-            Self::ActivityLogs => Self::Native,
+            Self::ActivityLogs => Self::Combined,
         }
     }
 
     fn label(self) -> &'static str {
         match self {
+            Self::Combined => "Combined · nonduplicated evidence",
             Self::Native => "Native usage reports",
             Self::RawSpan => "Span reports may overlap",
             Self::Traces => "Retained trace summaries",
@@ -56,6 +61,7 @@ impl Mode {
 
     fn tokens(self, day: &UsageDay) -> Option<&UsageTotals> {
         match self {
+            Self::Combined => Some(&day.combined.tokens),
             Self::Native => Some(&day.native),
             Self::RawSpan => Some(&day.span),
             Self::Traces => Some(&day.traces.tokens),
@@ -65,6 +71,7 @@ impl Mode {
 
     fn costs(self, day: &UsageDay) -> &[UsageCurrencyTotal] {
         match self {
+            Self::Combined => &day.combined.costs,
             Self::Traces => &day.traces.costs,
             Self::ActivityLogs => day.logs.as_ref().map_or(&[], |logs| &logs.costs),
             _ => &[],
@@ -86,9 +93,10 @@ impl Measure {
     fn next(self, mode: Mode) -> Self {
         match (self, mode) {
             (Self::Tokens, _) => Self::Reports,
-            (Self::Reports, Mode::Traces | Mode::ActivityLogs) => Self::Errors,
+            (Self::Reports, Mode::Traces | Mode::ActivityLogs | Mode::Combined) => Self::Errors,
             (Self::Errors, Mode::Traces) => Self::MissingCost,
-            (Self::Errors, Mode::ActivityLogs) | (Self::MissingCost, Mode::Traces) => Self::Cost,
+            (Self::Errors, Mode::ActivityLogs | Mode::Combined) => Self::Cost,
+            (Self::MissingCost, Mode::Traces) => Self::Cost,
             _ => Self::Tokens,
         }
     }
@@ -203,11 +211,13 @@ impl UsageChart {
             Measure::Reports => match self.mode {
                 Mode::Traces => "Recorded traces",
                 Mode::ActivityLogs => "Activity logs",
+                Mode::Combined => "Attributed usage reports",
                 _ => "Recorded usage reports",
             }
             .into(),
             Measure::Errors => match self.mode {
                 Mode::Traces => "Reported error traces",
+                Mode::Combined => "Excluded overlapping reports",
                 _ => "Reported error logs",
             }
             .into(),
@@ -235,9 +245,16 @@ impl UsageChart {
                     || day.traces.partial_traces == 0)
                     .then_some(day.traces.reported_error_traces as u128),
                 Mode::ActivityLogs => Some(day.logs.as_ref()?.reported_errors as u128),
+                Mode::Combined => Some(
+                    (day.combined.excluded_native_reports + day.combined.excluded_telemetry_reports)
+                        as u128,
+                ),
                 _ => None,
             },
-            Measure::MissingCost => Some(day.traces.traces_missing_exact_cost as u128),
+            Measure::MissingCost => match self.mode {
+                Mode::Traces => Some(day.traces.traces_missing_exact_cost as u128),
+                _ => None,
+            },
             Measure::Cost => {
                 let unit = currency?;
                 self.mode
@@ -276,6 +293,7 @@ impl UsageChart {
                         .logs
                         .as_ref()
                         .is_some_and(|logs| logs.cost_currencies_truncated),
+                    Mode::Combined => day.combined.cost_currencies_truncated,
                     _ => false,
                 }
     }
@@ -401,7 +419,7 @@ impl UsageChart {
         let controls = if matches!(self.measure, Measure::Cost) {
             "s source   t tokens   n totals   C currency"
         } else {
-            "s native / spans / traces / logs   t tokens   n totals"
+            "s combined / native / spans / traces / logs   t tokens   n totals"
         };
         rows.push(Line::from(controls).style(label_style()));
         frame.render_widget(Paragraph::new(rows).block(block), area);
@@ -436,6 +454,29 @@ mod tests {
                     end_unix_ns: 7,
                     days: std::array::from_fn(|index| UsageDay {
                         start_unix_ns: index as u64,
+                        combined: agenturm_kernel::retained_history::CombinedUsageTotals {
+                            tokens: UsageTotals {
+                                reports: usize::from(index == 6) * 2,
+                                input_tokens: match index {
+                                    3 => Some("40".into()),
+                                    6 => Some("12".into()),
+                                    _ => None,
+                                },
+                                ..UsageTotals::default()
+                            },
+                            costs: if index == 6 {
+                                vec![UsageCurrencyTotal {
+                                    currency: "USD".into(),
+                                    nanounits: "15".into(),
+                                    reports: 2,
+                                }]
+                            } else {
+                                Vec::new()
+                            },
+                            excluded_native_reports: usize::from(index == 6),
+                            excluded_telemetry_reports: 0,
+                            cost_currencies_truncated: false,
+                        },
                         native: UsageTotals {
                             input_tokens: match index {
                                 3 => Some("32".into()),
@@ -487,19 +528,58 @@ mod tests {
                 dates: std::array::from_fn(|index| format!("2026-11-{:02}", index + 1)),
                 scope: "All authorized sources".into(),
             });
+            // The combined view is the default: nonduplicated evidence with
+            // exclusions disclosed instead of summed.
             let screen = render(&mut terminal, &chart);
             assert!(screen.contains("7 UTC days"));
+            assert!(screen.contains("Combined · nonduplicated evidence"));
             assert!(screen.contains("2026-11-01 * Unreported"));
-            assert!(screen.contains("2026-11-06            0"));
             assert!(screen.contains("* Retention cutoff"));
             assert!(screen.contains("█"));
+            assert_eq!(chart.loaded_view().rows[3].value, "40");
+            assert!(chart.key(KeyCode::Char('n')));
+            assert!(
+                chart
+                    .loaded_view()
+                    .title
+                    .contains("Attributed usage reports")
+            );
+            assert!(
+                chart.loaded_view().rows[6]
+                    .value
+                    .starts_with("2 · Today to capture time")
+            );
+            assert!(chart.key(KeyCode::Char('n')));
+            assert!(
+                chart
+                    .loaded_view()
+                    .title
+                    .contains("Excluded overlapping reports")
+            );
+            assert!(
+                chart.loaded_view().rows[6]
+                    .value
+                    .starts_with("1 · Today to capture time")
+            );
+            assert!(chart.key(KeyCode::Char('n')));
+            let cost = chart.loaded_view();
+            assert!(cost.title.contains("USD reported cost"));
+            assert!(cost.rows[6].value.starts_with("0.000000015 ·"));
+            assert!(chart.key(KeyCode::Char('C')));
+            assert!(chart.loaded_view().title.contains("USD reported cost"));
+            // Native cohort remains one source step away.
             assert!(chart.key(KeyCode::Char('s')));
+            let screen = render(&mut terminal, &chart);
+            assert!(screen.contains("Native usage reports"));
+            assert!(screen.contains("2026-11-06            0"));
             assert!(chart.key(KeyCode::Char('t')));
             let screen = render(&mut terminal, &chart);
             assert!(screen.contains("Output tokens"));
+            assert!(chart.key(KeyCode::Char('s')));
+            let screen = render(&mut terminal, &chart);
             assert!(screen.contains("Span reports may overlap"));
             assert!(screen.contains("97"));
-            assert!(screen.contains("s native / spans"));
+            assert!(screen.contains("s combined / native / spans"));
             assert!(chart.key(KeyCode::Char('s')));
             assert!(chart.key(KeyCode::Char('n')));
             let screen = render(&mut terminal, &chart);
