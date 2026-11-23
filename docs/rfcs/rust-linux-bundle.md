@@ -16,9 +16,8 @@ collection is available on Linux systems without a user manager.
 
 ## Build and install
 
-This guide covers the Rust 0.3.8 Linux candidate. After its release assets are
-published, use the opt-in source installer from a checkout. The previous
-published 0.3.7 digests are retained below as a separate reference.
+Rust 0.3.8 is published for Linux x86-64 and ARM64. Use the opt-in source
+installer from a checkout and verify the matching versioned archive.
 
 ~~~sh
 agenturm=$(bash scripts/install-rust.sh install --version 0.3.8)
@@ -55,17 +54,16 @@ Use `agenturm-0.3.8-linux-aarch64.tar.gz` and its sidecar on ARM64. Keep the
 catalog and binaries in the extracted directory. Verify the matching release
 sidecar for the version being installed.
 
-For reference, the previously published **Rust 0.3.7** Linux archives have
-these SHA-256 digests:
+The published **Rust 0.3.8** Linux archives have these SHA-256 digests:
 
 | Platform | SHA-256 |
 | --- | --- |
-| Linux x86-64 | `936ad6f90e49bea8acdaf44b2fdc08e11c50df50987d7a5aa53ac8e65bef1791` |
-| Linux ARM64 / aarch64 | `56d1dcddc934e9c590c1247063ec78c35532201a04361a5de4c2aee5f40dda28` |
+| Linux x86-64 | `528d4c7057d280258788d44e684505b7c552bc5f4dc8f730c9a24d568fc0d657` |
+| Linux ARM64 / aarch64 | `95e37c0254f9bcd1650b1a7d9a630a40c180f61dc80f43035e934c732dd556cc` |
 
-The 0.3.7 tag run passed archive qualification and the offline installer check on
-both native Linux architectures. Its published assets match the digests above.
-[Native tag qualification](https://github.com/abhishekash/agenturm/actions/runs/45110581824)
+The 0.3.8 tag run passed archive qualification and the offline installer check on
+both native Linux architectures. The published assets match the digests above.
+[Native tag qualification](https://github.com/abhishekash/agenturm/actions/runs/45121070134)
 
 ## Open the cockpit
 

@@ -2,13 +2,13 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Rust 0.3.7</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-distribution-installation.md">Markdown source ↗</a></nav><h1>Rust distribution and installation</h1>
-<p>Use the published Rust 0.3.7 bundle on Linux x86-64 or ARM64. The opt-in
+</style></head><body><main><nav><strong>Agenturm / Rust 0.3.8 published</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-distribution-installation.md">Markdown source ↗</a></nav><h1>Rust distribution and installation</h1>
+<p>Use the published Rust 0.3.8 bundle on Linux x86-64 or ARM64. The opt-in
 installer keeps the app, process host, five adapters, connector driver,
 storage service and pinned catalog together under <strong>agenturm-rust</strong>. The
 default Rust cutover remains gated.</p>
-<p><a href="https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.7">Published Rust 0.3.7 release</a></p>
-<p>The implementation is a local source candidate in
+<p><a href="https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.8">Published Rust 0.3.8 release</a></p>
+<p>The qualified opt-in installer is available in
 <a href="https://github.com/abhishekash/agenturm/blob/main/scripts/install-rust.sh">scripts/install-rust.sh</a>. It does not publish
 a package, replace the existing installer, change the default command, or
 start a service. Its release-download path uses an exact Rust tag.</p>
@@ -24,7 +24,7 @@ start a service. Its release-download path uses an exact Rust tag.</p>
 <tbody>
 <tr>
 <td>Verified release-bundle installer</td>
-<td>Implement now, explicitly opt-in</td>
+<td>Implemented, explicitly opt-in</td>
 <td>Existing x86-64 and ARM64 artifacts already have native install, restart, upgrade and uninstall qualification. Users need neither Python nor a Rust compiler. All companion executables and their catalog remain together.</td>
 </tr>
 <tr>
@@ -52,7 +52,7 @@ documents archive URLs and binary-path metadata. These are possible later
 distribution mechanisms; this change does not enable either publication path.</p>
 <h2>Install with the checked-out source installer</h2>
 <p>Use Bash, curl, GNU tar and coreutils on qualified Linux x86-64 or ARM64.</p>
-<pre><code class="language-sh">bash scripts/install-rust.sh install --version 0.3.7
+<pre><code class="language-sh">bash scripts/install-rust.sh install --version 0.3.8
 agenturm-rust --version
 agenturm-rust
 </code></pre>
@@ -61,7 +61,7 @@ next steps on stderr. If ~/.local/bin is absent from PATH, it says so without
 editing the shell profile. The default managed layout is:</p>
 <pre><code class="language-text">~/.local/bin/agenturm-rust
   -&gt; ~/.local/share/agenturm-rust/dist/releases/
-       agenturm-0.3.7-linux-ARCH/bin/agenturm
+       agenturm-0.3.8-linux-ARCH/bin/agenturm
 </code></pre>
 <p>XDG_DATA_HOME selects the data base. --prefix and --bin-dir accept absolute
 paths, including spaces. The release directory has an ownership marker and a
@@ -71,38 +71,38 @@ Its conservative runtime floor is glibc 2.39, matching the qualified
 Ubuntu 24.04 runners. Other Linux distributions have not acquired support
 claims merely because the executable can start on them.</p>
 <p>Preview without downloading or changing files:</p>
-<pre><code class="language-sh">bash scripts/install-rust.sh install --version 0.3.7 --dry-run
+<pre><code class="language-sh">bash scripts/install-rust.sh install --version 0.3.8 --dry-run
 </code></pre>
 <p>For an already downloaded archive, the offline path uses the same checks:</p>
-<pre><code class="language-sh">bash scripts/install-rust.sh install --version 0.3.7 \
-  --archive ./agenturm-0.3.7-linux-x86_64.tar.gz \
-  --checksum ./agenturm-0.3.7-linux-x86_64.tar.gz.sha256 \
-  --sha256 936ad6f90e49bea8acdaf44b2fdc08e11c50df50987d7a5aa53ac8e65bef1791
+<pre><code class="language-sh">bash scripts/install-rust.sh install --version 0.3.8 \
+  --archive ./agenturm-0.3.8-linux-x86_64.tar.gz \
+  --checksum ./agenturm-0.3.8-linux-x86_64.tar.gz.sha256 \
+  --sha256 528d4c7057d280258788d44e684505b7c552bc5f4dc8f730c9a24d568fc0d657
 </code></pre>
 <p>Use the aarch64 asset and its matching digest on ARM64.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
 <tr>
-<th>Published 0.3.7 archive</th>
+<th>Published 0.3.8 archive</th>
 <th>SHA-256</th>
 </tr>
 </thead>
 <tbody>
 <tr>
 <td>Linux x86-64</td>
-<td>936ad6f90e49bea8acdaf44b2fdc08e11c50df50987d7a5aa53ac8e65bef1791</td>
+<td>528d4c7057d280258788d44e684505b7c552bc5f4dc8f730c9a24d568fc0d657</td>
 </tr>
 <tr>
 <td>Linux ARM64 / aarch64</td>
-<td>56d1dcddc934e9c590c1247063ec78c35532201a04361a5de4c2aee5f40dda28</td>
+<td>95e37c0254f9bcd1650b1a7d9a630a40c180f61dc80f43035e934c732dd556cc</td>
 </tr>
 </tbody>
 </table></div>
-<p><a href="https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.7">Release assets and sidecars</a> ·
-<a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-037-release.md">Archive qualification</a></p>
+<p><a href="https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.8">Release assets and sidecars</a> ·
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-038-ui-acceptance.md">Archive qualification</a></p>
 <h2>Update and recover</h2>
 <p>Updates are deliberate and versioned:</p>
-<pre><code class="language-sh">bash scripts/install-rust.sh update --version 0.3.7
+<pre><code class="language-sh">bash scripts/install-rust.sh update --version 0.3.8
 </code></pre>
 <p>There is no latest alias, automatic update, or lookup of GitHub's global
 latest release, which can refer to the Python distribution. A new complete
@@ -118,7 +118,7 @@ stop collection and back it up with the old selected version:</p>
 agenturm-rust service uninstall
 agenturm-rust backup --db &quot;$state/history.sqlite&quot; \
   --bundle &quot;$HOME/agenturm-before-upgrade&quot;
-bash scripts/install-rust.sh update --version 0.3.7
+bash scripts/install-rust.sh update --version 0.3.8
 agenturm-rust service install --config &quot;$state/sources.json&quot; \
   --db &quot;$state/history.sqlite&quot;
 agenturm-rust service status
@@ -127,7 +127,7 @@ agenturm-rust service status
 new backup directory. A foreground cockpit must also be closed before its
 history is backed up for an upgrade.</p>
 <p>Selecting a retained executable version does not downgrade a database.
-Rust 0.3.6 and 0.3.7 use schema 17, which 0.3.5 refuses. Keep the
+Rust 0.3.6–0.3.8 use schema 17, which 0.3.5 refuses. Keep the
 pre-upgrade backup and its matching executable for rollback. Preserve the
 upgraded history in its existing location. Restored private evidence needs new
 approvals and selections. See the
@@ -174,21 +174,21 @@ verifiable build attestations are follow-up work.</p>
 <h2>Ready now and publication gates</h2>
 <p>The versioned Linux release bundles are already public and qualified.
 The opt-in installer, offline verification mode and accompanying tests are
-implemented in the source candidate. Its cached exact-archive test installed
-0.3.6 into paths with spaces without a network transfer.
+implemented in the repository. Its exact 0.3.8 archive test installed into
+paths with spaces without a network transfer.
 The offline suite covers install, update, identical replay, foreign launchers,
 invalid digests and archives, platform refusal, data preservation and refusal
 before deleting an altered installation. An exact 0.3.5 → 0.3.6 installation
 also preserved a schema-16 history byte-for-byte through update and read-only
 query. Uninstall retained both the external history and an additional history
 file placed inside a release directory.
-The Rust 0.3.7 tag run passed native bundle qualification and the offline
+The Rust 0.3.8 tag run passed native bundle qualification and the offline
 installer check on both Linux x86-64 and ARM64. Each job verified all
 companion executables and catalog pins, same-version replay, the existing
 <code>agenturm</code> command, and uninstall with both normal and version-local SQLite
 history preserved. The published assets match the verified SHA-256 digests
 listed above.
-<a href="https://github.com/abhishekash/agenturm/actions/runs/45110581824">Native tag qualification</a></p>
+<a href="https://github.com/abhishekash/agenturm/actions/runs/45121070134">Native tag qualification</a></p>
 <p>A hosted one-command bootstrap is a proposed next distribution step after
 the installer review and qualification. It should fetch this script at an
 immutable reviewed commit and invoke Bash with an explicit version. This
