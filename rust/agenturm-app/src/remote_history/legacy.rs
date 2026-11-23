@@ -215,11 +215,24 @@ impl LegacyReceiver {
     }
 
     fn pending(&self, attention: &mut AttentionState) -> Result<AttentionReport, ReadError> {
+        self.pending_with_clock(attention).map(|(report, _)| report)
+    }
+
+    fn pending_with_clock(
+        &self,
+        attention: &mut AttentionState,
+    ) -> Result<(AttentionReport, Option<u64>), ReadError> {
         let deadline = Instant::now() + MAX_READ_TIME;
         let initial = self.health(deadline)?;
         let inventory = self.inventory(&initial, deadline)?;
         let final_health = self.health(deadline)?;
-        Ok(attention.observe(&self.identity, &initial, &final_health, inventory))
+        let report = attention.observe(&self.identity, &initial, &final_health, inventory);
+        let clock = initial
+            .observed_time_unix_nano
+            .zip(final_health.observed_time_unix_nano)
+            .filter(|(initial, final_clock)| report.ready && initial <= final_clock)
+            .map(|(_, final_clock)| final_clock);
+        Ok((report, clock))
     }
 }
 
@@ -266,6 +279,40 @@ pub(crate) fn attention_reader(
         Err(ReadError::Unavailable) => Ok(attention.report(&receiver.identity, false)),
         Err(error) => Err(error.into()),
     })
+}
+
+pub(crate) struct DesktopAttentionReader {
+    receiver: LegacyReceiver,
+    attention: AttentionState,
+}
+
+pub(crate) struct DesktopAttentionSample {
+    pub report: AttentionReport,
+    pub clock: Option<u64>,
+}
+
+impl DesktopAttentionReader {
+    pub(crate) fn connect(options: &RemoteHistoryOptions) -> Result<Self, String> {
+        Ok(Self {
+            receiver: LegacyReceiver::connect(options)?,
+            attention: AttentionState::default(),
+        })
+    }
+
+    pub(crate) fn identity(&self) -> &str {
+        &self.receiver.identity
+    }
+
+    pub(crate) fn read(&mut self) -> Result<DesktopAttentionSample, String> {
+        match self.receiver.pending_with_clock(&mut self.attention) {
+            Ok((report, clock)) => Ok(DesktopAttentionSample { report, clock }),
+            Err(ReadError::Unavailable) => Ok(DesktopAttentionSample {
+                report: self.attention.report(&self.receiver.identity, false),
+                clock: None,
+            }),
+            Err(error) => Err(error.into()),
+        }
+    }
 }
 
 fn get<T: DeserializeOwned>(
@@ -566,9 +613,17 @@ pub(crate) struct AttentionReport {
     pending: Vec<PendingRequest>,
 }
 
+impl AttentionReport {
+    /// Only a complete report confirms that all unresolved rows were present
+    /// in the current authenticated inventory.
+    pub(crate) fn desktop_requests(&self) -> Option<&[PendingRequest]> {
+        self.ready.then_some(&self.pending)
+    }
+}
+
 /// Only derived public identity and explicitly reported request state enter the output.
 #[derive(Clone, Debug, PartialEq, Eq, Serialize)]
-struct PendingRequest {
+pub(crate) struct PendingRequest {
     source_id: String,
     service: String,
     agent_id: String,
@@ -582,6 +637,35 @@ struct PendingRequest {
     reason_code: RequestKind,
     observed_at_unix_ns: String,
     source_clock: SourceClock,
+}
+
+impl PendingRequest {
+    pub(crate) fn receiver_clock(&self) -> Option<u64> {
+        let time = self.observed_at_unix_ns.parse().ok()?;
+        (self.source_clock == SourceClock::Receiver && time_ns(time)).then_some(time)
+    }
+
+    pub(crate) fn desktop_key(&self) -> [u8; 32] {
+        use sha2::{Digest, Sha256};
+
+        let mut key = Sha256::new();
+        for field in [
+            self.source_id.as_str(),
+            self.service.as_str(),
+            self.agent_id.as_str(),
+            self.session_id.as_str(),
+            self.trace_id.as_str(),
+            self.turn_id.as_deref().unwrap_or_default(),
+            self.sender_id.as_str(),
+            self.request_id.as_str(),
+            self.event_id.as_str(),
+        ] {
+            key.update((field.len() as u64).to_be_bytes());
+            key.update(field.as_bytes());
+        }
+        key.update(self.sequence.to_be_bytes());
+        key.finalize().into()
+    }
 }
 
 impl From<&RequestState> for PendingRequest {

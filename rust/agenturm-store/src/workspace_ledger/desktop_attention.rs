@@ -16,6 +16,13 @@ pub struct DesktopAttentionRequest {
     pub observed_at_unix_ns: u64,
 }
 
+/// An exact authenticated Python receiver occurrence. The key covers its
+/// sender, request, event and retained scope without keeping those labels.
+pub struct LegacyDesktopAttentionRequest {
+    pub event_key: [u8; 32],
+    pub observed_at_unix_ns: u64,
+}
+
 impl WorkspaceLedger {
     /// Consumes at most one automatic notification attempt per exact request.
     /// The first complete inventory for a history incarnation is silent.
@@ -28,20 +35,10 @@ impl WorkspaceLedger {
         now_unix_ns: u64,
         requests: &[DesktopAttentionRequest],
     ) -> Result<usize> {
-        if requests.len() > MAX_WORKSPACE_PAGE_SIZE
-            || history_identity.len() != 32
-            || !history_identity
-                .bytes()
-                .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
-        {
-            return Err(WorkspaceError::Invalid(
-                "invalid desktop attention inventory",
-            ));
-        }
+        validate_inventory(history_identity, requests.len())?;
         let now = positive_time(now_unix_ns)?;
         let watermark = i64::try_from(snapshot.watermark())
             .map_err(|_| WorkspaceError::Invalid("invalid desktop attention snapshot"))?;
-        self.verify_history()?;
 
         let mut namespace = Sha256::new();
         namespace.update(b"agenturm-desktop-attention-v1");
@@ -50,12 +47,55 @@ impl WorkspaceLedger {
         if let Some(incarnation) = snapshot.incarnation() {
             namespace.update(incarnation.to_string());
         }
-        let namespace: [u8; 32] = namespace.finalize().into();
         let requests = requests
             .iter()
             .map(request_key)
             .collect::<Result<Vec<_>>>()?;
+        self.claim_attention(namespace.finalize().into(), Some(watermark), now, requests)
+    }
 
+    /// Claims receiver-clock delivery in an external receiver's own namespace.
+    /// This mode consumes authenticated read proofs, not native receipt watermarks.
+    pub fn claim_legacy_desktop_attention(
+        &self,
+        endpoint: std::net::SocketAddr,
+        receiver_identity: &str,
+        receiver_time_unix_ns: u64,
+        requests: &[LegacyDesktopAttentionRequest],
+    ) -> Result<usize> {
+        validate_inventory(receiver_identity, requests.len())?;
+        if !endpoint.ip().is_loopback() {
+            return Err(WorkspaceError::Invalid(
+                "desktop attention requires a loopback receiver",
+            ));
+        }
+        let now = positive_time(receiver_time_unix_ns)?;
+        let mut namespace = Sha256::new();
+        namespace.update(b"agenturm-python-desktop-attention-v1");
+        namespace.update(self.binding);
+        namespace.update(receiver_identity);
+        namespace.update(endpoint.to_string());
+        let requests = requests
+            .iter()
+            .map(|request| {
+                Ok((
+                    request.event_key,
+                    positive_time(request.observed_at_unix_ns)?,
+                ))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        self.claim_attention(namespace.finalize().into(), None, now, requests)
+    }
+
+    fn claim_attention(
+        &self,
+        namespace: [u8; 32],
+        watermark: Option<i64>,
+        now: i64,
+        requests: Vec<([u8; 32], i64)>,
+    ) -> Result<usize> {
+        self.verify_history()?;
+        let stored_watermark = watermark.unwrap_or_default();
         let mut path = self.history.as_os_str().to_owned();
         path.push(".desktop-attention.sqlite");
         let path = Path::new(&path);
@@ -80,14 +120,14 @@ impl WorkspaceLedger {
         let claimed = if let Some((baseline_time, baseline_watermark, last_time, last_watermark)) =
             previous
         {
-            if now < last_time || watermark < last_watermark {
+            if now < last_time || stored_watermark < last_watermark {
                 return Err(WorkspaceError::Invalid(
                     "desktop attention inventory predates its last complete read",
                 ));
             }
             tx.execute(
                 "UPDATE desktop_histories SET last_time=?2, last_watermark=?3 WHERE namespace=?1",
-                params![namespace, now, watermark],
+                params![namespace, now, stored_watermark],
             )?;
             let oldest = now.saturating_sub(REQUEST_FRESHNESS_NS);
             tx.execute(
@@ -102,7 +142,7 @@ impl WorkspaceLedger {
             )?;
             let mut claimed = 0;
             for (digest, observed_at) in requests {
-                if watermark > baseline_watermark
+                if watermark.is_none_or(|watermark| watermark > baseline_watermark)
                     && observed_at > baseline_time
                     && (oldest..=now).contains(&observed_at)
                 {
@@ -128,7 +168,7 @@ impl WorkspaceLedger {
             }
             tx.execute(
                 "INSERT INTO desktop_histories VALUES (?1,?2,?3,?2,?3)",
-                params![namespace, now, watermark],
+                params![namespace, now, stored_watermark],
             )?;
             0
         };
@@ -139,6 +179,20 @@ impl WorkspaceLedger {
         tx.commit()?;
         Ok(claimed)
     }
+}
+
+fn validate_inventory(identity: &str, count: usize) -> Result<()> {
+    if count > MAX_WORKSPACE_PAGE_SIZE
+        || identity.len() != 32
+        || !identity
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+    {
+        return Err(WorkspaceError::Invalid(
+            "invalid desktop attention inventory",
+        ));
+    }
+    Ok(())
 }
 
 fn initialize(db: &Connection) -> Result<()> {
@@ -250,6 +304,31 @@ mod tests {
         fn drop(&mut self) {
             let _ = fs::remove_dir_all(&self.0);
         }
+    }
+
+    #[test]
+    fn legacy_claims_have_an_independent_endpoint_and_receiver_baseline() {
+        let root = Scratch::new();
+        let marker = root.0.join("identity");
+        fs::write(&marker, b"fixture").unwrap();
+        let ledger = WorkspaceLedger::open(marker).unwrap();
+        let identity = "a".repeat(32);
+        let endpoint = "127.0.0.1:4318".parse().unwrap();
+        let alternate = "127.0.0.1:4319".parse().unwrap();
+        let request = LegacyDesktopAttentionRequest {
+            event_key: [1; 32],
+            observed_at_unix_ns: 11,
+        };
+        let evidence = std::slice::from_ref(&request);
+        let observe = |endpoint, identity, now, rows| {
+            ledger.claim_legacy_desktop_attention(endpoint, identity, now, rows)
+        };
+        assert_eq!(observe(endpoint, &identity, 10, &[]).unwrap(), 0);
+        assert_eq!(observe(endpoint, &identity, 11, evidence).unwrap(), 1);
+        assert_eq!(observe(endpoint, &identity, 12, evidence).unwrap(), 0);
+        assert!(observe(endpoint, &identity, 11, evidence).is_err());
+        assert_eq!(observe(alternate, &identity, 12, evidence).unwrap(), 0);
+        assert_eq!(observe(endpoint, &"b".repeat(32), 12, evidence).unwrap(), 0);
     }
 
     #[test]

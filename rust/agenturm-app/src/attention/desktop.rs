@@ -17,6 +17,11 @@ use std::time::{SystemTime, UNIX_EPOCH};
 const HISTORY_PAGE_SIZE: usize = 5_000;
 const FRESHNESS_NS: u64 = 15_000_000_000;
 
+#[cfg(target_os = "linux")]
+mod legacy;
+#[cfg(target_os = "linux")]
+pub(super) use legacy::watch_legacy;
+
 #[derive(Debug, Eq, PartialEq, Serialize)]
 #[serde(rename_all = "snake_case")]
 pub(super) enum Delivery {

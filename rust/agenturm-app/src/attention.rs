@@ -20,6 +20,7 @@ const USAGE: &str = concat!(
     "       agenturm attention native <bind|send|hook|retry> (explicit receiver binding)\n",
     "       agenturm attention <status|watch> --endpoint http://<loopback-IP:port> ",
     "--token-file <path> [--receiver-protocol python-v0.2.8] [watch options]\n",
+    "Desktop delivery over HTTP requires explicit --receiver-protocol python-v0.2.8.\n",
 );
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,6 +40,7 @@ pub enum AttentionOptions {
     Remote {
         receiver: crate::RemoteHistoryOptions,
         watch: Option<(Duration, usize)>,
+        desktop: bool,
     },
 }
 
@@ -91,7 +93,7 @@ fn parse_watch(
             max_polls = Some(1);
             continue;
         }
-        if flag == "--desktop" && local && !desktop {
+        if flag == "--desktop" && !desktop {
             desktop = true;
             continue;
         }
@@ -133,14 +135,11 @@ fn parse_watch(
 
 #[cfg(target_os = "linux")]
 fn parse_remote(args: &[String]) -> Result<AttentionOptions, String> {
-    if args.iter().any(|argument| argument == "--desktop") {
-        return Err("Desktop attention requires a local history or broker attention watch with a native clock proof".into());
-    }
     let (verb, mut args) = args.split_first().ok_or(USAGE)?;
     let mut receiver = Vec::new();
     let mut polling = Vec::new();
     while let Some((flag, rest)) = args.split_first() {
-        if flag == "--once" {
+        if matches!(flag.as_str(), "--once" | "--desktop") {
             polling.push(flag.clone());
             args = rest;
             continue;
@@ -159,17 +158,22 @@ fn parse_remote(args: &[String]) -> Result<AttentionOptions, String> {
         }
         args = trailer;
     }
-    let watch = match verb.as_str() {
-        "status" if polling.is_empty() => None,
+    let (watch, desktop) = match verb.as_str() {
+        "status" if polling.is_empty() => (None, false),
         "watch" => {
-            let (_, interval, limit, _) = parse_watch(&polling, false)?;
-            Some((interval, limit))
+            let (_, interval, limit, desktop) = parse_watch(&polling, false)?;
+            (Some((interval, limit)), desktop)
         }
         _ => return Err(USAGE.into()),
     };
+    let receiver = crate::remote_history::parse_attach(&receiver)?;
+    if desktop && !receiver.is_python() {
+        return Err("Desktop attention over HTTP requires an explicit Python v0.2.8 receiver with a comparable clock".into());
+    }
     Ok(AttentionOptions::Remote {
-        receiver: crate::remote_history::parse_attach(&receiver)?,
+        receiver,
         watch,
+        desktop,
     })
 }
 
@@ -237,8 +241,12 @@ pub fn execute_attention(options: &AttentionOptions, mut output: impl Write) -> 
         AttentionOptions::Remote {
             receiver,
             watch: polling,
+            desktop: send_desktop,
         } => {
             if receiver.is_python() {
+                if *send_desktop && let Some((interval, limit)) = polling {
+                    return desktop::watch_legacy(receiver, *interval, *limit, output);
+                }
                 return legacy_attention(receiver, *polling, output);
             }
             use crate::HistoryReader;
