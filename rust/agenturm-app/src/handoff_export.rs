@@ -1,6 +1,6 @@
 //! Exports a saved handoff to a new local directory.
 
-use agenturm_store::{SavedHandoff, TaskHandoff, WorkspaceAnchor};
+use agenturm_store::{ApprovedTaskSource, SavedHandoff, TaskHandoff, WorkspaceAnchor};
 use std::collections::BTreeSet;
 use std::fmt::Write as _;
 use std::fs::{self, DirBuilder, File, OpenOptions};
@@ -285,13 +285,22 @@ fn task_sections(handoff: &TaskHandoff, history: bool) -> (String, Vec<(&'static
         sections.push(("Linked runs", links));
     }
     if let Some(approval) = handoff.continuity.last() {
-        let mut text = format!(
-            "Approved continuation {}\n{}\nEvent {} · revision {}",
-            approval.id,
-            anchor_text(&approval.source.anchor),
-            approval.source.event_id,
-            approval.source.revision
-        );
+        let selected = match &approval.source {
+            ApprovedTaskSource::Native(source) => format!(
+                "{}\nEvent {} · revision {}",
+                anchor_text(&source.anchor),
+                source.event_id,
+                source.revision
+            ),
+            ApprovedTaskSource::Python(source) => format!(
+                "Python receiver {}\n{} / {}\nRecorded event {}",
+                source.scope.receiver,
+                source.scope.producer,
+                source.scope.session_id,
+                source.occurrence.source_id
+            ),
+        };
+        let mut text = format!("Approved continuation {}\n{selected}", approval.id);
         if !approval.continuation.is_empty() {
             let _ = write!(text, "\n\n{}", approval.continuation);
         }

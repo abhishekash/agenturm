@@ -22,7 +22,10 @@ pub use evidence_view::{EvidenceRow, EvidenceSpec, EvidenceTable, EvidenceTables
 pub use findings::{FindingGroup, FindingOccurrence, FindingsPage};
 pub use operation_table::{ConfiguredMcpServer, McpInventory, OperationRow, OperationTables};
 
-pub use live_receiver::{LiveOwner, LivePage, LiveRow, run_live_receiver};
+pub use live_receiver::{
+    LiveOwner, LivePage, LiveRequest, LiveResponse, LiveReviewMode, LiveReviewSelection,
+    LiveReviewTarget, LiveRow, run_live_receiver, run_live_receiver_with_review,
+};
 pub use loaded_view::LoadedView;
 
 pub use workbench::evaluation::{

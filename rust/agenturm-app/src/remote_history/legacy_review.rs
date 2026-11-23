@@ -1,5 +1,7 @@
 //! Frozen exact-execution Review for an authenticated, already running 0.2.8 receiver.
 
+pub(crate) mod cockpit;
+pub(crate) mod continuity;
 mod output;
 mod projection;
 
@@ -152,7 +154,7 @@ enum Revision {
     Label(String),
 }
 
-#[derive(Clone, Debug, PartialEq)]
+#[derive(Clone, Debug, PartialEq, Serialize)]
 pub(super) struct CapturePolicy {
     denied: bool,
     global: Option<bool>,

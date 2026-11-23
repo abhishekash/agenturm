@@ -2,10 +2,12 @@
 
 use super::*;
 use agenturm_kernel::ReadSnapshot;
-use agenturm_store::{TaskDraftApproval, TaskSourceProof, WorkspaceHistory};
+use agenturm_store::{ApprovedTaskSource, TaskDraftApproval, TaskSourceProof, WorkspaceHistory};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 
+#[cfg(target_os = "linux")]
+pub(super) mod legacy;
 mod review;
 pub(super) use review::ReviewFile;
 
@@ -258,7 +260,7 @@ pub(super) fn approve(
         |ledger| {
             let approved = TaskDraftApproval {
                 draft_sha256: draft.draft_sha256.clone(),
-                source: draft.source.clone(),
+                source: ApprovedTaskSource::Native(draft.source.clone()),
                 continuation: draft.continuation,
             };
             let (task, approval) = if let Some(target) = draft.target {
@@ -339,12 +341,17 @@ pub(super) fn read(
         .iter()
         .find(|item| item.id == approval_id)
         .ok_or("The approved continuity version is unavailable")?;
+    let ApprovedTaskSource::Native(source) = &approval.source else {
+        return Err(
+            "Supply the explicit Python receiver options to reveal this continuity source".into(),
+        );
+    };
     with_source(
         access,
         config,
-        &from_proof(&approval.source, None),
+        &from_proof(source, None),
         |current, excerpt| {
-            check_proof(&approval.source, &current)?;
+            check_proof(source, &current)?;
             let retained = ledger.task_handoff(id)?.ok_or(MISSING_TASK)?;
             if !retained.continuity.contains(approval) {
                 return Err("The approved continuity version changed".into());

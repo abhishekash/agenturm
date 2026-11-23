@@ -38,6 +38,7 @@ pub(super) const USAGE: &str = concat!(
     "       agenturm task handoffs --db <history> [--limit <1..200>] [--before <id>]\n",
     "       agenturm task export <handoff-id> --db <history>\n",
     "       agenturm task backup --db <history> --destination <new-sqlite-file>\n",
+    "       Python-backed task draft, approve-draft and continuity --approval-id use --receiver-protocol python-v0.2.8 --endpoint <loopback-http-url> --token-file <path> with --db.\n",
     "\nBrief fields are intent, acceptance_criteria, constraints, open_questions and next_action. Use hyphens in flags.\n",
     "Create is an alias for add. Results are JSON except task handoff, which defaults to Markdown.\n",
     "Handoff --output and export write private Markdown and HTML pairs.\n",
@@ -51,6 +52,8 @@ pub struct TaskOptions {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum TaskAction {
+    #[cfg(target_os = "linux")]
+    Legacy(Box<continuity::legacy::Options>),
     Backup(PathBuf),
     List {
         limit: usize,
@@ -202,6 +205,23 @@ pub(super) fn parse(args: &[String]) -> Result<TaskOptions, String> {
 
     let db = required_flag(&mut flags, "--db")?.into();
     let json_output = flags.remove("--json").is_some();
+    if ["--endpoint", "--receiver-protocol", "--token-file"]
+        .iter()
+        .any(|flag| flags.contains_key(flag))
+    {
+        #[cfg(target_os = "linux")]
+        {
+            let action = continuity::legacy::parse(verb, id, draft_file, &mut flags)?;
+            if !flags.is_empty() {
+                return Err("Unexpected option for the selected Python-backed task action".into());
+            }
+            return Ok(TaskOptions {
+                request: Some((db, TaskAction::Legacy(Box::new(action)))),
+            });
+        }
+        #[cfg(not(target_os = "linux"))]
+        return Err("Python-backed task sources require Linux".into());
+    }
     let action = match (verb.as_str(), id) {
         ("backup", None) => TaskAction::Backup(required_flag(&mut flags, "--destination")?.into()),
         (verb @ ("list" | "handoffs"), None) => {
@@ -521,6 +541,13 @@ pub(super) fn with_task_stdout(
     options: &TaskOptions,
     execute: impl FnOnce(&mut dyn Write) -> TaskResult<()>,
 ) -> TaskResult<()> {
+    #[cfg(target_os = "linux")]
+    if matches!(
+        options.request.as_ref().map(|(_, action)| action),
+        Some(TaskAction::Legacy(_))
+    ) {
+        return crate::with_private_stdout(execute);
+    }
     if matches!(
         options.request.as_ref().map(|(_, action)| action),
         Some(
@@ -563,6 +590,13 @@ pub(super) fn execute_ledger(
         verifier: source_verifier,
     };
     let result = match action {
+        #[cfg(target_os = "linux")]
+        TaskAction::Legacy(options) => {
+            if source_verifier.is_some() {
+                return Err("Python-backed task evidence requires a local task ledger".into());
+            }
+            return continuity::legacy::execute(options, ledger, &mut output);
+        }
         TaskAction::Backup(destination) => {
             ledger.backup_tasks_to(destination).map_err(string)?;
             json!({"format": "agenturm-rust-task-backup/1", "path": destination})

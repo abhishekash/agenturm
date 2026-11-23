@@ -128,7 +128,7 @@ fn references(projection: &Value) -> Value {
     json!(records)
 }
 
-fn render(projection: &Value) -> String {
+pub(super) fn render(projection: &Value) -> String {
     let scope = &projection["scope"];
     let window = &projection["window"];
     let checks = sequence(&projection["checks"]);

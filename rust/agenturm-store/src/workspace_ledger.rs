@@ -2,7 +2,10 @@
 
 mod continuity;
 mod desktop_attention;
-pub use continuity::{ApprovedTaskDraft, TaskDraftApproval, TaskSourceProof};
+pub use continuity::{
+    ApprovedTaskDraft, ApprovedTaskSource, LegacyActivityId, LegacyTaskOccurrence, LegacyTaskScope,
+    LegacyTaskSourceProof, TaskDraftApproval, TaskSourceProof,
+};
 pub use desktop_attention::{DesktopAttentionRequest, LegacyDesktopAttentionRequest};
 
 use crate::{MAX_EVENT_ID_BYTES, MAX_SESSION_KEY_BYTES, Store, StoreError, validate_identifier};

@@ -13,7 +13,7 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod analytics;
 mod command_center;
-mod prompt;
+pub(crate) mod prompt;
 mod review_visibility;
 mod view_io;
 

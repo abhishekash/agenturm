@@ -4,7 +4,7 @@ use super::*;
 use crate::workspace::{RecordedSession, ReviewVersion};
 use agenturm_kernel::ReadSnapshot;
 use std::sync::{Arc, Mutex, mpsc};
-use std::time::Duration;
+use std::time::{Duration, Instant};
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct WorkAnchor {
@@ -124,6 +124,7 @@ pub(super) enum PromptKind {
     Telemetry,
     Evaluation,
     Investigation,
+    LegacyReview,
 }
 
 impl PromptKind {
@@ -135,6 +136,7 @@ impl PromptKind {
             Self::Telemetry => "Producer-captured text",
             Self::Evaluation => "Imported evaluation text",
             Self::Investigation => "Verified source evidence",
+            Self::LegacyReview => "Python receiver · verified Review",
         }
     }
 }
@@ -157,6 +159,61 @@ pub(super) fn prompt_channel(kind: PromptKind) -> (PromptDelivery, PromptReceive
             kind,
         },
     )
+}
+
+impl PromptDelivery {
+    /// Deliver one frame and check a revocable receiver authority until the
+    /// terminal has redrawn its metadata view and acknowledged redaction.
+    /// Each verification callback must honor the supplied absolute deadline.
+    pub fn flush_guarded(
+        &mut self,
+        mut verify: impl FnMut(Instant) -> Result<(), String>,
+    ) -> Result<(), String> {
+        const INTERVAL: Duration = Duration::from_secs(1);
+        const CHECK_LIMIT: Duration = Duration::from_millis(750);
+        const DISPLAY_LIMIT: Duration = Duration::from_secs(30);
+        const UNCONFIRMED: &str = "Private Review redaction was not acknowledged";
+        if let Err(error) = verify(Instant::now() + CHECK_LIMIT) {
+            self.buffer.clear();
+            return Err(error);
+        }
+        self.frames
+            .send(std::mem::take(&mut self.buffer))
+            .map_err(|_| "Private Review window closed")?;
+        let deadline = Instant::now() + DISPLAY_LIMIT;
+        loop {
+            let now = Instant::now();
+            match self
+                .acknowledgement
+                .recv_timeout(deadline.saturating_duration_since(now).min(INTERVAL))
+            {
+                Ok(()) => return Ok(()),
+                Err(mpsc::RecvTimeoutError::Disconnected) => {
+                    self.close_gate()?;
+                    return Err(UNCONFIRMED.into());
+                }
+                Err(mpsc::RecvTimeoutError::Timeout) => {}
+            }
+            let now = Instant::now();
+            let verified = if now < deadline {
+                verify((now + CHECK_LIMIT).min(deadline))
+            } else {
+                Err(UNCONFIRMED.into())
+            };
+            if let Err(error) = verified {
+                self.close_gate()?;
+                self.acknowledgement
+                    .recv_timeout(deadline.saturating_duration_since(Instant::now()))
+                    .map_err(|_| UNCONFIRMED.to_owned())?;
+                return Err(error);
+            }
+        }
+    }
+
+    fn close_gate(&self) -> Result<(), String> {
+        *self.active.lock().map_err(|_| "Review guard unavailable")? = false;
+        Ok(())
+    }
 }
 
 impl io::Write for PromptDelivery {

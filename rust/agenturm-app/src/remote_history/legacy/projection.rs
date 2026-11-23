@@ -299,6 +299,7 @@ impl Report {
     }
 
     pub(super) fn into_live_page(self) -> LivePage {
+        let receiver_id = self.receiver_id.clone();
         // The Python sessions API can derive its free-form task fields from
         // captured prompts. Use only authenticated structural evidence here.
         let mut roster_evidence = BTreeMap::new();
@@ -337,6 +338,7 @@ impl Report {
                     .as_ref()
                     .map(|actor| format!("Actor {actor}"));
                 LiveRow {
+                    review: None,
                     owner: Some(agent.owner.live()),
                     internal_review: agent.internal_review,
                     title,
@@ -355,6 +357,7 @@ impl Report {
                     .map(|owner| owner.live());
                 let detail = row.trace_id.map(|trace| format!("Trace {trace}"));
                 LiveRow {
+                    review: None,
                     owner,
                     internal_review: row.internal_review,
                     title: format!(
@@ -375,7 +378,17 @@ impl Report {
                     .zip(row.session_id.as_deref())
                     .and_then(|(service, session)| Owner::new(service, session, row.agent_id))
                     .map(|owner| owner.live());
+                let review = owner
+                    .as_ref()
+                    .filter(|owner| owner.agent_id.is_some())
+                    .map(|owner| agenturm_ui::LiveReviewTarget {
+                        receiver_id: receiver_id.clone(),
+                        owner: owner.clone(),
+                        trace_id: row.trace_id.clone(),
+                        turn_id: row.turn_id,
+                    });
                 LiveRow {
+                    review,
                     owner,
                     internal_review: row.internal_review,
                     title: format!("{} · {}", row.trace_id, row.status),
@@ -394,6 +407,7 @@ impl Report {
                 let owner = Owner::new(&row.service, &row.session_id, Some(row.agent_id))
                     .map(|owner| owner.live());
                 LiveRow {
+                    review: None,
                     owner,
                     internal_review: row.service == "codex-review",
                     title: format!(

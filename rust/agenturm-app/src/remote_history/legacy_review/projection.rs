@@ -151,7 +151,7 @@ pub(super) fn build(
         "errors": errors, "context_events": context,
         "window": {
             "earliest_ns": stamps.iter().min(), "latest_ns": stamps.iter().max(), "count": events.len(),
-            "next_cursor": cursor, "scope_revision": null, "capture_revision": policy.revision(),
+            "next_cursor": cursor, "scope_revision": null, "capture_revision": super::continuity::frozen_capture_revision(policy),
             "coverage": coverage, "reasons": reasons, "note": CAPTURE_NOTE,
         },
         "request": latest_message("user", scope, events),
@@ -383,7 +383,7 @@ fn edit(event: &Event, scope: &Scope) -> Option<Value> {
     }))
 }
 
-fn latest_message(action: &str, scope: &Scope, events: &[Event]) -> Option<Value> {
+pub(super) fn latest_message(action: &str, scope: &Scope, events: &[Event]) -> Option<Value> {
     for row in events
         .iter()
         .rev()

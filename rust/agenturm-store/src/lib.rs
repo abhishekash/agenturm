@@ -73,7 +73,8 @@ pub use telemetry_payload::{
     TelemetryPayload, TelemetryPayloadRecord, TelemetryPayloadSelection,
 };
 pub use workspace_ledger::{
-    ApprovedTaskDraft, DesktopAttentionRequest, LegacyDesktopAttentionRequest,
+    ApprovedTaskDraft, ApprovedTaskSource, DesktopAttentionRequest, LegacyActivityId,
+    LegacyDesktopAttentionRequest, LegacyTaskOccurrence, LegacyTaskScope, LegacyTaskSourceProof,
     MAX_WORKSPACE_GIT_DIFF_BYTES, MAX_WORKSPACE_PAGE_SIZE, SavedHandoff, SavedTask,
     SavedTaskDecision, TaskBrief, TaskBriefUpdate, TaskDecisionInput, TaskDecisionKind,
     TaskDraftApproval, TaskHandoff, TaskSourceProof, WorkspaceAnchor, WorkspaceError,

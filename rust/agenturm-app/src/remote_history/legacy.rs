@@ -262,14 +262,24 @@ pub(super) fn cockpit(options: &RemoteHistoryOptions) -> Result<(), String> {
     let options = options.clone();
     let mut receiver = None;
     let mut attention = AttentionState::default();
-    agenturm_ui::run_live_receiver(move || {
+    agenturm_ui::run_live_receiver_with_review(move |request| {
         let receiver = match &receiver {
             Some(receiver) => receiver,
             None => receiver.insert(LegacyReceiver::connect(&options)?),
         };
-        receiver
-            .report(SESSION_PAGE, &mut attention)
-            .map(Report::into_live_page)
+        match request {
+            agenturm_ui::LiveRequest::Refresh => receiver
+                .report(SESSION_PAGE, &mut attention)
+                .map(Report::into_live_page)
+                .map(agenturm_ui::LiveResponse::Page),
+            agenturm_ui::LiveRequest::Review {
+                selection,
+                delivery,
+            } => {
+                super::legacy_review::cockpit::deliver(receiver, &options, &selection, delivery)?;
+                Ok(agenturm_ui::LiveResponse::ReviewClosed)
+            }
+        }
     })
     .map_err(|_| "Cannot run the Python receiver cockpit".into())
 }
