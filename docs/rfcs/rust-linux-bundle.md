@@ -245,8 +245,26 @@ seen and `l` to focus the matching tmux pane when Agenturm verifies the
 route. `c` verifies the selected exact pending main-session request and previews
 and copies `codex resume …` or `claude --resume …` for supported sources.
 It never launches the command; Escape restores the request selection. Respond
-in the harness terminal. Integrated desktop threshold, snooze and retry
-settings remain an open parity requirement.
+in the harness terminal.
+
+Press `S` in Workflow to open notification settings. Enter toggles desktop
+notifications; Tab selects the task token, USD and elapsed-minute thresholds;
+Ctrl+S saves them. Zero disables a threshold. `z` snoozes delivery for ten
+minutes or ends the snooze. Tab from the request list switches to typed
+incidents. A Failed or Unavailable delivery can be retried with `T`; retries
+require the same current request or threshold crossing and exact delivery
+attempt. Claimed and uncertain attempts are not retried automatically.
+
+Settings start with desktop notifications unset, leaving the explicit watch
+configuration in control. Saving Off overrides that configuration. New or
+already-above-threshold evidence establishes a quiet baseline. Token and cost
+alerts require complete native turn evidence and a fresh below-to-above
+crossing; missing values remain unknown. Elapsed alerts require an
+authenticated current execution-start receipt. Completion is quiet. Cockpit
+delivery is checked while fresh views load; paused or stale history does not
+replay notifications. Messages contain only a generic count, without task
+names, commands or private bodies. These controls are implemented in the
+unpublished candidate and remain subject to final package qualification.
 
 In Review, press `n` for saved decision notes. In the decision list, press
 `e` to write a note against the selected evidence version and Ctrl+S to save it.
@@ -325,8 +343,12 @@ Review exports use new private destinations and include Markdown and HTML.
 Investigation cursors are opaque; keep the query, receiver and scope unchanged
 when continuing a page. Source references identify one exact occurrence and
 are revalidated on reveal. Capture can be metadata-only, in which case private
-text is unavailable. The integrated private receiver Review modal remains
-separate pending work.
+text is unavailable. In the explicit Python receiver cockpit, choose an exact trace and press
+Ctrl+R for run Review or Ctrl+T for an explicitly recorded whole turn. The
+private viewer has a fixed lifetime and no copy/export action; Escape restores
+the exact trace. Receiver authorization is polled with bounded checks rather
+than a server-held display lock. Private output backpressure and turn-member
+changes are part of candidate qualification.
 
 ## Edit tasks from the CLI
 
@@ -496,7 +518,70 @@ launcher installs no dependencies and starts no Python receiver. Captured text
 requires explicit `--capture-content` and the corresponding payload scope;
 metadata is the default.
 
+### Inspect reported error logs
+
+The candidate accepts ordinary OTLP error/fatal records (severity 17–24) over
+JSON or protobuf. Metadata records source, reported time, exact supplied scope
+and genuine trace/span correlation. Missing session identity stays source-scoped.
+Bodies, event labels and arbitrary attributes stay outside public history.
+Existing `agent.activity` records retain their separate usage cohort.
+
+To retain bounded scalar log text, explicitly enable it on the authenticated
+receiver and separately grant display:
+
+```sh
+"$agenturm" serve-traces --listen 127.0.0.1:4318 --db "$db" \
+  --source-id otlp.local --payload-scope standalone --token-file producer.token \
+  --capture-log-text
+# After stopping a local writer, or through the broker's maintenance grant:
+"$agenturm" log-text grant --db "$db" --source-id otlp.local --payload-scope standalone
+"$agenturm" log-text snapshot --db "$db" --source-id otlp.local
+```
+
+A source-only log needs no invented session flag. In Findings, inspect an exact
+error-log occurrence and press `s` to open producer-captured text under its
+current log grant. Escape redacts it and returns to that occurrence. A span
+payload grant does not authorize log text. `log-text revoke` uses the same
+binding flags as grant. `binding` prints the distinct `telemetry.log_text`
+fingerprint for broker maintenance configuration; broker `log-text snapshot`
+and `preview --selection` use the authenticated reader. Private bodies stay
+outside ordinary query, copy and export.
+
+Text must be a validated scalar of at most 2 KiB; a batch carries at most 64 KiB.
+No text is reconstructed from older metadata-only receipts. When a producer
+omits its record ID, public metadata forms the replay identity. Identical
+metadata coalesces, and different captured bodies under that identity conflict;
+provide a unique record ID to distinguish those records.
+
+The log grant requires schema 20. A writer upgrades supported existing histories;
+read-only use does not upgrade them. Schema 19 span grants and receipts remain
+valid. Older executables refuse schema 20, so retain a pre-upgrade backup for
+rollback. Restore requires fresh private-content approval as before.
+
+### Send a Python launch to an existing receiver
+
+```sh
+"$agenturm" run --endpoint http://127.0.0.1:4318 \
+  --token-file producer.token --instrument python --service my-app -- python app.py
+```
+
+This candidate route uses an already running authenticated native receiver or
+an explicit loopback SSH tunnel. The receiver owns the source identity; the
+launcher assigns a fresh standalone session and creates no local database or
+listener. It validates the owner-only producer token and authenticated receiver
+before starting the program. The receiver remains running when the program
+exits or is interrupted. Choose either this destination or `--db`. Content
+capture and source overrides are unavailable on the existing-receiver route.
+
 ## Use the workspace from scripts
+
+Use `attention status --db <path> --workflow` or
+`attention watch --db <path> --once --workflow` for a read-only JSON snapshot
+of current typed incidents, saved notification settings and matching delivery
+receipts. This report never starts a notifier or changes stored state. Exact
+64-bit values are decimal strings. `delivery_scope` identifies current matched
+evidence; absent history does not acquire an invented receipt scope.
+
 
 `agenturm task --help` lists the native task and handoff commands. They use
 the same task records as the cockpit. Run `agenturm attention status --db

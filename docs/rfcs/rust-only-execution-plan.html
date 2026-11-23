@@ -181,7 +181,7 @@ using the same key, and confirmed-absence retry. The bundled driver exposes
 collection and delivery commands. Untrusted connector activation remains
 gated on OS isolation and credential control.</p>
 <h2>Final journey integration — 23 November 2026</h2>
-<p>The integration branch implements the following selected Python 0.2.8 journeys. This is a development candidate; final archive qualification is pending and the default distribution remains gated. The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-journey-parity.md">paired cockpit audit</a> records tested behavior and remaining differences.</p>
+<p>The integration branch and <a href="https://github.com/abhishekash/agenturm/pull/379">draft PR #379</a> implement the following Python 0.2.8 journeys. This is a development candidate; the final checksum-identified archive is still being qualified and the default distribution remains gated. The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-journey-parity.md">paired cockpit audit</a> distinguishes tested behavior and remaining differences.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
 <tr>
@@ -192,45 +192,45 @@ gated on OS isolation and credential control.</p>
 </thead>
 <tbody>
 <tr>
-<td>Command center E4/E5</td>
-<td>Task title, then native nickname, then concise provider/role/project fallback; newest-updated ordering for groups and rows, deterministic ties and identity-preserving selection. Status sorting cannot override recency. UI tests passed.</td>
-<td>Joined installed refresh, pagination and restart checks. Header-only sessions require a truthful discovery fact, not invented Working state.</td>
+<td>Command center E1–E5</td>
+<td>Exact native titles/nicknames/project provenance; concise fallback; newest-updated group and row ordering; stable selection. Twelve actual open native transcripts across two processes passed exact source/session/title/project and return checks at 120×32, 80×24 and 60×18. Rename, distinct sources sharing a native ID, catch-up and restart passed.</td>
+<td>Final archive rerun. Header-only installed qualification passed old-cursor one-shot backfill, stable replay, guardian separation, neutral Unknown state and lifecycle authority under timestamp skew.</td>
 </tr>
 <tr>
 <td>MCP</td>
-<td>Authorized configured idle inventory; exact call-to-trace links pinned to source/session/turn/worker/operation and snapshot; retained text search filters before pagination, with literal case-insensitive matching; server selection carries through pages.</td>
-<td>Joined retained-search and return-path PTY, final extracted bundle.</td>
+<td>Authorized configured idle inventory; exact call-to-trace links pinned to source/session/turn/worker/operation and snapshot; retained literal text search before pagination and exact server filter carryover. Beyond-latest-500 search, linked trace, empty-result inventory separation and selection restoration passed at all three sizes.</td>
+<td>Final extracted bundle.</td>
 </tr>
 <tr>
 <td>Metric history and Usage</td>
-<td>All five typed OTLP metric kinds via JSON/protobuf; series/points/exemplar browsing; page-local catalog search; seven UTC days, per-currency costs, representative trace counters, run/error/log evidence and overlap suppression. Authenticated ingestion and three terminal sizes passed.</td>
-<td>Final archive and updated paired journeys. Descriptions are outside retained typed metric fields.</td>
+<td>All five typed OTLP metric kinds via JSON/protobuf; series/points/exemplar browsing; page-local catalog search; seven UTC days, per-currency costs, representative trace counters, run/error/log evidence and overlap suppression. Actual SDK exports, replay, denial and three terminal sizes passed.</td>
+<td>Final archive and current SDK matrix. Descriptions are outside retained typed metric fields.</td>
 </tr>
 <tr>
 <td>Findings and Host</td>
-<td>Source-scoped finding groups/counts and exact occurrence navigation; page-local filters; same-user pinned live processes and retained process working-directory basename, with no arguments or environment.</td>
-<td>Joined live Host/filter/refresh PTY. General Python finding-source body navigation, parent PID and host/platform display remain differences.</td>
+<td>Source-scoped finding groups/counts, exact occurrences and page-local filters. Protected exact failed Codex command sources reuse the current-grant/redraw-ACK viewer. Same-user pinned live and retained processes expose permitted cwd basenames. Live PID/project search, inspector and identity-preserving stopped-process refresh passed at all three sizes.</td>
+<td>Final packaged private-source journey. Exact failed-span sources and parent PID/search are implemented; actual terminal checks passed for failed command/span reveal, revocation and return selection. Failed evaluation and captured generic error-log sources are implemented with exact receipt/current failure or log-grant checks. The log route passed source-only terminal checks and separate-account qualification. Explicit Python receiver Findings and current remote Host inventory remain separate differences.</td>
 </tr>
 <tr>
-<td>Native requests</td>
-<td>Typed native requests and separate guardian review records; default-off persisted review visibility; bind/send/hook/retry bridges for native and explicit Python receivers; durable opt-in desktop delivery with receiver-clock, identity and exact-request checks. Separate-account guest bridge replay and restore fencing passed.</td>
-<td>Final joined guest and installed request visibility/notification runs. Review completion never implies approval. Integrated notification settings remain open.</td>
+<td>Native requests and Workflow</td>
+<td>Typed requests and separate default-off guardian reviews; bind/send/hook/retry for native and explicit Python receivers; durable opt-in desktop delivery with current receiver clock and exact request proof. Separate-account guest replay and restore fencing passed. Workflow copies a verified current main-session resume command without launching it.</td>
+<td>Final joined guest and installed notifications/resume. Review completion never implies approval. Typed threshold settings, ten-minute snooze, quiet baselines, exact failed-attempt retries and authenticated execution clocks are integrated. Final joined tests, terminal and packaged clock qualification are running.</td>
 </tr>
 <tr>
 <td>Storage and Review</td>
-<td>Schema 19 upgrades prior history and retains idempotent native-attention receipts. Native remote and standalone trace Review; explicit Python 0.2.8 receiver Review with bounded output and live capture-policy checks.</td>
-<td>Final prior-release archive upgrade, packaged remote APIs and private Review UI.</td>
+<td>Schema 20 adds a separate log-text grant while preserving schema 19 span grants and receipts; it upgrades supported prior history and retains idempotent attention receipts. Native remote and standalone trace Review; bounded explicit Python 0.2.8 receiver Review and investigations; a gated private receiver cockpit view. Authenticated native read/pagination regressions passed in the separate-account guest.</td>
+<td>Final prior-release archive upgrade. Authoritative turn-membership and bounded private output fencing are implemented; adversarial and actual terminal checks passed. Exact OpenCode first-page request preludes are separately authenticated without expanding step membership.</td>
 </tr>
 <tr>
 <td>Import, launcher and tasks</td>
-<td>Durable checkpointed span-JSONL following; typed activity-log ingestion; optional installed Python SDK auto instrumentation with cached real SDK witnesses; exact Rust review-file task drafts and task-only backup.</td>
-<td>Packaged checks. Python private Review-to-task drafting and remote investigations are still being integrated; they are not retired.</td>
+<td>Durable checkpointed span-JSONL following; typed activity logs; optional installed Python SDK auto instrumentation with cached real SDK witnesses; exact Rust/Python Review-backed task drafts, approval and reveal; task-only backup. Tagged receiver tests cover revocation, immutable prompt authority and fresh Rust Review after positive capture-safety regrant.</td>
+<td>Final packaged and SDK checks. The private Python task path retains current owner/member authority through final publication; tagged receiver positive, ordinary-only and changed-second-read cases passed. Final archive rerun remains.</td>
 </tr>
 </tbody>
 </table></div>
-<p>The earlier joined workspace passed 693 tests in 93 suites. Subsequent focused UI, Store, broker, HTTP, desktop, Python-receiver and real SDK checks passed on their stated source revisions. The complete joined workspace and strict Clippy are being rerun; these earlier counts are not a final release certificate. The guest qualification found a trace endpoint filtering after the page limit; the candidate now filters before pagination and has focused Store/broker/HTTP regressions, with the guest rerun pending.</p>
-<p>The remaining required workflows include integrated Workflow resume/settings, the protected finding-source and private receiver Review views, and private Python Review task drafting. Continue implementation and record intentional differences; do not retire them without explicit user approval. Typed native HTTP is not a claim of Python 0.2.8 wire compatibility.</p>
-<p>A real Kiro transcript and an approved production connector endpoint remain external acceptance inputs. Local implementation and qualification continue. macOS D2-Mac is planned but unsupported until its native architecture, installer and cockpit gates pass. Comparative performance benchmarking remains deferred. Public release cadence remains at most one release in any rolling 24 hours; no new public release or default switch is authorized by this candidate record.</p>
+<p>The joined <code>42712dd</code> source passed 813 tests across 96 suites, with none failed or ignored, strict whole-workspace all-target Clippy and an offline build of every workspace binary. Its frozen nine-binary development bundle passed Workflow settings/retry, concurrent retry CAS, protected Finding command/span and native resume terminal checks. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-039-candidate.md">candidate qualification record</a> for the exact executable hash and remaining archive gates. Linux x86-64 and ARM64 archive jobs passed on the PR source. The Rust CI test job exposed Node fixtures counting only structural spans after summary companions were added; those fixtures now verify each typed cohort and paired identities, and their focused local checks pass. The new head still needs CI. No receiver admission rule is weakened to satisfy those fixtures.</p>
+<p>The default cutover still requires the remaining required workflow differences, final installed paired journeys and supported production acceptance. Do not retire workflows without explicit user approval. Typed native HTTP is not a claim of full Python 0.2.8 wire compatibility.</p>
+<p>A real Kiro transcript and an approved production connector endpoint remain external acceptance inputs. Local implementation and qualification continue. macOS D2-Mac is planned but unsupported until each native architecture, installer and cockpit gate passes. Comparative performance benchmarking remains deferred. Public release cadence remains at most one release in any rolling 24 hours; this candidate record does not create a public release or switch the default.</p>
 <h2>Remaining work and acceptance</h2>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>

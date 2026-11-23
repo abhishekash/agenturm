@@ -1,6 +1,6 @@
 # Rust cutover workflow inventory
 
-Baseline is the Python `v0.2.8` tag and the published Rust 0.3.8 Linux bundle. The UI changes below passed integrated runtime, terminal, private-content and native package qualification. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.
+Baseline is the Python `v0.2.8` tag and the published Rust 0.3.8 Linux bundle. The 0.3.8 baseline passed integrated runtime, terminal, private-content and native package qualification. The later 0.3.9 development candidate is in final qualification; its [current journey record](../validation/rust-ui-journey-parity.md) supersedes the older screen descriptions below. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.
 
 The current implementation scope retains the remaining workflows. Remote
 receiver access, remaining eval views, automatic retention, recorded cost and
@@ -16,33 +16,35 @@ migration of Python-era databases remains outside the Rust-only product scope.
 | --- | --- |
 | Bare `agenturm`, `cockpit`, global `--db` | Keep local startup, discovery, one-shot snapshots and explicit history selection. Bare Rust startup, global `--db` and `cockpit --db` select local history. `cockpit --once` prints a bounded session report, with JSON and page coverage on request. The same report works through a broker or trusted remote reader. Use `query` for raw machine-readable history. `cockpit --endpoint` attaches through a trusted loopback listener or SSH tunnel. On Linux, `cockpit --new-window` opens the same cockpit with the selected history. The explicit Python 0.2.8 mode attaches to an existing tagged receiver for bounded live metadata. [Python receiver mode](#attach-to-an-existing-python-028-receiver) · [Remote history setup](rust-broker-commands.md#read-history-through-an-ssh-tunnel) |
 | `serve` | Keep local OTLP collection and source watch through `serve-traces`, `discover --follow` and `collect --watch` or the Linux user service. `broker serve-history` serves the native broker's retained metadata on loopback through a dedicated reader. The Python `/api/*` wire surface, direct remote TLS and arbitrary legacy JSONL tail remain open. |
-| `run` | Keep command launch, exit status, local trace delivery and exact source/session linkage. Rust `run` configures OTLP for an instrumented producer. Python-specific script and module injection requires a product decision. |
+| `run` | Keep command launch, exit status, local trace delivery and exact source/session linkage. Rust `run` configures OTLP for an instrumented producer. The candidate can also send an explicitly instrumented Python script/module to an existing authenticated native loopback receiver using `--endpoint` and an owner-only producer `--token-file`, without a local database or new listener. The candidate adds explicit installed Python SDK auto instrumentation; plain launch remains unchanged. Actual selected vendor SDK jobs remain a final candidate gate. |
 | `import-jsonl` | Use `import-jsonl` for supported native span exports and `import-traces` for OTLP JSON. Both retain structural trace metadata with exact session scope. JSONL can also capture supported private text with explicit opt-in. Legacy amounts without a currency remain unknown. |
 | `import-evals` | Import bounded `agent-evals` result metadata into an exact retained OTLP trace source. Use `evals` to read the current outcome in text or JSON. `evals --history` pages retained revisions, `evals --summary` reports current source outcomes with page counts, and `evals --list` inventories the latest retained outcome per trace across explicit OTLP sources. In the cockpit, `E` opens evaluations and `d` opens approved private result text. |
 | `migrate-db` | Retired by the Rust-only product decision. Rust `backup` and `restore` operate on Rust-owned state. |
 | `prune` | Keep explicit age-based retention. Rust `prune --before-unix-ns` and persisted `retention set\|disable\|run\|status` are available. New default cockpit histories use 14 days; existing histories retain their policy. Collector, cockpit, local receiver and broker writer ticks apply it, while receipts and checkpoints survive cleanup. Broker policy changes require maintenance authority. |
-| `attention status`, `attention watch` | Rust reads local history or an attached Rust receiver and keeps seen state in the user's workspace. Remote watch emits a snapshot and changes from retained native lifecycle evidence. Python 0.2.8 mode reads the exact native request inventory. Legacy state migration and cross-host terminal routing remain open. |
+| `attention status`, `attention watch` | Rust reads local history or an attached Rust receiver and keeps seen state in the user's workspace. Remote watch emits a snapshot and changes from retained native lifecycle evidence. Python 0.2.8 mode reads the exact native request inventory. Local `status --workflow` or `watch --once --workflow` adds body-free current incidents, saved policy and matched delivery receipts with exact attempts, without notification or state mutation. Legacy state migration and cross-host terminal routing remain open. |
 | `review` | Rust cockpit and noninteractive Review use exact source, session, turn, and worker scope. The CLI reads a bounded page and exports metadata receipts in Markdown, HTML, and JSON. It can list the explicitly linked spans of a turn, or resolve a trace to its unique retained turn using producer-provided source, session, turn, and worker identity. |
 | `investigate failures\|path\|command\|instruction\|source` | Rust local and broker investigations page retained failure metadata across authorized sources. Exact-scope searches for instructions, paths and commands use current grants and pinned source references. Codex command search accepts `--failed` for source-confirmed failures. See [failure investigation](#investigate-retained-failures) for the supported kinds and native evidence limits. |
 | `task list\|create\|show\|archive` | Rust supports create, exact show, completion, archiving and restoration. The default task list hides archived entries. `list --all` and `show` can still read them. |
 | `task link\|unlink\|handoff\|backup` | Rust links use exact native source/session/turn/worker identities. `task handoff` reads one saved task revision and renders Markdown, HTML, or JSON. Its private export writes a Markdown and HTML pair. Workspace backup retains the ledger and supports restore into a new history directory. |
-| `task update\|snapshot\|brief\|decide\|decisions\|draft\|approve-draft` | Rust supports revision-checked editing, local Git summaries, opt-in tracked text patches, five structured brief fields, and immutable decisions with supersession. Drafts and decision citations can use one exact retained user prompt. Approval and excerpt reopening require revalidation of the original grant and source receipt. Broader Review evidence projections remain open. |
+| `task update\|snapshot\|brief\|decide\|decisions\|draft\|approve-draft` | Rust supports revision-checked editing, local Git summaries, opt-in tracked text patches, five structured brief fields, and immutable decisions with supersession. Drafts and decision citations can use one exact retained user prompt. Approval and excerpt reopening require revalidation of the original grant and source receipt. The candidate also accepts exact native and explicit Python receiver Review receipts, revalidating current source and private capture authority before draft publication. |
 
 The CLI maintainer owns implementation and installed scenarios for the retained commands. Any later retirement requires an explicit product decision. [Python command source](https://github.com/abhishekash/agenturm/blob/v0.2.8/observatory/__main__.py) · [Rust workflow coverage](rust-cockpit-workflow-coverage.md)
 
 ### Session task labels
 
-The Rust Agents roster uses a saved task title when a session-level link
-matches the exact history, source, and session. If the bounded title read
-cannot resolve a single title, the roster can use a structural label such as
-a recorded pull request or file edit. Sessions without title evidence show
-**Untitled session**. The source and session ID remain visible separately.
+The current candidate uses an exact saved task title or safe native conversation
+title, then an agent nickname, then concise provider/role context. Prompt-derived
+title copies are excluded. IDs remain stable identity keys in details. Native
+Codex and Claude name/project metadata has explicit provenance and exact
+source/session matching. Renames preserve selection. The command center sorts
+project groups by their newest member and sessions by descending update time;
+status and hierarchy do not override recency. E4/E5 tests cover missing names,
+duplicates, ties and selection movement. See the [native-session validation
+record](../validation/rust-real-session-roster.md).
 
-Prompt and payload text stays in explicit private views. The live Python
-receiver client can label a row from typed activity and trace evidence tied
-to the same service, session, and actor. Legacy task fields can contain
-captured prompts, so the live roster leaves those fields outside its labels.
-
+Prompt and payload text stays in explicit private views. Python receiver
+attachment uses typed activity and trace evidence tied to the exact service,
+session and actor; captured prompt fields do not label its live roster.
 
 ### Command-center first screen
 
@@ -72,11 +74,11 @@ private modal body. Query and form inputs own printable keys.
 
 `z` switches an open user prompt between Readable and original captured layout; both use the same already granted text and fixed 25-second display lifetime. Original layout preserves captured newlines and tab stops and allows horizontal scrolling. This does not reveal uncaptured source envelopes or affect other private viewers.
 
-`p` pauses or resumes automatic refresh. `R` refreshes on demand. `[` moves to a loaded newer page, `]` reads an older page, and `l` returns to the latest page within the current scope. `a` resets the roster filters. `f` switches between tree and flat views, `o` changes the sort, and `!` shows sessions needing attention. `Esc` closes the current overlay or returns to the previous view. `F1` or `?` opens keyboard help.
+`p` pauses or resumes automatic refresh. `R` refreshes on demand. `[` moves to a loaded newer page, `]` reads an older page, and `l` returns to the latest page within the current scope. `a` resets the roster filters. `f` switches between tree and flat views, and `!` shows sessions needing attention. The current candidate keeps Updated ↓ order rather than exposing status sorting. `Esc` closes the current overlay or returns to the previous view. `F1` or `?` opens keyboard help.
 
 On the Rust roster, `X` marks one exact pending request seen. When several current worker or turn requests match the session, the chooser lets you select one. The request stays pending until its source records a state change. A newly recorded request revision can need attention again. `Ctrl+R` or `V` opens Review for the selected session.
 
-The authenticated Python receiver view uses `v` to include or hide captured internal approval reviews. Local Rust capture currently excludes these internal review sessions. Python receiver attachment uses `1`, `2`, and `4` for its live metadata pages. `w` or `!` opens Pending, where the receiver's recorded requests can be inspected.
+The authenticated Python receiver view uses `v` to include or hide captured internal approval reviews. The candidate separates explicitly typed native internal approval reviews behind a default-off visibility preference; ordinary sessions cannot be promoted into that inventory by a name. Python receiver attachment uses `1`, `2`, and `4` for its live metadata pages. `w` or `!` opens Pending, where the receiver's recorded requests can be inspected.
 
 ### Attach to an existing Python 0.2.8 receiver
 
@@ -101,9 +103,7 @@ service, session and actor where supplied. Escape restores the roster selection.
 The one-shot JSON response uses `agenturm-python-receiver-live/1` and labels
 readiness and partial coverage. Reads check the receiver header and any body
 identity, then confirm the same health identity after the batch. The Python
-protocol provides live pages without a Rust history watermark. Private content,
-Review receipts, saved tasks and cross-host terminal routing are unavailable in
-this view. Client output excludes legacy prompt, log and arbitrary provider bodies.
+protocol provides live pages without a Rust history watermark. The candidate adds explicit gated private Review and Review-backed task receipts. It verifies current capture policy, exact receiver/owner/member identity and a fixed display lifetime; private viewers have no copy/export. Cross-host terminal routing remains unavailable. Ordinary client output excludes prompt, log and arbitrary provider bodies.
 
 Attention requires a ready, complete native lifecycle inventory. A partial or
 unavailable read leaves request state unconfirmed. A watch preserves the last
