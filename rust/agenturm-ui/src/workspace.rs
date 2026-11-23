@@ -2567,7 +2567,12 @@ mod tests {
 
     #[test]
     fn native_names_context_and_duplicates_are_readable_at_every_supported_size() {
-        let mut first = session("harness.codex.11111111111111111111111111111111", "opaque-one", "running", None);
+        let mut first = session(
+            "harness.codex.11111111111111111111111111111111",
+            "opaque-one",
+            "running",
+            None,
+        );
         first.task_title = Some("Release checks".into());
         first.project_path = Some("/work/agenturm".into());
         first.project_origin = Some(ProjectOrigin::NativeRecordedWorkspace);
@@ -2584,14 +2589,37 @@ mod tests {
         agents.update(catalog(vec![first, second]));
         for (width, height) in [(120, 32), (80, 24), (60, 18)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
-            terminal.draw(|frame| draw_agents(frame, &mut agents, false, None)).unwrap();
-            let text = terminal.backend().buffer().content().iter()
-                .map(|cell| cell.symbol()).collect::<String>();
-            for expected in ["Release checks", "Codex", "Mira", "Sol", "/work/agenturm", "Same name"] {
-                assert!(text.contains(expected), "{width}x{height}: {expected}: {text}");
+            terminal
+                .draw(|frame| draw_agents(frame, &mut agents, false, None))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            for expected in [
+                "Release checks",
+                "Codex",
+                "Mira",
+                "Sol",
+                "/work/agenturm",
+                "Same name",
+            ] {
+                assert!(
+                    text.contains(expected),
+                    "{width}x{height}: {expected}: {text}"
+                );
             }
-            assert!(!text.contains("opaque-one"), "IDs belong in inspector/copy: {text}");
-            assert!(!text.contains("opaque-two"), "IDs belong in inspector/copy: {text}");
+            assert!(
+                !text.contains("opaque-one"),
+                "IDs belong in inspector/copy: {text}"
+            );
+            assert!(
+                !text.contains("opaque-two"),
+                "IDs belong in inspector/copy: {text}"
+            );
         }
     }
 
@@ -2603,7 +2631,9 @@ mod tests {
         selected.project_origin = Some(ProjectOrigin::NativeRecordedWorkspace);
         let other = session("harness.codex.beta", "shared", "completed", None);
         let mut workspace = Workspace::new();
-        workspace.agents.update(catalog(vec![selected.clone(), other.clone()]));
+        workspace
+            .agents
+            .update(catalog(vec![selected.clone(), other.clone()]));
         let exact = session_key(&selected);
         workspace.agents.apply_filters(Some(&exact));
         selected.task_title = Some("After rename".into());
@@ -2612,7 +2642,13 @@ mod tests {
         assert_eq!(session_key(workspace.agents.current().unwrap()), exact);
         let (sender, requests) = mpsc::channel();
         assert!(!press(&mut workspace, &sender, KeyCode::Enter));
-        let Ok(WorkspaceRequest::History { selection: HistorySelection::Session(row, SessionView::Overview), .. }) = requests.try_recv() else { panic!("expected exact session inspector request") };
+        let Ok(WorkspaceRequest::History {
+            selection: HistorySelection::Session(row, SessionView::Overview),
+            ..
+        }) = requests.try_recv()
+        else {
+            panic!("expected exact session inspector request")
+        };
         assert_eq!(session_key(&row), exact);
         assert_eq!(row.task_title.as_deref(), Some("After rename"));
         assert_eq!(row.project_path.as_deref(), Some("/work/a-project"));
@@ -2636,7 +2672,10 @@ mod tests {
             agents.search = query.into();
             agents.apply_filters(None);
             assert_eq!(agents.visible.len(), 1, "{query}");
-            assert_eq!(command_center::name(agents.current().unwrap()), "Name unavailable");
+            assert_eq!(
+                command_center::name(agents.current().unwrap()),
+                "Name unavailable"
+            );
         }
         agents.search = "absent".into();
         agents.apply_filters(None);

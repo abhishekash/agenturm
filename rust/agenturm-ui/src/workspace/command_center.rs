@@ -61,7 +61,9 @@ pub(super) fn name(row: &RecordedSession) -> &str {
 
 fn supporting_context(row: &RecordedSession, grouping: Grouping, duplicate: bool) -> String {
     let mut parts = vec![provider(row).to_owned()];
-    if let Some(value) = row.native_context.as_deref()
+    if let Some(value) = row
+        .native_context
+        .as_deref()
         .and_then(|context| context.agent_name.as_deref())
         .filter(|value| !value.is_empty())
     {
@@ -70,7 +72,9 @@ fn supporting_context(row: &RecordedSession, grouping: Grouping, duplicate: bool
     if duplicate {
         parts.push("Same name".into());
     }
-    if let Some(value) = row.native_context.as_deref()
+    if let Some(value) = row
+        .native_context
+        .as_deref()
         .and_then(|context| context.agent_role.as_deref())
         .filter(|value| !value.is_empty())
     {
