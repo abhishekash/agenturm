@@ -44,14 +44,14 @@ fn wire_error(error: std::io::Error) -> ReadError {
 }
 
 #[derive(Clone)]
-struct LegacyReceiver {
+pub(crate) struct LegacyReceiver {
     endpoint: SocketAddr,
     token: ProducerToken,
     identity: String,
 }
 
 impl LegacyReceiver {
-    fn connect(options: &RemoteHistoryOptions) -> Result<Self, String> {
+    pub(crate) fn connect(options: &RemoteHistoryOptions) -> Result<Self, String> {
         let token = ProducerToken::from_python_receiver_file(options.token_file())?;
         let deadline = Instant::now() + MAX_READ_TIME;
         let (identity, health) =
@@ -73,6 +73,67 @@ impl LegacyReceiver {
             deadline,
         )?;
         Ok(value)
+    }
+
+    pub(crate) fn get_for_native<T: DeserializeOwned>(
+        &self,
+        path: &str,
+        deadline: Instant,
+    ) -> Result<T, String> {
+        self.get(path, deadline).map_err(String::from)
+    }
+
+    pub(crate) fn native_identity(&self) -> &str {
+        &self.identity
+    }
+
+    pub(crate) fn post_native(&self, body: &[u8], deadline: Instant) -> Result<(), String> {
+        const UNCERTAIN: &str =
+            "Native lifecycle delivery was not confirmed; pending event retained";
+        let budget = deadline
+            .checked_duration_since(Instant::now())
+            .filter(|budget| !budget.is_zero())
+            .ok_or(UNCERTAIN)?;
+        let endpoint = self.endpoint;
+        let stream = TcpStream::connect_timeout(&endpoint, budget).map_err(|_| UNCERTAIN)?;
+        let head = format!(
+            "POST /v1/logs HTTP/1.1\r\nHost: {endpoint}\r\nAuthorization: {}\r\nX-Agenturm-Expected-Receiver-ID: {}\r\nContent-Type: application/json\r\nContent-Length: {}\r\nConnection: close\r\n\r\n",
+            self.token.bearer_header(),
+            self.identity,
+            body.len()
+        );
+        http::write(&stream, deadline, &head, body).map_err(|_| UNCERTAIN)?;
+        let mut reader = BufReader::new(&stream);
+        let head = http::read_python_head(&mut reader, deadline, 8192).map_err(|_| UNCERTAIN)?;
+        let mut status = head.start.split_whitespace();
+        if !matches!(status.next(), Some("HTTP/1.0" | "HTTP/1.1"))
+            || status.next() != Some("200")
+            || head
+                .receiver_id
+                .is_some_and(|receiver| receiver != self.identity)
+        {
+            return Err(UNCERTAIN.into());
+        }
+        let body = http::read_body(&mut reader, deadline, head.length).map_err(|_| UNCERTAIN)?;
+        let receipt: NativeWriteReceipt = serde_json::from_slice(&body).map_err(|_| UNCERTAIN)?;
+        if receipt
+            .receiver_id
+            .is_some_and(|receiver| receiver != self.identity)
+            || receipt.accepted != 1
+            || receipt.partial_success.rejected_log_records != 0
+        {
+            return Err(UNCERTAIN.into());
+        }
+        self.native_health_check(deadline)?;
+        Ok(())
+    }
+
+    pub(crate) fn native_health_check(&self, deadline: Instant) -> Result<(), String> {
+        let health = self.health(deadline)?;
+        if !health.ready() || !health.native_lifecycle_v1 {
+            return Err("Python receiver native lifecycle is unavailable or indexing".into());
+        }
+        Ok(())
     }
 
     fn health(&self, deadline: Instant) -> Result<Health, ReadError> {
@@ -255,6 +316,21 @@ fn get<T: DeserializeOwned>(
     let value = serde_json::from_slice(&body)
         .map_err(|_| ReadError::Protocol("Python receiver metadata is invalid"))?;
     Ok((identity, value))
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativeWriteReceipt {
+    accepted: u64,
+    #[serde(rename = "receiver_id")]
+    receiver_id: Option<String>,
+    partial_success: NativePartialSuccess,
+}
+
+#[derive(Deserialize)]
+#[serde(rename_all = "camelCase")]
+struct NativePartialSuccess {
+    rejected_log_records: u64,
 }
 
 #[derive(Deserialize)]

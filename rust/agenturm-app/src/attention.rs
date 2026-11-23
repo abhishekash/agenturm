@@ -15,12 +15,15 @@ const USAGE: &str = concat!(
     "usage: agenturm attention status --db <path>\n",
     "       agenturm attention watch --db <path> [--once | --max-polls <1..10000>] ",
     "[--interval-ms <100..60000>]\n",
+    "       agenturm attention native <bind|send|hook|retry> (explicit Python v0.2.8 receiver)\n",
     "       agenturm attention <status|watch> --endpoint http://<loopback-IP:port> ",
     "--token-file <path> [--receiver-protocol python-v0.2.8] [watch options]\n",
 );
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum AttentionOptions {
+    #[cfg(target_os = "linux")]
+    Native(Box<crate::attention_native::NativeOptions>),
     Status {
         db: PathBuf,
     },
@@ -37,6 +40,13 @@ pub enum AttentionOptions {
 }
 
 pub(super) fn parse(args: &[String]) -> Result<AttentionOptions, String> {
+    #[cfg(target_os = "linux")]
+    if let Some((verb, values)) = args.split_first()
+        && verb == "native"
+    {
+        return crate::attention_native::parse(values)
+            .map(|options| AttentionOptions::Native(Box::new(options)));
+    }
     #[cfg(target_os = "linux")]
     if args.iter().any(|arg| {
         matches!(
@@ -184,6 +194,8 @@ struct Notification<'a, T> {
 
 pub fn execute_attention(options: &AttentionOptions, mut output: impl Write) -> Result<(), String> {
     match options {
+        #[cfg(target_os = "linux")]
+        AttentionOptions::Native(options) => crate::attention_native::execute(options),
         AttentionOptions::Status { db } => emit(&mut output, "snapshot", &read_snapshot(db)?)
             .map_err(|error| format!("write attention snapshot failed: {error}")),
         AttentionOptions::Watch {
