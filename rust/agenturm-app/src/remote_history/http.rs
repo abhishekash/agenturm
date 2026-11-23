@@ -16,12 +16,30 @@ pub(super) struct Head {
     pub host: Option<String>,
     pub bearer: Option<String>,
     pub history_binding: Option<String>,
+    pub receiver_id: Option<String>,
 }
 
 pub(super) fn read_head(
     reader: &mut BufReader<&TcpStream>,
     deadline: Instant,
     max_body: usize,
+) -> io::Result<Head> {
+    read_head_for(reader, deadline, max_body, false)
+}
+
+pub(super) fn read_python_head(
+    reader: &mut BufReader<&TcpStream>,
+    deadline: Instant,
+    max_body: usize,
+) -> io::Result<Head> {
+    read_head_for(reader, deadline, max_body, true)
+}
+
+fn read_head_for(
+    reader: &mut BufReader<&TcpStream>,
+    deadline: Instant,
+    max_body: usize,
+    python_response: bool,
 ) -> io::Result<Head> {
     let mut bytes = Vec::new();
     while !bytes.ends_with(b"\r\n\r\n") {
@@ -42,7 +60,7 @@ pub(super) fn read_head(
         .filter(|start| !start.is_empty())
         .ok_or_else(invalid)?;
     let (mut host, mut bearer, mut length, mut json) = (None, None, None, false);
-    let mut history_binding = None;
+    let (mut history_binding, mut receiver_id) = (None, None);
     for raw in lines.take_while(|line| !line.is_empty()) {
         let (name, value) = raw.split_once(':').ok_or_else(invalid)?;
         if name.is_empty()
@@ -62,8 +80,18 @@ pub(super) fn read_head(
             {
                 length = Some(value.parse().map_err(|_| invalid())?);
             }
-            "content-type" if !json && value.eq_ignore_ascii_case("application/json") => {
+            "content-type"
+                if !json
+                    && (value.eq_ignore_ascii_case("application/json")
+                        || (python_response
+                            && value.eq_ignore_ascii_case("application/json; charset=utf-8"))) =>
+            {
                 json = true
+            }
+            "x-agenturm-receiver-id" if python_response => {
+                if receiver_id.replace(value.to_owned()).is_some() {
+                    return Err(invalid());
+                }
             }
             "host" if host.is_none() => host = Some(value.to_owned()),
             "authorization" if bearer.is_none() => bearer = Some(value.to_owned()),
@@ -96,6 +124,7 @@ pub(super) fn read_head(
         host,
         bearer,
         history_binding,
+        receiver_id,
     })
 }
 

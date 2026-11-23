@@ -14,14 +14,14 @@ migration of Python-era databases remains outside the Rust-only product scope.
 
 | Python 0.2.8 workflow | Rust path and cutover disposition |
 | --- | --- |
-| Bare `agenturm`, `cockpit`, global `--db` | Keep local startup, discovery, one-shot snapshots and explicit history selection. Bare Rust startup, global `--db` and `cockpit --db` select local history. `cockpit --once` prints a bounded session report, with JSON and page coverage on request. The same report works through a broker or trusted remote reader. Use `query` for raw machine-readable history. `cockpit --endpoint` attaches through a trusted loopback listener or SSH tunnel. On Linux, `cockpit --new-window` opens the same cockpit with the selected history. Compatibility with a Python receiver remains open. [Remote history setup](rust-broker-commands.md#read-history-through-an-ssh-tunnel) |
+| Bare `agenturm`, `cockpit`, global `--db` | Keep local startup, discovery, one-shot snapshots and explicit history selection. Bare Rust startup, global `--db` and `cockpit --db` select local history. `cockpit --once` prints a bounded session report, with JSON and page coverage on request. The same report works through a broker or trusted remote reader. Use `query` for raw machine-readable history. `cockpit --endpoint` attaches through a trusted loopback listener or SSH tunnel. On Linux, `cockpit --new-window` opens the same cockpit with the selected history. The explicit Python 0.2.8 mode attaches to an existing tagged receiver for bounded live metadata. [Python receiver mode](#attach-to-an-existing-python-028-receiver) · [Remote history setup](rust-broker-commands.md#read-history-through-an-ssh-tunnel) |
 | `serve` | Keep local OTLP collection and source watch through `serve-traces`, `discover --follow` and `collect --watch` or the Linux user service. `broker serve-history` serves the native broker's retained metadata on loopback through a dedicated reader. The Python `/api/*` wire surface, direct remote TLS and arbitrary legacy JSONL tail remain open. |
 | `run` | Keep command launch, exit status, local trace delivery and exact source/session linkage. Rust `run` configures OTLP for an instrumented producer. Python-specific script and module injection requires a product decision. |
 | `import-jsonl` | Use `import-jsonl` for supported native span exports and `import-traces` for OTLP JSON. Both retain structural trace metadata with exact session scope. JSONL can also capture supported private text with explicit opt-in. Legacy amounts without a currency remain unknown. |
 | `import-evals` | Import bounded `agent-evals` result metadata into an exact retained OTLP trace source. Use `evals` to read the current outcome in text or JSON. `evals --history` pages retained revisions, `evals --summary` reports current source outcomes with page counts, and `evals --list` inventories the latest retained outcome per trace across explicit OTLP sources. In the cockpit, `E` opens evaluations and `d` opens approved private result text. |
 | `migrate-db` | Retired by the Rust-only product decision. Rust `backup` and `restore` operate on Rust-owned state. |
 | `prune` | Keep explicit age-based retention. Rust `prune --before-unix-ns` and persisted `retention set\|disable\|run\|status` are available. New default cockpit histories use 14 days; existing histories retain their policy. Collector, cockpit, local receiver and broker writer ticks apply it, while receipts and checkpoints survive cleanup. Broker policy changes require maintenance authority. |
-| `attention status`, `attention watch` | Rust reads local history or an attached Rust receiver and keeps seen state in the user's workspace. Remote watch emits a snapshot and changes from retained native lifecycle evidence. Python receiver observation and cross-host terminal routing remain open. |
+| `attention status`, `attention watch` | Rust reads local history or an attached Rust receiver and keeps seen state in the user's workspace. Remote watch emits a snapshot and changes from retained native lifecycle evidence. Python 0.2.8 mode reads the exact native request inventory. Legacy state migration and cross-host terminal routing remain open. |
 | `review` | Rust cockpit and noninteractive Review use exact source, session, turn, and worker scope. The CLI reads a bounded page and exports metadata receipts in Markdown, HTML, and JSON. It can list the explicitly linked spans of a turn, or resolve a trace to its unique retained turn using producer-provided source, session, turn, and worker identity. |
 | `investigate failures\|path\|command\|instruction\|source` | Rust local and broker investigations page retained failure metadata across authorized sources. Exact-scope searches for instructions, paths and commands use current grants and pinned source references. Codex command search accepts `--failed` for source-confirmed failures. See [failure investigation](#investigate-retained-failures) for the supported kinds and native evidence limits. |
 | `task list\|create\|show\|archive` | Rust supports create, exact show, completion, archiving and restoration. The default task list hides archived entries. `list --all` and `show` can still read them. |
@@ -29,6 +29,41 @@ migration of Python-era databases remains outside the Rust-only product scope.
 | `task update\|snapshot\|brief\|decide\|decisions\|draft\|approve-draft` | Rust supports revision-checked editing, local Git summaries, opt-in tracked text patches, five structured brief fields, and immutable decisions with supersession. Drafts and decision citations can use one exact retained user prompt. Approval and excerpt reopening require revalidation of the original grant and source receipt. Broader Review evidence projections remain open. |
 
 The CLI maintainer owns implementation and installed scenarios for the retained commands. Any later retirement requires an explicit product decision. [Python command source](https://github.com/abhishekash/agenturm/blob/v0.2.8/observatory/__main__.py) · [Rust workflow coverage](rust-cockpit-workflow-coverage.md)
+
+
+### Attach to an existing Python 0.2.8 receiver
+
+Use an authenticated Python 0.2.8 receiver already listening on loopback, or
+forward its port over SSH. Supply its URL-safe bearer token in an owner-only
+regular file. The Rust client opens the configured loopback socket directly.
+It neither discovers a receiver nor starts one. The protocol option must be
+explicit to attach to Python.
+
+```sh
+agenturm cockpit --endpoint http://127.0.0.1:14318 --token-file receiver.token \
+  --receiver-protocol python-v0.2.8
+agenturm cockpit --once --json --endpoint http://127.0.0.1:14318 \
+  --token-file receiver.token --receiver-protocol python-v0.2.8
+agenturm attention watch --once --endpoint http://127.0.0.1:14318 \
+  --token-file receiver.token --receiver-protocol python-v0.2.8
+```
+
+The attached cockpit shows bounded live Agents, Activity, Traces and Pending
+pages. Enter on a session scopes the loaded evidence to the exact recorded
+service, session and actor where supplied. Escape restores the roster selection.
+The one-shot JSON response uses `agenturm-python-receiver-live/1` and labels
+readiness and partial coverage. Reads check the receiver header and any body
+identity, then confirm the same health identity after the batch. The Python
+protocol provides live pages without a Rust history watermark. Private content,
+Review receipts, saved tasks and cross-host terminal routing are unavailable in
+this view. Client output excludes legacy prompt, log and arbitrary provider bodies.
+
+Attention requires a ready, complete native lifecycle inventory. A partial or
+unavailable read leaves request state unconfirmed. A watch preserves the last
+exact pending evidence within its process and clears a request only when the same
+owner, sender and request record an ordered resolution. A missing request is
+insufficient. `attention watch --once` exits unsuccessfully if inventory cannot
+be confirmed. This mode creates no Rust history or durable workflow state.
 
 ### Investigate retained failures
 

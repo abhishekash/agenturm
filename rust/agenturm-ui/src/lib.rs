@@ -6,8 +6,11 @@
 
 #![forbid(unsafe_code)]
 
+mod live_receiver;
 mod workbench;
 mod workspace;
+
+pub use live_receiver::{LiveOwner, LivePage, LiveRow, run_live_receiver};
 
 pub use workbench::evaluation::{
     EvaluationDetailEntry, EvaluationPage, EvaluationRead, EvaluationRow, EvaluationView,

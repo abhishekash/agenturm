@@ -3,6 +3,7 @@
 mod api;
 mod client;
 mod http;
+pub(crate) mod legacy;
 
 pub(crate) use client::RemoteStore;
 pub use client::{RemoteHistoryOptions, execute_remote_cockpit};

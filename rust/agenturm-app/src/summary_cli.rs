@@ -65,6 +65,9 @@ pub(super) fn parse(args: &[String]) -> Result<SummaryOptions, String> {
 pub fn execute_summary(options: &SummaryOptions) -> Result<String, String> {
     #[cfg(target_os = "linux")]
     if let Some(remote) = &options.remote {
+        if remote.is_python() {
+            return crate::remote_history::legacy::summary(remote, options.limit, options.json);
+        }
         let store = crate::remote_history::RemoteStore::open(remote)?;
         return from_reader(&store, options, None);
     }

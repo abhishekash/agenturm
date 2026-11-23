@@ -49,29 +49,10 @@ pub(super) struct ProducerToken(String);
 impl ProducerToken {
     #[cfg(target_os = "linux")]
     pub(super) fn from_file(path: &std::path::Path) -> Result<Self, String> {
-        use std::fs::OpenOptions;
-        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
-
         const INVALID: &str =
             "Bearer token file must be an owner-only regular file with 64 lowercase hex digits";
-        let file = OpenOptions::new()
-            .read(true)
-            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
-            .open(path)
-            .map_err(|_| INVALID)?;
-        let metadata = file.metadata().map_err(|_| INVALID)?;
-        // SAFETY: geteuid takes no arguments and has no memory preconditions.
-        let owner = unsafe { libc::geteuid() };
-        if !metadata.is_file() || metadata.uid() != owner || metadata.mode() & 0o077 != 0 {
-            return Err(INVALID.into());
-        }
-        let mut token = String::new();
-        file.take(66)
-            .read_to_string(&mut token)
-            .map_err(|_| INVALID)?;
-        if token.ends_with('\n') {
-            token.pop();
-        }
+        let token = Self::read_private_token(path, 65, INVALID)?;
+        let token = token.strip_suffix('\n').unwrap_or(&token);
         if token.len() != 64
             || !token
                 .bytes()
@@ -79,7 +60,52 @@ impl ProducerToken {
         {
             return Err(INVALID.into());
         }
-        Ok(Self(token))
+        Ok(Self(token.to_owned()))
+    }
+
+    #[cfg(target_os = "linux")]
+    pub(super) fn from_python_receiver_file(path: &std::path::Path) -> Result<Self, String> {
+        const INVALID: &str = "Python receiver token file must be an owner-only regular file containing a URL-safe bearer token";
+        let token = Self::read_private_token(path, 258, INVALID)?;
+        let token = token.trim_matches([' ', '\t', '\r', '\n']);
+        if !(32..=256).contains(&token.len())
+            || !token
+                .bytes()
+                .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+        {
+            return Err(INVALID.into());
+        }
+        Ok(Self(token.to_owned()))
+    }
+
+    #[cfg(target_os = "linux")]
+    fn read_private_token(
+        path: &std::path::Path,
+        limit: usize,
+        invalid: &str,
+    ) -> Result<String, String> {
+        use std::fs::OpenOptions;
+        use std::os::unix::fs::{MetadataExt, OpenOptionsExt};
+
+        let file = OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_NONBLOCK)
+            .open(path)
+            .map_err(|_| invalid)?;
+        let metadata = file.metadata().map_err(|_| invalid)?;
+        // SAFETY: geteuid takes no arguments and has no memory preconditions.
+        let owner = unsafe { libc::geteuid() };
+        if !metadata.is_file() || metadata.uid() != owner || metadata.mode() & 0o077 != 0 {
+            return Err(invalid.into());
+        }
+        let mut token = String::new();
+        file.take((limit + 1) as u64)
+            .read_to_string(&mut token)
+            .map_err(|_| invalid)?;
+        if token.len() > limit {
+            return Err(invalid.into());
+        }
+        Ok(token)
     }
 
     #[cfg(target_os = "linux")]

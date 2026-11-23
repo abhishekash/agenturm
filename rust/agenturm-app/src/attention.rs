@@ -17,7 +17,7 @@ const USAGE: &str = concat!(
     "       agenturm attention watch --db <path> [--once | --max-polls <1..10000>] ",
     "[--interval-ms <100..60000>]\n",
     "       agenturm attention <status|watch> --endpoint http://<loopback-IP:port> ",
-    "--token-file <path> [watch options]\n",
+    "--token-file <path> [--receiver-protocol python-v0.2.8] [watch options]\n",
 );
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -39,10 +39,12 @@ pub enum AttentionOptions {
 
 pub(super) fn parse(args: &[String]) -> Result<AttentionOptions, String> {
     #[cfg(target_os = "linux")]
-    if args
-        .iter()
-        .any(|arg| matches!(arg.as_str(), "--endpoint" | "--token-file"))
-    {
+    if args.iter().any(|arg| {
+        matches!(
+            arg.as_str(),
+            "--endpoint" | "--token-file" | "--receiver-protocol"
+        )
+    }) {
         return parse_remote(args);
     }
     match args
@@ -125,7 +127,10 @@ fn parse_remote(args: &[String]) -> Result<AttentionOptions, String> {
             .split_first()
             .filter(|(value, _)| valid_value(value))
             .ok_or(USAGE)?;
-        if matches!(flag.as_str(), "--endpoint" | "--token-file") {
+        if matches!(
+            flag.as_str(),
+            "--endpoint" | "--token-file" | "--receiver-protocol"
+        ) {
             receiver.extend([flag.clone(), value.clone()]);
         } else {
             polling.extend([flag.clone(), value.clone()]);
@@ -170,12 +175,12 @@ struct Pending {
 }
 
 #[derive(Serialize)]
-struct Notification<'a> {
+struct Notification<'a, T> {
     schema_version: u8,
     #[serde(rename = "type")]
     kind: &'static str,
     #[serde(flatten)]
-    snapshot: &'a Snapshot,
+    snapshot: &'a T,
 }
 
 pub fn execute_attention(options: &AttentionOptions, mut output: impl Write) -> Result<(), String> {
@@ -192,6 +197,9 @@ pub fn execute_attention(options: &AttentionOptions, mut output: impl Write) -> 
             receiver,
             watch: polling,
         } => {
+            if receiver.is_python() {
+                return legacy_attention(receiver, *polling, output);
+            }
             use crate::HistoryReader;
             let (store, marker) = crate::remote_history::open_workspace(receiver)?;
             let ledger = store.workspace_ledger(&marker)?;
@@ -204,6 +212,25 @@ pub fn execute_attention(options: &AttentionOptions, mut output: impl Write) -> 
             }
         }
     }
+}
+
+#[cfg(target_os = "linux")]
+fn legacy_attention(
+    receiver: &crate::RemoteHistoryOptions,
+    polling: Option<(Duration, usize)>,
+    mut output: impl Write,
+) -> Result<(), String> {
+    let mut read = crate::remote_history::legacy::attention_reader(receiver)?;
+    if let Some((interval, limit)) = polling.filter(|(_, limit)| *limit > 1) {
+        return watch(interval, limit, output, read);
+    }
+    let snapshot = read()?;
+    emit(&mut output, "snapshot", &snapshot)
+        .map_err(|error| format!("write attention snapshot failed: {error}"))?;
+    if polling.is_some() && !snapshot.ready {
+        return Err("Python receiver request inventory is incomplete".into());
+    }
+    Ok(())
 }
 
 fn read_snapshot(db: &Path) -> Result<Snapshot, String> {
@@ -236,7 +263,7 @@ fn snapshot_from(
     Ok(Snapshot { partial, pending })
 }
 
-fn emit(writer: &mut impl Write, kind: &'static str, snapshot: &Snapshot) -> io::Result<()> {
+fn emit(writer: &mut impl Write, kind: &'static str, snapshot: &impl Serialize) -> io::Result<()> {
     serde_json::to_writer(
         &mut *writer,
         &Notification {
@@ -249,11 +276,11 @@ fn emit(writer: &mut impl Write, kind: &'static str, snapshot: &Snapshot) -> io:
     writer.flush()
 }
 
-fn watch(
+fn watch<T: PartialEq + Serialize>(
     interval: Duration,
     max_polls: usize,
     mut output: impl Write,
-    mut read_snapshot: impl FnMut() -> Result<Snapshot, String>,
+    mut read_snapshot: impl FnMut() -> Result<T, String>,
 ) -> Result<(), String> {
     if !(1..=MAX_POLLS).contains(&max_polls)
         || !(Duration::from_millis(100)..=Duration::from_secs(60)).contains(&interval)

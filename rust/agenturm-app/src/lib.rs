@@ -777,7 +777,7 @@ fn lifecycle_evidence_rows(
 fn default_cockpit_flag(flag: &str) -> bool {
     matches!(
         flag,
-        "--db" | "--once" | "--new-window" | "--endpoint" | "--token-file"
+        "--db" | "--once" | "--new-window" | "--endpoint" | "--token-file" | "--receiver-protocol"
     )
 }
 
@@ -850,9 +850,12 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         }),
         #[cfg(target_os = "linux")]
         Some("cockpit")
-            if args[1..]
-                .iter()
-                .any(|arg| matches!(arg.as_str(), "--endpoint" | "--token-file")) =>
+            if args[1..].iter().any(|arg| {
+                matches!(
+                    arg.as_str(),
+                    "--endpoint" | "--token-file" | "--receiver-protocol"
+                )
+            }) =>
         {
             remote_history::parse_attach(&args[1..]).map(Command::RemoteCockpit)
         }
@@ -3507,7 +3510,7 @@ pub fn render(command: Command) -> String {
             "       agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path> [--include-host]\n",
             "       agenturm cockpit [--new-window] [--db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]]\n",
             "       agenturm cockpit --once [--db <path>] [--json] [--limit <1..256>]\n",
-            "       agenturm cockpit --endpoint http://<loopback-IP:port> --token-file <path> [--new-window]\n",
+            "       agenturm cockpit --endpoint http://<loopback-IP:port> --token-file <path> [--receiver-protocol python-v0.2.8] [--new-window | --once [--json]]\n",
             "       agenturm broker cockpit --broker-config <json> [--new-window]\n",
             "       agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]\n",
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
@@ -3531,7 +3534,8 @@ pub fn render(command: Command) -> String {
             "       agenturm evals --list --db <path> --source-id otlp.<id> [--source-id otlp.<id> ...] [--json]\n",
             "       agenturm attention status --db <path>\n",
             "       agenturm attention watch --db <path> [--once | --max-polls <1..10000>] [--interval-ms <100..60000>]\n",
-            "       agenturm attention <status|watch> --endpoint http://<loopback-IP:port> --token-file <path> [watch options]\n",
+            "       agenturm attention <status|watch> --endpoint http://<loopback-IP:port> --token-file <path> [--receiver-protocol python-v0.2.8] [watch options]\n",
+            "       Python receiver mode reads bounded live metadata with no private views or saved Review evidence.\n",
             "       agenturm host record --db <path> --source-id host.<label> [--watch [--interval-ms <1000..60000>]]\n",
             "       agenturm host history --db <path> [--source-id host.<label>] [--limit <1..64>] [--before <position-json>]\n",
             "       agenturm task <list|add|show|complete|reopen|link|unlink|handoffs|export> [options]\n",
