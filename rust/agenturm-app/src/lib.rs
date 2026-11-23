@@ -2317,20 +2317,20 @@ fn load_workspace_history(
 ) -> Result<agenturm_ui::HistoryPage, String> {
     let (source, session, pinned) = match &selection {
         HistorySelection::All(_) => (None, None, None),
-        HistorySelection::McpTraces { source_id, snapshot_id, .. } => (Some(source_id), None, Some(*snapshot_id)),
+        HistorySelection::McpTraces { source_id, snapshot_id, .. } => (Some(source_id.as_str()), None, Some(*snapshot_id)),
         HistorySelection::Session(session, _) => (
-            Some(&session.harness_id),
+            Some(session.harness_id.as_str()),
             Some(&session.session_id),
             Some(session.snapshot_id),
         ),
         HistorySelection::Turn(turn) => (
-            Some(&turn.harness_id),
+            Some(turn.harness_id.as_str()),
             Some(&turn.session_id),
             Some(turn.snapshot_id),
         ),
     };
     let query = ObservationQuery {
-        harness_id: source.cloned(),
+        harness_id: source.map(str::to_owned),
         session_id: session.cloned(),
         snapshot_id: before.as_ref().map(|cursor| cursor.snapshot_id).or(pinned),
         before,
