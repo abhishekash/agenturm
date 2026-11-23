@@ -105,8 +105,13 @@ pub(crate) struct Investigation {
     kind: usize,
     query: String,
     page: Option<InvestigationPage>,
+    previous: Vec<InvestigationPage>,
+    page_number: usize,
+    advancing: bool,
     selection: ListState,
 }
+
+const MAX_PREVIOUS_PAGES: usize = 4;
 
 impl Investigation {
     pub fn new(
@@ -122,6 +127,9 @@ impl Investigation {
             kind: 0,
             query: String::new(),
             page: None,
+            previous: Vec::new(),
+            page_number: 0,
+            advancing: false,
             selection: ListState::default(),
         }
     }
@@ -131,8 +139,27 @@ impl Investigation {
         if self.history_identity.is_none() {
             self.history_identity.clone_from(&page.history_identity);
         }
+        if self.advancing {
+            if let Some(previous) = self.page.take() {
+                if self.previous.len() == MAX_PREVIOUS_PAGES {
+                    self.previous.remove(0);
+                }
+                self.previous.push(previous);
+            }
+            self.page_number = self.page_number.saturating_add(1).max(1);
+        } else if self.page.is_none() {
+            self.page_number = 1;
+        }
+        self.advancing = false;
         self.selection = ListState::default().with_selected((!page.rows.is_empty()).then_some(0));
         self.page = Some(page);
+    }
+
+    fn reset_pages(&mut self) {
+        self.page = None;
+        self.previous.clear();
+        self.page_number = 0;
+        self.advancing = false;
     }
 
     fn request(&self, cursor: Option<String>) -> InvestigationInput {
@@ -173,12 +200,12 @@ impl Investigation {
                 let advance = if key == KeyCode::Tab { 1 } else { modes - 1 };
                 self.kind = (self.kind + advance) % modes;
                 self.query.clear();
-                self.page = None;
+                self.reset_pages();
                 return InvestigationInput::Edited;
             }
             KeyCode::Char('s') if !private && self.owner.is_some() => {
                 self.all_sources = !self.all_sources;
-                self.page = None;
+                self.reset_pages();
                 return InvestigationInput::Edited;
             }
             KeyCode::Enter => {
@@ -193,14 +220,24 @@ impl Investigation {
                         history_identity: self.history_identity.clone(),
                     };
                 }
-                self.page = None;
+                self.reset_pages();
                 return self.request(None);
             }
             KeyCode::PageDown
                 if let Some(next) =
                     self.page.as_ref().and_then(|page| page.next_cursor.clone()) =>
             {
+                self.advancing = true;
                 return self.request(Some(next));
+            }
+            KeyCode::PageUp if !self.previous.is_empty() => {
+                if let Some(previous) = self.previous.pop() {
+                    self.selection = ListState::default()
+                        .with_selected((!previous.rows.is_empty()).then_some(0));
+                    self.page_number = self.page_number.saturating_sub(1).max(1);
+                    self.page = Some(previous);
+                }
+                return InvestigationInput::Handled;
             }
             KeyCode::Up | KeyCode::Down if let Some(page) = &self.page => {
                 crate::workspace::move_selection(
@@ -211,7 +248,7 @@ impl Investigation {
             }
             KeyCode::Backspace if private => {
                 self.query.pop();
-                self.page = None;
+                self.reset_pages();
                 return InvestigationInput::Edited;
             }
             KeyCode::Char(ch)
@@ -220,7 +257,7 @@ impl Investigation {
                     && self.query.len() + ch.len_utf8() <= query_limit =>
             {
                 self.query.push(ch);
-                self.page = None;
+                self.reset_pages();
                 return InvestigationInput::Edited;
             }
             _ => {}
@@ -356,15 +393,16 @@ impl Investigation {
             .map(visible_text)
             .or_else(|| loading.then(|| "Searching retained evidence…".into()))
             .or(coverage)
-            .unwrap_or_else(|| "Bounded retained evidence".into());
+            .unwrap_or_else(|| "Bounded retained evidence · page-local results".into());
         let snapshot = self.page.as_ref().map_or_else(String::new, |page| {
             format!(
-                "Snapshot {}{}",
+                "Page {} · Snapshot {}{}",
+                self.page_number,
                 page.snapshot_id,
                 if page.next_cursor.is_none() {
                     " · end of scope"
                 } else {
-                    ""
+                    " · page-local"
                 }
             )
         });
@@ -373,15 +411,17 @@ impl Investigation {
         } else {
             ""
         };
-        let more = if self
+        let mut paging = String::new();
+        if !self.previous.is_empty() {
+            paging.push_str(" · PgUp previous");
+        }
+        if self
             .page
             .as_ref()
             .is_some_and(|page| page.next_cursor.is_some())
         {
-            " · PgDn more"
-        } else {
-            ""
-        };
+            paging.push_str(" · PgDn more");
+        }
         let enter = if self
             .page
             .as_ref()
@@ -395,11 +435,159 @@ impl Investigation {
         frame.render_widget(
             Paragraph::new(vec![
                 Line::from(status),
-                Line::from(format!("{enter}{scope_hint}{more} · Esc back")),
+                Line::from(format!("{enter}{scope_hint}{paging} · Esc back")),
                 Line::from(snapshot),
             ])
             .wrap(Wrap { trim: true }),
             footer,
         );
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crossterm::event::KeyModifiers;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    fn key(code: KeyCode) -> KeyEvent {
+        KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn matched(event: &str) -> InvestigationMatch {
+        InvestigationMatch {
+            position: ObservationPosition {
+                observed_at_unix_ns: 1,
+                harness_id: "harness.fixture".into(),
+                event_id: event.into(),
+                revision: 0,
+                snapshot_id: 0.into(),
+            },
+            session: Some("session".into()),
+            turn: None,
+            worker: None,
+            label: "Recorded failure",
+            source_reference: None,
+        }
+    }
+
+    fn page(events: &[&str], next: Option<&str>) -> InvestigationPage {
+        InvestigationPage {
+            rows: events.iter().map(|event| matched(event)).collect(),
+            history_identity: Some("history".into()),
+            snapshot_id: 0.into(),
+            inspected: 5,
+            verified: None,
+            unavailable: 0,
+            next_cursor: next.map(str::to_owned),
+        }
+    }
+
+    fn screen(investigation: &mut Investigation, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| investigation.draw(frame, false, None))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn paging_keeps_the_bounded_query_and_can_return_to_the_previous_page() {
+        let mut investigation = Investigation::new(None, Some("history".into()), Some(0.into()));
+        let InvestigationInput::Read(request) = investigation.key(key(KeyCode::Enter), false)
+        else {
+            panic!("Enter should request the first failures page");
+        };
+        assert_eq!(request.kind, InvestigationKind::Failures);
+        assert_eq!(request.cursor, None);
+        investigation.apply(page(&["failure-a"], Some("cursor-1")));
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let text = screen(&mut investigation, width, height);
+            for marker in [
+                "Page 1",
+                "1 matches / 5 inspected",
+                "PgDn more",
+                "page-local",
+            ] {
+                assert!(text.contains(marker), "{width}×{height}: {marker}\n{text}");
+            }
+            assert!(!text.contains("PgUp previous"));
+        }
+
+        let InvestigationInput::Read(request) = investigation.key(key(KeyCode::PageDown), false)
+        else {
+            panic!("PageDown should read the older bounded page");
+        };
+        assert_eq!(request.cursor.as_deref(), Some("cursor-1"));
+        investigation.apply(page(&["failure-b"], None));
+        let text = screen(&mut investigation, 80, 24);
+        for marker in ["Page 2", "failure-b", "PgUp previous", "end of scope"] {
+            assert!(text.contains(marker), "{marker}\n{text}");
+        }
+
+        assert!(matches!(
+            investigation.key(key(KeyCode::PageUp), false),
+            InvestigationInput::Handled
+        ));
+        let text = screen(&mut investigation, 80, 24);
+        assert!(
+            text.contains("Page 1") && text.contains("failure-a"),
+            "{text}"
+        );
+        assert!(text.contains("PgDn more") && !text.contains("PgUp previous"));
+        assert_eq!(investigation.selection.selected(), Some(0));
+        // The boundary is explicit: no further PageUp.
+        assert!(matches!(
+            investigation.key(key(KeyCode::PageUp), false),
+            InvestigationInput::Handled
+        ));
+        assert!(screen(&mut investigation, 80, 24).contains("Page 1"));
+    }
+
+    #[test]
+    fn paging_preserves_a_private_query_and_mode_across_pages() {
+        let mut investigation = Investigation::new(None, Some("history".into()), Some(0.into()));
+        assert!(matches!(
+            investigation.key(key(KeyCode::Tab), false),
+            InvestigationInput::Edited
+        ));
+        for ch in "needle".chars() {
+            assert!(matches!(
+                investigation.key(key(KeyCode::Char(ch)), false),
+                InvestigationInput::Edited
+            ));
+        }
+        let InvestigationInput::Read(request) = investigation.key(key(KeyCode::Enter), false)
+        else {
+            panic!("Enter should run the exact private query");
+        };
+        assert_eq!(request.kind, InvestigationKind::Instruction);
+        assert_eq!(request.query, "needle");
+        investigation.apply(page(&["match-a"], Some("next")));
+        let InvestigationInput::Read(request) = investigation.key(key(KeyCode::PageDown), false)
+        else {
+            panic!("PageDown should keep the same private query");
+        };
+        assert_eq!(request.kind, InvestigationKind::Instruction);
+        assert_eq!(request.query, "needle");
+        assert_eq!(request.cursor.as_deref(), Some("next"));
+        investigation.apply(page(&["match-b"], None));
+        assert!(screen(&mut investigation, 60, 18).contains("PgUp previous"));
+        investigation.key(key(KeyCode::PageUp), false);
+        let text = screen(&mut investigation, 60, 18);
+        assert!(
+            text.contains("match-a") && !text.contains("match-b"),
+            "{text}"
+        );
+        assert!(matches!(
+            investigation.key(key(KeyCode::Esc), false),
+            InvestigationInput::Close
+        ));
     }
 }

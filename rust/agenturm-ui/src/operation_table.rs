@@ -99,14 +99,19 @@ impl Browser {
 
     pub(super) fn inherit_filters(&mut self, previous: &Self) {
         for (id, pane) in &mut self.panes {
-            if let Some(prior) = previous.panes.get(id)
-                && pane.is_mcp()
-            {
+            let Some(prior) = previous.panes.get(id) else {
+                continue;
+            };
+            if pane.is_mcp() {
                 pane.retained_search = prior.retained_search;
                 if pane.retained_search {
                     pane.inventory_open = false;
                 }
                 pane.server_filter.clone_from(&prior.server_filter);
+                pane.set_filter(prior.filter());
+            } else {
+                // A page-local filter stays applied when an older or newer
+                // Operations/Activity page replaces the loaded rows.
                 pane.set_filter(prior.filter());
             }
         }
@@ -163,13 +168,33 @@ impl OperationList {
             "↑↓ scroll · t traces · m payload · Esc back"
         } else if self.inventory.is_some() {
             "/ search · f server · i inventory · Enter inspect · t trace"
+        } else if self.search.active() {
+            "↑↓ select · / edit filter · Esc clear · Enter inspect"
         } else {
-            "↑↓ select / scroll · Enter inspect · Esc back · ←→ views"
+            "/ filter · ↑↓ select / scroll · Enter inspect · Esc back · ←→ views"
         }
     }
 
     pub(super) fn search_key(&mut self, key: KeyCode) -> SearchInput {
-        if !self.is_mcp() || self.inventory_open || self.expanded {
+        if self.expanded {
+            return SearchInput::Unhandled;
+        }
+        if !self.is_mcp() {
+            // Activity and Operations panes filter their loaded page locally.
+            // Retained MCP searches stay server-side through Submit below.
+            if key != KeyCode::Char('/') && !self.search.editing() {
+                return SearchInput::Unhandled;
+            }
+            return match self.search.key(key) {
+                FilterKey::Ignored => SearchInput::Unhandled,
+                FilterKey::Handled => SearchInput::Handled,
+                FilterKey::Changed => {
+                    self.apply_filters();
+                    SearchInput::Handled
+                }
+            };
+        }
+        if self.inventory_open {
             return SearchInput::Unhandled;
         }
         let previous = self.search.committed();
@@ -211,14 +236,8 @@ impl OperationList {
                 let fields = std::iter::once(row.tool.as_str())
                     .chain(row.server.as_deref())
                     .chain(row.result.as_deref())
-                    .chain(
-                        row.evidence
-                            .iter()
-                            .filter(|field| {
-                                matches!(field.label.as_str(), "Method" | "Action" | "MCP call")
-                            })
-                            .map(|field| field.value.as_str()),
-                    );
+                    .chain(row.latency.as_deref())
+                    .chain(row.evidence.iter().map(|field| field.value.as_str()));
                 (server.is_none_or(|server| row.server.as_ref() == Some(server))
                     && (self.retained_search || self.search.matches(fields)))
                 .then_some(index)
@@ -240,6 +259,11 @@ impl OperationList {
             if self.inventory_open {
                 return inventory.key(key);
             }
+        }
+        if !self.expanded && !self.is_mcp() && self.search.active() && key == KeyCode::Esc {
+            self.search = Filter::default();
+            self.apply_filters();
+            return true;
         }
         if !self.expanded && self.is_mcp() && (!self.retained_search || self.search.editing()) {
             match self.search.key(key) {
@@ -465,21 +489,46 @@ impl OperationList {
         let Some(row) = self.selected_row() else {
             return;
         };
-        let block = panel(" Tool inspector ");
+        let block = panel(" Operation detail ");
         let inner = block.inner(detail);
         let mut lines = vec![Line::styled(visible_text(&row.tool), heading_style())];
         for (label, value) in [
-            ("Server", row.server.as_deref()),
-            ("Result", row.result.as_deref()),
-            ("Latency", row.latency.as_deref()),
-            ("Observed", Some(row.time.as_str())),
+            ("Server", row.server.as_deref().unwrap_or("Unreported")),
+            ("Result", row.result.as_deref().unwrap_or("Unreported")),
+            ("Latency", row.latency.as_deref().unwrap_or("Unreported")),
+            ("Observed", row.time.as_str()),
         ] {
-            if let Some(value) = value {
-                lines.push(Line::from(vec![
-                    Span::styled(format!("{label:<10}"), label_style()),
-                    Span::raw(visible_text(value)),
-                ]));
-            }
+            lines.push(Line::from(vec![
+                Span::styled(format!("{label:<10}"), label_style()),
+                Span::raw(visible_text(value)),
+            ]));
+        }
+        let worker = row
+            .evidence
+            .iter()
+            .find(|field| field.label == "Worker")
+            .map(|field| field.value.as_str())
+            .unwrap_or("Unreported (main session or not recorded)");
+        lines.push(Line::from(vec![
+            Span::styled(format!("{:<10}", "Worker"), label_style()),
+            Span::raw(visible_text(worker)),
+        ]));
+        match &row.mcp_event {
+            Some((source, event, revision)) => lines.push(Line::from(vec![
+                Span::styled(format!("{:<10}", "Trace"), label_style()),
+                Span::raw(visible_text(&format!(
+                    "{source} / {event} r{revision}{}",
+                    if self.is_mcp() {
+                        " · t opens the linked retained trace"
+                    } else {
+                        " · follow it from MCP or Traces"
+                    }
+                ))),
+            ])),
+            None => lines.push(Line::from(vec![
+                Span::styled(format!("{:<10}", "Trace"), label_style()),
+                Span::raw("No linked MCP call for this operation"),
+            ])),
         }
         lines.push(Line::default());
         lines.push(Line::styled("Recorded evidence", heading_style()));
@@ -505,23 +554,39 @@ impl OperationList {
 
 struct InventoryRow {
     name: String,
-    declaration: Option<ConfiguredMcpServer>,
+    declarations: Vec<ConfiguredMcpServer>,
     counts: Option<(usize, usize)>,
 }
 
 impl InventoryRow {
     fn provenance(&self) -> String {
-        self.declaration.as_ref().map_or_else(
-            || "Recorded calls on this page".to_owned(),
-            |server| format!("{} · {}", server.client, server.scope),
-        )
+        if self.declarations.is_empty() {
+            return "Recorded calls on this page".to_owned();
+        }
+        self.declarations
+            .iter()
+            .map(|server| format!("{} · {}", server.client, server.scope))
+            .collect::<BTreeSet<_>>()
+            .into_iter()
+            .collect::<Vec<_>>()
+            .join(" · ")
     }
 
     fn state(&self) -> &'static str {
-        match self.declaration.as_ref().map(|server| server.enabled) {
-            Some(Some(false)) => "Disabled config",
-            Some(_) => "Configured",
-            None => "Observed",
+        let disabled = self
+            .declarations
+            .iter()
+            .any(|server| server.enabled == Some(false));
+        match (
+            self.declarations.is_empty(),
+            self.counts.is_some(),
+            disabled,
+        ) {
+            (true, _, _) => "Observed",
+            (false, true, false) => "Observed & config",
+            (false, true, true) => "Observed, disabled",
+            (false, false, true) => "Disabled config",
+            (false, false, false) => "Configured · idle",
         }
     }
 }
@@ -540,24 +605,41 @@ impl ServerInventory {
             *count += 1;
             *errors += usize::from(matches!(call.result.as_deref(), Some("failed" | "error")));
         }
-        let mut rows: Vec<_> = configured
+        let mut declared: BTreeMap<&str, Vec<ConfiguredMcpServer>> = BTreeMap::new();
+        for declaration in configured
             .into_iter()
             .flat_map(|inventory| &inventory.servers)
-            .map(|declaration| InventoryRow {
-                name: declaration.name.clone(),
-                declaration: Some(declaration.clone()),
-                counts: None,
+        {
+            declared
+                .entry(declaration.name.as_str())
+                .or_default()
+                .push(declaration.clone());
+        }
+        let names = declared
+            .keys()
+            .copied()
+            .chain(
+                observed
+                    .keys()
+                    .map(|name| name.unwrap_or("Server unreported")),
+            )
+            .collect::<BTreeSet<_>>();
+        // One row per server, as in the reference: configuration and the calls
+        // loaded on this page are joined by the exact recorded server name.
+        let mut rows: Vec<_> = names
+            .into_iter()
+            .map(|name| InventoryRow {
+                name: name.to_owned(),
+                declarations: declared.get(name).cloned().unwrap_or_default(),
+                counts: observed.get(&Some(name)).copied(),
             })
-            .chain(observed.into_iter().map(|(name, counts)| InventoryRow {
-                name: name.unwrap_or("Server unreported").to_owned(),
-                declaration: None,
-                counts: Some(counts),
-            }))
             .collect();
         rows.sort_by(|left, right| {
             left.name
-                .cmp(&right.name)
-                .then_with(|| left.declaration.cmp(&right.declaration))
+                .to_lowercase()
+                .cmp(&right.name.to_lowercase())
+                .then_with(|| left.name.cmp(&right.name))
+                .then_with(|| left.declarations.cmp(&right.declarations))
         });
         Self {
             selection: TableState::default().with_selected((!rows.is_empty()).then_some(0)),
@@ -623,7 +705,7 @@ impl ServerInventory {
             return;
         }
         let wide = area.width >= 80;
-        let mut widths = vec![Constraint::Fill(1), Constraint::Length(16)];
+        let mut widths = vec![Constraint::Fill(1), Constraint::Length(18)];
         let mut headings = vec!["Server", "Evidence"];
         if wide {
             widths.push(Constraint::Length(24));
@@ -694,6 +776,122 @@ mod tests {
     }
 
     #[test]
+    fn operations_filter_the_loaded_page_and_clear_with_escape() {
+        let id = ExtensionId::parse("test.operations").unwrap();
+        let rows = [
+            ("tool-shell", Some("main"), Some("failed")),
+            ("tool-read", Some("worker-a"), Some("succeeded")),
+            ("tool-check", None, None),
+        ]
+        .into_iter()
+        .enumerate()
+        .map(|(i, (tool, server, result))| OperationRow {
+            time: format!("2026-11-23 00:00:0{i}Z"),
+            server: server.map(str::to_owned),
+            tool: tool.into(),
+            result: result.map(str::to_owned),
+            latency: None,
+            evidence: vec![MetricRow {
+                label: "Worker".into(),
+                value: if i == 1 { "worker-a" } else { "" }.into(),
+            }],
+            mcp_event: None,
+        })
+        .collect();
+        let mut browser = Browser::new([(id.clone(), rows)].into(), None);
+        let list = browser.panes.get_mut(&id).unwrap();
+        assert!(!list.is_mcp());
+        let search = |list: &mut OperationList, text: &str| {
+            assert!(matches!(
+                list.search_key(KeyCode::Char('/')),
+                SearchInput::Handled
+            ));
+            for ch in text.chars() {
+                assert!(matches!(
+                    list.search_key(KeyCode::Char(ch)),
+                    SearchInput::Handled
+                ));
+            }
+        };
+        search(list, "worker-a failed");
+        // Every word must match somewhere in the row's recorded fields.
+        assert!(matches!(
+            list.search_key(KeyCode::Enter),
+            SearchInput::Handled
+        ));
+        assert!(list.visible.is_empty());
+        assert!(list.key(KeyCode::Esc));
+        assert_eq!(list.visible.len(), 3);
+        search(list, "worker-a");
+        assert!(matches!(
+            list.search_key(KeyCode::Enter),
+            SearchInput::Handled
+        ));
+        assert_eq!(
+            list.selected_row().map(|row| row.tool.as_str()),
+            Some("tool-read")
+        );
+        let row = list.selected_row().unwrap();
+        assert_eq!(
+            row.evidence
+                .iter()
+                .find(|field| field.label == "Worker")
+                .map(|field| field.value.as_str()),
+            Some("worker-a")
+        );
+        assert!(list.key(KeyCode::Esc));
+        search(list, "tool-check");
+        assert!(matches!(
+            list.search_key(KeyCode::Enter),
+            SearchInput::Handled
+        ));
+        assert!(list.key_hint().contains("Esc clear"));
+        // Inspector attribution keeps an absent result explicit.
+        assert_eq!(
+            list.selected_row().map(|row| row.tool.as_str()),
+            Some("tool-check")
+        );
+        let mut terminal =
+            ratatui::Terminal::new(ratatui::backend::TestBackend::new(120, 32)).unwrap();
+        terminal
+            .draw(|frame| list.draw(frame, frame.area(), "Operations"))
+            .unwrap();
+        let screen = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(screen.contains("Result"));
+        assert!(screen.contains("Unreported"));
+        assert!(screen.contains("Worker"));
+        assert!(screen.contains("Filter page"));
+        assert!(screen.contains("No linked MCP call"));
+        let next_rows = ["tool-check", "tool-other"]
+            .into_iter()
+            .map(|tool| OperationRow {
+                time: "2026-11-24 00:00:00Z".into(),
+                server: None,
+                tool: tool.into(),
+                result: Some("succeeded".into()),
+                latency: None,
+                evidence: vec![],
+                mcp_event: None,
+            })
+            .collect();
+        let mut older = Browser::new([(id, next_rows)].into(), None);
+        older.inherit_filters(&browser);
+        let prior = older.panes.values().next().unwrap();
+        assert_eq!(prior.search.query(), "tool-check");
+        assert_eq!(prior.visible.len(), 1);
+        assert_eq!(
+            prior.selected_row().map(|row| row.tool.as_str()),
+            Some("tool-check")
+        );
+    }
+
+    #[test]
     fn inventory_shows_idle_declarations_at_all_widths_without_changing_call_selection() {
         let pane = ExtensionId::parse("app.workspace-mcp").unwrap();
         let calls = vec![OperationRow {
@@ -711,6 +909,12 @@ mod tests {
                     name: "idle-server".into(),
                     client: "Codex".into(),
                     scope: "User".into(),
+                    enabled: None,
+                },
+                ConfiguredMcpServer {
+                    name: "disabled-server".into(),
+                    client: "Claude Code".into(),
+                    scope: "Project".into(),
                     enabled: Some(false),
                 },
                 ConfiguredMcpServer {
@@ -729,9 +933,16 @@ mod tests {
         assert!(list.selected_row().is_none());
         let rows = &list.inventory.as_ref().unwrap().rows;
         assert_eq!(rows.len(), 3);
-        assert_eq!(rows.iter().filter(|row| row.name == "shared").count(), 2);
-        assert_eq!(rows[0].name, "idle-server");
-        assert_eq!(rows[0].counts, None);
+        // Configured and observed evidence for the same server is one row.
+        assert_eq!(rows.iter().filter(|row| row.name == "shared").count(), 1);
+        assert_eq!(rows[0].name, "disabled-server");
+        assert_eq!(rows[0].state(), "Disabled config");
+        let idle = rows.iter().find(|row| row.name == "idle-server").unwrap();
+        assert_eq!(idle.state(), "Configured · idle");
+        assert_eq!(idle.counts, None);
+        let observed = rows.iter().find(|row| row.name == "shared").unwrap();
+        assert_eq!(observed.state(), "Observed & config");
+        assert_eq!(observed.counts, Some((1, 1)));
 
         for (width, height) in [(120, 32), (80, 24), (60, 18)] {
             let backend = ratatui::backend::TestBackend::new(width, height);
@@ -740,12 +951,20 @@ mod tests {
                 .draw(|frame| list.draw(frame, frame.area(), "MCP"))
                 .unwrap();
             let display = terminal.backend().to_string();
-            for text in [
+            let mut expected = vec![
                 "idle-server",
+                "Configured · idle",
                 "Disabled config",
-                "Codex · User",
+                "Observed & config",
                 "Configuration coverage is partial",
-            ] {
+            ];
+            // At compact widths the selected server keeps its origin in the footer.
+            expected.push(if width >= 80 {
+                "Codex · User"
+            } else {
+                "Claude Code · Project"
+            });
+            for text in expected {
                 assert!(display.contains(text), "missing {text} at width {width}");
             }
         }
