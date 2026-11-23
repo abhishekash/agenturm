@@ -196,7 +196,7 @@ def run_packaged(binaries):
                         service.wait()
                         raise
         print(
-            f"Packaged broker committed 3,072 rows from 1,024 spans in a {source_file.stat().st_size}-byte "
+            f"Packaged broker verified {len(seen):,} rows from 1,024 spans in a {source_file.stat().st_size}-byte "
             f"export. Reader verified all kinds in {pages} pages. Malformed and reader writes left no rows. Replay was a no-op."
         )
 
