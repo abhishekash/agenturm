@@ -87,6 +87,21 @@ Review with `v`, and open the selected session’s Usage with `u`. Press
 `y` in Review to acknowledge the displayed evidence. The acknowledgement
 is stored next to the history database and applies to the reviewed version.
 
+Print a bounded session report without entering the full-screen UI:
+
+```sh
+"$agenturm" cockpit --once --db history.sqlite
+"$agenturm" cockpit --once --db history.sqlite --json --limit 64
+"$agenturm" broker cockpit --once --broker-config reader.json --json
+```
+
+`agenturm --once` uses the default cockpit's discovery and history, then
+stops its session-owned workers after printing. An explicit `--db` reads
+retained history. The report preserves each source and session, reports an
+unknown state when no lifecycle was recorded, and indicates when older
+sessions are outside its page. A trusted remote reader supports the same
+report with `--endpoint` and `--token-file` in place of `--db`.
+
 From Agents, `g` opens the cross-source Overview. Use `2` for Activity,
 `3` for MCP, `4` for Operations, `5` for Findings, `6` for Host, and
 `7` for Usage or `8` for Traces. Press `t` in a history view to select a

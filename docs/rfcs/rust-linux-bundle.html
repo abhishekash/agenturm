@@ -90,6 +90,17 @@ Press <code>r</code> in Agents to refresh it immediately. Open Activity with <co
 Review with <code>v</code>, and open the selected session’s Usage with <code>u</code>. Press
 <code>y</code> in Review to acknowledge the displayed evidence. The acknowledgement
 is stored next to the history database and applies to the reviewed version.</p>
+<p>Print a bounded session report without entering the full-screen UI:</p>
+<pre><code class="language-sh">&quot;$agenturm&quot; cockpit --once --db history.sqlite
+&quot;$agenturm&quot; cockpit --once --db history.sqlite --json --limit 64
+&quot;$agenturm&quot; broker cockpit --once --broker-config reader.json --json
+</code></pre>
+<p><code>agenturm --once</code> uses the default cockpit's discovery and history, then
+stops its session-owned workers after printing. An explicit <code>--db</code> reads
+retained history. The report preserves each source and session, reports an
+unknown state when no lifecycle was recorded, and indicates when older
+sessions are outside its page. A trusted remote reader supports the same
+report with <code>--endpoint</code> and <code>--token-file</code> in place of <code>--db</code>.</p>
 <p>From Agents, <code>g</code> opens the cross-source Overview. Use <code>2</code> for Activity,
 <code>3</code> for MCP, <code>4</code> for Operations, <code>5</code> for Findings, <code>6</code> for Host, and
 <code>7</code> for Usage or <code>8</code> for Traces. Press <code>t</code> in a history view to select a

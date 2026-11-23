@@ -244,7 +244,9 @@ pub(super) fn parse_os(args: &[OsString]) -> Result<BrokerOptions, String> {
     ) {
         return Err(USAGE.into());
     }
-    if command.first().is_some_and(|verb| verb == "cockpit") {
+    if command.first().is_some_and(|verb| verb == "cockpit")
+        && !command.iter().any(|argument| argument == "--once")
+    {
         command[0] = "inspect".into();
     }
     command.extend(["--db".into(), "broker-history".into()]);
@@ -557,6 +559,7 @@ pub fn execute(options: &BrokerOptions) -> Result<ExitCode, BrokerExecutionError
         }
     };
     match command {
+        Command::Summary(options) => print!("{}", summary_cli::from_reader(&store, options, None)?),
         Command::Collect(options) => {
             let config = load_collection_config(&options.config)?;
             let stop = Arc::new(AtomicBool::new(false));

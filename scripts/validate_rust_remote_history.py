@@ -338,6 +338,13 @@ def main():
             assert probe.returncode and b"PermissionError" in probe.stderr
             denied = run(ui, *command("query"), gid=ui_gid, code=1)
             assert not denied.stdout
+            broker_summary = json.loads(run(reader, *command("cockpit", "--once", "--json")).stdout)
+            remote_summary = json.loads(run(ui, app, "cockpit", "--once", "--json",
+                                            *attach(endpoint), gid=ui_gid, env=env).stdout)
+            assert broker_summary['format'] == remote_summary['format'] == 'agenturm-summary/1'
+            assert broker_summary['sessions'] == remote_summary['sessions']
+            assert broker_summary['snapshot_id'] == remote_summary['snapshot_id']
+            assert PROMPT not in json.dumps(remote_summary)
             pending = attention(endpoint, "watch", "--once")["pending"]
             assert len(pending) == 1 and pending[0]["turn_id"] == TURN and not pending[0]["seen"]
             assert_seen_in_cockpit([app, "cockpit", *attach(endpoint)],

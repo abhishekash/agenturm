@@ -22,7 +22,7 @@ migration of Python-era databases remains outside the Rust-only product scope.</
 <tbody>
 <tr>
 <td>Bare <code>agenturm</code>, <code>cockpit</code>, global <code>--db</code></td>
-<td>Keep local startup, discovery, one-shot snapshots and explicit history selection. Bare Rust startup and <code>cockpit --db</code> exist. Use <code>query</code> for machine-readable history. <code>cockpit --endpoint</code> attaches to a Rust reader through a trusted loopback listener or SSH tunnel. Compatibility with a Python receiver, <code>--new-window</code> and the old one-shot summary remains open. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md#read-history-through-an-ssh-tunnel">Remote history setup</a></td>
+<td>Keep local startup, discovery, one-shot snapshots and explicit history selection. Bare Rust startup and <code>cockpit --db</code> exist. <code>cockpit --once</code> prints a bounded session report, with JSON and page coverage on request. The same report works through a broker or trusted remote reader. Use <code>query</code> for raw machine-readable history. <code>cockpit --endpoint</code> attaches through a trusted loopback listener or SSH tunnel. Compatibility with a Python receiver and <code>--new-window</code> remain open. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md#read-history-through-an-ssh-tunnel">Remote history setup</a></td>
 </tr>
 <tr>
 <td><code>serve</code></td>

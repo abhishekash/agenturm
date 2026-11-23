@@ -25,6 +25,7 @@ mod retention_cli;
 mod review_receipt;
 mod session_evidence;
 mod span_jsonl_import;
+mod summary_cli;
 mod task_cli;
 mod task_git;
 mod trace_import;
@@ -49,6 +50,7 @@ pub use remote_history::{RemoteHistoryOptions, execute_remote_cockpit};
 pub use retention_cli::{RetentionOptions, execute_retention};
 pub use review_receipt::ReviewOutput;
 pub use span_jsonl_import::{SpanJsonlImportOptions, execute_span_jsonl_import};
+pub use summary_cli::{SummaryOptions, execute_summary};
 pub use task_cli::{TaskOptions, execute_task, execute_task_stdout};
 pub use trace_import::{TraceImportOptions, execute_trace_import};
 pub use trace_receiver::{TraceReceiverOptions, execute_trace_receiver};
@@ -239,6 +241,7 @@ pub enum Command {
     },
     Content(ContentOptions),
     Retention(RetentionOptions),
+    Summary(SummaryOptions),
     Ingest(IngestOptions),
     ImportTraces(TraceImportOptions),
     ImportJsonl(SpanJsonlImportOptions),
@@ -771,6 +774,16 @@ pub fn parse_os_command(args: &[std::ffi::OsString]) -> Result<Command, String> 
 }
 
 pub fn parse_command(args: &[String]) -> Result<Command, String> {
+    if args.first().is_some_and(|arg| arg == "--once") {
+        let mut explicit = vec!["cockpit".to_owned()];
+        explicit.extend_from_slice(args);
+        return parse_command(&explicit);
+    }
+    if args.first().is_some_and(|arg| arg == "cockpit")
+        && args[1..].iter().any(|arg| arg == "--once")
+    {
+        return summary_cli::parse(&args[1..]).map(Command::Summary);
+    }
     match args.first().map(String::as_str) {
         None => Ok(Command::Help),
         Some("--help" | "-h" | "help") if args.len() == 1 => Ok(Command::Help),
@@ -3319,6 +3332,7 @@ pub fn render(command: Command) -> String {
             "       agenturm broker <collect|query|review|cockpit|task|grant|content|backup|integrity|prune> --broker-config <json> [command options]\n",
             "       agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path>\n",
             "       agenturm cockpit [--db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]]\n",
+            "       agenturm cockpit --once [--db <path>] [--json] [--limit <1..256>]\n",
             "       agenturm cockpit --endpoint http://<loopback-IP:port> --token-file <path>\n",
             "       agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]\n",
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
@@ -3373,6 +3387,7 @@ pub fn render(command: Command) -> String {
         | Command::RestoreWorkspace { .. }
         | Command::Prune { .. }
         | Command::Retention(_)
+        | Command::Summary(_)
         | Command::Content(_) => String::new(),
         Command::Discover { .. } | Command::Cockpit { .. } => String::new(),
         #[cfg(target_os = "linux")]

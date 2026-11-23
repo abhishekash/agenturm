@@ -3,6 +3,7 @@
 mod client;
 mod http;
 
+pub(crate) use client::RemoteStore;
 pub use client::{RemoteHistoryOptions, execute_remote_cockpit};
 pub(crate) use client::{open_workspace, parse as parse_attach};
 

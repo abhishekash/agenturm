@@ -85,7 +85,7 @@ pub(crate) struct RemoteStore {
 }
 
 impl RemoteStore {
-    fn open(options: &RemoteHistoryOptions) -> Result<Self, String> {
+    pub(crate) fn open(options: &RemoteHistoryOptions) -> Result<Self, String> {
         let token = ProducerToken::from_file(&options.token_file)?;
         let reply = exchange(
             options.endpoint,
