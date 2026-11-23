@@ -131,7 +131,7 @@ inspect_history() {
         sleep 1
         printf g
         sleep 0.3
-        printf t
+        printf T
         sleep 0.3
         printf '\033[B'
         sleep 0.3
@@ -268,7 +268,11 @@ verify_default_cockpit() {
         sleep 0.2
         printf '\033' >&"$keyboard_fd"
         sleep 0.1
-        printf '\033[B' >&"$keyboard_fd"
+        if ((attempt % 2 == 0)); then
+            printf '\033[B' >&"$keyboard_fd"
+        else
+            printf '\033[A' >&"$keyboard_fd"
+        fi
     done
     wait_for_live_check grep -aFq 'bundle-codex-session' "$transcript"
     wait_for_live_check grep -aFq 'bundle-pi-session' "$transcript"
