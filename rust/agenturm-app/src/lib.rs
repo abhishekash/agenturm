@@ -27,6 +27,7 @@ mod private_output;
 mod remote_history;
 mod retention_cli;
 mod review_receipt;
+mod session_display;
 mod session_evidence;
 mod session_projects;
 mod session_titles;
@@ -2245,6 +2246,7 @@ fn load_workspace_history(
                 &session.harness_id,
                 &session.session_id,
             );
+            session_display::add_context(&mut snapshot, &panes.overview, &session);
             let mut page = inspector_activity::overview_page(snapshot);
             if !page.snapshot.observations.is_empty() {
                 page.review_pane = Some(panes.review.clone());
