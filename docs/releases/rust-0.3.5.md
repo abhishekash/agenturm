@@ -102,11 +102,21 @@ fresh selection and approval.
 
 ## Qualification and remaining gates
 
-The joined candidate has passed workspace library and strict Clippy checks,
-actual local OpenAI/LangChain/LangGraph and Node producer checks, and
-separate-principal Linux fixtures for private delivery and Host navigation.
-The final archive and mandatory vendor CI qualification are recorded before
-publication.
+The x86-64 archive has SHA-256
+`76fd77c0c492ac9ae9a458ae196cd64245e39e772d0208d54e4165393874fceb`.
+It passed Python-free startup, managed install/restart, upgrade from 0.3.4,
+backup, uninstall with retained history, 16 local producer checks, and
+separate-principal private, replay, retention, Host and restore fixtures.
+The maximum 3,072-fact broker batch passed with unchanged frame deadlines
+under hardware virtualization. All 180 recorded packaged keyboard steps
+passed across six wide/narrow terminal sessions with termios restored.
+
+The source passed 386 workspace library tests, 36 CLI process tests and strict
+workspace Clippy. Mandatory CI passed all 16 selected metadata/token/payload
+cases across seven vendor SDKs with zero skips. Native x86-64 and arm64 bundle
+jobs passed; arm64 publication follows the qualified release-tag job.
+
+[Exact artifact and qualification record](../validation/rust-035-release.md)
 
 The default distribution entry point remains gated by the retained workflow
 inventory. Real Kiro transcripts, supported production connector delivery,
