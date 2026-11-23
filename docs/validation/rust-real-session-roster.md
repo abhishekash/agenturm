@@ -28,3 +28,81 @@ Add `--require-live` only with independently observed `pid` values for at least 
 `historical` accepts one ordinary Claude record with `harness`, `path`, and `session`. Include `title` and `project` to check the full presentation at all three widths, and optionally `status`. It uses a separately configured store so managed retention does not retroactively admit stale sessions into the live cockpit. The full display check advances the committed Claude checkpoint to the complete unchanged source before comparing the title and project. The observed case reached 259,858 bytes in 15 collection passes. `mutation` creates disposable metadata records and checks an exact native title change, distinct sources with the same native ID, state catch-up, and restart. Its results do not count as real concurrent sessions.
 
 To examine an identified running store, use `inspect-existing --db /path/to/history.sqlite`. It reports source and session IDs, counts and verified native classifications. It leaves private message bodies, native title text, credentials and full terminal frames outside its output.
+
+
+## Qualified 0.3.9 candidate — 23 November 2026
+
+PR [#377](https://github.com/abhishekash/agenturm/pull/377) merged as
+`ed03815fdfe0a6bfea88ee07ce69e9ff227c2b89`. The frozen runtime source is
+`b2c1328f8f9f0daa9d3dfdf1376675e05532189e`; `13e3bb6` changes only the
+terminal qualification scripts. The merge has the same source tree as that
+qualified head. No 0.3.9 tag or release was published.
+
+The exact local x86-64 candidate archive SHA-256 is
+`b17a10d382d3e2604fb528db05992e7dbf6a56b6738f99f5e2cd55c76c3f6a45`.
+Its `bin/agenturm` SHA-256 is
+`508482fdd3ea02272fd2800cec97c7f8401b083e8d3c021c859fbda62e065ca2`.
+These identify this candidate, not a future daily batch that includes further
+changes. Its bundled README predates the publication hold; the current guide
+above documents the published/candidate distinction and local-archive install.
+
+| Check | Evidence | Result |
+| --- | --- | --- |
+| Workspace | 652 tests across 93 suites, including the host socket case | Passed; zero failed or ignored |
+| Formatting and lint | Full workspace, strict all-target Clippy | Passed |
+| Actual open Codex cohort | 12 non-guardian transcript handles across two recognized native processes; exact titles, projects, Enter/Esc and restart at 120×32, 80×24, 60×18 | All 36 session/size checks passed |
+| Actual recorded Codex | Nine retained native sessions, catch-up, restart and the same three sizes | All 27 session/size checks passed |
+| Actual historical Claude | Scoped native custom title and cwd after complete 259,858-byte checkpoint, 15 passes | All three size checks passed |
+| Actual Claude snapshot prelude | Complete 8,815-byte transcript, exact row-two identity and workspace; no explicit name | All three size checks passed; native bytes and file identity unchanged |
+| Disposable native metadata | Rename without identity change, distinct path-bound sources with the same native ID, independent lifecycle catch-up, narrow/reopened UI | Passed |
+| Discovery fixture | Seven older synthetic open handles, one late arrival, ten backlog sessions, guardian exclusion and saved-cursor restart | Passed against exact package |
+| Installed workflow | Foreground collection, exact two-session/completed-turn inspector, backup, follow, prior 0.3.8 reopen and cursors | Passed |
+| Installer | Offline install, update/replay and uninstall with retained history/configuration | Passed |
+| Themes | Five palettes, preview/save/cancel/restart, MCP/inspectors and compact terminal layouts | Passed against exact package |
+| Multi-user KVM | Native private content, telemetry payloads, eval details, host history, remote history, remote host and eval inventory | All seven passed in the network-isolated guest |
+
+Native candidate CI passed both Linux architectures at `13e3bb6` in
+[run 45150637065](https://github.com/abhishekash/agenturm/actions/runs/45150637065),
+including ARM64 upgrade and user-service checks. All five SDK jobs passed on
+runtime-identical `b2c1328` in
+[run 45149465255](https://github.com/abhishekash/agenturm/actions/runs/45149465255).
+The current core/SDK rerun subsequently passed at `13e3bb6` in
+[run 45150636838](https://github.com/abhishekash/agenturm/actions/runs/45150636838).
+The legacy Python matrix was still running when this record was updated.
+
+The old native qualification failure was an assertion over concatenated
+incremental terminal writes. It reproduced on this archive; reconstructing
+current terminal cells preserved and passed the exact session, source, turn,
+completed lifecycle, Escape and terminal-restoration assertions.
+
+### Unreleased visual follow-up
+
+Visual review of captured terminal cells found that task titles inherited a
+heading background, overriding the table's row background. Commit `88c0006`
+uses foreground-only bold task names and muted supporting context. A rendered
+buffer regression checks title, status and context backgrounds at 120 and 60
+columns. The updated source passed 653 tests across 93 suites, all 45 UI tests,
+strict all-target workspace Clippy and formatting. The earlier exact archive
+above predates this display-only follow-up; the next release batch must be built
+from and qualified against its selected final source.
+
+The exact archive also passed 30 `NO_COLOR` terminal captures across the five
+themes and compact layouts without RGB escape sequences. Theme selection,
+Escape, keyboard navigation and state text remained available.
+
+### Remaining acceptance and release limits
+
+Contemporaneous live Claude concurrency was unavailable in the inspected host;
+historical native Claude coverage is not a replacement for that acceptance.
+Header-only recordings without session facts remain outside retained roster
+rows. Names absent from explicit metadata stay unavailable. Discovery beyond
+its file/process scan budgets is partial. Mutable Claude names are bounded to
+16 MiB per source and 32 MiB per roster read; a snapshot-prefixed opening requires
+full committed-prefix verification before any row-two workspace is shown.
+
+The public release cadence is at most one publication per rolling 24 hours.
+The previous publication was 23 November 2026 at 06:03:24 UTC, so the next eligible
+batch begins 24 November at 06:03:24 UTC (07:03:24 Europe/Berlin), provided there
+has been no later publication. Implementation and qualification continue.
+The remaining Python view-parity, production endpoint and default-cutover gates
+in the execution plan remain open.

@@ -13,6 +13,15 @@
 <li><strong>UI contributions</strong> provide data-only panes; the Rust UI owns layout, navigation, focus and terminal lifecycle.</li>
 </ol>
 <p>Connectors remain a later runtime extension family. The new <code>agenturm-connector-api</code> crate defines preliminary, versioned inbound and outbound contracts; it does not yet register, supervise, authorize, or persist connector work. The <strong>target</strong> kernel owns extension identity, policy, durable writes, query boundaries and supervision. The current <code>agenturm-kernel</code> owns supervised admission and a bounded durable observation read port, but not product policy, app configuration (which lives in CLI input), or process supervision. Rust performance is a user-chosen implementation direction; no gain is claimed without whole-application measurements.</p>
+<h2>Release cadence</h2>
+<p>Publish at most one release in any rolling 24-hour period. Continue implementation,
+qualification and completed PR merges between publications, then batch qualified
+work into the next eligible release. This policy does not pause implementation
+or change the default Rust cutover gates.</p>
+<p>The latest publication is Rust 0.3.8 at 23 November 2026, 06:03:24 UTC.
+The next batch is eligible no earlier than 24 November, 06:03:24 UTC
+(07:03:24 Europe/Berlin); recheck the latest publication when preparing that batch.
+Rust 0.3.9 remains an unpublished candidate.</p>
 <h2>Milestones and gates</h2>
 <h3>1. Rust composition kernel — foundation implemented</h3>
 <p>Deliver typed extension ports and deterministic registries for harnesses, capabilities and UI contributions. The host stamps source identity, validates bounded snapshot results, records returned errors/unwind panics, and returns a render-neutral snapshot. This seam is synchronous and trusted; it is not a process, time or allocation isolation boundary.</p>
@@ -51,7 +60,7 @@ the existing observations, cursors, and receipt sequence. Lifecycle facts collec
 <li>Pending UI parity: configured-but-idle MCP server inventory and per-call related-trace navigation; generic OTLP metric point/history/exemplar browsing and the seven-day usage chart; grouped/generated Findings with occurrence counts; per-process project labels; and native internal approval review capture. These remain open requirements rather than retired workflows. Local extracted-package acceptance passed: prior-release reopen, empty startup/rolling collection, exact inspectors, restart/replay, backup, offline installer, all six packaged terminal lanes, and seven distinct-UID KVM cases. Required SDK jobs passed on the same frozen runtime. Both native Linux bundle CI jobs passed in run <code>45120054721</code>, including ARM64 upgrade and service checks. All required Rust/SDK jobs passed in run <code>45120054720</code>; the Python matrix was still running. Both published archives and sidecars were verified after <a href="https://github.com/abhishekash/agenturm/actions/runs/45121070134">tag qualification</a>. See <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-038-ui-acceptance.md">0.3.8 acceptance</a>. The command-center initial layout is the user-selected replacement for the Python split view.</li>
 <li>Comparative performance benchmarking remains deferred. Rust 0.3.8 is an opt-in release; the remaining parity and production acceptance requirements below continue to gate the default switch.</li>
 </ul>
-<h3>Live roster and native names — 0.3.9 candidate</h3>
+<h3>Live roster and native names — implemented and qualified candidate</h3>
 <p>The later “do it” instruction authorized implementation of E1/E2/E3 from the
 <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-live-roster-diagnosis.md">live-roster diagnosis</a>. Parallel
 lanes implemented discovery, native context, and actual-session acceptance.</p>
@@ -79,11 +88,22 @@ yet create roster rows. Discovery beyond its scan window remains partial.</li>
 preferences. Semantic status styles, alternating rows and observed MCP-server
 summaries share the same theme. The command-center first-screen structure is
 preserved. This is not a claim that the remaining view parity below is done.</li>
-<li>The joined pre-final candidate passed 647 workspace tests with no failures or
-ignores and strict all-target workspace Clippy. Final archive, real concurrent
-Codex, historical Claude, restart, narrow-screen and multi-user acceptance are
-tracked in the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-real-session-roster.md">native-session record</a>.
-The 0.3.8 assets remain unchanged; 0.3.9 publication is pending final gates.</li>
+<li>PR #377 merged as <code>ed03815fdfe0a6bfea88ee07ce69e9ff227c2b89</code>. The final
+runtime passed 652 tests across 93 workspace suites, zero failed or ignored,
+strict all-target Clippy, actual 12-session Codex process-witness acceptance,
+recorded Codex and historical Claude acceptance, and all seven multi-user
+KVM cases. Native x86-64 and ARM64 candidate CI passed. See the
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-real-session-roster.md">native-session record</a> for exact
+artifact identity, remaining bounds and evidence categories. Publication is
+held under the rolling 24-hour cadence. Contemporaneous live Claude
+concurrency remains unverified; its actual historical native recordings
+passed the display and collection checks.</li>
+<li>A subsequent visual follow-up keeps task text on the shared row background
+and mutes supporting context. The updated source passed 653 workspace tests
+across 93 suites, all 45 UI tests, strict Clippy and formatting. Its rendered
+background regression covers 120 and 60 columns. The next daily release must
+qualify its selected final batch; the earlier exact archive remains identified
+separately in the validation record.</li>
 </ul>
 <h3>First screen — Agenturm command center</h3>
 <p>The user selected the command-center screenshot supplied on 23 November as the layout reference for the first screen. Use Agenturm branding and the established Agenturm colors, typography and terminal controls.</p>

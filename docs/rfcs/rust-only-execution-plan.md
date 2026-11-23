@@ -14,6 +14,18 @@ The application keeps three independent extension families:
 
 Connectors remain a later runtime extension family. The new `agenturm-connector-api` crate defines preliminary, versioned inbound and outbound contracts; it does not yet register, supervise, authorize, or persist connector work. The **target** kernel owns extension identity, policy, durable writes, query boundaries and supervision. The current `agenturm-kernel` owns supervised admission and a bounded durable observation read port, but not product policy, app configuration (which lives in CLI input), or process supervision. Rust performance is a user-chosen implementation direction; no gain is claimed without whole-application measurements.
 
+## Release cadence
+
+Publish at most one release in any rolling 24-hour period. Continue implementation,
+qualification and completed PR merges between publications, then batch qualified
+work into the next eligible release. This policy does not pause implementation
+or change the default Rust cutover gates.
+
+The latest publication is Rust 0.3.8 at 23 November 2026, 06:03:24 UTC.
+The next batch is eligible no earlier than 24 November, 06:03:24 UTC
+(07:03:24 Europe/Berlin); recheck the latest publication when preparing that batch.
+Rust 0.3.9 remains an unpublished candidate.
+
 ## Milestones and gates
 
 ### 1. Rust composition kernel — foundation implemented
@@ -77,7 +89,7 @@ Python 0.2.8 remains the visual and interaction reference. [Rust 0.3.8 is publis
 - Pending UI parity: configured-but-idle MCP server inventory and per-call related-trace navigation; generic OTLP metric point/history/exemplar browsing and the seven-day usage chart; grouped/generated Findings with occurrence counts; per-process project labels; and native internal approval review capture. These remain open requirements rather than retired workflows. Local extracted-package acceptance passed: prior-release reopen, empty startup/rolling collection, exact inspectors, restart/replay, backup, offline installer, all six packaged terminal lanes, and seven distinct-UID KVM cases. Required SDK jobs passed on the same frozen runtime. Both native Linux bundle CI jobs passed in run `45120054721`, including ARM64 upgrade and service checks. All required Rust/SDK jobs passed in run `45120054720`; the Python matrix was still running. Both published archives and sidecars were verified after [tag qualification](https://github.com/abhishekash/agenturm/actions/runs/45121070134). See [0.3.8 acceptance](../validation/rust-038-ui-acceptance.md). The command-center initial layout is the user-selected replacement for the Python split view.
 - Comparative performance benchmarking remains deferred. Rust 0.3.8 is an opt-in release; the remaining parity and production acceptance requirements below continue to gate the default switch.
 
-### Live roster and native names — 0.3.9 candidate
+### Live roster and native names — implemented and qualified candidate
 
 The later “do it” instruction authorized implementation of E1/E2/E3 from the
 [live-roster diagnosis](../validation/rust-live-roster-diagnosis.md). Parallel
@@ -106,11 +118,22 @@ lanes implemented discovery, native context, and actual-session acceptance.
   preferences. Semantic status styles, alternating rows and observed MCP-server
   summaries share the same theme. The command-center first-screen structure is
   preserved. This is not a claim that the remaining view parity below is done.
-- The joined pre-final candidate passed 647 workspace tests with no failures or
-  ignores and strict all-target workspace Clippy. Final archive, real concurrent
-  Codex, historical Claude, restart, narrow-screen and multi-user acceptance are
-  tracked in the [native-session record](../validation/rust-real-session-roster.md).
-  The 0.3.8 assets remain unchanged; 0.3.9 publication is pending final gates.
+- PR #377 merged as `ed03815fdfe0a6bfea88ee07ce69e9ff227c2b89`. The final
+  runtime passed 652 tests across 93 workspace suites, zero failed or ignored,
+  strict all-target Clippy, actual 12-session Codex process-witness acceptance,
+  recorded Codex and historical Claude acceptance, and all seven multi-user
+  KVM cases. Native x86-64 and ARM64 candidate CI passed. See the
+  [native-session record](../validation/rust-real-session-roster.md) for exact
+  artifact identity, remaining bounds and evidence categories. Publication is
+  held under the rolling 24-hour cadence. Contemporaneous live Claude
+  concurrency remains unverified; its actual historical native recordings
+  passed the display and collection checks.
+- A subsequent visual follow-up keeps task text on the shared row background
+  and mutes supporting context. The updated source passed 653 workspace tests
+  across 93 suites, all 45 UI tests, strict Clippy and formatting. Its rendered
+  background regression covers 120 and 60 columns. The next daily release must
+  qualify its selected final batch; the earlier exact archive remains identified
+  separately in the validation record.
 
 ### First screen — Agenturm command center
 

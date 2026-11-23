@@ -16,15 +16,16 @@ collection is available on Linux systems without a user manager.
 
 ## Build and install
 
-This guide describes Rust 0.3.9 for Linux x86-64 and ARM64. Use the opt-in source
-installer from a checkout and verify the matching versioned archive.
+Rust 0.3.8 is the latest published opt-in release. Rust 0.3.9 is a qualified
+candidate for Linux x86-64 and ARM64, held for the next daily release batch.
+Use the source installer from a checkout and verify the matching archive.
 
 ~~~sh
-agenturm=$(bash scripts/install-rust.sh install --version 0.3.9)
+agenturm=$(bash scripts/install-rust.sh install --version 0.3.8)
 "$agenturm" --version
 ~~~
 
-[Rust 0.3.9 release assets](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.9)
+[Published Rust 0.3.8 assets](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.8)
 
 It installs the complete versioned bundle and an agenturm-rust launcher,
 preserving the existing agenturm command and leaving services and history
@@ -42,7 +43,7 @@ From the directory containing the published archive and its checksum, use
 the matching asset for your architecture. This example uses x86-64.
 
 ```sh
-archive="agenturm-0.3.9-linux-x86_64.tar.gz"
+archive="agenturm-0.3.8-linux-x86_64.tar.gz"
 sha256sum -c "$archive.sha256"
 mkdir -p "$HOME/.local/opt"
 tar -xzf "$archive" -C "$HOME/.local/opt"
@@ -50,11 +51,11 @@ agenturm="$HOME/.local/opt/${archive%.tar.gz}/bin/agenturm"
 "$agenturm" --version
 ```
 
-Use `agenturm-0.3.9-linux-aarch64.tar.gz` and its sidecar on ARM64. Keep the
+Use `agenturm-0.3.8-linux-aarch64.tar.gz` and its sidecar on ARM64. Keep the
 catalog and binaries in the extracted directory. Verify the matching release
 sidecar for the version being installed.
 
-For comparison, the previous published **Rust 0.3.8** Linux archives have these SHA-256 digests:
+The published **Rust 0.3.8** Linux archives have these SHA-256 digests:
 
 | Platform | SHA-256 |
 | --- | --- |
@@ -64,6 +65,27 @@ For comparison, the previous published **Rust 0.3.8** Linux archives have these 
 The 0.3.8 tag run passed archive qualification and the offline installer check on
 both native Linux architectures. The published assets match the digests above.
 [Native tag qualification](https://github.com/abhishekash/agenturm/actions/runs/45121070134)
+
+### Qualified 0.3.9 candidate
+
+The candidate has passed local Linux x86-64 qualification and native x86-64 and
+ARM64 CI. It is not a published release. Build it from the current source, or
+use the matching checksum-verified CI candidate archive, then install locally:
+
+```sh
+bash scripts/build-rust-linux-bundle.sh ./dist
+archive="./dist/agenturm-0.3.9-linux-$(uname -m).tar.gz"
+agenturm=$(bash scripts/install-rust.sh install --version 0.3.9 \
+  --archive "$archive" --checksum "$archive.sha256")
+"$agenturm" --version
+```
+
+The release policy permits at most one publication in a rolling 24-hour window.
+Rust 0.3.8 was published on 23 November 2026 at 06:03:24 UTC. The next batch is
+eligible no earlier than 24 November at 06:03:24 UTC (07:03:24 Europe/Berlin),
+subject to the completed batch's qualification and any later publication.
+Implementation, PR merges and candidate qualification continue between releases.
+See the [qualification record](../validation/rust-real-session-roster.md).
 
 ## Open the cockpit
 
@@ -88,8 +110,8 @@ partial discovery coverage. A fixed `discover` configuration remains a bounded
 recent-file selection. An explicit `--db` cockpit states that discovery is
 disabled and needs a separate writer for fresh observations.
 
-The roster uses explicit saved task names first, then safe native conversation
-names. Provider, agent name and role provide supporting context. Native recorded
+The roster uses explicit saved task names first, then safe native Codex and
+Claude conversation names. Provider, agent name and role provide supporting context. Native recorded
 workspaces supply project headings when an operator task link does not override
 them. Missing names remain “Name unavailable”; tool activity and session IDs do
 not become names. Source and session IDs stay in the inspector and copy/export.
