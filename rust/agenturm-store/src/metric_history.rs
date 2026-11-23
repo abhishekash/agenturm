@@ -16,12 +16,18 @@ pub use agenturm_kernel::retained_history::{
     MetricSeriesPosition,
 };
 
-pub(super) fn create_index(connection: &Connection) -> Result<()> {
-    connection.execute_batch(
-        "CREATE INDEX agenturm_metric_series_points ON agenturm_observations(
+const INDEX_SQL: &str = "CREATE INDEX agenturm_metric_series_points ON agenturm_observations(
             source_id, json_extract(kind_json, '$.series.id'), observed_at_unix_ns DESC, event_id DESC)
-         WHERE json_extract(kind_json, '$.kind') = 'metric_point';",
-    )?;
+         WHERE json_extract(kind_json, '$.kind') = 'metric_point';";
+
+pub(super) fn create_index(connection: &Connection) -> Result<()> {
+    connection.execute_batch(INDEX_SQL)?;
+    Ok(())
+}
+
+pub(super) fn validate_index(connection: &Connection) -> Result<()> {
+    let sql: String = connection.query_row("SELECT sql FROM sqlite_schema WHERE type='index' AND name='agenturm_metric_series_points'", [], |row| row.get(0))?;
+    if sql != INDEX_SQL.trim_end_matches(';') { return Err(StoreError::UnrecognizedDatabase); }
     Ok(())
 }
 

@@ -565,6 +565,12 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         expected.push(("table".into(), "agenturm_eval_details".into()));
         eval_detail::validate_schema(connection)?;
     }
+    if version >= 18 {
+        expected.push(("index".into(), "agenturm_metric_series_points".into()));
+        expected.push(("index".into(), "agenturm_usage_history_by_time".into()));
+        metric_history::validate_index(connection)?;
+        usage_history::validate_index(connection)?;
+    }
     expected.sort();
     if objects != expected {
         return Err(StoreError::UnrecognizedDatabase);
@@ -2659,7 +2665,9 @@ mod tests {
 
     fn downgrade_fixture_to_v14(connection: &Connection) {
         connection.execute_batch(
-            "DROP TABLE agenturm_eval_details;
+            "DROP INDEX agenturm_metric_series_points;
+             DROP INDEX agenturm_usage_history_by_time;
+             DROP TABLE agenturm_eval_details;
              DROP TABLE agenturm_eval_detail_admissions;
              DROP INDEX agenturm_observations_by_trace;
              DROP TABLE agenturm_eval_outcomes;
@@ -2741,7 +2749,9 @@ mod tests {
         let snapshot = store.query_observations(&query).unwrap().snapshot_id;
         let tx = store.connection.transaction().unwrap();
         tx.execute_batch(
-            "DROP TABLE agenturm_eval_details; DROP TABLE agenturm_eval_detail_admissions;",
+            "DROP INDEX agenturm_metric_series_points;
+             DROP INDEX agenturm_usage_history_by_time;
+             DROP TABLE agenturm_eval_details; DROP TABLE agenturm_eval_detail_admissions;",
         )
         .unwrap();
         content_grant::migrate_grant_schema(&tx, 16).unwrap();
@@ -2783,6 +2793,27 @@ mod tests {
             SCHEMA_VERSION
         );
         eval_detail::validate_schema(&upgraded.connection).unwrap();
+    }
+
+    #[test]
+    fn v17_upgrade_preserves_existing_eval_tables_and_pinned_history() {
+        let db = TempDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        store.commit_batch(&batch("prior", vec![event("prior", "session", 10)])).unwrap();
+        let query = ObservationQuery::latest(1);
+        let snapshot = store.query_observations(&query).unwrap().snapshot_id;
+        let identity = store.history_identity().unwrap();
+        store.connection.execute_batch("DROP INDEX agenturm_metric_series_points; DROP INDEX agenturm_usage_history_by_time;").unwrap();
+        store.connection.execute("UPDATE agenturm_store_meta SET value=?1 WHERE key='format'", [STORE_MARKER_V17]).unwrap();
+        store.connection.pragma_update(None, "user_version", 17).unwrap();
+        drop(store);
+        let reader = Store::open_read_only(&db.0).unwrap();
+        assert_eq!(reader.query_observations(&query).unwrap().snapshot_id, snapshot);
+        drop(reader);
+        let upgraded = Store::open(&db.0).unwrap();
+        assert_eq!(upgraded.history_identity().unwrap(), identity);
+        assert_eq!(upgraded.query_observations(&query).unwrap().snapshot_id, snapshot);
+        validate_marked_shape(&upgraded.connection, 18).unwrap();
     }
 
     #[test]

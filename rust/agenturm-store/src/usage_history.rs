@@ -58,12 +58,18 @@ struct DayCounters {
     span: Counters,
 }
 
-pub(super) fn create_index(connection: &Connection) -> Result<()> {
-    connection.execute_batch(
-        "CREATE INDEX agenturm_usage_history_by_time ON agenturm_observations(
+const INDEX_SQL: &str = "CREATE INDEX agenturm_usage_history_by_time ON agenturm_observations(
            observed_at_unix_ns DESC, source_id DESC, event_id DESC, revision DESC)
-         WHERE json_extract(kind_json, '$.kind') IN ('usage', 'span_token_usage');",
-    )?;
+         WHERE json_extract(kind_json, '$.kind') IN ('usage', 'span_token_usage');";
+
+pub(super) fn create_index(connection: &Connection) -> Result<()> {
+    connection.execute_batch(INDEX_SQL)?;
+    Ok(())
+}
+
+pub(super) fn validate_index(connection: &Connection) -> Result<()> {
+    let sql: String = connection.query_row("SELECT sql FROM sqlite_schema WHERE type='index' AND name='agenturm_usage_history_by_time'", [], |row| row.get(0))?;
+    if sql != INDEX_SQL.trim_end_matches(';') { return Err(StoreError::UnrecognizedDatabase); }
     Ok(())
 }
 
