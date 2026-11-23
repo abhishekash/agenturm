@@ -54,7 +54,7 @@ impl Workspace {
             }
             let catalog = self.agents.catalog.as_ref()?;
             Some(LoadedView {
-                title: "Agents".into(),
+                title: "Agenturm command center".into(),
                 scope: "Loaded and filtered session page".into(),
                 rows: self
                     .agents
@@ -64,8 +64,9 @@ impl Workspace {
                     .map(|row| MetricRow {
                         label: format!("{} / {}", row.harness_id, row.session_id),
                         value: format!(
-                            "task={} · state={} · updated_unix_ns={}",
+                            "task={} · project={} · state={} · updated_unix_ns={}",
                             row.task_title.as_deref().unwrap_or("Untitled session"),
+                            command_center::project(row),
                             recorded_state(row),
                             row.updated_at_unix_ns
                         ),

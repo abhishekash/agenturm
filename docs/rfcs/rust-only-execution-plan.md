@@ -64,6 +64,29 @@ Finish the standalone Rust application from a fresh data directory. Use the same
 
 The [standalone execution validation record](../validation/rust-standalone-execution.md) tracks the Linux bundle, independent adapter, and recovery checks.
 
+### Current UI implementation status — 23 November 2026
+
+Python 0.2.8 remains the visual and interaction reference. Rust 0.3.8 UI integration is in progress on `feature/rust-python-ux-completion` in `/tmp/agenturm-038-ui-integration`.
+
+- Integrated the Agents table and persistent inspector, Python Current colors, horizontal navigation, and selectable MCP/Operations tables with server filtering and expanded evidence. Handoff commit `2fa075f` was integrated as `06d450c`.
+- The initial handoff passed 79 app and 18 UI library tests, strict Clippy, and terminal checks at 120×32 and 60×18. These results apply to the handoff revision.
+- Meaningful task titles, the central Python keyboard mapping, and selectable Activity/Traces/Usage/Findings/Host evidence views are integrated. Copy and export operate on bounded loaded metadata only. The command-center first screen has replaced the initial split inspector, with status filters, project headings and full-width task selection.
+- The command-center change passed 30 UI library tests, including populated/empty/loading/unavailable/cached-error layouts at 120×32, 80×24 and 60×18, exact selection restoration, and a selectable next-page action. These are component results, not final candidate qualification.
+- Still in progress: Ctrl+F investigations; X attention receipts and v internal-review visibility; z protected prompt presentation; final integrated tests, private-content fences and terminal screen comparisons. Native retained session summaries currently have no explicit project path: the UI displays “Project unavailable” rather than infer a directory from the local checkout or private content.
+- Comparative performance benchmarking remains deferred. Rust 0.3.7 remains the latest published candidate; its main CI run `45110429996` completed successfully. Rust 0.3.8 has not been published and the default Rust cutover remains gated.
+
+### First screen — Agenturm command center
+
+The user selected the command-center screenshot supplied on 23 November as the layout reference for the first screen. Use Agenturm branding and the established Agenturm colors, typography and terminal controls.
+
+- Open with an Agenturm command-center header and a project grouping control.
+- Show selectable counts for All, Needs you, Working, Ready and Inactive. Counts and statuses come from recorded evidence and current collection state.
+- Place tasks under project path headings, each with its task count. Use aligned Tasks, Status and Updated columns, readable task titles, compact status markers and a full-width selected-row highlight.
+- Use the available width for the task list on initial launch. Enter opens the selected task or session inspector, and Escape returns to the same project, filter and task selection.
+- Support keyboard selection and additional rows through a Show more action. Preserve the project grouping, status text and updated age in compact terminals, truncating long task titles by display width.
+- Compare populated, empty, loading and unavailable screens at 120×32, 80×24 and 60×18. Use the screenshot's structure with Agenturm's visual identity, then verify the resulting first screen with the user.
+
+
 ### Step 1 — Finish the harness plugin boundary
 
 Start on `feature/rust-harness-decoder-api`. Keep harness-specific parsing in adapter processes. Use a shared, versioned observation format with host validation and select supported formats through the configured plugin catalog. Keep identity, admission, cursor commits and ACK ordering in the host.

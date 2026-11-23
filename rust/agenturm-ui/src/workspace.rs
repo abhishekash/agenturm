@@ -10,6 +10,7 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod command_center;
 mod view_io;
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -17,6 +18,8 @@ pub struct RecordedSession {
     pub harness_id: String,
     pub session_id: String,
     pub task_title: Option<Box<str>>,
+    /// Explicit public project metadata; never inferred from prompts or local cwd.
+    pub project_path: Option<Box<str>>,
     pub updated_at_unix_ns: u64,
     pub snapshot_id: ReadSnapshot,
     pub state: Option<String>,
@@ -102,15 +105,27 @@ enum Filter {
     Attention,
     Finished,
     ToReview,
+    Inactive,
 }
 
 impl Filter {
     fn next(self) -> Self {
         match self {
-            Self::All => Self::Active,
+            Self::All => Self::Attention,
+            Self::Attention => Self::Active,
+            Self::Active => Self::Finished,
+            Self::Finished => Self::Inactive,
+            Self::Inactive | Self::ToReview => Self::All,
+        }
+    }
+
+    fn previous(self) -> Self {
+        match self {
+            Self::All => Self::Inactive,
+            Self::Attention => Self::All,
             Self::Active => Self::Attention,
-            Self::Attention => Self::Finished,
-            Self::Finished => Self::ToReview,
+            Self::Finished => Self::Active,
+            Self::Inactive => Self::Finished,
             Self::ToReview => Self::All,
         }
     }
@@ -118,9 +133,10 @@ impl Filter {
     fn label(self) -> &'static str {
         match self {
             Self::All => "All",
-            Self::Active => "Active",
-            Self::Attention => "Attention",
-            Self::Finished => "Finished",
+            Self::Active => "Working",
+            Self::Attention => "Needs you",
+            Self::Finished => "Ready",
+            Self::Inactive => "Inactive",
             Self::ToReview => "To review",
         }
     }
@@ -135,6 +151,7 @@ impl Filter {
                 Some("failed" | "interrupted" | "waiting" | "blocked")
             ),
             Self::Finished => matches!(state, Some("completed" | "ended")),
+            Self::Inactive => matches!(state, Some("idle" | "stopped" | "cancelled" | "closed")),
             Self::ToReview => {
                 !session.reviewed
                     && matches!(
@@ -164,12 +181,17 @@ struct AgentList {
     flat: bool,
     help: bool,
     sort_by_state: bool,
+    show_more_selected: bool,
+    display_offset: usize,
     paused: bool,
     collapsed: BTreeSet<(String, String)>,
 }
 
 impl AgentList {
     fn current(&self) -> Option<&RecordedSession> {
+        if self.show_more_selected {
+            return None;
+        }
         let position = self.visible.get(self.selection.selected()?)?.index;
         self.catalog.as_ref()?.sessions.get(position)
     }
@@ -220,6 +242,13 @@ impl AgentList {
             }
             agent_rows(&catalog.sessions, &matching, self.flat, &self.collapsed)
         });
+        if let Some(catalog) = &self.catalog {
+            self.visible.sort_by(|a, b| {
+                command_center::project(&catalog.sessions[a.index])
+                    .cmp(command_center::project(&catalog.sessions[b.index]))
+            });
+        }
+        self.show_more_selected = false;
         let selected = identity.and_then(|identity| {
             self.visible.iter().position(|item| {
                 let row = &self
@@ -308,6 +337,25 @@ impl AgentList {
     }
 
     fn move_selection(&mut self, down: bool) {
+        if self.show_more_selected {
+            if !down {
+                self.show_more_selected = false;
+            }
+            return;
+        }
+        if down
+            && self
+                .selection
+                .selected()
+                .is_some_and(|i| i + 1 == self.visible.len())
+            && self
+                .catalog
+                .as_ref()
+                .is_some_and(|catalog| catalog.older.is_some())
+        {
+            self.show_more_selected = true;
+            return;
+        }
         if let Some(index) = self.selection.selected() {
             let next = if down {
                 (index + 1).min(self.visible.len().saturating_sub(1))
@@ -1270,8 +1318,16 @@ impl Workspace {
                 };
                 self.agents.apply_filters(identity.as_ref());
             }
-            KeyCode::Char('F') => {
-                self.agents.filter = self.agents.filter.next();
+            KeyCode::Char('Y') => {
+                self.agents.filter = Filter::ToReview;
+                self.agents.apply_filters(None);
+            }
+            KeyCode::Tab | KeyCode::BackTab | KeyCode::Char('F') => {
+                self.agents.filter = if key == KeyCode::BackTab {
+                    self.agents.filter.previous()
+                } else {
+                    self.agents.filter.next()
+                };
                 self.agents.apply_filters(None);
             }
             KeyCode::Char('R') | keymap::LATEST => self.request(
@@ -1310,6 +1366,15 @@ impl Workspace {
                     _ => WorkspaceView::Overview,
                 };
                 self.open(sender, HistorySelection::All(view));
+            }
+            KeyCode::Enter if self.agents.show_more_selected => {
+                if let Some(cursor) = self.agents.catalog.as_ref().and_then(|c| c.older.clone()) {
+                    self.request(
+                        sender,
+                        WorkspaceRequest::Sessions(Some(cursor)),
+                        Change::OlderSessions,
+                    );
+                }
             }
             KeyCode::Enter | KeyCode::Char('e' | 'm' | 'A' | 's' | 'v' | 'u' | 't') => {
                 if let Some(session) = self.agents.current().cloned() {
@@ -1779,10 +1844,6 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
     );
 }
 
-fn source_label(source: &str) -> &str {
-    source.strip_prefix("harness.").unwrap_or(source)
-}
-
 fn recorded_state(row: &RecordedSession) -> &str {
     row.state.as_deref().unwrap_or("Unknown")
 }
@@ -1838,271 +1899,7 @@ fn is_trace_view(view: &HistoryView) -> bool {
 }
 
 fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message: Option<&str>) {
-    let area = frame.area();
-    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
-        frame.render_widget(
-            Paragraph::new("Terminal too small · widen the window"),
-            area,
-        );
-        return;
-    }
-    let [header, content, footer] = Layout::vertical([
-        Constraint::Length(if area.height < 14 { 2 } else { 4 }),
-        Constraint::Min(1),
-        Constraint::Length(2),
-    ])
-    .areas(area);
-    let counts = agents.catalog.as_ref().map_or_else(
-        || "— working agents   — need attention".to_owned(),
-        |catalog| {
-            let working = catalog
-                .sessions
-                .iter()
-                .filter(|r| Filter::Active.accepts(r))
-                .count();
-            let attention = catalog
-                .sessions
-                .iter()
-                .filter(|r| Filter::Attention.accepts(r))
-                .count();
-            format!("{working} working agents   {attention} need attention · this page")
-        },
-    );
-    let [top, lower] = Layout::vertical([Constraint::Length(1), Constraint::Min(1)]).areas(header);
-    let [brand, connection] =
-        Layout::horizontal([Constraint::Fill(1), Constraint::Length(25)]).areas(top);
-    frame.render_widget(
-        Paragraph::new(" Agenturm  /  Agents").style(heading_style()),
-        brand,
-    );
-    let status = if agents.paused {
-        "Paused · p resume"
-    } else {
-        match (agents.catalog.is_some(), pending) {
-            (false, true) => "Loading sessions",
-            (false, false) => "Unavailable · R retry",
-            (true, true) => "Loading…",
-            (true, false) => "History · R refresh",
-        }
-    };
-    frame.render_widget(
-        Paragraph::new(status).right_aligned().style(label_style()),
-        connection,
-    );
-    let nav_count = if area.width >= 95 {
-        keymap::NAVIGATION.len()
-    } else if area.width >= 60 {
-        5
-    } else {
-        3
-    };
-    let more = if nav_count < keymap::NAVIGATION.len() {
-        " · F1 more"
-    } else {
-        ""
-    };
-    let nav = Line::from(vec![
-        Span::styled(" 1 Agents ", selection_style()),
-        Span::raw(format!(
-            " {}{more}",
-            keymap::navigation_hints(&keymap::NAVIGATION[1..nav_count])
-        )),
-    ]);
-    let filter = agents.filter.label();
-    let order = if agents.sort_by_state {
-        "Attention first"
-    } else {
-        "Updated ↓"
-    };
-    let search = if agents.editing || !agents.search.is_empty() {
-        format!(
-            "Search: {}{}",
-            visible_text(&agents.search),
-            if agents.editing { "▏" } else { "" }
-        )
-    } else {
-        "/ Search sessions".into()
-    };
-    let controls = Line::from(vec![
-        Span::styled(" Show  ", label_style()),
-        Span::raw(format!("{filter}  ·  {order}   {search}")),
-    ]);
-    let lines = if header.height > 2 {
-        vec![Line::raw(format!(" {counts}")), nav, controls]
-    } else {
-        vec![controls]
-    };
-    frame.render_widget(Paragraph::new(lines).style(surface(SURFACE)), lower);
-    let wide = area.width >= 84;
-    let [left, right] = if wide {
-        Layout::horizontal([Constraint::Percentage(61), Constraint::Percentage(39)]).areas(content)
-    } else {
-        [content, Rect::default()]
-    };
-    if agents.help {
-        let primary = keymap::navigation_hints(&keymap::NAVIGATION[..5]);
-        let secondary = keymap::navigation_hints(&keymap::NAVIGATION[5..]);
-        let help = format!(
-            "{primary}\n{secondary} · H live Host · U workspace Usage\nEnter Overview · Ctrl+R Review · t Traces · u Usage\nm Inspector modes · P Prompts · s Source activity\n/ Search · a Reset · ! Attention · F Filter · o Sort\nf Tree/flat · ←/→ Collapse/expand · p Pause refresh\nAlt+↑/↓ Parent/child · Alt+→ Descendant needing attention\n[ Newer · ] Older · l Latest · R Refresh\nb Tasks · w Workflow · d Diagnostics · g History · q Quit"
-        );
-        frame.render_widget(
-            Paragraph::new(help)
-                .wrap(Wrap { trim: false })
-                .block(Block::bordered().title(HELP_CLOSE_HINT)),
-            content,
-        );
-        return;
-    }
-    let sessions = agents
-        .catalog
-        .as_ref()
-        .map(|catalog| catalog.sessions.as_slice());
-    let caption = match sessions {
-        Some(rows) => format!(" Sessions · {} of {} ", agents.visible.len(), rows.len()),
-        None if pending => " Sessions · loading ".into(),
-        None => " Sessions ".into(),
-    };
-    let table_block = panel(caption);
-    let table_area = table_block.inner(left);
-    frame.render_widget(table_block, left);
-    // The other columns, two gutters, and selection marker occupy 24 cells.
-    let task_width = table_area.width.saturating_sub(24);
-    let rows = agents.visible.iter().filter_map(|item| {
-        let row = sessions?.get(item.index)?;
-        let indent = "  ".repeat(item.depth.min(6));
-        let marker = if item.has_children {
-            if agents.collapsed.contains(&session_key(row)) {
-                "▸ "
-            } else {
-                "▾ "
-            }
-        } else {
-            ""
-        };
-        let title = row.task_title.as_deref().unwrap_or("Untitled session");
-        let task = Line::styled(
-            roster_cell(
-                &format!("{indent}{marker}{}", visible_text(title)),
-                task_width,
-            ),
-            heading_style(),
-        );
-        let identity_width = task_width.saturating_sub(indent.cell_width());
-        let source_name = roster_cell(
-            &visible_text(source_label(&row.harness_id)),
-            identity_width / 2,
-        );
-        let session = roster_cell(
-            &visible_text(&row.session_id),
-            identity_width.saturating_sub(source_name.cell_width() + 3),
-        );
-        let source = Line::styled(format!("{indent}{source_name} · {session}"), label_style());
-        Some(
-            Row::new(vec![
-                Text::from(vec![task, source]),
-                Text::from(visible_text(recorded_state(row))),
-                Text::from(age(row.updated_at_unix_ns)),
-            ])
-            .height(2),
-        )
-    });
-    frame.render_stateful_widget(
-        Table::new(
-            rows,
-            [
-                Constraint::Fill(1),
-                Constraint::Length(12),
-                Constraint::Length(8),
-            ],
-        )
-        .header(Row::new(["Task / source", "State", "Updated"]).style(heading_style()))
-        .highlight_symbol("› ")
-        .row_highlight_style(selection_style()),
-        table_area,
-        &mut agents.selection,
-    );
-    let empty = match sessions {
-        None if pending => "Waiting for session data…",
-        None => "Session history unavailable · r retry",
-        Some([]) => "No sessions collected yet · R refresh",
-        Some(_) => "No matches on this page · x clear filters",
-    };
-    if agents.visible.is_empty() && table_area.height > 1 {
-        frame.render_widget(
-            Paragraph::new(empty).wrap(Wrap { trim: false }),
-            Rect::new(
-                table_area.x,
-                table_area.y + 1,
-                table_area.width,
-                table_area.height - 1,
-            ),
-        );
-    }
-    if wide {
-        let mut lines = Vec::new();
-        if let Some(row) = agents.current() {
-            lines.push(Line::styled(visible_text(&row.session_id), heading_style()));
-            lines.push(Line::default());
-            for (label, value) in [
-                ("Agent", Some(row.harness_id.as_str())),
-                ("Status", Some(recorded_state(row))),
-                ("Reason", row.reason.as_deref()),
-                ("Parent", row.parent_session_id.as_deref()),
-                ("Turn", row.turn_id.as_deref()),
-            ] {
-                if let Some(value) = value {
-                    lines.push(Line::from(vec![
-                        Span::styled(format!("{label:<9}"), label_style()),
-                        Span::raw(visible_text(value)),
-                    ]));
-                }
-            }
-            lines.push(Line::from(format!(
-                "Updated  {}",
-                age(row.updated_at_unix_ns)
-            )));
-            if row.reviewed {
-                lines.push(Line::from("Review   Reviewed"));
-            }
-        } else {
-            lines.push(Line::styled(empty, heading_style()));
-            if sessions.is_none() {
-                lines.push(Line::default());
-                lines.push(Line::styled("Connection", label_style()));
-                lines.push(Line::from(
-                    message
-                        .map(visible_text)
-                        .unwrap_or_else(|| "Waiting for the history reader".into()),
-                ));
-            }
-        }
-        frame.render_widget(
-            Paragraph::new(lines).wrap(Wrap { trim: false }).block(
-                panel(" Session inspector ").title_bottom(if agents.current().is_some() {
-                    " e expand "
-                } else {
-                    ""
-                }),
-            ),
-            right,
-        );
-    }
-    let keys = if agents.editing {
-        "Enter / Esc done · Backspace edit"
-    } else {
-        "Enter overview · Ctrl+R review · / search"
-    };
-    let status = message.map(visible_text).unwrap_or_else(|| {
-        if pending {
-            "Loading…".into()
-        } else {
-            "b tasks · w workflow · P prompts · F1 help · q quit".into()
-        }
-    });
-    frame.render_widget(
-        Paragraph::new(vec![Line::from(keys), Line::from(status)]),
-        footer,
-    );
+    command_center::draw(frame, agents, pending, message);
 }
 
 #[cfg(test)]
@@ -2115,6 +1912,7 @@ mod tests {
             harness_id: source.into(),
             session_id: id.into(),
             task_title: None,
+            project_path: None,
             updated_at_unix_ns: 1,
             snapshot_id: 9.into(),
             state: Some(state.into()),
@@ -2330,9 +2128,11 @@ mod tests {
                 .iter()
                 .map(|cell| cell.symbol())
                 .collect::<String>();
-            assert!(text.contains("Task / source"), "{text}");
+            assert!(text.contains("Tasks"), "{text}");
             assert!(text.contains("tracing and verify"), "{text}");
-            assert!(text.contains('…'), "{text}");
+            if width == 60 {
+                assert!(text.contains('…'), "{text}");
+            }
             assert!(text.contains("source-session"), "{text}");
             assert!(text.contains("Untitled session"), "{text}");
         }
@@ -2681,10 +2481,173 @@ mod tests {
                 .iter()
                 .map(|cell| cell.symbol())
                 .collect::<String>();
-            for text in ["Agents", "sample-session", "interrupted", "Enter overview"] {
+            for text in [
+                "Agenturm command center",
+                "sample-session",
+                "interrupted",
+                "Enter inspect",
+            ] {
                 assert!(screen.contains(text), "{text} missing at {width} columns");
             }
-            assert_eq!(screen.contains("Session inspector"), width >= 84);
+            assert!(!screen.contains("Session inspector"));
+        }
+    }
+    #[test]
+    fn command_center_groups_projects_and_counts_only_evidenced_states() {
+        let mut first = session("harness.codex", "a-session", "running", None);
+        first.task_title = Some("Implement checkpoint ordering".into());
+        first.project_path = Some("/projects/alpha".into());
+        let mut second = session("harness.pi", "b-session", "completed", None);
+        second.project_path = Some("/projects/beta".into());
+        let rows = vec![
+            second,
+            first,
+            session("harness.codex", "needs", "waiting", None),
+            session("harness.codex", "inactive", "idle", None),
+            session("harness.codex", "unknown", "unrecognized", None),
+        ];
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let mut agents = AgentList::default();
+            agents.update(catalog(rows.clone()));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| draw_agents(frame, &mut agents, false, None))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            for expected in [
+                "Agenturm command center",
+                "Group: Project",
+                "All 5",
+                "Needs you 1",
+                "Working 1",
+                "Ready 1",
+                "Inactive 1",
+                "/projects/alpha",
+                "/projects/beta",
+                "Project unavailable",
+                "Unknown",
+            ] {
+                assert!(
+                    text.contains(expected),
+                    "{expected} absent at {width}: {text}"
+                );
+            }
+            assert!(!text.contains("Session inspector"));
+            assert_eq!(agents.current().unwrap().session_id, "a-session");
+        }
+    }
+
+    #[test]
+    fn command_center_tab_filter_and_inspector_back_keep_exact_selection() {
+        let (sender, receiver) = mpsc::channel();
+        let mut workspace = Workspace::new();
+        workspace.agents.update(catalog(vec![
+            session("harness.codex", "same", "waiting", None),
+            session("harness.pi", "same", "waiting", None),
+            session("harness.pi", "other", "completed", None),
+        ]));
+        press(&mut workspace, &sender, KeyCode::Tab);
+        assert_eq!(workspace.agents.filter, Filter::Attention);
+        press(&mut workspace, &sender, KeyCode::Down);
+        let selected = workspace.agents.current().unwrap().clone();
+        press(&mut workspace, &sender, KeyCode::Enter);
+        let WorkspaceRequest::History {
+            selection: HistorySelection::Session(requested, _),
+            ..
+        } = receiver.try_recv().unwrap()
+        else {
+            panic!("exact inspector request")
+        };
+        assert_eq!(selected, requested);
+        workspace.finish(Ok(WorkspaceResponse::History(empty_history_page())));
+        press(&mut workspace, &sender, KeyCode::Esc);
+        assert_eq!(workspace.agents.current(), Some(&selected));
+        assert_eq!(workspace.agents.filter, Filter::Attention);
+        assert!(workspace.history.is_empty());
+        press(&mut workspace, &sender, KeyCode::BackTab);
+        assert_eq!(workspace.agents.filter, Filter::All);
+    }
+
+    #[test]
+    fn command_center_show_more_is_an_exact_selectable_page_request() {
+        let (sender, receiver) = mpsc::channel();
+        let mut workspace = Workspace::new();
+        let mut page = catalog(vec![session("harness.codex", "selected", "running", None)]);
+        let cursor = SessionCursor {
+            harness_id: "harness.codex".into(),
+            session_id: "selected".into(),
+            updated_at_unix_ns: 1,
+            snapshot_id: 9.into(),
+        };
+        page.older = Some(cursor.clone());
+        workspace.agents.update(page);
+        press(&mut workspace, &sender, KeyCode::Down);
+        assert!(workspace.agents.show_more_selected);
+        press(&mut workspace, &sender, KeyCode::Enter);
+        assert!(
+            matches!(receiver.try_recv().unwrap(), WorkspaceRequest::Sessions(Some(actual)) if actual == cursor)
+        );
+    }
+
+    #[test]
+    fn command_center_empty_loading_unavailable_and_cached_error_are_distinct() {
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            for (loaded, pending, message, expected) in [
+                (false, true, None, "Loading session evidence"),
+                (
+                    false,
+                    false,
+                    Some("Receiver disconnected"),
+                    "Session history unavailable",
+                ),
+                (true, false, None, "No sessions collected yet"),
+            ] {
+                let mut agents = AgentList::default();
+                if loaded {
+                    agents.update(catalog(vec![]));
+                }
+                terminal
+                    .draw(|frame| draw_agents(frame, &mut agents, pending, message))
+                    .unwrap();
+                let text = terminal
+                    .backend()
+                    .buffer()
+                    .content()
+                    .iter()
+                    .map(|c| c.symbol())
+                    .collect::<String>();
+                assert!(text.contains(expected), "{width}: {text}");
+                assert!(
+                    !text.contains("All 0") || loaded,
+                    "unknown counts must not become zero"
+                );
+            }
+            let mut agents = AgentList::default();
+            agents.update(catalog(vec![session(
+                "harness.codex",
+                "retained-selection",
+                "running",
+                None,
+            )]));
+            terminal
+                .draw(|frame| draw_agents(frame, &mut agents, false, Some("Receiver disconnected")))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|c| c.symbol())
+                .collect::<String>();
+            assert!(text.contains("retained-selection"));
+            assert!(text.contains("Receiver disconnected"));
         }
     }
 }

@@ -1937,6 +1937,7 @@ fn load_session_catalog(
             });
             RecordedSession {
                 harness_id: session.harness_id.as_str().to_owned(),
+                project_path: None,
                 task_title: titles
                     .remove(&(session.harness_id.clone(), session.session_id.clone()))
                     .map(String::into_boxed_str),
