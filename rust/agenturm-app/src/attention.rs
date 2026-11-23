@@ -1,5 +1,7 @@
 //! Read-only attention snapshots and bounded change notifications.
 
+mod desktop;
+
 use crate::{WatchSignalRegistrations, cockpit_workflows::pending_requests_with_seen};
 use agenturm_store::{Store, WorkspaceLedger};
 use serde::Serialize;
@@ -14,7 +16,7 @@ const MAX_POLLS: usize = 10_000;
 const USAGE: &str = concat!(
     "usage: agenturm attention status --db <path>\n",
     "       agenturm attention watch --db <path> [--once | --max-polls <1..10000>] ",
-    "[--interval-ms <100..60000>]\n",
+    "[--interval-ms <100..60000>] [--desktop]\n",
     "       agenturm attention native <bind|send|hook|retry> (explicit receiver binding)\n",
     "       agenturm attention <status|watch> --endpoint http://<loopback-IP:port> ",
     "--token-file <path> [--receiver-protocol python-v0.2.8] [watch options]\n",
@@ -31,6 +33,7 @@ pub enum AttentionOptions {
         db: PathBuf,
         interval: Duration,
         max_polls: usize,
+        desktop: bool,
     },
     #[cfg(target_os = "linux")]
     Remote {
@@ -64,11 +67,12 @@ pub(super) fn parse(args: &[String]) -> Result<AttentionOptions, String> {
             Ok(AttentionOptions::Status { db: path.into() })
         }
         Some(("watch", values)) => {
-            let (db, interval, max_polls) = parse_watch(values, true)?;
+            let (db, interval, max_polls, desktop) = parse_watch(values, true)?;
             Ok(AttentionOptions::Watch {
                 db: db.ok_or(USAGE)?,
                 interval,
                 max_polls,
+                desktop,
             })
         }
         _ => Err(USAGE.into()),
@@ -78,12 +82,17 @@ pub(super) fn parse(args: &[String]) -> Result<AttentionOptions, String> {
 fn parse_watch(
     mut args: &[String],
     local: bool,
-) -> Result<(Option<PathBuf>, Duration, usize), String> {
+) -> Result<(Option<PathBuf>, Duration, usize, bool), String> {
     let (mut db, mut interval, mut max_polls) = (None, None, None);
+    let mut desktop = false;
     while let Some((flag, rest)) = args.split_first() {
         args = rest;
         if flag == "--once" && max_polls.is_none() {
             max_polls = Some(1);
+            continue;
+        }
+        if flag == "--desktop" && local && !desktop {
+            desktop = true;
             continue;
         }
         let (value, rest) = args
@@ -118,11 +127,15 @@ fn parse_watch(
         db,
         interval.unwrap_or(Duration::from_secs(2)),
         max_polls.unwrap_or(MAX_POLLS),
+        desktop,
     ))
 }
 
 #[cfg(target_os = "linux")]
 fn parse_remote(args: &[String]) -> Result<AttentionOptions, String> {
+    if args.iter().any(|argument| argument == "--desktop") {
+        return Err("Desktop attention requires a local history or broker attention watch with a native clock proof".into());
+    }
     let (verb, mut args) = args.split_first().ok_or(USAGE)?;
     let mut receiver = Vec::new();
     let mut polling = Vec::new();
@@ -149,7 +162,7 @@ fn parse_remote(args: &[String]) -> Result<AttentionOptions, String> {
     let watch = match verb.as_str() {
         "status" if polling.is_empty() => None,
         "watch" => {
-            let (_, interval, limit) = parse_watch(&polling, false)?;
+            let (_, interval, limit, _) = parse_watch(&polling, false)?;
             Some((interval, limit))
         }
         _ => return Err(USAGE.into()),
@@ -168,6 +181,8 @@ fn valid_value(value: &str) -> bool {
 struct Snapshot {
     partial: bool,
     pending: Vec<Pending>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    desktop_delivery: Option<desktop::Delivery>,
 }
 
 #[derive(Debug, Eq, PartialEq, Serialize)]
@@ -202,7 +217,22 @@ pub fn execute_attention(options: &AttentionOptions, mut output: impl Write) -> 
             db,
             interval,
             max_polls,
-        } => watch(*interval, *max_polls, output, || read_snapshot(db)),
+            desktop,
+        } => {
+            if *desktop {
+                let ledger = WorkspaceLedger::open(db)
+                    .map_err(|error| format!("open workflow state failed: {error}"))?;
+                let store = open_history(db)?;
+                watch(*interval, *max_polls, output, |stop| {
+                    desktop::snapshot(&store, &ledger, stop, || {
+                        let current = open_history(db)?;
+                        desktop::current_position(&current)
+                    })
+                })
+            } else {
+                watch(*interval, *max_polls, output, |_| read_snapshot(db))
+            }
+        }
         #[cfg(target_os = "linux")]
         AttentionOptions::Remote {
             receiver,
@@ -216,11 +246,43 @@ pub fn execute_attention(options: &AttentionOptions, mut output: impl Write) -> 
             let ledger = store.workspace_ledger(&marker)?;
             let read = || snapshot_from(&store, &ledger);
             if let Some((interval, limit)) = polling {
-                watch(*interval, *limit, output, read)
+                watch(*interval, *limit, output, |_| read())
             } else {
                 emit(&mut output, "snapshot", &read()?)
                     .map_err(|error| format!("write attention snapshot failed: {error}"))
             }
+        }
+    }
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn execute_broker(
+    options: &AttentionOptions,
+    store: &agenturm_storage_service::NativeStore,
+    workspace: &Path,
+    mut output: impl Write,
+) -> Result<(), String> {
+    use crate::HistoryReader;
+    let ledger = store.workspace_ledger(workspace)?;
+    match options {
+        AttentionOptions::Status { .. } => {
+            emit(&mut output, "snapshot", &snapshot_from(store, &ledger)?)
+                .map_err(|error| format!("write attention snapshot failed: {error}"))
+        }
+        AttentionOptions::Watch {
+            interval,
+            max_polls,
+            desktop,
+            ..
+        } => watch(*interval, *max_polls, output, |stop| {
+            if *desktop {
+                desktop::snapshot(store, &ledger, stop, || desktop::current_position(store))
+            } else {
+                snapshot_from(store, &ledger)
+            }
+        }),
+        AttentionOptions::Remote { .. } => {
+            Err("Broker attention uses its configured native history".into())
         }
     }
 }
@@ -233,7 +295,7 @@ fn legacy_attention(
 ) -> Result<(), String> {
     let mut read = crate::remote_history::legacy::attention_reader(receiver)?;
     if let Some((interval, limit)) = polling.filter(|(_, limit)| *limit > 1) {
-        return watch(interval, limit, output, read);
+        return watch(interval, limit, output, |_| read());
     }
     let snapshot = read()?;
     emit(&mut output, "snapshot", &snapshot)
@@ -247,9 +309,12 @@ fn legacy_attention(
 fn read_snapshot(db: &Path) -> Result<Snapshot, String> {
     let ledger = WorkspaceLedger::open(db)
         .map_err(|error| format!("open workflow state failed: {error}"))?;
-    let store =
-        Store::open_read_only(db).map_err(|error| format!("open history failed: {error}"))?;
+    let store = open_history(db)?;
     snapshot_from(&store, &ledger)
+}
+
+fn open_history(db: &Path) -> Result<Store, String> {
+    Store::open_read_only(db).map_err(|error| format!("open history failed: {error}"))
 }
 
 fn snapshot_from(
@@ -257,6 +322,14 @@ fn snapshot_from(
     ledger: &WorkspaceLedger,
 ) -> Result<Snapshot, String> {
     let (requests, partial) = pending_requests_with_seen(store, ledger)?;
+    Ok(snapshot_report(requests, partial, None))
+}
+
+fn snapshot_report(
+    requests: Vec<agenturm_ui::RequestEntry>,
+    partial: bool,
+    desktop_delivery: Option<desktop::Delivery>,
+) -> Snapshot {
     let pending = requests
         .into_iter()
         .map(|row| Pending {
@@ -271,7 +344,11 @@ fn snapshot_from(
             seen: row.seen,
         })
         .collect();
-    Ok(Snapshot { partial, pending })
+    Snapshot {
+        partial,
+        pending,
+        desktop_delivery,
+    }
 }
 
 fn emit(writer: &mut impl Write, kind: &'static str, snapshot: &impl Serialize) -> io::Result<()> {
@@ -291,7 +368,7 @@ fn watch<T: PartialEq + Serialize>(
     interval: Duration,
     max_polls: usize,
     mut output: impl Write,
-    mut read_snapshot: impl FnMut() -> Result<T, String>,
+    mut read_snapshot: impl FnMut(&AtomicBool) -> Result<T, String>,
 ) -> Result<(), String> {
     if !(1..=MAX_POLLS).contains(&max_polls)
         || !(Duration::from_millis(100)..=Duration::from_secs(60)).contains(&interval)
@@ -305,7 +382,7 @@ fn watch<T: PartialEq + Serialize>(
         if stop.load(Ordering::Relaxed) {
             break;
         }
-        let snapshot = read_snapshot()?;
+        let snapshot = read_snapshot(&stop)?;
         if previous.as_ref() != Some(&snapshot) {
             let kind = if previous.is_none() {
                 "snapshot"

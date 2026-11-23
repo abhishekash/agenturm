@@ -457,7 +457,7 @@ fn from_store(anchor: WorkspaceAnchor) -> WorkAnchor {
     }
 }
 
-fn request_key(row: &RequestEntry) -> Result<(WorkspaceAnchor, String, u32), String> {
+pub(super) fn request_key(row: &RequestEntry) -> Result<(WorkspaceAnchor, String, u32), String> {
     Ok((
         to_store(row.owner.clone())?,
         row.event_id.clone(),
@@ -636,7 +636,7 @@ fn mark_seen(
     Ok(WorkResult::Seen(item))
 }
 
-fn project_requests(rows: &[Observation], proof: &RequestProof) -> Vec<RequestEntry> {
+pub(super) fn project_requests(rows: &[Observation], proof: &RequestProof) -> Vec<RequestEntry> {
     let mut latest_revisions = HashMap::new();
     for row in rows
         .iter()
