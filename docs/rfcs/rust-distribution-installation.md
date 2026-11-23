@@ -179,6 +179,11 @@ before deleting an altered installation. An exact 0.3.5 → 0.3.6 installation
 also preserved a schema-16 history byte-for-byte through update and read-only
 query. Uninstall retained both the external history and an additional history
 file placed inside a release directory.
+The [native bundle CI](https://github.com/abhishekash/agenturm/actions/runs/45109270284)
+also passed the offline installer against the built 0.3.7 archive on both
+Linux x86-64 and ARM64. Each job verified all companion executables and
+catalog pins, same-version replay, the unchanged default command, and
+uninstall with both normal and version-local SQLite history preserved.
 
 A hosted one-command bootstrap is a proposed next distribution step after
 the installer review and qualification. It should fetch this script at an
@@ -186,8 +191,9 @@ immutable reviewed commit and invoke Bash with an explicit version. This
 change does not publish a mutable install endpoint, registry package, OS
 package, or new default installer.
 
-Before advertising the bootstrap, run its real HTTPS path and uninstall on
-both qualified architectures, including bad-checksum and interrupted-update
-cases. Before making agenturm select Rust by default, close the retained
+Before advertising the bootstrap, qualify its real HTTPS path on both
+architectures, including bad-checksum and interrupted-update cases. The
+native offline install and uninstall checks have passed. Before making
+agenturm select Rust by default, close the retained
 workflow and external qualification gates in the
 [execution plan](rust-only-execution-plan.md).

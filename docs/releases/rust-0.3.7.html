@@ -1,0 +1,93 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust 0.3.7</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / Rust 0.3.7</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/releases/rust-0.3.7.md">Markdown source ↗</a></nav><h1>Agenturm Rust 0.3.7</h1>
+<p>This release extends retained span imports and evaluation queries, adds an
+explicit client for an existing Python 0.2.8 receiver, and binds saved private
+telemetry selections to their issuing history. The standalone Rust runtime
+continues to run without Python.</p>
+<h2>Private span text and history binding</h2>
+<p><code>import-jsonl</code> and <code>broker import-jsonl</code> can capture bounded private span text
+when the collector selects <code>--payload-scope</code> on first admission. The standard
+format selects <code>agenturm.payload.input</code> and <code>agenturm.payload.output</code>.
+<code>--payload-format agent-harness</code> selects the supported run, task, summary and executed tool
+fields from legacy exports. Capture requires exact source and session scope.
+In broker mode, the collector's allowlist and configured telemetry binding
+also apply. Keep the source export in a collector-owned directory with
+owner-only file permissions such as mode <code>0600</code>. The telemetry grant controls
+the imported copy.</p>
+<p>An exact replay deduplicates. Changed text or an attempt to add text to an
+existing metadata-only span is rejected. Pruned text stays retired. Ordinary
+history and import output omit the private text.</p>
+<p>Saved private telemetry selectors now identify the history that issued them.
+Rust 0.3.5 and 0.3.6 could accept a selector from another history when the
+scope and numeric watermark matched and the receiving history already had its
+own approval. The current reader checks history identity and snapshot under
+the grant fence. Refresh older selections with <code>trace-payload snapshot</code> against
+the intended history and copy <code>history_identity</code> and <code>snapshot_id</code> together.
+The current telemetry grant remains required. A restored history needs a fresh
+selection and approval. The database stays on schema 17.</p>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md#import-exported-spans">Private JSONL import and selector refresh</a></p>
+<h2>Current evaluation inventory</h2>
+<p>Use <code>evals --list</code>, <code>broker evals --list</code>, or authenticated
+<code>GET /api/outcomes</code> to list the latest retained outcome for each exact source
+and trace. Select one to 16 distinct <code>otlp.*</code> sources. The broker authorizes
+the entire set before reading it. Each row identifies its source and revision,
+so the same trace ID from two sources remains two distinct results.</p>
+<p>The inventory is complete within its bounds. It checks up to 1,024 candidate
+source and trace keys, including replay-protection entries, and accepts up to
+2 MiB of serialized rows. Exceeding either cap fails the request without
+partial results. The evidence snapshot identifies the retained trace evidence.
+Evaluation metadata reflects the current read transaction. The inventory's
+metadata preserves numeric zero and uses <code>null</code> for unknown scores. The list
+excludes private text and reveal selections. Use <code>evals --history</code> for retained
+revisions.</p>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md#read-source-aware-metadata-with-http-get">CLI and HTTP inventory commands</a></p>
+<h2>Attach to an existing Python receiver</h2>
+<p>Use <code>--receiver-protocol python-v0.2.8</code> with <code>cockpit</code>, <code>cockpit --once</code>, or
+<code>attention</code> to read an authenticated Python 0.2.8 receiver through trusted
+loopback or an active SSH forward. The client verifies the receiver identity
+across a bounded set of live reads. Enter on a session scopes the visible
+activity, traces, and pending requests to its recorded service, session, and
+actor. Escape returns to the roster selection.</p>
+<p>Attention keeps previously confirmed pending requests during incomplete
+inventory reads. It accepts an ordered resolution for the exact sender and
+request and rejects reuse of a sender's sequence for another occurrence.
+The live view provides metadata only. It creates no Rust history, saved
+Review receipt, or private content grant. <code>q</code> and Ctrl-C restore terminal
+settings promptly even during a stalled receiver read. The Rust receiver
+protocol remains the default.</p>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md#attach-to-an-existing-python-028-receiver">Python receiver setup and coverage</a></p>
+<h2>Opt-in installer source candidate</h2>
+<p>The checked-out <code>scripts/install-rust.sh</code> installs the complete versioned Linux
+bundle as <code>agenturm-rust</code>. It verifies the archive checksum and layout before
+selecting a release, supports offline archives and same-version replay, and
+preserves user history and configuration on uninstall. The existing <code>agenturm</code>
+command retains its current behavior. Both native Linux bundle jobs run the
+offline installer verifier before uploading their artifacts. A hosted
+bootstrap, signed release manifests, and registry packages remain future work.</p>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-distribution-installation.md">Installer proposal and usage</a></p>
+<h2>Qualification and remaining gates</h2>
+<p>The frozen source passed 602 Rust workspace tests across 93 suites and strict
+workspace Clippy. The installer passed 14 offline fixture tests and upgrade,
+replay, and uninstall checks with the published 0.3.5 and 0.3.6 Linux x86-64
+archives. Source-built Linux guests checked private selection isolation,
+complete evaluation inventories, and tagged Python receiver navigation at
+60×18 and 120×32.</p>
+<p>The exact Linux x86-64 archive has SHA-256
+936ad6f90e49bea8acdaf44b2fdc08e11c50df50987d7a5aa53ac8e65bef1791.
+It passed managed install, restart, backup, upgrade and uninstall, all six
+retained keyboard journeys, 24 producer/client cases and eight cached SDK
+and private-capture cases without skips. Separate-principal packaged guests
+passed the selector, evaluation, legacy receiver, HTTP, Host and disclosure
+checks. Both native Linux candidate jobs passed the offline installer flow;
+all five mandatory vendor jobs passed 16 selected SDK cases. The tag build
+qualifies and attaches the ARM64 archive and checksum separately.</p>
+<p>The standalone Rust installation remains opt-in.
+The default distribution cutover still depends on real Kiro transcript
+collection, qualification with a supported production connector endpoint,
+and the remaining legacy remote and native evidence workflows.</p>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-037-release.md">Qualification record</a> ·
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md">Rust-only execution plan</a></p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
