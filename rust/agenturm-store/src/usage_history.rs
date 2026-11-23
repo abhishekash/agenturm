@@ -6,10 +6,14 @@ use crate::{
 };
 use agenturm_kernel::ExtensionId;
 use rusqlite::{Connection, params};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
+
+mod trace_graph;
+mod trace_history;
 
 pub use agenturm_kernel::retained_history::{
-    USAGE_DAYS, UsageDay, UsageHistoryPage, UsageHistoryQuery, UsageTotals,
+    ActivityLogTotals, MAX_USAGE_COST_CURRENCIES, TraceUsageTotals, USAGE_DAYS, UsageCurrencyTotal,
+    UsageDay, UsageHistoryPage, UsageHistoryQuery, UsageTotals,
 };
 
 const DAY_NS: u64 = 86_400_000_000_000;
@@ -53,6 +57,49 @@ impl Counters {
 }
 
 #[derive(Default)]
+struct CostCounters {
+    amounts: BTreeMap<String, (u128, usize)>,
+}
+
+impl CostCounters {
+    fn add(&mut self, currency: &str, nanounits: u64) {
+        let totals = self.amounts.entry(currency.to_owned()).or_default();
+        totals.0 += u128::from(nanounits);
+        totals.1 += 1;
+    }
+
+    fn totals(self) -> (Vec<UsageCurrencyTotal>, bool) {
+        let truncated = self.amounts.len() > MAX_USAGE_COST_CURRENCIES;
+        let costs = self
+            .amounts
+            .into_iter()
+            .take(MAX_USAGE_COST_CURRENCIES)
+            .map(|(currency, (amount, reports))| UsageCurrencyTotal {
+                currency,
+                nanounits: amount.to_string(),
+                reports,
+            })
+            .collect();
+        (costs, truncated)
+    }
+}
+
+impl trace_graph::DayTraceReports {
+    fn totals(self) -> TraceUsageTotals {
+        let (costs, cost_currencies_truncated) = self.costs.totals();
+        TraceUsageTotals {
+            traces: self.traces,
+            reported_error_traces: self.reported_error_traces,
+            partial_traces: self.partial_traces,
+            traces_missing_exact_cost: self.traces_missing_exact_cost,
+            tokens: self.tokens.totals(),
+            costs,
+            cost_currencies_truncated,
+        }
+    }
+}
+
+#[derive(Default)]
 struct DayCounters {
     native: Counters,
     span: Counters,
@@ -69,7 +116,9 @@ pub(super) fn create_index(connection: &Connection) -> Result<()> {
 
 pub(super) fn validate_index(connection: &Connection) -> Result<()> {
     let sql: String = connection.query_row("SELECT sql FROM sqlite_schema WHERE type='index' AND name='agenturm_usage_history_by_time'", [], |row| row.get(0))?;
-    if sql != INDEX_SQL.trim_end_matches(';') { return Err(StoreError::UnrecognizedDatabase); }
+    if sql != INDEX_SQL.trim_end_matches(';') {
+        return Err(StoreError::UnrecognizedDatabase);
+    }
     Ok(())
 }
 
@@ -155,12 +204,28 @@ impl Store {
             ))?;
             add_report(bucket, serde_json::from_str(&row.get::<_, String>(1)?)?);
         }
+        drop(rows);
+        let telemetry = trace_history::Window {
+            connection: &transaction,
+            query,
+            first,
+            cutoff,
+            watermark,
+            allowed: allowed_sources,
+        }
+        .read()?;
+        let partial_before_day = match (truncated_day, telemetry.partial_before_day) {
+            (Some(left), Some(right)) => Some(left.max(right)),
+            (left, right) => left.or(right),
+        };
         let mut days = counters.into_iter().enumerate();
+        let mut trace_days = telemetry.traces.into_iter();
+        let mut log_days = telemetry.logs.into_iter();
         Ok(UsageHistoryPage {
             snapshot_id,
             end_unix_ns: end,
             retention_cutoff_unix_ns: cutoff,
-            scan_limited: truncated_day.is_some(),
+            scan_limited: partial_before_day.is_some() || telemetry.membership_limited,
             days: std::array::from_fn(|_| {
                 let (index, counters) = days.next().expect("seven usage buckets");
                 let start_unix_ns = first + index as u64 * DAY_NS;
@@ -168,8 +233,10 @@ impl Store {
                     start_unix_ns,
                     native: counters.native.totals(),
                     span: counters.span.totals(),
+                    traces: trace_days.next().expect("seven trace buckets").totals(),
+                    logs: log_days.next().expect("seven log buckets").totals(),
                     retention_partial: cutoff > start_unix_ns,
-                    scan_partial: truncated_day.is_some_and(|limit| index <= limit),
+                    scan_partial: partial_before_day.is_some_and(|limit| index <= limit),
                 }
             }),
         })
@@ -262,6 +329,133 @@ mod tests {
             total_tokens: None,
         });
         [row, tokens]
+    }
+
+    #[test]
+    fn summaries_and_log_only_rows_use_the_same_pinned_scope_and_latest_trace_day() {
+        use agenturm_kernel::telemetry_summary::{
+            LogCost, LogTokenUsage, OtlpActivityLog, TraceSpanSummary,
+        };
+        let mut store = Store::open(":memory:").unwrap();
+        let collector = ExtensionId::parse("otlp.fixture").unwrap();
+        let at = 9 * DAY_NS + 3;
+        let [mut span, mut tokens] = trace_and_usage(at, "matching-worker", '3');
+        span.identity.worker_id = None;
+        span.identity.turn_id = None;
+        span.identity.session_id = Some("trace-backed".into());
+        tokens.identity = span.identity.clone();
+        let ObservationKind::TraceSpan(span_body) = &span.kind else {
+            panic!("trace")
+        };
+        let mut summary = span.clone();
+        summary.event_id.push_str(":summary");
+        summary.kind = ObservationKind::TraceSpanSummary(TraceSpanSummary {
+            trace_id: span_body.trace_id.clone(),
+            span_id: span_body.span_id.clone(),
+            agent_run: false,
+            reported_error: true,
+        });
+        let log = |session: &str, id: char, source: &str, value| Observation {
+            harness_id: ExtensionId::parse(source).unwrap(),
+            identity: ObservationIdentity::session(session),
+            event_id: format!("otlp-log:{}", id.to_string().repeat(64)),
+            revision: 0,
+            observed_at_unix_ns: at + 1,
+            kind: ObservationKind::OtlpActivityLog(OtlpActivityLog {
+                reported_error: true,
+                target_source_id: Some("harness.fixture".into()),
+                usage: Some(LogTokenUsage {
+                    input_tokens: Some(value),
+                    output_tokens: None,
+                    cache_read_input_tokens: None,
+                    cache_write_input_tokens: None,
+                    reasoning_output_tokens: None,
+                    total_tokens: None,
+                }),
+                cost: Some(LogCost {
+                    currency: "USD".into(),
+                    nanounits: 0,
+                }),
+            }),
+        };
+        ObservationStore::commit(
+            &mut store,
+            collector.as_str(),
+            None,
+            "traces",
+            &[span.clone(), summary, tokens],
+        )
+        .unwrap();
+        for (source, checkpoint, rows) in [
+            (
+                collector.as_str(),
+                Some("traces"),
+                vec![
+                    log("trace-backed", 'a', collector.as_str(), 99),
+                    log("log-only", 'b', collector.as_str(), 7),
+                ],
+            ),
+            (
+                "otlp.unrelated",
+                None,
+                vec![log("trace-backed", 'a', "otlp.unrelated", 13)],
+            ),
+        ] {
+            ObservationStore::commit(&mut store, source, checkpoint, "logs", &rows).unwrap();
+        }
+        let allowed = [collector.clone()].into_iter().collect();
+        let mut query = UsageHistoryQuery {
+            source_id: None,
+            session_id: None,
+            snapshot_id: None,
+            end_unix_ns: 10 * DAY_NS + 10,
+        };
+        let initial = store.query_usage_history(&query, Some(&allowed)).unwrap();
+        assert_eq!(initial.days[5].traces.traces, 1);
+        assert_eq!(initial.days[5].traces.reported_error_traces, 1);
+        assert_eq!(
+            initial.days[5].traces.tokens.input_tokens.as_deref(),
+            Some("0")
+        );
+        assert_eq!(initial.days[5].traces.traces_missing_exact_cost, 1);
+        let logs = initial.days[5].logs.as_ref().unwrap();
+        assert_eq!(logs.logs, 1);
+        assert_eq!(logs.reported_errors, 1);
+        assert_eq!(logs.tokens.input_tokens.as_deref(), Some("7"));
+        assert_eq!(logs.costs[0].nanounits, "0");
+        assert_eq!(initial.days[5].native.reports, 0);
+        let combined = store.query_usage_history(&query, None).unwrap();
+        assert_eq!(combined.days[5].logs.as_ref().unwrap().logs, 2);
+        let mut later = span.clone();
+        let new_id = "4".repeat(16);
+        later.observed_at_unix_ns = 10 * DAY_NS;
+        let ObservationKind::TraceSpan(body) = &mut later.kind else {
+            panic!("trace")
+        };
+        body.parent_span_id = Some(std::mem::replace(&mut body.span_id, new_id));
+        later.event_id = format!("otlp:{}:{}", body.trace_id, body.span_id);
+        ObservationStore::commit(
+            &mut store,
+            collector.as_str(),
+            Some("logs"),
+            "later",
+            &[later],
+        )
+        .unwrap();
+        query.snapshot_id = Some(initial.snapshot_id);
+        assert_eq!(
+            store.query_usage_history(&query, Some(&allowed)).unwrap(),
+            initial
+        );
+        query.snapshot_id = None;
+        let latest = store.query_usage_history(&query, Some(&allowed)).unwrap();
+        assert_eq!(latest.days[5].traces.traces, 0);
+        assert_eq!(latest.days[6].traces.traces, 1);
+        assert_eq!(latest.days[6].traces.partial_traces, 1);
+        assert_eq!(
+            latest.days[6].traces.tokens.input_tokens.as_deref(),
+            Some("0")
+        );
     }
 
     #[test]

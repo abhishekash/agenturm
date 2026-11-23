@@ -129,6 +129,40 @@ pub struct UsageTotals {
     pub total_tokens: Option<String>,
 }
 
+pub const MAX_USAGE_COST_CURRENCIES: usize = 16;
+
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct UsageCurrencyTotal {
+    pub currency: String,
+    pub nanounits: String,
+    pub reports: usize,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TraceUsageTotals {
+    pub traces: usize,
+    pub reported_error_traces: usize,
+    /// Missing retained parents, explicit classification, or bounded membership.
+    pub partial_traces: usize,
+    pub traces_missing_exact_cost: usize,
+    /// Per-counter representative span reports, never a mix with raw/native usage.
+    pub tokens: UsageTotals,
+    pub costs: Vec<UsageCurrencyTotal>,
+    pub cost_currencies_truncated: bool,
+}
+
+#[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct ActivityLogTotals {
+    pub logs: usize,
+    pub reported_errors: usize,
+    pub tokens: UsageTotals,
+    pub costs: Vec<UsageCurrencyTotal>,
+    pub cost_currencies_truncated: bool,
+}
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct UsageDay {
@@ -137,6 +171,8 @@ pub struct UsageDay {
     /// Producer span counters can overlap with native counters and with one
     /// another. Keep their observed sum separate from native reports.
     pub span: UsageTotals,
+    pub traces: TraceUsageTotals,
+    pub logs: Option<ActivityLogTotals>,
     pub retention_partial: bool,
     pub scan_partial: bool,
 }
