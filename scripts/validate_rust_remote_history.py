@@ -21,7 +21,7 @@ import tempfile
 import termios
 import threading
 import time
-from urllib.parse import urlsplit
+from urllib.parse import urlencode, urlsplit
 
 
 CODEX = "harness.codex"
@@ -87,6 +87,18 @@ def request(endpoint, token, operation, identity=None, *, duplicate=False):
                 conn.putheader("Authorization", f"Bearer {token}")
         conn.endheaders(body.encode())
         response = conn.getresponse()
+        assert response.getheader("Cache-Control") == "no-store"
+        return response.status, json.loads(response.read())
+
+
+def request_get(endpoint, token, path, binding=None):
+    address = urlsplit(endpoint)
+    headers = {} if token is None else {"Authorization": f"Bearer {token}"}
+    if binding is not None:
+        headers["X-Agenturm-History-Binding"] = binding
+    with closing(http.client.HTTPConnection(address.hostname, address.port, timeout=5)) as connection:
+        connection.request("GET", path, headers=headers)
+        response = connection.getresponse()
         assert response.getheader("Cache-Control") == "no-store"
         return response.status, json.loads(response.read())
 
@@ -312,6 +324,18 @@ def main():
                            page["snapshot_id"])["Ok"]["value"]["observations"] == []
             assert history(PI, "pi-session", exact, 0)["Ok"]["value"]["observations"] == []
 
+            assert request_get(endpoint, None, "/api/health")[0] == 401
+            status, health = request_get(endpoint, token, "/api/health")
+            assert status == 200 and health["history_identity"] == identity and health["read_only"]
+            assert request_get(endpoint, token, "/api/sessions")[0] == 428
+            status, roster = request_get(endpoint, token, "/api/sessions?source_id=" + PI, identity)
+            assert status == 200 and roster["sessions"]
+            assert all(row["harness_id"] == PI for row in roster["sessions"])
+            assert PROMPT not in json.dumps(roster)
+            assert request_get(endpoint, token, "/api/activity?source_id=harness.outside", identity)[0] == 403
+            assert request_get(endpoint, token, "/api/activity?source_id=host.guest", identity)[0] == 403
+            assert request_get(endpoint, token, "/api/activity?source_id=" + PI + "&source_id=" + CODEX, identity)[0] == 400
+
             backup = json.loads(run(maintenance, *command("backup")).stdout)
             trace_export = source / "traces.json"
             trace_scope = {"agenturm.source.id": PI, "session.id": "pi-session",
@@ -323,6 +347,13 @@ def main():
                                for key, value in trace_scope.items()],
             }]}]}]}))
             run(collector, *command("import-traces", "--file", trace_export, "--source-id", OTLP))
+            status, spans = request_get(endpoint, token,
+                f"/api/traces/{TRACE}/spans?" + urlencode({"source_id":OTLP,"limit":1}), identity)
+            assert status == 200 and spans["observations"]
+            assert spans["observations"][0]["kind"]["span_id"] == "22" * 8
+            assert PROMPT not in json.dumps(spans)
+            assert request_get(endpoint, token, f"/api/traces/{TRACE}/spans", identity)[0] == 400
+
             trace_review = {
                 "page": {"harness_id": PI, "session_id": "pi-session", "limit": 20},
                 "trace_source_id": OTLP, "trace_id": TRACE, "expected_worker_id": "worker-1",
@@ -381,6 +412,9 @@ def main():
             binding = fresh_identity["history_identity"]
             assert fresh_identity["result"]["Ok"]["value"] == identity
             assert binding.startswith(identity + ":")
+            assert request_get(endpoint, token, "/api/sessions", identity)[0] == 409
+            assert request_get(endpoint, token, "/api/sessions", binding)[0] == 200
+            assert request_get(endpoint, token, "/api/activity?" + urlencode({"source_id":OTLP,"snapshot_id":previous_snapshot}), binding)[0] == 409
             assert request(endpoint, token, identity_request, identity)[1]["result"] == {
                 "Err": {"code": "snapshot_replaced"},
             }

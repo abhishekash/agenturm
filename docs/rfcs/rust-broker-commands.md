@@ -469,3 +469,35 @@ grant revocation, broker-backed task approval, and private modal redaction
 before Escape, quit and Ctrl-C return control to the terminal.
 
 [Broker protocol](rust-storage-broker.md)
+
+
+## Read source-aware metadata with HTTP GET
+
+The dedicated `broker serve-history` listener also provides these authenticated
+metadata routes: `/api/health`, `/api/sessions`, `/api/activity`, `/api/traces`,
+`/api/traces/<trace-id>/spans`, `/api/mcp`, `/api/metrics`, and `/api/hierarchy`.
+The response format is `agenturm.http-history/1`. It exposes Rust evidence
+and coverage rather than a Python receiver compatibility layer.
+
+First read `/api/health` with the listener's bearer credential. Preserve its
+`history_identity` as the `X-Agenturm-History-Binding` header on every other
+GET. Missing binding returns 428; a replaced history or branch returns 409.
+The reader's current source allowlist still applies. This is the same trusted
+loopback/SSH-forward endpoint described above, without direct public TLS.
+
+Queries accept `source_id`, `limit` (1–256), an opaque `cursor`, and optional
+`snapshot_id`. Evidence routes also accept `session_id`. A trace's `/spans`
+route requires an exact `otlp.*` source ID. Percent-encode query values;
+duplicate, unknown, malformed and over-limit selectors reject the request.
+
+`next_cursor` is an opaque JSON string: pass it unchanged as the next query's
+`cursor`. Page filters report how many metadata rows were inspected, so a
+filtered empty page can still have more evidence. Counts cover the current
+page. Token counters, cost/credit units, nanosecond times and snapshot tokens
+are strings to preserve exact integers in JavaScript clients.
+
+These endpoints never return prompt or SDK message bodies, private operation
+payloads, or Host samples. They cannot admit observations, change policy or
+invoke a live sampler. The typed `/v1/history/read` protocol remains available
+to the native cockpit. Private views and other receiver APIs retain their
+separate implementation requirements.

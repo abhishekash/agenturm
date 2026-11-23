@@ -1,5 +1,6 @@
 //! Authenticated loopback access to a dedicated broker reader.
 
+mod api;
 mod client;
 mod http;
 
@@ -151,9 +152,17 @@ fn handle(
     let response = (|| {
         let head = http::read_head(&mut reader, request_deadline, http::MAX_REQUEST)
             .map_err(|_| "400 Bad Request")?;
-        if head.start != format!("POST {} HTTP/1.1", http::PATH) {
+        let rest = if let Some(target) = head
+            .start
+            .strip_prefix("GET ")
+            .and_then(|line| line.strip_suffix(" HTTP/1.1"))
+        {
+            Some(api::Request::parse(target)?)
+        } else if head.start == format!("POST {} HTTP/1.1", http::PATH) {
+            None
+        } else {
             return Err("404 Not Found");
-        }
+        };
         if head
             .host
             .as_deref()
@@ -167,6 +176,34 @@ fn handle(
             .is_some_and(|header| token.authorizes(header))
         {
             return Err("401 Unauthorized");
+        }
+        if let Some(rest) = rest {
+            if !rest.is_health() {
+                match head.history_binding.as_deref() {
+                    Some(expected) if logical_read_identity(expected).is_none() => {
+                        return Err("400 Bad Request");
+                    }
+                    Some(expected) if expected == binding => {}
+                    Some(_) => return Err("409 Conflict"),
+                    None => return Err("428 Precondition Required"),
+                }
+            }
+            let result = rest
+                .execute(binding, read)
+                .map_err(|failure| match failure {
+                    ReadFailure::Unauthorized => "403 Forbidden",
+                    ReadFailure::InvalidRequest => "400 Bad Request",
+                    ReadFailure::HistoryReplaced
+                    | ReadFailure::SnapshotReplaced
+                    | ReadFailure::ExpiredSnapshot { .. } => "409 Conflict",
+                    _ => "503 Service Unavailable",
+                })?;
+            let bytes = serde_json::to_vec(&result).map_err(|_| "503 Service Unavailable")?;
+            return if bytes.len() <= http::MAX_REPLY {
+                Ok(bytes)
+            } else {
+                Err("503 Service Unavailable")
+            };
         }
         let bytes = http::read_body(&mut reader, request_deadline, head.length)
             .map_err(|_| "400 Bad Request")?;
@@ -215,4 +252,94 @@ fn handle(
         bytes.len()
     );
     let _ = http::write(stream, Instant::now() + http::IO_BUDGET, &head, &bytes);
+}
+
+#[cfg(test)]
+mod http_api_tests {
+    use super::*;
+    use std::io::{Read, Write};
+    use std::sync::atomic::AtomicUsize;
+
+    #[test]
+    fn metadata_get_requires_bearer_and_current_binding_without_bodies_or_writes() {
+        let root = std::env::temp_dir().join(format!("agenturm-get-api-{}", std::process::id()));
+        std::fs::create_dir(&root).unwrap();
+        let token_path = root.join("token");
+        std::fs::write(&token_path, "1".repeat(64)).unwrap();
+        use std::os::unix::fs::PermissionsExt;
+        std::fs::set_permissions(&token_path, std::fs::Permissions::from_mode(0o600)).unwrap();
+        let token = ProducerToken::from_file(&token_path).unwrap();
+        let binding = "a".repeat(32);
+        let calls = AtomicUsize::new(0);
+        let round_trip = |target: &str, headers: &str| {
+            let listener = TcpListener::bind("127.0.0.1:0").unwrap();
+            let address = listener.local_addr().unwrap();
+            std::thread::scope(|scope| {
+                scope.spawn(|| {
+                    let (stream, _) = listener.accept().unwrap();
+                    handle(&stream, &token, &binding, &|request| {
+                        calls.fetch_add(1, Ordering::Relaxed);
+                        match request {
+                            ReaderHistoryRequest::Identity => {
+                                Ok(ReaderHistoryReply::Identity(binding.clone()))
+                            }
+                            ReaderHistoryRequest::Sessions { .. } => {
+                                Ok(ReaderHistoryReply::Sessions(Default::default()))
+                            }
+                            _ => panic!("Unexpected metadata request"),
+                        }
+                    });
+                });
+                let mut client = TcpStream::connect(address).unwrap();
+                client
+                    .set_read_timeout(Some(std::time::Duration::from_secs(3)))
+                    .unwrap();
+                write!(
+                    client,
+                    "GET {target} HTTP/1.1\r\nHost: {address}\r\n{headers}\r\n"
+                )
+                .unwrap();
+                let mut response = String::new();
+                client.read_to_string(&mut response).unwrap();
+                response
+            })
+        };
+        let authorization = format!("Authorization: Bearer {}\r\n", "1".repeat(64));
+        assert!(round_trip("/api/health", "").starts_with("HTTP/1.1 401"));
+        assert_eq!(calls.load(Ordering::Relaxed), 0);
+        let health = round_trip("/api/health", &authorization);
+        assert!(health.starts_with("HTTP/1.1 200"));
+        assert!(health.contains(&binding));
+        assert!(round_trip("/api/sessions", &authorization).starts_with("HTTP/1.1 428"));
+        let current = format!("{authorization}X-Agenturm-History-Binding: {binding}\r\n");
+        assert!(round_trip("/api/sessions?limit=1", &current).starts_with("HTTP/1.1 200"));
+        let read_count = calls.load(Ordering::Relaxed);
+        for extra in [
+            "Content-Length: 1\r\n",
+            "Origin: http://untrusted.example\r\n",
+            "Transfer-Encoding: chunked\r\n",
+            "X-Agenturm-History-Binding: duplicate\r\n",
+        ] {
+            assert!(
+                round_trip("/api/sessions", &format!("{current}{extra}"))
+                    .starts_with("HTTP/1.1 400")
+            );
+        }
+        assert!(round_trip("/api/spans", &current).starts_with("HTTP/1.1 404"));
+        assert!(
+            round_trip("/api/sessions?source_id=otlp.a&source_id=otlp.b", &current)
+                .starts_with("HTTP/1.1 400")
+        );
+        let other = "b".repeat(32);
+        assert!(
+            round_trip(
+                "/api/sessions",
+                &format!("{authorization}X-Agenturm-History-Binding: {other}\r\n")
+            )
+            .starts_with("HTTP/1.1 409")
+        );
+        assert_eq!(calls.load(Ordering::Relaxed), read_count);
+        std::fs::remove_file(token_path).unwrap();
+        std::fs::remove_dir(root).unwrap();
+    }
 }
