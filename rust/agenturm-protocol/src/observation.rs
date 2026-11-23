@@ -142,6 +142,7 @@ impl<'de> Deserialize<'de> for ObservationRecord {
             PullRequestRaised,
             Relationship,
             WorkerSpawn,
+            WorkerLaunch,
             Message,
             Diagnostic,
         }
@@ -190,6 +191,12 @@ impl<'de> Deserialize<'de> for ObservationRecord {
                     return Err(serde::de::Error::custom("invalid worker spawn payload"));
                 }
                 serde_json::from_str(payload).map(ObservationFact::WorkerSpawn)
+            }
+            FactKind::WorkerLaunch => {
+                if !payload.trim_start().starts_with('{') {
+                    return Err(serde::de::Error::custom("invalid worker launch payload"));
+                }
+                serde_json::from_str(payload).map(ObservationFact::WorkerLaunch)
             }
             FactKind::Message => serde_json::from_str(payload).map(ObservationFact::Message),
             FactKind::Diagnostic => serde_json::from_str(payload).map(ObservationFact::Diagnostic),
@@ -249,6 +256,7 @@ pub enum ObservationFact {
     PullRequestRaised(PullRequestRaised),
     Relationship(Relationship),
     WorkerSpawn(WorkerSpawn),
+    WorkerLaunch(WorkerLaunch),
     Message(Message),
     Diagnostic(Diagnostic),
 }
@@ -267,15 +275,34 @@ pub struct WorkerSpawn {
 
 impl WorkerSpawn {
     pub fn is_valid_for(&self, parent_worker_id: Option<&str>) -> bool {
-        let id = self.child_worker_id.as_bytes();
-        !id.is_empty()
-            && id.len() <= 200
-            && id[0].is_ascii_alphanumeric()
-            && id
-                .iter()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(byte))
-            && parent_worker_id != Some(self.child_worker_id.as_str())
+        is_valid_child_worker_id(&self.child_worker_id, parent_worker_id)
     }
+}
+
+/// Explicit evidence of a child worker asynchronously launched within the
+/// parent session. A launch claims only the child identity and the launched
+/// state; it never claims a resolution.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerLaunch {
+    pub child_worker_id: String,
+}
+
+impl WorkerLaunch {
+    pub fn is_valid_for(&self, parent_worker_id: Option<&str>) -> bool {
+        is_valid_child_worker_id(&self.child_worker_id, parent_worker_id)
+    }
+}
+
+fn is_valid_child_worker_id(child_worker_id: &str, parent_worker_id: Option<&str>) -> bool {
+    let id = child_worker_id.as_bytes();
+    !id.is_empty()
+        && id.len() <= 200
+        && id[0].is_ascii_alphanumeric()
+        && id
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(byte))
+        && parent_worker_id != Some(child_worker_id)
 }
 
 /// Counts from one explicitly successful file edit. Native paths and diffs

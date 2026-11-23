@@ -66,11 +66,17 @@ pub(super) fn activity(evidence: &[&Observation]) -> EvidenceTable {
                     ObservationKind::WorkerSpawn(spawn) => {
                         ("declared", spawn.child_worker_id.as_str())
                     }
+                    ObservationKind::WorkerLaunch(launch) => {
+                        ("launched", launch.child_worker_id.as_str())
+                    }
                     _ => ("—", description.as_str()),
                 };
                 let mut details = vec![match &row.kind {
                     ObservationKind::WorkerSpawn(spawn) => {
                         metric("Declared child worker", &spawn.child_worker_id)
+                    }
+                    ObservationKind::WorkerLaunch(launch) => {
+                        metric("Launched child worker", &launch.child_worker_id)
                     }
                     _ => metric(kind, description.as_str()),
                 }];
@@ -162,7 +168,10 @@ fn clock(row: &Observation) -> String {
 
 fn identity(row: &Observation) -> impl Iterator<Item = MetricRow> + '_ {
     let worker = row.identity.worker_id.as_deref();
-    let worker = if matches!(row.kind, ObservationKind::WorkerSpawn(_)) {
+    let worker = if matches!(
+        row.kind,
+        ObservationKind::WorkerSpawn(_) | ObservationKind::WorkerLaunch(_)
+    ) {
         ("Parent worker", Some(worker.unwrap_or("Unreported")))
     } else {
         ("Worker", worker)
