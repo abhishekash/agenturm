@@ -23,6 +23,7 @@ pub struct RecordedSession {
     pub task_title: Option<Box<str>>,
     /// Explicit public project metadata; never inferred from prompts or local cwd.
     pub project_path: Option<Box<str>>,
+    pub project_origin: Option<ProjectOrigin>,
     pub updated_at_unix_ns: u64,
     pub snapshot_id: ReadSnapshot,
     pub state: Option<String>,
@@ -32,6 +33,12 @@ pub struct RecordedSession {
     pub relationship_kind: Option<RelationshipKind>,
     pub review_version: ReviewVersion,
     pub reviewed: bool,
+}
+
+/// Authority for a public project heading; never inferred from captured text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ProjectOrigin {
+    OperatorTaskWorkspace,
 }
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
@@ -179,6 +186,7 @@ struct AgentList {
     visible: Vec<AgentRow>,
     selection: TableState,
     filter: Filter,
+    grouping: command_center::Grouping,
     search: String,
     editing: bool,
     flat: bool,
@@ -247,8 +255,9 @@ impl AgentList {
         });
         if let Some(catalog) = &self.catalog {
             self.visible.sort_by(|a, b| {
-                command_center::project(&catalog.sessions[a.index])
-                    .cmp(command_center::project(&catalog.sessions[b.index]))
+                command_center::group(&catalog.sessions[a.index], self.grouping).cmp(
+                    command_center::group(&catalog.sessions[b.index], self.grouping),
+                )
             });
         }
         self.show_more_selected = false;
@@ -1285,6 +1294,11 @@ impl Workspace {
             KeyCode::Char('f' | 'h') => self.agents.toggle_tree(),
             KeyCode::Char('d' | 'D') => self.navigate(sender, Destination::Findings),
             KeyCode::Char('?') => self.agents.help = true,
+            KeyCode::Char('G') => {
+                let identity = self.agents.current().map(session_key);
+                self.agents.grouping = self.agents.grouping.next();
+                self.agents.apply_filters(identity.as_ref());
+            }
             KeyCode::Char('o') => {
                 let identity = self.agents.current().map(session_key);
                 self.agents.sort_by_state = !self.agents.sort_by_state;
@@ -1880,6 +1894,7 @@ mod tests {
             session_id: id.into(),
             task_title: None,
             project_path: None,
+            project_origin: None,
             updated_at_unix_ns: 1,
             snapshot_id: 9.into(),
             state: Some(state.into()),
@@ -2539,8 +2554,10 @@ mod tests {
         let mut first = session("harness.codex", "a-session", "running", None);
         first.task_title = Some("Implement checkpoint ordering".into());
         first.project_path = Some("/projects/alpha".into());
+        first.project_origin = Some(ProjectOrigin::OperatorTaskWorkspace);
         let mut second = session("harness.pi", "b-session", "completed", None);
         second.project_path = Some("/projects/beta".into());
+        second.project_origin = Some(ProjectOrigin::OperatorTaskWorkspace);
         let rows = vec![
             second,
             first,
@@ -2598,6 +2615,9 @@ mod tests {
         assert_eq!(workspace.agents.filter, Filter::Attention);
         press(&mut workspace, &sender, KeyCode::Down);
         let selected = workspace.agents.current().unwrap().clone();
+        press(&mut workspace, &sender, KeyCode::Char('G'));
+        assert_eq!(workspace.agents.grouping, command_center::Grouping::Source);
+        assert_eq!(workspace.agents.current(), Some(&selected));
         press(&mut workspace, &sender, KeyCode::Enter);
         let WorkspaceRequest::History {
             selection: HistorySelection::Session(requested, _),
@@ -2612,6 +2632,7 @@ mod tests {
         assert_eq!(workspace.agents.current(), Some(&selected));
         assert_eq!(workspace.agents.filter, Filter::Attention);
         assert!(workspace.history.is_empty());
+        assert_eq!(workspace.agents.grouping, command_center::Grouping::Source);
         press(&mut workspace, &sender, KeyCode::BackTab);
         assert_eq!(workspace.agents.filter, Filter::All);
     }

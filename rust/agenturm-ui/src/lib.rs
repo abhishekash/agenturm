@@ -31,8 +31,8 @@ pub use workbench::{
 };
 
 pub use workspace::{
-    HistorySelection, RecordedSession, ReviewVersion, SessionCatalog, SessionCursor, SessionView,
-    WorkspaceRequest, WorkspaceResponse, WorkspaceView, run_workspace,
+    HistorySelection, ProjectOrigin, RecordedSession, ReviewVersion, SessionCatalog, SessionCursor,
+    SessionView, WorkspaceRequest, WorkspaceResponse, WorkspaceView, run_workspace,
 };
 
 use agenturm_kernel::ReadSnapshot;

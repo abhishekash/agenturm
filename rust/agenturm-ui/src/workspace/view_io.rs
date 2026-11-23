@@ -64,9 +64,10 @@ impl Workspace {
                     .map(|row| MetricRow {
                         label: format!("{} / {}", row.harness_id, row.session_id),
                         value: format!(
-                            "task={} · project={} · state={} · updated_unix_ns={}",
+                            "task={} · project={} · project_origin={} · state={} · updated_unix_ns={}",
                             row.task_title.as_deref().unwrap_or("Untitled session"),
                             command_center::project(row),
+                            if row.project_origin == Some(ProjectOrigin::OperatorTaskWorkspace) { "operator_task_workspace" } else { "unavailable" },
                             recorded_state(row),
                             row.updated_at_unix_ns
                         ),

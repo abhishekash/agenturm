@@ -9,11 +9,96 @@ const FILTERS: [Filter; 5] = [
     Filter::Inactive,
 ];
 
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum Grouping {
+    #[default]
+    Project,
+    Source,
+    None,
+}
+
+impl Grouping {
+    pub(super) fn next(self) -> Self {
+        match self {
+            Self::Project => Self::Source,
+            Self::Source => Self::None,
+            Self::None => Self::Project,
+        }
+    }
+    fn label(self) -> &'static str {
+        match self {
+            Self::Project => "Project",
+            Self::Source => "Source",
+            Self::None => "None",
+        }
+    }
+}
+
 pub(super) fn project(row: &RecordedSession) -> &str {
     row.project_path
         .as_deref()
-        .filter(|p| !p.trim().is_empty())
+        .filter(|p| {
+            row.project_origin == Some(ProjectOrigin::OperatorTaskWorkspace) && !p.trim().is_empty()
+        })
         .unwrap_or("Project unavailable")
+}
+
+pub(super) fn group(row: &RecordedSession, grouping: Grouping) -> &str {
+    match grouping {
+        Grouping::Project => project(row),
+        Grouping::Source => &row.harness_id,
+        Grouping::None => "All tasks",
+    }
+}
+
+fn filter_lines(agents: &AgentList, width: u16) -> Vec<Line<'static>> {
+    let mut chips = FILTERS
+        .iter()
+        .map(|filter| {
+            let count = agents.catalog.as_ref().map_or("—".into(), |catalog| {
+                catalog
+                    .sessions
+                    .iter()
+                    .filter(|row| filter.accepts(row))
+                    .count()
+                    .to_string()
+            });
+            (
+                format!("{} {count}", filter.label()),
+                if *filter == agents.filter {
+                    selection_style()
+                } else {
+                    label_style()
+                },
+            )
+        })
+        .collect::<Vec<_>>();
+    if let Some(catalog) = &agents.catalog {
+        let unknown = catalog
+            .sessions
+            .iter()
+            .filter(|row| !FILTERS[1..].iter().any(|f| f.accepts(row)))
+            .count();
+        if unknown != 0 {
+            chips.push((format!("Unknown {unknown}"), label_style()));
+        }
+    }
+    let mut lines = Vec::new();
+    let mut spans = vec![Span::raw(" ")];
+    let mut occupied = 1;
+    for (text, style) in chips {
+        let cells = text.cell_width() + 1;
+        if occupied + cells > width && occupied > 1 {
+            lines.push(Line::from(spans));
+            spans = vec![Span::raw(" ")];
+            occupied = 1;
+        }
+        occupied += cells;
+        spans.push(Span::styled(text, style));
+        spans.push(Span::raw(" "));
+    }
+    lines.push(Line::from(spans));
+    lines
 }
 
 fn status(row: &RecordedSession) -> &str {
@@ -41,55 +126,25 @@ pub(super) fn draw(
         );
         return;
     }
-    let narrow = area.width < 76;
+    let lines = filter_lines(agents, area.width);
     let [brand, filters, navigation, body, footer] = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Length(if narrow { 2 } else { 1 }),
+        Constraint::Length(lines.len() as u16),
         Constraint::Length(1),
         Constraint::Min(1),
         Constraint::Length(3),
     ])
     .areas(area);
-    let [title, group] =
-        Layout::horizontal([Constraint::Fill(1), Constraint::Length(18)]).areas(brand);
     frame.render_widget(
-        Paragraph::new(" Agenturm command center").style(heading_style()),
-        title,
+        Paragraph::new(Line::from(vec![
+            Span::styled(" Agenturm command center", heading_style()),
+            Span::styled(
+                format!("   Group: {} · G", agents.grouping.label()),
+                label_style(),
+            ),
+        ])),
+        brand,
     );
-    frame.render_widget(
-        Paragraph::new("Group: Project ")
-            .right_aligned()
-            .style(label_style()),
-        group,
-    );
-    let filter_spans = |items: &[Filter]| {
-        let mut spans = vec![Span::raw(" ")];
-        for filter in items {
-            let count = agents.catalog.as_ref().map_or("—".into(), |catalog| {
-                catalog
-                    .sessions
-                    .iter()
-                    .filter(|row| filter.accepts(row))
-                    .count()
-                    .to_string()
-            });
-            spans.push(Span::styled(
-                format!(" {} {count} ", filter.label()),
-                if *filter == agents.filter {
-                    selection_style()
-                } else {
-                    label_style()
-                },
-            ));
-            spans.push(Span::raw(" "));
-        }
-        Line::from(spans)
-    };
-    let lines = if narrow {
-        vec![filter_spans(&FILTERS[..3]), filter_spans(&FILTERS[3..])]
-    } else {
-        vec![filter_spans(&FILTERS)]
-    };
     frame.render_widget(Paragraph::new(lines).style(surface(SURFACE)), filters);
     let navigation_text = if agents.editing || !agents.search.is_empty() {
         format!(
@@ -111,7 +166,7 @@ pub(super) fn draw(
     );
     if agents.help {
         let help = format!(
-            "{}\n{} · H live Host · U Usage\nTab / Shift+Tab Status filter · / Search · a Reset\nEnter Inspect · Esc Back · Ctrl+R Review · P Prompts\nf Tree/flat · ←/→ Collapse/expand · o Sort · p Pause\nAlt+↑/↓ Parent/child · Alt+→ Needs attention\n[ Newer · ] Show more · l Latest · R Refresh\nb Tasks · w Workflow · c Copy · x Export · q Quit",
+            "{}\n{} · H live Host · U Usage\nTab / Shift+Tab Status filter · / Search · a Reset\nEnter Inspect · Esc Back · Ctrl+R Review · P Prompts\nG Group project/source/none · f Tree/flat · o Sort\n←/→ Collapse/expand · p Pause · Y To review\nAlt+↑/↓ Parent/child · Alt+→ Needs attention\n[ Newer · ] Show more · l Latest · R Refresh\nb Tasks · w Workflow · c Copy · x Export · q Quit",
             keymap::navigation_hints(&keymap::NAVIGATION[..5]),
             keymap::navigation_hints(&keymap::NAVIGATION[5..])
         );
@@ -135,15 +190,15 @@ pub(super) fn draw(
         let Some(row) = sessions.and_then(|rows| rows.get(item.index)) else {
             continue;
         };
-        let group = project(row);
-        if previous_project != Some(group) {
+        let group_name = group(row, agents.grouping);
+        if previous_project != Some(group_name) {
             let count = agents
                 .visible
                 .iter()
                 .filter(|item| {
                     sessions.is_some_and(|rows| {
                         rows.get(item.index)
-                            .is_some_and(|row| project(row) == group)
+                            .is_some_and(|row| group(row, agents.grouping) == group_name)
                     })
                 })
                 .count();
@@ -151,14 +206,14 @@ pub(super) fn draw(
                 Row::new([
                     format!(
                         " {}  {count}",
-                        roster_cell(&visible_text(group), task_width)
+                        roster_cell(&visible_text(group_name), task_width)
                     ),
                     String::new(),
                     String::new(),
                 ])
                 .style(label_style()),
             );
-            previous_project = Some(group);
+            previous_project = Some(group_name);
         }
         if !agents.show_more_selected && agents.selection.selected() == Some(position) {
             selected_display = Some(rows.len());
@@ -258,9 +313,18 @@ pub(super) fn draw(
     } else {
         "Loaded page · R refresh"
     };
-    let detail = message
-        .map(visible_text)
-        .unwrap_or_else(|| connection.into());
+    let detail = message.map(visible_text).unwrap_or_else(|| {
+        agents
+            .current()
+            .filter(|row| {
+                row.project_origin == Some(ProjectOrigin::OperatorTaskWorkspace)
+                    && row.project_path.is_some()
+            })
+            .map_or_else(
+                || connection.into(),
+                |row| format!("Operator task workspace · {}", visible_text(project(row))),
+            )
+    });
     let hints = if agents.editing {
         "Enter / Esc done · Backspace edit"
     } else {
