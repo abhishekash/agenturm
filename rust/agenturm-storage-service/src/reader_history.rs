@@ -10,8 +10,8 @@ use agenturm_kernel::{ExtensionId, ObservationPage, ObservationQuery};
 use agenturm_kernel::{ObservationKind, is_host_source};
 use agenturm_store::{
     EvalInventory, EvalInventoryQuery, McpTraceQuery, ResolvedTraceReview, SelectedEvalPage,
-    SelectedEvalQuery, SessionPage, SessionQuery, StandaloneTraceQuery, Store, TraceReviewQuery, WorkspaceAnchor,
-    WorkspaceHistory,
+    SelectedEvalQuery, SessionPage, SessionQuery, StandaloneTraceQuery, Store, TraceReviewQuery,
+    WorkspaceAnchor, WorkspaceHistory,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -241,6 +241,17 @@ mod tests {
                 end_unix_ns: 7 * 86_400_000_000_000,
             },
         };
+        let trace = |source_id, snapshot_id| ReaderHistoryRequest::StandaloneTrace {
+            query: StandaloneTraceQuery {
+                source_id,
+                session_id: "telemetry-session".into(),
+                trace_id: "1".repeat(32),
+                worker_id: None,
+                snapshot_id,
+                before: None,
+                limit: 1,
+            },
+        };
         let dispatch_reader =
             |request| dispatch(&store, &allowed, Role::Reader, Some(&identity), request);
         assert!(matches!(
@@ -253,6 +264,10 @@ mod tests {
         );
         assert!(matches!(dispatch_reader(usage(Some(native.clone()))),
             Ok(ReaderHistoryReply::UsageHistory(page)) if page.snapshot_id == snapshot && page.days.len() == 7));
+        assert!(
+            matches!(dispatch_reader(trace(source.clone(), Some(snapshot))),
+            Ok(ReaderHistoryReply::StandaloneTrace(page)) if page.snapshot_id == snapshot && page.observations.is_empty())
+        );
 
         let outside_cursor = MetricSeriesPosition {
             series: MetricSeriesKey {
@@ -265,7 +280,8 @@ mod tests {
             mcp(denied.clone()),
             metrics(Some(denied.clone()), Some(snapshot), None),
             metrics(None, Some(snapshot), Some(outside_cursor)),
-            usage(Some(denied)),
+            usage(Some(denied.clone())),
+            trace(denied, Some(snapshot)),
         ] {
             assert!(matches!(
                 dispatch_reader(request),
@@ -276,6 +292,7 @@ mod tests {
             mcp(native.clone()),
             metrics(None, Some(snapshot), None),
             usage(None),
+            trace(source.clone(), Some(snapshot)),
         ] {
             assert!(matches!(
                 dispatch(&store, &allowed, Role::Collector, Some(&identity), request),
@@ -286,6 +303,10 @@ mod tests {
             ReadSnapshot::new(snapshot.watermark(), Some("1".repeat(32).parse().unwrap()));
         assert!(matches!(
             dispatch_reader(metrics(None, Some(replaced), None)),
+            Err(ReadFailure::SnapshotReplaced)
+        ));
+        assert!(matches!(
+            dispatch_reader(trace(source.clone(), Some(replaced))),
             Err(ReadFailure::SnapshotReplaced)
         ));
         let other = if identity == "0".repeat(32) {

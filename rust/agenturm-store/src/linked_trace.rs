@@ -86,7 +86,9 @@ impl Store {
             || !valid_trace_id(&query.trace_id)
             || !(1..=MAX_DURABLE_SNAPSHOT_OBSERVATIONS).contains(&query.limit)
         {
-            return Err(StoreError::Invalid("standalone trace review scope is invalid"));
+            return Err(StoreError::Invalid(
+                "standalone trace review scope is invalid",
+            ));
         }
         validate_identifier(&query.session_id, MAX_SESSION_KEY_BYTES, "session ID")?;
         if let Some(worker) = &query.worker_id {
@@ -98,11 +100,14 @@ impl Store {
                 || query.snapshot_id != Some(cursor.snapshot_id)
                 || cursor.observed_at_unix_ns > i64::MAX as u64
             {
-                return Err(StoreError::Invalid("trace cursor does not match the review scope"));
+                return Err(StoreError::Invalid(
+                    "trace cursor does not match the review scope",
+                ));
             }
         }
         let transaction = self.connection.unchecked_transaction()?;
-        let (snapshot_id, watermark) = retention::resolve_read_snapshot(&transaction, query.snapshot_id)?;
+        let (snapshot_id, watermark) =
+            retention::resolve_read_snapshot(&transaction, query.snapshot_id)?;
         let prefix = format!("otlp:{}:", query.trace_id);
         let before = query.before.as_ref();
         let mut statement = transaction.prepare(STANDALONE_TRACE_SQL)?;
@@ -123,12 +128,18 @@ impl Store {
         let mut observations = Vec::new();
         while let Some(row) = results.next()? {
             if row.get::<_, usize>(0)? > MAX_TRACE_SCOPE_ROWS {
-                return Err(StoreError::TraceScopeTooLarge { max_rows: MAX_TRACE_SCOPE_ROWS });
+                return Err(StoreError::TraceScopeTooLarge {
+                    max_rows: MAX_TRACE_SCOPE_ROWS,
+                });
             }
             if !row.get::<_, bool>(1)? {
-                return Err(StoreError::Invalid("trace cursor occurrence is outside the review scope"));
+                return Err(StoreError::Invalid(
+                    "trace cursor occurrence is outside the review scope",
+                ));
             }
-            let Some(event_id) = row.get::<_, Option<String>>(2)? else { break };
+            let Some(event_id) = row.get::<_, Option<String>>(2)? else {
+                break;
+            };
             let kind = serde_json::from_str::<KernelObservationKind>(&row.get::<_, String>(7)?)?;
             observations.push(Observation {
                 harness_id: query.source_id.clone(),
@@ -148,7 +159,11 @@ impl Store {
         let has_more = observations.len() > query.limit;
         observations.truncate(query.limit);
         observations.reverse();
-        Ok(ObservationPage { observations, snapshot_id, has_more })
+        Ok(ObservationPage {
+            observations,
+            snapshot_id,
+            has_more,
+        })
     }
 
     /// Revalidates the selected MCP receipt and reads its explicitly linked
@@ -359,7 +374,9 @@ impl Store {
 
 fn valid_trace_id(value: &str) -> bool {
     value.len() == 32
-        && value.bytes().all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
+        && value
+            .bytes()
+            .all(|byte| matches!(byte, b'0'..=b'9' | b'a'..=b'f'))
         && value.bytes().any(|byte| byte != b'0')
 }
 
@@ -437,6 +454,168 @@ const STANDALONE_TRACE_SQL: &str = "
 mod tests {
     use super::*;
     use agenturm_kernel::{McpMethod, ObservationIdentity, TraceSpan, TraceStatus};
+
+    #[test]
+    fn standalone_trace_pins_exact_scopes_and_companions_across_pages() {
+        use agenturm_kernel::telemetry_summary::TraceSpanSummary;
+        use agenturm_kernel::{ReportedCost, SpanTokenUsage, TraceSpanIdentity};
+
+        let mut store = Store::open(":memory:").unwrap();
+        let source = ExtensionId::parse("otlp.fixture").unwrap();
+        let sibling = ExtensionId::parse("otlp.sibling").unwrap();
+        let trace = "1".repeat(32);
+        let other_trace = "2".repeat(32);
+        let span =
+            |source: &ExtensionId, trace: &str, id: u64, session: &str, worker: Option<&str>| {
+                let mut identity = ObservationIdentity::session(session);
+                identity.worker_id = worker.map(str::to_owned);
+                identity.turn_id = worker.map(|_| "recorded-turn".into());
+                let span_id = format!("{id:016x}");
+                Observation {
+                    harness_id: source.clone(),
+                    event_id: format!("otlp:{trace}:{span_id}"),
+                    revision: 0,
+                    identity,
+                    observed_at_unix_ns: 10 + id,
+                    kind: KernelObservationKind::TraceSpan(TraceSpan {
+                        trace_id: trace.into(),
+                        span_id,
+                        parent_span_id: None,
+                        target_source_id: worker.map(|_| "harness.not-retained".into()),
+                        target_operation_id: None,
+                        started_at_unix_ns: 5,
+                        status: TraceStatus::Ok,
+                    }),
+                }
+            };
+        let selected = span(&source, &trace, 1, "session", Some("worker-one"));
+        let span_id = "0000000000000001".to_owned();
+        let identity = TraceSpanIdentity {
+            trace_id: trace.clone(),
+            span_id: span_id.clone(),
+        };
+        let summary = Observation {
+            event_id: format!("{}:summary", selected.event_id),
+            kind: KernelObservationKind::TraceSpanSummary(TraceSpanSummary {
+                trace_id: trace.clone(),
+                span_id: span_id.clone(),
+                agent_run: true,
+                reported_error: false,
+            }),
+            ..selected.clone()
+        };
+        let usage = Observation {
+            event_id: format!("otlp-usage:{trace}:{span_id}"),
+            kind: KernelObservationKind::SpanTokenUsage(SpanTokenUsage {
+                span: identity.clone(),
+                target_source_id: Some("harness.not-retained".into()),
+                input_tokens: Some(0),
+                output_tokens: None,
+                cache_read_input_tokens: None,
+                cache_write_input_tokens: None,
+                reasoning_output_tokens: None,
+                total_tokens: None,
+            }),
+            ..selected.clone()
+        };
+        let cost = Observation {
+            event_id: format!("otlp-cost:{trace}:{span_id}"),
+            kind: KernelObservationKind::ReportedCost(ReportedCost {
+                currency: "USD".into(),
+                nanounits: 0,
+                span: Some(identity),
+                native_origin: None,
+            }),
+            ..selected.clone()
+        };
+        let wrong_worker = span(&source, &trace, 2, "session", Some("worker-two"));
+        let wrong_session = span(&source, &trace, 3, "second-session", Some("worker-one"));
+        let wrong_trace = span(&source, &other_trace, 4, "session", Some("worker-one"));
+        store
+            .commit(
+                source.as_str(),
+                None,
+                "first",
+                &[
+                    selected.clone(),
+                    summary.clone(),
+                    usage.clone(),
+                    cost.clone(),
+                    wrong_worker.clone(),
+                    wrong_session,
+                    wrong_trace,
+                ],
+            )
+            .unwrap();
+        store
+            .commit(
+                sibling.as_str(),
+                None,
+                "first",
+                &[span(&sibling, &trace, 1, "session", Some("worker-one"))],
+            )
+            .unwrap();
+        let allowed = BTreeSet::from([source.clone()]);
+        let query = StandaloneTraceQuery {
+            source_id: source.clone(),
+            session_id: "session".into(),
+            trace_id: trace.clone(),
+            worker_id: Some("worker-one".into()),
+            snapshot_id: None,
+            before: None,
+            limit: 2,
+        };
+        let first = store
+            .query_standalone_trace(&query, Some(&allowed))
+            .unwrap();
+        assert_eq!(first.observations, [selected, summary]);
+        assert!(first.has_more);
+        let late = span(&source, &trace, 5, "session", Some("worker-one"));
+        store
+            .commit(
+                source.as_str(),
+                Some("first"),
+                "second",
+                std::slice::from_ref(&late),
+            )
+            .unwrap();
+        let next = StandaloneTraceQuery {
+            snapshot_id: Some(first.snapshot_id),
+            before: first.older_position(),
+            ..query.clone()
+        };
+        let older = store.query_standalone_trace(&next, Some(&allowed)).unwrap();
+        assert_eq!(older.observations, [cost, usage]);
+        assert!(!older.has_more);
+        assert_eq!(older.snapshot_id, first.snapshot_id);
+        let mut forged = next.clone();
+        let cursor = forged.before.as_mut().unwrap();
+        cursor.event_id = wrong_worker.event_id.clone();
+        cursor.observed_at_unix_ns = wrong_worker.observed_at_unix_ns;
+        assert!(
+            store
+                .query_standalone_trace(&forged, Some(&allowed))
+                .is_err()
+        );
+        assert!(
+            store
+                .query_standalone_trace(&query, Some(&BTreeSet::from([sibling])))
+                .is_err()
+        );
+        let all_workers = store
+            .query_standalone_trace(
+                &StandaloneTraceQuery {
+                    worker_id: None,
+                    limit: 10,
+                    ..query
+                },
+                Some(&allowed),
+            )
+            .unwrap();
+        assert_eq!(all_workers.observations.len(), 6);
+        assert!(all_workers.observations.contains(&wrong_worker));
+        assert!(all_workers.observations.contains(&late));
+    }
 
     #[test]
     fn mcp_trace_page_matches_the_exact_retained_call_and_both_source_permissions() {
