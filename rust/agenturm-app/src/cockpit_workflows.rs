@@ -1192,6 +1192,96 @@ mod tests {
     }
 
     #[test]
+    fn review_decision_notes_are_bound_to_the_exact_evidence_version() {
+        use agenturm_kernel::ObservationStore;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "agenturm-review-notes-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let db = dir.join("history.sqlite");
+        let mut store = Store::open_collector(&db).unwrap();
+        let mut identity = ObservationIdentity::session("same-session");
+        identity.turn_id = Some("recorded-turn".into());
+        let observation = |event: &str, at: u64| Observation {
+            harness_id: ExtensionId::parse("harness.codex").unwrap(),
+            event_id: event.into(),
+            revision: 0,
+            identity: identity.clone(),
+            observed_at_unix_ns: at,
+            kind: ObservationKind::Message {
+                role: "user".into(),
+            },
+        };
+        store
+            .commit("harness.codex", None, "one", &[observation("check", 10)])
+            .unwrap();
+        let catalog = super::super::load_session_catalog(&store, &db, None).unwrap();
+        let session = catalog
+            .sessions
+            .into_iter()
+            .find(|row| row.session_id == "same-session")
+            .unwrap();
+        let WorkResult::ReviewNotes { items, .. } =
+            execute(&store, &db, WorkCommand::ReviewNotes(session.clone())).unwrap()
+        else {
+            panic!("review notes page")
+        };
+        assert!(items.is_empty());
+        let WorkResult::ReviewNotes {
+            items,
+            session: saved,
+        } = execute(
+            &store,
+            &db,
+            WorkCommand::SaveReviewNote {
+                session: session.clone(),
+                note: "Checks pass on the recorded evidence".into(),
+            },
+        )
+        .unwrap()
+        else {
+            panic!("saved review notes page")
+        };
+        assert_eq!(saved.review_version, session.review_version);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].version, session.review_version);
+        assert_eq!(items[0].note, "Checks pass on the recorded evidence");
+
+        // A later admitted event changes the receipt version for the session.
+        store
+            .commit(
+                "harness.codex",
+                Some("one"),
+                "two",
+                &[observation("later-check", 11)],
+            )
+            .unwrap();
+        let catalog = super::super::load_session_catalog(&store, &db, None).unwrap();
+        let newer = catalog
+            .sessions
+            .into_iter()
+            .find(|row| row.session_id == "same-session")
+            .unwrap();
+        assert_ne!(newer.review_version, session.review_version);
+        let newer_version = newer.review_version;
+        let WorkResult::ReviewNotes { items, .. } =
+            execute(&store, &db, WorkCommand::ReviewNotes(newer)).unwrap()
+        else {
+            panic!("review notes page")
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].version, session.review_version);
+        assert_ne!(items[0].version, newer_version);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
     fn workflow_requires_an_exact_pending_state_and_applies_lifecycle_corrections() {
         let proof = RequestProof {
             snapshot_id: 1.into(),
