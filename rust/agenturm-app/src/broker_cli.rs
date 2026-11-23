@@ -673,7 +673,9 @@ pub fn execute(options: &BrokerOptions) -> Result<ExitCode, BrokerExecutionError
             selection,
             output,
         } => {
-            let store = if selection.linked_traces
+            let store = if output.format.is_some()
+                || output.directory.is_some()
+                || selection.linked_traces
                 || matches!(
                     selection.anchor,
                     ReviewAnchor::Trace { .. } | ReviewAnchor::StandaloneTrace { .. }

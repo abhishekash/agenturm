@@ -194,7 +194,10 @@ fn matches_projection(kind: &ObservationKind, projection: &HistoryProjection) ->
             | ObservationKind::SpanTokenUsage(_),
             HistoryProjection::Usage,
         ) => true,
-        (ObservationKind::Relationship { .. }, HistoryProjection::Relationships) => true,
+        (
+            ObservationKind::Relationship { .. } | ObservationKind::WorkerSpawn(_),
+            HistoryProjection::Relationships,
+        ) => true,
         (
             ObservationKind::Lifecycle { .. }
             | ObservationKind::Usage { .. }
@@ -282,6 +285,99 @@ mod tests {
         );
         row.identity.turn_id = Some("turn-one".into());
         row
+    }
+
+    fn worker_spawn(source: &ExtensionId) -> Observation {
+        let mut row = event(
+            source,
+            "spawn",
+            20,
+            KernelObservationKind::WorkerSpawn(agenturm_kernel::WorkerSpawn {
+                child_worker_id: "child-worker".into(),
+            }),
+        );
+        row.revision = 1;
+        row.identity.worker_id = Some("parent-worker".into());
+        row.identity.turn_id = Some("parent-turn".into());
+        row.identity.operation_id = Some("parent-operation".into());
+        row
+    }
+
+    #[test]
+    fn worker_spawn_round_trips_through_the_relationship_projection() {
+        let mut store = Store::open(":memory:").unwrap();
+        let source = ExtensionId::parse("harness.fixture").unwrap();
+        let spawn = worker_spawn(&source);
+        let mut edge = event(
+            &source,
+            "session-edge",
+            10,
+            KernelObservationKind::Relationship {
+                relationship_kind: agenturm_kernel::RelationshipKind::Delegated,
+                parent_session_id: "fixture".into(),
+            },
+        );
+        edge.identity.session_id = Some("other-session".into());
+        commit(
+            &mut store,
+            &source,
+            &[spawn.clone(), edge.clone()],
+            None,
+            "first",
+        );
+
+        let query = ObservationQuery::latest(1);
+        let projection = HistoryProjection::Relationships;
+        let allowed = [source].into_iter().collect();
+        let page = store
+            .query_projected_history(&query, &projection, None, None, Some(&allowed))
+            .unwrap();
+        assert_eq!(page.observations, [spawn]);
+        let older = ObservationQuery {
+            snapshot_id: Some(page.snapshot_id),
+            before: Some(page.older_position().unwrap()),
+            ..query
+        };
+        let page = store
+            .query_projected_history(&older, &projection, None, None, Some(&allowed))
+            .unwrap();
+        assert_eq!(page.observations, [edge]);
+
+        let sessions = store.query_sessions(&SessionQuery::latest(2)).unwrap();
+        let parent = &sessions.sessions[0];
+        assert_eq!(parent.session_id, "fixture");
+        assert!(parent.parent_session_id.is_none());
+        assert!(parent.relationship_kind.is_none());
+    }
+
+    #[test]
+    fn worker_spawn_admission_requires_exact_parent_operation() {
+        let mut store = Store::open(":memory:").unwrap();
+        let source = ExtensionId::parse("harness.fixture").unwrap();
+        let row = worker_spawn(&source);
+        let batch =
+            ObservationBatch::from_observations(source.as_str(), None, "first", &[row]).unwrap();
+        let mut missing_turn = batch.clone();
+        missing_turn.observations[0].identity.turn_id = None;
+        let mut missing_operation = batch.clone();
+        missing_operation.observations[0].identity.operation_id = None;
+        let mut self_spawn = batch;
+        self_spawn.observations[0].identity.worker_id = Some("child-worker".into());
+        for invalid in [missing_turn, missing_operation, self_spawn] {
+            assert!(matches!(
+                store.commit_batch(&invalid),
+                Err(StoreError::Invalid(
+                    "worker spawn ID or parent operation identity is invalid"
+                ))
+            ));
+        }
+        assert!(store.source_cursor(source.as_str()).unwrap().is_none());
+        assert!(
+            serde_json::from_str::<ObservationKind>(
+                r#"{"kind":"worker_spawn","child_worker_id":"child","body":"unexpected"}"#,
+            )
+            .is_err()
+        );
     }
 
     #[test]

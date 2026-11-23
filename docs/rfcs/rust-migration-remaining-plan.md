@@ -16,7 +16,9 @@ list/show/pin-CAS removal and CF4 body-free OTLP log failure investigation.
 CF1/CF3/CF4 are implemented; CF2 source is integrated with focused checks,
 and the CF1 unknown-time admission/retention refinement is implemented in
 schema 22. The composed app lib/bin compile check passed. CF5 exact Claude
-worker-spawn evidence is the next active core feature slice.
+worker-spawn evidence is also implemented. Typed broker receipt and local
+Review-ledger identity fixes accompany these features. Broad qualification
+remains delegated to the other test agent.
 Developers run focused compile/regression checks only. The test agent executes
 Q1–Q10 and the new acceptance matrix on the supplied integrated source head.
 
@@ -66,9 +68,11 @@ invent check results, parent relationships, current liveness or cost totals.
   and recognized direct checks are covered. Complete check coverage and the
   remaining native turn shapes still require an explicit coverage inventory.
 - Claude Code: exact worker/session identity and completion are supported.
-  Same-session worker-parent relationships do not fit the existing
-  distinct-session relationship contract. Correlate explicit spawning calls
-  with child agent IDs before introducing an attributable worker edge.
+  Same-session worker-spawn evidence is now a separate typed fact (CF5),
+  correlated to exact native Agent/Task declaration and completed result, with
+  parent worker/turn/operation and a bounded child ID. Distinct-session
+  relationships remain a separate contract; async/ambiguous native shapes
+  remain unsupported pending positive evidence.
   Sampled Bash results lack a native exit field; output text alone must not
   become a passed/failed check.
 - OpenCode: idle-boundary attribution, parent/fork identities and direct checks

@@ -31,7 +31,7 @@ a separate agent owns broad test execution. Follow the
 | CF2 Whole-session paged Review edits | Implemented; 17 focused checks/Clippy passed. Paged exact-session browser with original ReviewVersion and private proof. | Separate test agent: terminal/private/broker and selection-return acceptance. |
 | CF3 Trusted adapter list/show/remove | Implemented; four focused checks/Clippy passed. Exact-pin CAS removal preserves artifacts/history. | Separate test agent: CLI/atomicity/security/collection regression. |
 | CF4 OTLP log failure investigation | Implemented; one focused process regression passed. Metadata only, explicit log kind, scope/cursor binding retained. | Separate test agent: broad failure inventory/remote/terminal privacy regression. |
-| CF5 Exact Claude worker spawning | In development; typed parent/child attribution from structured native declaration/result evidence. | Separate test agent: wait for its own frozen source head. |
+| CF5 Exact Claude worker spawning | Implemented; exact structured declaration/result correlation, typed parent scope/child ID and declared-child evidence presentation. | Separate test agent: native collection, persistence and exact parent/child acceptance. |
 
 Feature developers run focused checks needed for implementation. Q1–Q10 and
 release qualification remain delegated; no broad campaign is duplicated here.

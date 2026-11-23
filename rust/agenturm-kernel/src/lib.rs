@@ -267,6 +267,7 @@ pub enum ObservationKind {
         relationship_kind: RelationshipKind,
         parent_session_id: String,
     },
+    WorkerSpawn(WorkerSpawn),
     Message {
         role: String,
     },
@@ -318,7 +319,8 @@ pub use agenturm_protocol::metric::{MetricDescriptor, MetricPoint, is_metric_sou
 pub use agenturm_protocol::observation::{
     FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, NANOUNITS_PER_CURRENCY_UNIT, NativeCostBasis,
     RelationshipKind, ReportedCost, SpanTokenUsage, TraceProgress, TraceSpan, TraceSpanIdentity,
-    TraceStatus, is_github_pull_request, is_valid_mcp_metadata, parse_currency_nanounits,
+    TraceStatus, WorkerSpawn, is_github_pull_request, is_valid_mcp_metadata,
+    parse_currency_nanounits,
 };
 
 pub fn is_mcp_operation(identity: &ObservationIdentity) -> bool {
@@ -332,6 +334,15 @@ pub fn is_file_edit_operation(identity: &ObservationIdentity) -> bool {
         && identity.session_id.is_some()
         && identity.turn_id.is_some()
         && identity.operation_id.is_some()
+}
+
+/// A worker spawn is anchored to the exact parent session, turn and operation.
+pub fn is_anchored_worker_spawn(spawn: &WorkerSpawn, identity: &ObservationIdentity) -> bool {
+    identity.scope == ObservationScope::Session
+        && identity.session_id.is_some()
+        && identity.turn_id.is_some()
+        && identity.operation_id.is_some()
+        && spawn.is_valid_for(identity.worker_id.as_deref())
 }
 
 /// Bound trace metadata is attributed to its OTLP source. The optional target
@@ -1637,6 +1648,11 @@ fn validate_raw_observation_slice(
             && !is_session_relationship(parent_session_id, &row.identity)
         {
             return Err("relationship parent or identity is invalid".into());
+        }
+        if let ObservationKind::WorkerSpawn(spawn) = &row.kind
+            && !is_anchored_worker_spawn(spawn, &row.identity)
+        {
+            return Err("worker spawn ID or parent operation identity is invalid".into());
         }
         if let ObservationKind::Message { role } = &row.kind
             && !matches!(role.as_str(), "user" | "assistant")

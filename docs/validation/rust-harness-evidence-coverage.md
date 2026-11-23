@@ -187,3 +187,20 @@ evidence, not current liveness or Working state. Real lifecycle facts remain
 authoritative. Forty-one focused adapter checks and strict Clippy passed;
 actual collection/restart/concurrent roster acceptance remains delegated under
 CF1 in the [core feature test plan](rust-core-feature-test-plan.md).
+
+## Core development follow-up: explicit Claude worker spawning
+
+The new `worker_spawn` fact retains the exact spawning parent session, optional
+worker, turn and operation, plus one bounded child worker ID. It is separate
+from distinct-session parent/fork edges. Claude requires an exact native
+Agent/Task declaration UUID and tool-use ID, matching user result with
+`sourceToolAssistantUUID`, same verified opening-turn owner/session/worker,
+completed status and structured `toolUseResult.agentId`. Asynchronous or
+ambiguous results, text and message ancestry do not create an edge. Older
+checkpoints lacking an opening owner wait for the next native user turn.
+
+Activity and session Overview expose declared-child details/counts on the
+loaded evidence page without inventing child-session rows, liveness or a
+recency-changing roster hierarchy. Focused decoder, contract, Store and
+presentation checks passed. Actual installed native witness and broad private
+scope/regression checks remain delegated under CF5 in the core test plan.

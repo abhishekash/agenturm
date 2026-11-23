@@ -6,8 +6,8 @@ use crate::{
 };
 use agenturm_kernel::{
     ObservationIdentity, ObservationKind, ObservationScope, PreparedSourceBatch, RawObservation,
-    is_anchored_pull_request, is_file_edit_operation, is_lifecycle_state, is_mcp_operation,
-    is_safe_diagnostic_code, is_session_relationship, is_valid_mcp_metadata,
+    is_anchored_pull_request, is_anchored_worker_spawn, is_file_edit_operation, is_lifecycle_state,
+    is_mcp_operation, is_safe_diagnostic_code, is_session_relationship, is_valid_mcp_metadata,
 };
 use agenturm_protocol::observation::{ObservationBatch, ObservationFact, ObservationRecord};
 
@@ -289,6 +289,12 @@ fn project_record(record: ObservationRecord, source_id: &str) -> Result<Option<R
                 parent_session_id: relationship.parent_session_id,
             }
         }
+        ObservationFact::WorkerSpawn(spawn) => {
+            if !is_anchored_worker_spawn(&spawn, &identity) {
+                return Err(RuntimeError::new("source worker spawn identity is invalid"));
+            }
+            ObservationKind::WorkerSpawn(spawn)
+        }
         ObservationFact::Message(message) => {
             if !matches!(message.role.as_str(), "user" | "assistant") {
                 return Err(RuntimeError::new("source message payload is invalid"));
@@ -426,6 +432,41 @@ mod tests {
             batch["records"][0][invalid.0] = invalid.1;
             let error = parse_source_batch(&batch.to_string(), "harness.codex").unwrap_err();
             assert!(!error.to_string().contains("private sentinel"));
+        }
+    }
+
+    #[test]
+    fn worker_spawn_requires_exact_parent_scope_and_closed_child_id() {
+        let source = "harness.claude.fixture";
+        let mut batch = json!({"type":"batch","protocol":1,"source_id":source,"cursor":"verified-operation",
+            "records":[{"event_id":"spawn-event","revision":7,"kind":"worker_spawn","time_ns":"100",
+                "identity":{"session_id":"session","turn_id":"turn","worker_id":"parent","operation_id":"launch"},
+                "payload":{"child_worker_id":"child"}}]});
+        let prepared = parse_source_batch(&batch.to_string(), source).unwrap();
+        let row = &prepared.observations[0];
+        assert_eq!(row.identity.operation_id.as_deref(), Some("launch"));
+        assert!(matches!(&row.kind,
+            ObservationKind::WorkerSpawn(spawn) if spawn.child_worker_id == "child"));
+        let valid = batch["records"][0].clone();
+        for (field, invalid) in [
+            ("identity", json!(null)),
+            (
+                "identity",
+                json!({"session_id":"session","operation_id":"launch"}),
+            ),
+            ("identity", json!({"session_id":"session","turn_id":"turn"})),
+            ("payload", json!({"child_worker_id":"parent"})),
+            ("payload", json!({"child_worker_id":"invalid ID"})),
+            (
+                "payload",
+                json!({"child_worker_id":"child","body":"private fixture"}),
+            ),
+            ("payload", json!(["child"])),
+        ] {
+            batch["records"][0] = valid.clone();
+            batch["records"][0][field] = invalid;
+            let error = parse_source_batch(&batch.to_string(), source).unwrap_err();
+            assert!(!error.to_string().contains("private fixture"));
         }
     }
 

@@ -1995,6 +1995,7 @@ fn workspace_response_with_sources(
         }
         WorkspaceRequest::MarkReviewed(session) => {
             cockpit_workflows::verify_review_snapshot(store, &session)?;
+            let ledger = store.review_ledger(db, &session)?;
             let key = ReviewKey {
                 harness_id: ExtensionId::parse(session.harness_id)
                     .map_err(|error| error.to_string())?,
@@ -2005,8 +2006,6 @@ fn workspace_response_with_sources(
                 retained_observations: session.review_version.retained_observations,
                 read_incarnation: session.snapshot_id.incarnation(),
             };
-            let ledger =
-                ReviewLedger::open(db).map_err(|error| format!("Open reviews failed: {error}"))?;
             let saved = ledger
                 .mark_reviewed(&key, version, session.snapshot_id)
                 .map_err(|error| format!("Save review failed: {error}"))?;
@@ -2213,6 +2212,13 @@ fn load_session_catalog_with_sources(
 }
 
 trait HistoryReader: ObservationStore {
+    fn review_ledger(
+        &self,
+        marker: &std::path::Path,
+        _session: &agenturm_ui::RecordedSession,
+    ) -> Result<ReviewLedger, String> {
+        ReviewLedger::open(marker).map_err(|error| format!("Open reviews failed: {error}"))
+    }
     fn query_selected_evals(
         &self,
         source: &ExtensionId,
@@ -2297,6 +2303,18 @@ trait HistoryReader: ObservationStore {
 }
 
 impl HistoryReader for Store {
+    fn review_ledger(
+        &self,
+        path: &std::path::Path,
+        session: &agenturm_ui::RecordedSession,
+    ) -> Result<ReviewLedger, String> {
+        let identity = session
+            .history_identity
+            .as_deref()
+            .ok_or("The selected Review has no established history identity")?;
+        ReviewLedger::open_for_history(path, identity, session.snapshot_id)
+            .map_err(|error| format!("Open reviews failed: {error}"))
+    }
     fn workspace_history_identity(&self) -> Option<String> {
         Store::history_identity(self).ok()
     }
@@ -3044,6 +3062,9 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                     parent_session_id,
                 } => {
                     serde_json::json!({"kind":"relationship", "relationship_kind":relationship_kind, "parent_session_id":parent_session_id})
+                }
+                ObservationKind::WorkerSpawn(spawn) => {
+                    serde_json::json!({"kind":"worker_spawn", "child_worker_id":spawn.child_worker_id})
                 }
                 ObservationKind::Message { role } => {
                     serde_json::json!({"kind":"message", "role":role})

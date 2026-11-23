@@ -464,7 +464,15 @@ fn poll_inner<F: SourceFormat>(
     }
     let mut position = offset;
     while !upgrading_header && records.len() < max_records && position - offset < MAX_SCAN {
-        let Some(line) = read_line(&mut file, position).map_err(classify_read)? else {
+        // Parse the exact header used to establish identity and generation.
+        // A second read here could silently substitute changed header bytes;
+        // the final prefix proof instead detects any rewrite or truncation.
+        let line = if position == 0 {
+            Some(header.clone())
+        } else {
+            read_line(&mut file, position).map_err(classify_read)?
+        };
+        let Some(line) = line else {
             break;
         };
         if line.len() as u64 > MAX_SCAN - (position - offset) {
@@ -696,6 +704,51 @@ mod tests {
             "source changed during poll"
         );
         fs::remove_dir_all(root).unwrap();
+    }
+
+    #[test]
+    fn initial_or_replaced_header_cannot_change_between_identity_and_translation() {
+        struct RewriteHeader;
+        impl SourceFormat for RewriteHeader {
+            type Context = ();
+            const PLUGIN_ID: &'static str = "fixture.header-read";
+            const GAP_EVENT_PREFIX: &'static str = "fixture-gap";
+            fn header_identity(path: &Path, _raw: &[u8]) -> Result<()> {
+                fs::write(path, b"{\"row\":2}\n")?;
+                Ok(())
+            }
+            fn checkpoint(context: &()) -> String {
+                EmptyFormat::checkpoint(context)
+            }
+            fn restore(context: &mut (), checkpoint: &str) -> Result<()> {
+                EmptyFormat::restore(context, checkpoint)
+            }
+            fn translate_line(
+                raw: &[u8],
+                context: &(),
+                origin: &str,
+                offset: u64,
+            ) -> Result<(Vec<Value>, ())> {
+                EmptyFormat::translate_line(raw, context, origin, offset)
+            }
+        }
+        for replaced in [false, true] {
+            let (root, file) = fixture_file();
+            let initial = read(&file, "");
+            let prior = if replaced {
+                fs::write(&file, b"{\"row\":3}\n").unwrap();
+                initial["cursor"].as_str().unwrap()
+            } else {
+                ""
+            };
+            let result =
+                poll::<RewriteHeader>(&file, "fixture-source", prior, 16, max_frame_bytes());
+            assert_eq!(
+                result.unwrap_err().to_string(),
+                "source changed during poll"
+            );
+            fs::remove_dir_all(root).unwrap();
+        }
     }
 
     #[test]

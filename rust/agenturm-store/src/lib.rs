@@ -180,6 +180,7 @@ pub enum ObservationKind {
         relationship_kind: agenturm_kernel::RelationshipKind,
         parent_session_id: String,
     },
+    WorkerSpawn(agenturm_kernel::WorkerSpawn),
     Message {
         role: String,
     },
@@ -389,6 +390,9 @@ impl ObservationBatch {
                         relationship_kind: *relationship_kind,
                         parent_session_id: parent_session_id.clone(),
                     },
+                    KernelObservationKind::WorkerSpawn(spawn) => {
+                        ObservationKind::WorkerSpawn(spawn.clone())
+                    }
                     KernelObservationKind::Message { role } => {
                         ObservationKind::Message { role: role.clone() }
                     }
@@ -2077,7 +2081,7 @@ impl Store {
                        OR instr(lower(json_extract(observation.kind_json,'$.result')),lower(?17))>0))
                    WHEN 'usage' THEN json_extract(observation.kind_json,'$.kind') IN (
                        'usage','credit_usage','reported_cost','span_token_usage')
-                   WHEN 'relationships' THEN json_extract(observation.kind_json,'$.kind')='relationship'
+                   WHEN 'relationships' THEN json_extract(observation.kind_json,'$.kind') IN ('relationship','worker_spawn')
                    WHEN 'workflow_alerts' THEN ({workflow_filter})
                    ELSE ?16 IS NULL
                END
@@ -2248,6 +2252,9 @@ impl Store {
                         relationship_kind,
                         parent_session_id,
                     },
+                    ObservationKind::WorkerSpawn(spawn) => {
+                        KernelObservationKind::WorkerSpawn(spawn)
+                    }
                     ObservationKind::Message { role } => KernelObservationKind::Message { role },
                     ObservationKind::CreditUsage { nanocredits } => {
                         KernelObservationKind::CreditUsage { nanocredits }
@@ -2666,6 +2673,16 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
         {
             return Err(StoreError::Invalid(
                 "relationship parent or identity is invalid",
+            ));
+        }
+        if let ObservationKind::WorkerSpawn(spawn) = &observation.kind
+            && (observation.identity.scope != StoredScope::Session
+                || observation.identity.turn_id.is_none()
+                || observation.identity.operation_id.is_none()
+                || !spawn.is_valid_for(observation.identity.worker_id.as_deref()))
+        {
+            return Err(StoreError::Invalid(
+                "worker spawn ID or parent operation identity is invalid",
             ));
         }
         if let ObservationKind::Message { role } = &observation.kind

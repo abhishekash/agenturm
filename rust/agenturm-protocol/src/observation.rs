@@ -141,6 +141,7 @@ impl<'de> Deserialize<'de> for ObservationRecord {
             Check,
             PullRequestRaised,
             Relationship,
+            WorkerSpawn,
             Message,
             Diagnostic,
         }
@@ -183,6 +184,12 @@ impl<'de> Deserialize<'de> for ObservationRecord {
             }
             FactKind::Relationship => {
                 serde_json::from_str(payload).map(ObservationFact::Relationship)
+            }
+            FactKind::WorkerSpawn => {
+                if !payload.trim_start().starts_with('{') {
+                    return Err(serde::de::Error::custom("invalid worker spawn payload"));
+                }
+                serde_json::from_str(payload).map(ObservationFact::WorkerSpawn)
             }
             FactKind::Message => serde_json::from_str(payload).map(ObservationFact::Message),
             FactKind::Diagnostic => serde_json::from_str(payload).map(ObservationFact::Diagnostic),
@@ -241,6 +248,7 @@ pub enum ObservationFact {
     Check(Check),
     PullRequestRaised(PullRequestRaised),
     Relationship(Relationship),
+    WorkerSpawn(WorkerSpawn),
     Message(Message),
     Diagnostic(Diagnostic),
 }
@@ -249,6 +257,26 @@ pub enum ObservationFact {
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionDiscovered {}
+
+/// Explicit evidence of a child worker spawned within the parent session.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerSpawn {
+    pub child_worker_id: String,
+}
+
+impl WorkerSpawn {
+    pub fn is_valid_for(&self, parent_worker_id: Option<&str>) -> bool {
+        let id = self.child_worker_id.as_bytes();
+        !id.is_empty()
+            && id.len() <= 200
+            && id[0].is_ascii_alphanumeric()
+            && id
+                .iter()
+                .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(byte))
+            && parent_worker_id != Some(self.child_worker_id.as_str())
+    }
+}
 
 /// Counts from one explicitly successful file edit. Native paths and diffs
 /// stay in the source transcript and are outside this observation contract.

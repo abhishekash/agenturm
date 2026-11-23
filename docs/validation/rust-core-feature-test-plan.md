@@ -31,7 +31,7 @@ baselines, not results for the new feature slices. Every new row starts
 | CF2 | Whole-session paged Review edit browser pinned to selected history, source/session, ReviewVersion and snapshot; reuse existing private edit proof. | `/tmp/agenturm-review-session-edits` | Separate test agent; not run on new source. |
 | CF3 | Trusted installed-adapter list/show/remove with pin-checked removal and atomic catalog publication. Install already exists. | `/tmp/agenturm-adapter-lifecycle` | Separate test agent; not run on new source. |
 | CF4 | Body-free OTLP error/fatal logs in failure investigation, including explicit `--kind log`; existing Findings private log view unchanged. | `/tmp/agenturm-core-development` | Separate test agent; not run on new source. |
-| CF5 | Next slice, in development: exact native Claude worker-spawn facts and declared-child metadata in session evidence. | `/tmp/agenturm-native-presence` + `/tmp/agenturm-review-session-edits` | Separate test agent; wait for its own frozen integrated source head. |
+| CF5 | Implemented: exact native Claude worker-spawn facts and declared-child metadata in session evidence. | `/tmp/agenturm-native-presence` + `/tmp/agenturm-review-session-edits` | Separate test agent; execute on the supplied integrated source head. |
 
 Worktree paths identify current ownership, not release artifacts. The developer
 must supply the final integrated commit before the test owner freezes a binary.
@@ -121,7 +121,7 @@ The existing trusted local install/replace flow remains compatible.
 | --- | --- | --- |
 | List/show populated valid private root | Exact catalog identities/pins and deterministic machine-readable output; no executable starts. | Not run |
 | Absent root or entry; invalid flags/ID | Useful error and exit status; reads never create directories/catalogs. | Not run |
-| Correct removal pin | Only selected entry unregisters atomically; unrelated entries remain byte-equivalent in meaning. | Not run |
+| Correct removal pin | Only selected entry unregisters atomically; unrelated entry fields remain unchanged. | Not run |
 | Stale pin during replacement | Compare-and-swap fails under lock; newly installed pin remains registered. | Not run |
 | Last entry removal | Valid empty versioned catalog, with defined list/show/collector behavior. | Not run |
 | Failure before catalog publication or held lock | Original catalog remains usable; no partial publication. | Not run |
@@ -160,10 +160,12 @@ Do not merge evaluation outcome inventory into this test's claim. Evaluation
 revisions are a separate current-outcome contract and need their own design if
 later added to unified failure investigation.
 
-## CF5 — exact Claude worker-spawn evidence (next source slice)
+## CF5 — exact Claude worker-spawn evidence
 
-This feature is in development and is not part of the four-feature handoff
-until a separate integrated commit is supplied. The contract is a closed
+This feature is integrated with CF1–CF4 in the accompanying development source.
+Developer checks passed for three Claude decoder cases, the Runtime contract,
+two Store round-trip/projection cases and the scoped presentation case; scoped
+Clippy passed on the native/kernel lane. These are not installed qualification. The contract is a closed
 `worker_spawn { child_worker_id }` fact; record identity names the exact
 spawning parent source/session/optional worker/turn/operation. A child-worker
 declaration does not claim a separate session or live process.
@@ -179,8 +181,26 @@ sibling worker and same-session different turn; conflicting/reused tool-use ID;
 wrong declaring assistant UUID; malformed/self child; non-completed/error/
 multiple results; bounded checkpoint overflow and old cursor continuation;
 exact declared-child Activity/inspector details and page coverage. Verify no
-prompt/tool-body copy and no roster recency/hierarchy changes. All scenarios
-start **not run** until CF5's source head is frozen.
+prompt/tool-body copy and no roster recency/hierarchy changes. All delegated scenarios
+remain **not run** until the test owner records actual results on the frozen head.
+
+## Related Review identity fixes — delegated regression
+
+Typed broker Review receipts now pin the authenticated history identity for
+`--format` and directory export as well as linked traces. In the existing
+separate-UID fixture, export one exact turn as JSON, verify its identity,
+snapshot and user occurrence, then draft a task from the file. Restore into a
+new incarnation and reapprove the prompt: old receipt must reject without
+excerpt bytes; a fresh receipt must draft. Repeat directory export and confirm
+unformatted plain Review retains its existing output contract. **Not run.**
+
+Local Review marks and decision notes now open their ledger against the selected
+logical history and snapshot/incarnation. Replace the database path between
+selection and mutation, including equal numeric receipt counts: deny before
+creating a sidecar or saving a note against the replacement. Repeat after a
+same-path incarnation change. Existing broker workspace-marker behavior remains
+separate. Two focused Store regressions passed; actual UI/restore regression is
+**not run** and belongs to the test owner.
 
 ## Joined and release checks delegated unchanged
 

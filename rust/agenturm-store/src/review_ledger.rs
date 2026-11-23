@@ -96,6 +96,7 @@ pub struct ReviewLedger {
     history_path: PathBuf,
     sidecar: PathBuf,
     history_binding: [u8; 32],
+    expected_history: Option<(String, ReadSnapshot)>,
 }
 
 impl ReviewLedger {
@@ -116,7 +117,21 @@ impl ReviewLedger {
             history_path,
             sidecar: PathBuf::from(sidecar),
             history_binding,
+            expected_history: None,
         })
+    }
+
+    /// Bind a mutation to the logical history and read incarnation selected
+    /// before opening the sidecar. The pathname alone may now name a new DB.
+    pub fn open_for_history(
+        history_path: impl AsRef<Path>,
+        identity: &str,
+        snapshot: ReadSnapshot,
+    ) -> Result<Self> {
+        let mut ledger = Self::open(history_path)?;
+        ledger.expected_history = Some((identity.to_owned(), snapshot));
+        ledger.verify_history()?;
+        Ok(ledger)
     }
 
     /// Looks up the review marks for at most one session catalog page. Missing
@@ -359,6 +374,29 @@ impl ReviewLedger {
     fn verify_history(&self) -> Result<()> {
         if file_binding(&self.history_path)? != self.history_binding {
             return Err(ReviewError::HistoryChanged);
+        }
+        if let Some((identity, snapshot)) = &self.expected_history {
+            let history = crate::Store::open_read_only(&self.history_path)
+                .map_err(|_| ReviewError::HistoryChanged)?;
+            if history
+                .history_identity()
+                .map_err(|_| ReviewError::HistoryChanged)?
+                != *identity
+            {
+                return Err(ReviewError::HistoryChanged);
+            }
+            agenturm_kernel::ObservationStore::query_observations(
+                &history,
+                &agenturm_kernel::ObservationQuery {
+                    snapshot_id: Some(*snapshot),
+                    ..agenturm_kernel::ObservationQuery::latest(1)
+                },
+            )
+            .map_err(|_| ReviewError::HistoryChanged)?;
+            // The read-only open and query must not silently rebind the path.
+            if file_binding(&self.history_path)? != self.history_binding {
+                return Err(ReviewError::HistoryChanged);
+            }
         }
         Ok(())
     }
@@ -631,6 +669,77 @@ mod tests {
             current.reviewed(std::slice::from_ref(&codex)).unwrap()[&codex],
             post_retention
         );
+    }
+
+    #[test]
+    fn selected_history_cannot_rebind_a_new_ledger_after_path_replacement() {
+        use agenturm_kernel::{ObservationQuery, ObservationStore};
+        let scratch = Scratch::new();
+        let path = scratch.0.join("history.sqlite");
+        let original = Store::open(&path).unwrap();
+        let identity = original.history_identity().unwrap();
+        let snapshot = original
+            .query_observations(&ObservationQuery::latest(1))
+            .unwrap()
+            .snapshot_id;
+        assert!(ReviewLedger::open_for_history(&path, &identity, snapshot).is_ok());
+        drop(original);
+        fs::rename(&path, scratch.0.join("old.sqlite")).unwrap();
+        drop(Store::open(&path).unwrap());
+        assert!(matches!(
+            ReviewLedger::open_for_history(&path, &identity, snapshot),
+            Err(ReviewError::HistoryChanged)
+        ));
+        assert!(!scratch.0.join("history.sqlite.reviews.sqlite").exists());
+    }
+
+    #[test]
+    fn selected_history_ledger_rechecks_incarnation_before_creating_a_note() {
+        use agenturm_kernel::{
+            Observation, ObservationIdentity, ObservationKind, ObservationQuery, ObservationStore,
+        };
+        let scratch = Scratch::new();
+        let path = scratch.0.join("history.sqlite");
+        let mut history = Store::open(&path).unwrap();
+        ObservationStore::commit(
+            &mut history,
+            "harness.codex",
+            None,
+            "first",
+            &[Observation {
+                harness_id: ExtensionId::parse("harness.codex").unwrap(),
+                event_id: "event".into(),
+                revision: 0,
+                identity: ObservationIdentity::session("shared-session"),
+                observed_at_unix_ns: 1,
+                kind: ObservationKind::Lifecycle {
+                    state: "failed".into(),
+                    reason_code: None,
+                },
+            }],
+        )
+        .unwrap();
+        let identity = history.history_identity().unwrap();
+        let snapshot = history
+            .query_observations(&ObservationQuery::latest(1))
+            .unwrap()
+            .snapshot_id;
+        let ledger = ReviewLedger::open_for_history(&path, &identity, snapshot).unwrap();
+        crate::retention::renew_read_incarnation(&history.connection).unwrap();
+        let selected = ReviewVersion {
+            read_incarnation: snapshot.incarnation(),
+            ..version(1, 1)
+        };
+        assert!(matches!(
+            ledger.save_decision_note(
+                &key("harness.codex"),
+                selected,
+                snapshot,
+                "selected evidence"
+            ),
+            Err(ReviewError::HistoryChanged)
+        ));
+        assert!(!scratch.0.join("history.sqlite.reviews.sqlite").exists());
     }
 
     #[test]

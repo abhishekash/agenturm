@@ -1,5 +1,7 @@
 //! Bounded, content-free translation of one Claude Code main-transcript row.
 
+mod worker_spawns;
+
 use agenturm_jsonl_source::Result;
 use agenturm_protocol::observation::{McpCall, McpMethod, is_mcp_identifier, mcp_tool_labels};
 use serde::{Deserialize, de::IgnoredAny};
@@ -32,6 +34,14 @@ fn digest(value: &str) -> String {
     format!("{:x}", Sha256::digest(value.as_bytes()))[..32].to_owned()
 }
 
+fn worker_checkpoint(worker: &str) -> String {
+    if worker.is_empty() {
+        "x".into()
+    } else {
+        digest(worker)
+    }
+}
+
 #[derive(Clone, Debug, Default, PartialEq, Eq)]
 pub(crate) struct Context {
     pub session_id: String,
@@ -43,6 +53,7 @@ pub(crate) struct Context {
     last_usage_key: String,
     last_usage: [Option<u64>; 4],
     mcp: Vec<McpDeclaration>,
+    worker_spawns: worker_spawns::WorkerSpawns,
 }
 
 #[derive(Clone, Debug, PartialEq, Eq)]
@@ -76,11 +87,7 @@ impl Context {
     }
 
     fn mcp_worker(&self) -> String {
-        if self.worker_id.is_empty() {
-            "x".into()
-        } else {
-            digest(&self.worker_id)
-        }
+        worker_checkpoint(&self.worker_id)
     }
 
     fn remember_mcp(&mut self, operation: &str, labels: Option<(&str, &str)>) {
@@ -185,6 +192,12 @@ fn checkpoint_field(value: &str) -> &str {
 }
 
 pub(crate) fn checkpoint(context: &Context) -> String {
+    let mut checkpoint = checkpoint_base(context);
+    context.worker_spawns.encode(&mut checkpoint);
+    checkpoint
+}
+
+fn checkpoint_base(context: &Context) -> String {
     let number = |value: Option<u64>| value.map_or("x".to_owned(), |value| value.to_string());
     let mut checkpoint = context.prelude_end.map_or_else(String::new, |_| {
         format!("p{}:{}:", context.session_id.len(), context.session_id)
@@ -216,6 +229,7 @@ pub(crate) fn checkpoint(context: &Context) -> String {
 }
 
 pub(crate) fn restore(context: &mut Context, checkpoint: &str) -> Result<()> {
+    let checkpoint_bytes = checkpoint.len();
     let checkpoint = if context.prelude_end.is_some() {
         let shape = || invalid("invalid Claude prelude checkpoint");
         let (length, payload) = checkpoint
@@ -235,6 +249,9 @@ pub(crate) fn restore(context: &mut Context, checkpoint: &str) -> Result<()> {
     } else {
         checkpoint
     };
+    let (checkpoint, spawn_suffix) = checkpoint
+        .split_once(worker_spawns::PREFIX)
+        .map_or((checkpoint, None), |(base, suffix)| (base, Some(suffix)));
     let (base, mcp) = checkpoint.split_once(':').unwrap_or((checkpoint, ""));
     if checkpoint.ends_with(':') {
         return Err(invalid("invalid Claude MCP checkpoint"));
@@ -277,6 +294,14 @@ pub(crate) fn restore(context: &mut Context, checkpoint: &str) -> Result<()> {
     }
     if context.last_usage_key.is_empty() && context.last_usage.iter().any(Option::is_some) {
         return Err(invalid("Claude checkpoint usage lacks identity"));
+    }
+    context.worker_spawns = worker_spawns::WorkerSpawns::restore(
+        spawn_suffix,
+        !context.turn_id.is_empty(),
+        checkpoint_bytes,
+    )?;
+    if context.legacy_admission {
+        context.worker_spawns = worker_spawns::WorkerSpawns::default();
     }
     context.mcp.clear();
     if !mcp.is_empty() {
@@ -418,7 +443,7 @@ fn mcp_payload((server, tool): (&str, &str), result: &str) -> Value {
     })
 }
 
-fn append_mcp_details(facts: &mut Vec<Value>, details: Vec<Value>) -> Result<()> {
+fn append_bounded_details(facts: &mut Vec<Value>, details: Vec<Value>) -> Result<()> {
     use agenturm_jsonl_source::{MAX_STRUCTURAL_TOKENS, structural_tokens};
     // Preserve all existing facts on dense lines. Leave room for the shared
     // cursor and batch envelope within the configured host frame limits.
@@ -688,6 +713,10 @@ pub(crate) fn translate_line(
         if tool_results.is_empty() && has_text(content) {
             next.turn_id = digest(if row_key.is_empty() { &base } else { row_key });
             next.mcp.clear();
+            if !next.legacy_admission {
+                next.worker_spawns =
+                    worker_spawns::WorkerSpawns::start_turn(raw, &next.session_id, &next.worker_id);
+            }
             facts.push(fact(
                 format!("{base}:message"),
                 revision,
@@ -884,13 +913,213 @@ pub(crate) fn translate_line(
             );
         }
     }
-    append_mcp_details(&mut facts, mcp_details)?;
+    append_bounded_details(&mut facts, mcp_details)?;
+    if !next.legacy_admission && !next.turn_id.is_empty() {
+        if kind == "assistant"
+            && blocks.iter().any(|block| {
+                block["type"].as_str() == Some("tool_use")
+                    && (next.worker_spawns.is_tracking()
+                        || matches!(block["name"].as_str(), Some("Agent" | "Task")))
+            })
+        {
+            next.worker_spawns
+                .note_declarations(raw, &next.session_id, &next.worker_id);
+        } else if kind == "user"
+            && next.worker_spawns.is_tracking()
+            && row["toolUseResult"].is_object()
+            && blocks.len() == 1
+            && let Some((operation, spawn)) =
+                next.worker_spawns
+                    .take_result(raw, &next.session_id, &next.worker_id)
+        {
+            let detail = fact(
+                format!("{base}:worker-spawn"),
+                revision,
+                "worker_spawn",
+                &time_ns,
+                &next,
+                Some(&operation),
+                json!(spawn),
+            );
+            append_bounded_details(&mut facts, vec![detail])?;
+        }
+        if next.worker_spawns.has_turn_owner() {
+            let base_bytes = checkpoint_base(&next).len();
+            next.worker_spawns.enforce_checkpoint_budget(base_bytes);
+        }
+    }
     Ok((facts, next))
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    const NATIVE_WORKER_PROMPT: &[u8] = br#"{"type":"user","sessionId":"session","agentId":"parent","uuid":"turn","timestamp":"2026-10-24T12:00:00Z","message":{"role":"user","content":"private prompt"}}"#;
+    const NATIVE_WORKER_DECLARATION: &[u8] = br#"{"type":"assistant","sessionId":"session","agentId":"parent","uuid":"declaration","timestamp":"2026-10-24T12:00:01Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Agent","id":"toolu_agent1","input":{"prompt":"private launch"}}]}}"#;
+    const NATIVE_WORKER_RESULT: &str = r#"{"type":"user","sessionId":"session","agentId":"parent","uuid":"completion","sourceToolAssistantUUID":"declaration","timestamp":"2026-10-24T12:00:02Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_agent1","content":"private result"}]},"toolUseResult":{"status":"completed","agentId":"child","content":"private evidence"}}"#;
+
+    fn worker_prompt() -> Context {
+        let header = header_identity(NATIVE_WORKER_PROMPT).unwrap();
+        translate_line(NATIVE_WORKER_PROMPT, &header, "fixture", 0)
+            .unwrap()
+            .1
+    }
+
+    fn has_spawn(facts: &[Value]) -> bool {
+        facts.iter().any(|fact| fact["kind"] == "worker_spawn")
+    }
+
+    #[test]
+    fn worker_spawn_uses_exact_native_declaration_and_result_across_checkpoint() {
+        let prompt = worker_prompt();
+        let old = checkpoint_base(&prompt);
+        assert!(!old.contains(worker_spawns::PREFIX));
+        let (facts, context) =
+            translate_line(NATIVE_WORKER_DECLARATION, &prompt, "fixture", 10).unwrap();
+        assert!(!has_spawn(&facts));
+        let saved = checkpoint(&context);
+        assert!(saved.contains(worker_spawns::PREFIX));
+        for private in ["private", "parent", "declaration", "toolu_agent1"] {
+            assert!(!saved.contains(private));
+        }
+        let mut resumed = header_identity(NATIVE_WORKER_PROMPT).unwrap();
+        restore(&mut resumed, &saved).unwrap();
+        assert_eq!(checkpoint(&resumed), saved);
+        let (facts, consumed) =
+            translate_line(NATIVE_WORKER_RESULT.as_bytes(), &resumed, "fixture", 20).unwrap();
+        let spawn = facts
+            .iter()
+            .find(|row| row["kind"] == "worker_spawn")
+            .unwrap();
+        assert_eq!(
+            spawn["identity"],
+            json!({
+                "session_id":"session","worker_id":"parent","turn_id":digest("turn"),
+                "operation_id":digest("toolu_agent1"),
+            })
+        );
+        assert_eq!(spawn["payload"], json!({"child_worker_id":"child"}));
+        assert!(!spawn.to_string().contains("private"));
+        restore(&mut resumed, &checkpoint(&consumed)).unwrap();
+        let repeated =
+            translate_line(NATIVE_WORKER_RESULT.as_bytes(), &resumed, "fixture", 30).unwrap();
+        assert!(!has_spawn(&repeated.0));
+    }
+
+    #[test]
+    fn worker_spawn_unsupported_or_ambiguous_evidence_withholds_only_relationship() {
+        let prompt = worker_prompt();
+        let (_, context) =
+            translate_line(NATIVE_WORKER_DECLARATION, &prompt, "fixture", 10).unwrap();
+        for (from, to) in [
+            (r#""sourceToolAssistantUUID":"declaration","#, ""),
+            (
+                r#""sourceToolAssistantUUID":"declaration""#,
+                r#""sourceToolAssistantUUID":"different""#,
+            ),
+            (
+                r#""sourceToolAssistantUUID":"declaration""#,
+                r#""sourceToolAssistantUUID":"other","sourceToolAssistantUUID":"declaration""#,
+            ),
+            (
+                r#""tool_use_id":"toolu_agent1""#,
+                r#""tool_use_id":"other""#,
+            ),
+            (
+                r#""tool_use_id":"toolu_agent1""#,
+                r#""tool_use_id":"toolu_agent1","is_error":true"#,
+            ),
+            (r#""status":"completed""#, r#""status":"async_launched""#),
+            (r#""agentId":"child""#, r#""agentId":"parent""#),
+            (
+                r#""agentId":"child""#,
+                r#""agentId":"child","agentId":"other""#,
+            ),
+            (r#""agentId":"parent""#, r#""agentId":"other-parent""#),
+            (r#""agentId":"child""#, r#""agentId":"not a valid id""#),
+        ] {
+            let raw = NATIVE_WORKER_RESULT.replace(from, to);
+            assert_ne!(raw, NATIVE_WORKER_RESULT);
+            let (facts, _) = translate_line(raw.as_bytes(), &context, "fixture", 20).unwrap();
+            assert!(!has_spawn(&facts));
+            assert!(facts.iter().any(|row| row["kind"] == "tool"));
+        }
+        let same_operation = translate_line(NATIVE_WORKER_DECLARATION, &context, "fixture", 11)
+            .unwrap()
+            .1;
+        let unrelated = std::str::from_utf8(NATIVE_WORKER_DECLARATION)
+            .unwrap()
+            .replace(r#""Agent""#, r#""Explore""#);
+        let unrelated_context = translate_line(unrelated.as_bytes(), &prompt, "fixture", 12)
+            .unwrap()
+            .1;
+        let new_turn = std::str::from_utf8(NATIVE_WORKER_PROMPT)
+            .unwrap()
+            .replace(r#""uuid":"turn""#, r#""uuid":"new-turn""#);
+        let renewed = translate_line(new_turn.as_bytes(), &context, "fixture", 13)
+            .unwrap()
+            .1;
+        let other_worker = new_turn.replace(r#""agentId":"parent""#, r#""agentId":"other-parent""#);
+        let other_worker = translate_line(other_worker.as_bytes(), &prompt, "fixture", 15)
+            .unwrap()
+            .1;
+        let other_worker = translate_line(NATIVE_WORKER_DECLARATION, &other_worker, "fixture", 16)
+            .unwrap()
+            .1;
+        let mut old = prompt.clone();
+        restore(&mut old, &checkpoint_base(&prompt)).unwrap();
+        let old = translate_line(NATIVE_WORKER_DECLARATION, &old, "fixture", 17)
+            .unwrap()
+            .1;
+        let duplicate = std::str::from_utf8(NATIVE_WORKER_DECLARATION)
+            .unwrap()
+            .replace(r#"{"type":"tool_use","name":"Agent""#, r#"{"type":"tool_use","name":"Bash","id":"toolu_agent1"},{"type":"tool_use","name":"Agent""#);
+        let duplicate = translate_line(duplicate.as_bytes(), &prompt, "fixture", 18)
+            .unwrap()
+            .1;
+        let mut legacy = prompt.clone();
+        legacy.use_legacy_admission();
+        let legacy = translate_line(NATIVE_WORKER_DECLARATION, &legacy, "fixture", 14)
+            .unwrap()
+            .1;
+        for scope in [
+            prompt,
+            same_operation,
+            unrelated_context,
+            renewed,
+            other_worker,
+            old,
+            duplicate,
+            legacy,
+        ] {
+            let (facts, _) =
+                translate_line(NATIVE_WORKER_RESULT.as_bytes(), &scope, "fixture", 20).unwrap();
+            assert!(!has_spawn(&facts));
+        }
+    }
+
+    #[test]
+    fn worker_spawn_checkpoint_overflow_withholds_turn_without_rearming() {
+        let mut context = worker_prompt();
+        for index in 1..=4 {
+            let raw = std::str::from_utf8(NATIVE_WORKER_DECLARATION)
+                .unwrap()
+                .replace("toolu_agent1", &format!("toolu_agent{index}"));
+            context = translate_line(raw.as_bytes(), &context, "fixture", 10 + index)
+                .unwrap()
+                .1;
+        }
+        let saved = checkpoint(&context);
+        assert!(!saved.contains(worker_spawns::PREFIX));
+        restore(&mut context, &saved).unwrap();
+        let context = translate_line(NATIVE_WORKER_DECLARATION, &context, "fixture", 30)
+            .unwrap()
+            .1;
+        let (facts, _) =
+            translate_line(NATIVE_WORKER_RESULT.as_bytes(), &context, "fixture", 40).unwrap();
+        assert!(!has_spawn(&facts));
+    }
 
     #[test]
     fn qualified_mcp_names_require_exact_safe_boundaries() {
