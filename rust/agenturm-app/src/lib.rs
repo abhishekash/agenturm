@@ -74,7 +74,7 @@ pub use private_output::with_private_stdout;
 #[cfg(target_os = "linux")]
 pub use remote_history::{RemoteHistoryOptions, execute_remote_cockpit};
 #[cfg(target_os = "linux")]
-pub use remote_review::{RemoteReviewOptions, execute_remote_review};
+pub use remote_review::{LegacyReviewOptions, RemoteReviewOptions, execute_legacy_review, execute_remote_review};
 pub use retention_cli::{RetentionOptions, execute_retention};
 pub use review_receipt::ReviewOutput;
 pub use span_jsonl_follow::{SpanJsonlFollowOptions, execute_span_jsonl_follow};
@@ -248,6 +248,8 @@ pub enum Command {
     RemoteCockpit(RemoteHistoryOptions),
     #[cfg(target_os = "linux")]
     RemoteReview(RemoteReviewOptions),
+    #[cfg(target_os = "linux")]
+    LegacyReview(Box<LegacyReviewOptions>),
     Query(HistoryQueryOptions),
     #[cfg(target_os = "linux")]
     Broker(broker_cli::BrokerOptions),
@@ -3999,7 +4001,7 @@ pub fn execute_ingest(options: &IngestOptions) -> Result<String, String> {
 pub fn render(command: Command) -> String {
     match command {
         #[cfg(target_os = "linux")]
-        Command::RemoteReview(_) => String::new(),
+        Command::RemoteReview(_) | Command::LegacyReview(_) => String::new(),
         Command::Help => concat!(
             "Agenturm · Rust application (early composition shell)\n",
             "\n",
