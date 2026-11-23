@@ -78,6 +78,10 @@ pub(super) fn execute(
     command: WorkCommand,
 ) -> Result<WorkResult, String> {
     match command {
+        WorkCommand::ExportView {
+            document,
+            directory,
+        } => crate::view_export::export(&document, &directory),
         WorkCommand::Evaluations(request) => crate::eval_import::workspace_evals(store, *request),
         WorkCommand::HostHistory(before) => store
             .query_host_history(&ObservationQuery {

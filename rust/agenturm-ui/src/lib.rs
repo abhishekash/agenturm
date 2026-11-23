@@ -7,12 +7,14 @@
 #![forbid(unsafe_code)]
 
 mod live_receiver;
+mod loaded_view;
 mod operation_table;
 mod workbench;
 mod workspace;
 pub use operation_table::{OperationRow, OperationTables};
 
 pub use live_receiver::{LiveOwner, LivePage, LiveRow, run_live_receiver};
+pub use loaded_view::LoadedView;
 
 pub use workbench::evaluation::{
     EvaluationDetailEntry, EvaluationPage, EvaluationRead, EvaluationRow, EvaluationView,

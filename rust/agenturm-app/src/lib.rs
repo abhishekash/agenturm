@@ -37,6 +37,7 @@ mod trace_import;
 mod trace_progress;
 mod trace_receiver;
 mod trace_run;
+mod view_export;
 mod workflow_route;
 
 #[cfg(target_os = "linux")]

@@ -167,6 +167,10 @@ pub(crate) mod evaluation;
 mod host;
 
 pub enum WorkCommand {
+    ExportView {
+        document: crate::LoadedView,
+        directory: String,
+    },
     Evaluations(Box<evaluation::EvaluationRead>),
     HostHistory(Option<agenturm_kernel::ObservationPosition>),
     ReviewNotes(RecordedSession),

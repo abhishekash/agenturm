@@ -8,6 +8,8 @@ use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
+mod view_io;
+
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RecordedSession {
     pub harness_id: String,
@@ -399,6 +401,7 @@ enum Change {
 }
 
 struct Workspace {
+    view_io: view_io::ViewIo,
     agents: AgentList,
     newer_sessions: VecDeque<SessionCatalog>,
     browsing_older: bool,
@@ -450,6 +453,7 @@ impl PromptScreen {
 impl Workspace {
     fn new() -> Self {
         Self {
+            view_io: view_io::ViewIo::default(),
             agents: AgentList::default(),
             newer_sessions: VecDeque::new(),
             browsing_older: false,
@@ -597,6 +601,9 @@ impl Workspace {
     fn key(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, key: event::KeyEvent) -> bool {
         if key.code == KeyCode::Char('c') && key.modifiers.contains(KeyModifiers::CONTROL) {
             return true;
+        }
+        if let Some(quit) = self.view_io_key(sender, key) {
+            return quit;
         }
         if let Some(prompt) = &mut self.prompt {
             match key.code {
@@ -1203,6 +1210,12 @@ pub fn run_workspace(
                                 }
                                 break Ok(());
                             }
+                            if let Some(bytes) = workspace.view_io.clipboard.take() {
+                                use std::io::Write;
+                                let mut output = io::stdout().lock();
+                                output.write_all(&bytes)?;
+                                output.flush()?;
+                            }
                             dirty = true;
                         }
                         Event::Resize(_, _) => dirty = true,
@@ -1220,6 +1233,10 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
     frame.render_widget(Block::default().style(surface(CANVAS)), frame.area());
     if let Some(prompt) = &workspace.prompt {
         prompt.draw(frame);
+        return;
+    }
+    if let Some(form) = &workspace.view_io.form {
+        view_io::draw(frame, form, workspace.message.as_deref());
         return;
     }
     if let Some(work) = &mut workspace.work {
