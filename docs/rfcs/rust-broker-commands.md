@@ -140,9 +140,20 @@ with that occurrence. A broker backup retains the data in its private
 history file. Restore rotates the read snapshot and requires a fresh
 approval. Pruning removes the retained text and keeps replay evidence.
 
-The current preview covers explicit text fields and automatic OpenInference
-message text. Additional SDK-specific structured content, Node capture,
-and tool payloads need their own bounded projections.
+The Python and Node clients accept explicit bounded text fields. Set
+`captureContent: true` on the Node client and provide the same
+`agenturm.payload.input` and `agenturm.payload.output` attributes.
+OpenInference selects user and assistant text for OpenAI, Anthropic and
+LangChain. The LangGraph callback and OpenAI Agents exporter also require
+their own `capture_content=True` setting. Pydantic AI and Google ADK can
+supply structured GenAI message text through the Python SDK exporter.
+The Google ADK legacy trace fields are also supported when its content
+capture is enabled. These projections omit headers, tools, images,
+reasoning fields, and arbitrary provider objects.
+
+Provider setup is documented in the [OpenAI Agents tracing guide](https://openai.github.io/openai-agents-python/tracing/),
+[Pydantic AI instrumentation settings](https://pydantic.dev/docs/ai/api/models/instrumented/),
+and [Google ADK trace guide](https://google.github.io/adk-docs/observability/traces/).
 
 The broker cockpit supports saved tasks, handoffs, request seen state and
 review decisions alongside remote history. These user-owned records live

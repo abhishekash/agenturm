@@ -8,6 +8,8 @@ from collections.abc import Mapping
 from datetime import datetime
 from typing import Any
 
+from observatory.integrations.otel_payload import agents_message_text
+
 try:
     from agents.tracing.processor_interface import TracingExporter
 except ImportError as exc:  # pragma: no cover - optional integration dependency
@@ -137,10 +139,14 @@ class OpenAIAgentsExporter(TracingExporter):
         exported = data.export() if callable(getattr(data, "export", None)) else {}
         attrs = _safe_attributes(data, str(kind), exported)
         if self.capture_content and isinstance(exported, Mapping):
-            for field in ("input", "output"):
-                if exported.get(field) is not None:
-                    attrs[f"openai_agents.{field}"] = _bounded_content(
-                        exported[field], self.max_content_chars)
+            if getattr(self.client, "transport", None) == "otlp":
+                if self.client.capture_content:
+                    attrs.update(agents_message_text(data, kind, exported))
+            else:
+                for field in ("input", "output"):
+                    if exported.get(field) is not None:
+                        attrs[f"openai_agents.{field}"] = _bounded_content(
+                            exported[field], self.max_content_chars)
         attrs["openai_agents.trace_id"] = raw_trace_id
         attrs["openai_agents.span_id"] = raw_span_id
         workflow, group_id = self._trace_context.get(raw_trace_id, ("agent.run", None))

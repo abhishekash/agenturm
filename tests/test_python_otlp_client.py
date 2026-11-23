@@ -162,6 +162,47 @@ class PythonOtlpClientTests(unittest.TestCase):
                     pass
             self.assertEqual(len(self.requests), 2)
 
+    def test_structured_sdk_projection_only_reads_message_text(self):
+        from observatory.integrations.otel_payload import agents_message_text, structured_message_text
+
+        user = {"role": "user", "parts": [
+            {"type": "text", "content": MARKER},
+            {"type": "tool_call", "content": "tool private"},
+            {"type": "blob", "content": "image private"},
+        ]}
+        attrs = {
+            "gen_ai.input.messages": json.dumps([user, {"role": "system", "parts": user["parts"]}]),
+            "input.value": "provider private",
+            "gen_ai.output.messages": json.dumps([{"role": "assistant", "parts": [
+                {"type": "thinking", "content": "reasoning private"},
+                {"type": "text", "content": "assistant text"},
+            ]}]),
+        }
+        self.assertEqual(structured_message_text(attrs, "pydantic-ai"), {
+            "agenturm.payload.input": MARKER, "agenturm.payload.output": "assistant text",
+        })
+        adk = {
+            "gcp.vertex.agent.llm_request": json.dumps({"contents": [{"role": "user", "parts": [
+                {"text": MARKER}, {"text": "reasoning private", "thought": True},
+                {"function_call": {"args": "tool private"}},
+            ]}], "config": {"headers": "provider private"}}),
+            "gcp.vertex.agent.llm_response": json.dumps({"content": {
+                "role": "model", "parts": [{"text": "assistant text"}],
+            }}),
+        }
+        self.assertEqual(structured_message_text(adk, "gcp.vertex.agent"), {
+            "agenturm.payload.input": MARKER, "agenturm.payload.output": "assistant text",
+        })
+        self.assertEqual(structured_message_text(adk, "other"), {})
+        self.assertEqual(agents_message_text(None, "generation", {
+            "input": [{"role": "user", "content": MARKER}],
+            "output": [{"role": "assistant", "content": [{"type": "text", "text": "assistant text"}]}],
+            "model_config": {"headers": "provider private"},
+        }), {"agenturm.payload.input": MARKER, "agenturm.payload.output": "assistant text"})
+        self.assertEqual(agents_message_text(None, "function", {
+            "input": [{"role": "user", "content": MARKER}],
+        }), {})
+
     def test_broker_bearer_is_sent_only_to_its_configured_trace_endpoint(self):
         bearer = "Bearer " + "e1" * 32
         launch_env = {

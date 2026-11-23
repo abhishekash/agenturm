@@ -8,6 +8,7 @@ from datetime import datetime
 import hashlib
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 import json
+import os
 import sys
 import threading
 from typing import TypedDict
@@ -18,6 +19,7 @@ MODEL = "private-vendor-fixture-model"
 KEY = "fixture-key-never-used-off-loopback"
 ROOT = "private-vendor-fixture-span"
 EXIT = 23
+CAPTURE_TEXT = os.environ.get("AGENTURM_FIXTURE_CAPTURE_TEXT") == "1"
 
 
 def completion(body):
@@ -96,7 +98,8 @@ def scoped_client(vendor):
     from observatory import Client
 
     return Client(transport="otlp", strict=True, session_id=f"session.{vendor}",
-                  harness_id="harness.codex", turn_id="turn.fixture", worker_id="worker/fixture")
+                  harness_id="harness.codex", turn_id="turn.fixture", worker_id="worker/fixture",
+                  capture_content=CAPTURE_TEXT)
 
 
 def observed_sdk_spans():
@@ -217,7 +220,7 @@ def run_langgraph(endpoint):
     graph.add_edge(START, "ask")
     graph.add_edge("ask", END)
     with scoped_client("langgraph").trace(ROOT, task=REQUEST_TEXT) as run:
-        callback = LangChainCallbackHandler().attach(run)
+        callback = LangChainCallbackHandler(capture_content=CAPTURE_TEXT).attach(run)
         result = graph.compile().invoke({"question": REQUEST_TEXT, "answer": ""},
                                         config={"callbacks": [callback]})
         assert result["answer"] == RESPONSE_TEXT
@@ -266,18 +269,34 @@ def run_openai_agents():
         return RESPONSE_TEXT
 
     client = scoped_client("openai-agents")
-    processor = BatchTraceProcessor(WitnessExporter(client), max_batch_size=128, schedule_delay=60)
+    processor = BatchTraceProcessor(WitnessExporter(client, capture_content=CAPTURE_TEXT),
+                                    max_batch_size=128, schedule_delay=60)
     set_trace_processors([processor])
     try:
-        model = ScriptedModel([
-            [function_call("lookup_fixture", {"question": REQUEST_TEXT}, call_id="call-fixture")],
-            [assistant_message(RESPONSE_TEXT)],
-        ], emit_traces=True)
-        agent = Agent(name=ROOT, model=model, tools=[lookup_fixture])
-        with trace(ROOT, group_id=REQUEST_TEXT):
-            result = Runner.run_sync(agent, REQUEST_TEXT, run_config=RunConfig(tracing_disabled=False))
+        if CAPTURE_TEXT:
+            from agents import OpenAIChatCompletionsModel
+            from openai import AsyncOpenAI
+
+            async def run_model(endpoint):
+                async with AsyncOpenAI(api_key=KEY, base_url=endpoint + "/v1", max_retries=0) as sdk:
+                    model = OpenAIChatCompletionsModel(model=MODEL, openai_client=sdk)
+                    return await Runner.run(
+                        Agent(name=ROOT, model=model), REQUEST_TEXT,
+                        run_config=RunConfig(tracing_disabled=False, trace_include_sensitive_data=True),
+                    )
+
+            with provider_endpoint() as endpoint, trace(ROOT, group_id=REQUEST_TEXT):
+                result = asyncio.run(run_model(endpoint))
+        else:
+            model = ScriptedModel([
+                [function_call("lookup_fixture", {"question": REQUEST_TEXT}, call_id="call-fixture")],
+                [assistant_message(RESPONSE_TEXT)],
+            ], emit_traces=True)
+            agent = Agent(name=ROOT, model=model, tools=[lookup_fixture])
+            with trace(ROOT, group_id=REQUEST_TEXT):
+                result = Runner.run_sync(agent, REQUEST_TEXT, run_config=RunConfig(tracing_disabled=False))
+            model.assert_complete()
         assert result.final_output == RESPONSE_TEXT
-        model.assert_complete()
         processor.force_flush()
         assert client.last_error is None, client.last_error
     finally:
@@ -291,6 +310,7 @@ def run_pydantic_ai():
         from pydantic_ai.capabilities import Instrumentation
         from pydantic_ai.messages import ModelResponse, TextPart, ToolCallPart
         from pydantic_ai.models.function import FunctionModel
+        from pydantic_ai.models.instrumented import InstrumentationSettings
         from pydantic_ai.usage import RequestUsage
 
         calls = 0
@@ -306,8 +326,12 @@ def run_pydantic_ai():
             assert question == REQUEST_TEXT
             return RESPONSE_TEXT
 
+        instrumentation = Instrumentation(
+            settings=InstrumentationSettings(include_content=True, include_binary_content=False,
+                                             include_model_request_parameters=False)
+        ) if CAPTURE_TEXT else Instrumentation()
         agent = Agent(FunctionModel(fake_model, model_name=MODEL), name=ROOT,
-                      tools=[lookup_fixture], capabilities=[Instrumentation()])
+                      tools=[lookup_fixture], capabilities=[instrumentation])
         result = agent.run_sync(REQUEST_TEXT)
         assert result.output == RESPONSE_TEXT
         assert calls == 2
@@ -315,6 +339,9 @@ def run_pydantic_ai():
 
 
 def run_google_adk():
+    if CAPTURE_TEXT:
+        os.environ["ADK_TELEMETRY_SCHEMA_VERSION_OPT_IN"] = "1"
+        os.environ["ADK_CAPTURE_MESSAGE_CONTENT_IN_SPANS"] = "true"
     with native_telemetry("google-adk") as spans:
         from google.adk.agents import LlmAgent
         from google.adk.models.base_llm import BaseLlm

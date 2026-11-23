@@ -6,6 +6,8 @@ export interface ClientOptions {
   timeoutMs?: number;
   strict?: boolean;
   resourceAttributes?: Record<string, unknown>;
+  /** Export only explicit bounded agenturm.payload.input/output text to an authenticated OTLP receiver. */
+  captureContent?: boolean;
 }
 
 export interface TraceOptions {

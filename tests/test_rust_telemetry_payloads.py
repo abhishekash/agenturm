@@ -5,6 +5,7 @@ from __future__ import annotations
 import importlib.metadata
 import json
 import os
+import shutil
 from pathlib import Path
 import subprocess
 import sys
@@ -24,13 +25,23 @@ UNRELATED = "synthetic excluded provider request"
 PRODUCER = ROOT / "tests/fixtures/rust_vendor_trace_producer.py"
 
 
-def have_openai():
+def installed(*packages):
     try:
-        for package in ("openai", "openinference-instrumentation-openai"):
+        for package in packages:
             importlib.metadata.version(package)
     except importlib.metadata.PackageNotFoundError:
         return False
     return True
+
+
+OPENAI = installed("openai", "openinference-instrumentation-openai")
+ANTHROPIC = installed("anthropic", "openinference-instrumentation-anthropic")
+LANGCHAIN = OPENAI and installed("langchain-openai", "openinference-instrumentation-langchain")
+LANGGRAPH = installed("langgraph", "langchain-openai", "openai")
+AGENTS = installed("openai-agents")
+PYDANTIC = installed("pydantic-ai")
+ADK = installed("google-adk")
+NODE = shutil.which("node")
 
 
 @unittest.skipUnless(APP or REQUIRED, "set AGENTURM_RUST_APP_BIN to the standalone Rust binary")
@@ -114,9 +125,9 @@ assert client._post_spans([span])
         self.action("revoke", "standalone")
         self.preview(selection, code=1)
 
-    @unittest.skipUnless(have_openai() or REQUIRED, "install OpenAI and OpenInference test packages")
+    @unittest.skipUnless(OPENAI or REQUIRED, "install OpenAI and OpenInference test packages")
     def test_openai_automatic_capture_selects_only_message_text(self):
-        self.assertTrue(have_openai(), "install OpenAI and OpenInference test packages")
+        self.assertTrue(OPENAI, "install OpenAI and OpenInference test packages")
         source_scope = "harness.codex"
         session = "session.openai"
         result = self.invoke(
@@ -148,6 +159,98 @@ assert client._post_spans([span])
             self.assertEqual(receipt["payload"]["input"], "private-vendor-fixture-question")
             self.assertEqual(receipt["payload"]["output"], "private-vendor-fixture-answer")
         self.assertNotIn(b"fixture-key-never-used", self.db.read_bytes())
+
+    def exercise_vendor(self, vendor, *, available, automatic=False):
+        self.assertTrue(available, f"SDK test dependency for {vendor} is required")
+        session = f"session.{vendor}"
+        harness = "harness.codex"
+        arguments = [sys.executable]
+        if automatic:
+            arguments.extend([
+                "-m", "observatory", "run", "--transport", "otlp", "--capture-content",
+                "--session-id", session, "--harness-id", harness, "--turn-id", "turn.fixture",
+                "--worker-id", "worker/fixture",
+            ])
+        self.environment["AGENTURM_FIXTURE_CAPTURE_TEXT"] = "1"
+        result = self.invoke(
+            "run", "--db", self.db, "--source-id", SOURCE, "--payload-scope", harness,
+            "--", *arguments, PRODUCER, vendor, code=23,
+        )
+        self.assertNotIn("export failed", result.stderr)
+        snapshot_id = self.snapshot(session)
+        self.action("grant", harness)
+        outputs = []
+        for row in self.metadata():
+            span = row["observation"]
+            self.selector.write_text(json.dumps({
+                "binding": {"source_id": SOURCE, "native_source_id": harness},
+                "trace_id": span["trace_id"], "span_id": span["span_id"],
+                "session_id": session, "turn_id": "turn.fixture", "worker_id": "worker/fixture",
+                "snapshot_id": snapshot_id,
+            }))
+            read = subprocess.run([APP, "trace-payload", "preview", "--db", self.db,
+                                   "--selection", self.selector], text=True, capture_output=True,
+                                  timeout=10)
+            self.assertIn(read.returncode, (0, 1), read.stderr)
+            if read.returncode == 0:
+                value = json.loads(read.stdout)
+                self.assertEqual(value["origin"], "producer_captured_telemetry")
+                outputs.append(value["payload"])
+            else:
+                self.assertFalse(read.stdout)
+        self.assertTrue(any("private-vendor-fixture-question" in entry.get("input", "")
+                            for entry in outputs), f"{vendor} input coverage")
+        self.assertTrue(any("private-vendor-fixture-answer" in entry.get("output", "")
+                            for entry in outputs), f"{vendor} output coverage")
+        self.assertNotIn("lookup_fixture", json.dumps(outputs))
+        self.assertNotIn(b"fixture-key-never-used", self.db.read_bytes())
+
+    @unittest.skipUnless(ANTHROPIC or REQUIRED, "install Anthropic and OpenInference")
+    def test_anthropic_message_text(self):
+        self.exercise_vendor("anthropic", available=ANTHROPIC, automatic=True)
+
+    @unittest.skipUnless(LANGCHAIN or REQUIRED, "install LangChain and OpenInference")
+    def test_langchain_model_message_text(self):
+        self.exercise_vendor("langchain", available=LANGCHAIN, automatic=True)
+
+    @unittest.skipUnless(LANGGRAPH or REQUIRED, "install LangGraph and LangChain OpenAI")
+    def test_langgraph_callback_model_text(self):
+        self.exercise_vendor("langgraph", available=LANGGRAPH)
+
+    @unittest.skipUnless(AGENTS or REQUIRED, "install OpenAI Agents")
+    def test_openai_agents_model_text(self):
+        self.exercise_vendor("openai-agents", available=AGENTS)
+
+    @unittest.skipUnless(PYDANTIC or REQUIRED, "install Pydantic AI")
+    def test_pydantic_ai_model_text(self):
+        self.exercise_vendor("pydantic-ai", available=PYDANTIC)
+
+    @unittest.skipUnless(ADK or REQUIRED, "install Google ADK")
+    def test_google_adk_model_text(self):
+        self.exercise_vendor("google-adk", available=ADK)
+
+    @unittest.skipUnless(NODE, "install Node.js")
+    def test_node_explicit_payload(self):
+        module = (ROOT / "clients/javascript/index.mjs").as_uri()
+        producer = f"""
+import {{ Client }} from {json.dumps(module)};
+const client = new Client({{transport:'otlp', strict:true, captureContent:true}});
+await client.trace({{sessionId:{SESSION!r}, attributes: {{
+  'agenturm.payload.input': {INPUT!r}, 'agenturm.payload.output': {OUTPUT!r},
+  'input.value': {UNRELATED!r},
+}}}}, () => {{}});
+"""
+        self.invoke("run", "--db", self.db, "--source-id", SOURCE, "--payload-scope", "standalone",
+                    "--", NODE, "--input-type=module", "--eval", producer)
+        row, = self.metadata()
+        span = row["observation"]
+        self.action("grant", "standalone")
+        self.assertEqual(self.preview({
+            "binding": {"source_id": SOURCE, "native_source_id": None},
+            "trace_id": span["trace_id"], "span_id": span["span_id"], "session_id": SESSION,
+            "turn_id": None, "worker_id": None, "snapshot_id": self.snapshot(SESSION),
+        })["payload"], {"input": INPUT, "output": OUTPUT})
+        self.assertNotIn(UNRELATED.encode(), self.db.read_bytes())
 
 
 if __name__ == "__main__":

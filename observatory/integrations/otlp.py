@@ -6,6 +6,8 @@ import re
 
 from opentelemetry.sdk.trace.export import SpanExporter, SpanExportResult
 
+from .otel_payload import join_text, structured_message_text
+
 _LOGGER = logging.getLogger(__name__)
 
 
@@ -20,9 +22,10 @@ _MESSAGE_SCOPES = frozenset(
 
 def _captured_text(span):
     scope = getattr(span, "instrumentation_scope", None)
-    if scope is None or scope.name not in _MESSAGE_SCOPES:
-        return {}
+    scope_name = getattr(scope, "name", "")
     attributes = span.attributes or {}
+    if scope_name not in _MESSAGE_SCOPES:
+        return structured_message_text(attributes, scope_name)
     messages = {"input": [], "output": []}
     for key, text in attributes.items():
         match = _MESSAGE_TEXT.fullmatch(key)
@@ -37,10 +40,12 @@ def _captured_text(span):
             if kind != "text":
                 continue
         messages[direction].append((int(index), int(block) if block is not None else -1, text))
-    return {
-        f"agenturm.payload.{direction}": "\n".join(text for _, _, text in sorted(parts))
-        for direction, parts in messages.items() if parts
-    }
+    result = {}
+    for direction, parts in messages.items():
+        text = join_text(text for _, _, text in sorted(parts))
+        if text is not None:
+            result[f"agenturm.payload.{direction}"] = text
+    return result
 
 
 def _span_metadata(span, capture_content=False):

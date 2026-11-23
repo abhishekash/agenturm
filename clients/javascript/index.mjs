@@ -9,6 +9,10 @@ const activeSpan = new AsyncLocalStorage();
 const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
 const MAX_OTLP_SPANS = 1024;
 const MAX_OTLP_REPLY_BYTES = 4096;
+const MAX_OTLP_TEXT_BYTES = 2048;
+const MAX_OTLP_PAYLOAD_BYTES = 64 * 1024;
+const OTLP_PAYLOAD_KEYS = ['agenturm.payload.input', 'agenturm.payload.output'];
+
 const OTLP_STATUS = { UNSET: 0, OK: 1, ERROR: 2 };
 const COST_AMOUNT = 'agenturm.reported_cost.amount';
 const COST_CURRENCY = 'agenturm.reported_cost.currency';
@@ -100,6 +104,33 @@ function otlpAuthorization(endpoint, configuredEndpoint) {
     // A malformed environment cannot supply a credential.
   }
   return undefined;
+}
+
+function capturedAttributes(source, sessionId) {
+  const attributes = [];
+  let bytes = 0;
+  for (const key of OTLP_PAYLOAD_KEYS) {
+    if (!Object.hasOwn(source, key)) continue;
+    if (sessionId === null) {
+      throw new TypeError('OTLP captured text requires an explicit session identity');
+    }
+    const text = source[key];
+    if (typeof text !== 'string' || !text || text.length > MAX_OTLP_TEXT_BYTES
+        || Buffer.byteLength(text) > MAX_OTLP_TEXT_BYTES) {
+      throw new TypeError('OTLP captured text is invalid or exceeds its byte limit');
+    }
+    const markers = /private key|sk-|[sr]k_(?:live|test)_|gh[pousr]_|github_pat_|akia|aiza|xox[baprs]-|\bbearer\b/i;
+    const field = /authorization|password|passwd|token|secret|credential|api[_-]?key/i;
+    const control = /[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/;
+    if (markers.test(text) || control.test(text)
+        || /:\/\/[^/\s]+:[^/\s]+@/.test(text)
+        || text.split('\n').some(line => /[:=]/.test(line) && field.test(line))) {
+      throw new TypeError('OTLP captured text was withheld');
+    }
+    bytes += Buffer.byteLength(text);
+    attributes.push({ key, value: { stringValue: text } });
+  }
+  return { attributes, bytes };
 }
 
 async function postOtlpJson(endpoint, headers, body, timeoutMs) {
@@ -199,9 +230,13 @@ export class Client {
   #otlpEndpoint;
 
   constructor({ endpoint, service = 'node-agent', token, transport = 'agenturm',
-                timeoutMs = 3000, strict = false, resourceAttributes = {} } = {}) {
+                timeoutMs = 3000, strict = false, resourceAttributes = {}, captureContent = false } = {}) {
     if (!['agenturm', 'otlp'].includes(transport)) throw new TypeError('unknown trace transport');
+    if (captureContent && transport !== 'otlp') {
+      throw new TypeError('captureContent requires OTLP transport');
+    }
     this.transport = transport;
+    this.captureContent = Boolean(captureContent);
     this.service = String(service);
     this.configurationError = null;
     this.endpoint = transport === 'otlp' ? ''
@@ -215,6 +250,9 @@ export class Client {
         this.token = token;
         if (token === undefined) {
           this.#otlpAuthorization = otlpAuthorization(this.#otlpEndpoint, configuredEndpoint);
+        }
+        if (this.captureContent && !this.#otlpAuthorization) {
+          throw new TypeError('OTLP captured text requires an authenticated trace receiver');
         }
       } else {
         this.token = receiverToken(this.endpoint, token);
@@ -312,12 +350,35 @@ export class Client {
       if (value !== null) attributes.push({ key, value: { stringValue: value } });
     }
     let failure = null;
-    for (let offset = 0; offset < run.spans.length; offset += MAX_OTLP_SPANS) {
-      const spans = run.spans.slice(offset, offset + MAX_OTLP_SPANS)
-        .map(span => span.exportOtlp(attributes));
-      const payload = { resourceSpans: [{ scopeSpans: [{ scope: { name: '@agenturm/client' }, spans }] }] };
+    let batch = [];
+    let privateBytes = 0;
+    const send = async () => {
+      if (!batch.length) return;
+      const payload = { resourceSpans: [{ scopeSpans: [{
+        scope: { name: '@agenturm/client' }, spans: batch,
+      }] }] };
       if (!await this._post('', payload)) failure = this.lastError;
+      batch = [];
+      privateBytes = 0;
+    };
+    for (const span of run.spans) {
+      let captured;
+      try {
+        captured = this.captureContent
+          ? capturedAttributes(span.attributes, run.sessionId)
+          : { attributes: [], bytes: 0 };
+      } catch (error) {
+        failure = error;
+        if (this.strict) throw error;
+        continue;
+      }
+      if (batch.length === MAX_OTLP_SPANS || privateBytes + captured.bytes > MAX_OTLP_PAYLOAD_BYTES) {
+        await send();
+      }
+      batch.push(span.exportOtlp([...attributes, ...captured.attributes]));
+      privateBytes += captured.bytes;
     }
+    await send();
     if (failure) this.lastError = failure;
   }
 

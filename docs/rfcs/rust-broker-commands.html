@@ -107,8 +107,16 @@ text. Limits are 2 KiB per slot and 64 KiB per batch.</p>
 A conflicting payload retry fails without changing the recorded span.
 Pruning removes the text and preserves retry evidence. A private backup
 retains the captured text. Restore requires a fresh snapshot and approval.
-Additional SDK-specific structured content, Node capture and tool
-payloads need bounded projections.</p>
+Python and Node can send explicit text slots. OpenInference selects message
+text for OpenAI, Anthropic and LangChain. LangGraph callbacks and the OpenAI
+Agents SDK exporter require explicit <code>capture_content=True</code>.
+Pydantic AI and Google ADK can supply structured GenAI message text.
+The projections omit headers, tools, images, reasoning fields, and
+arbitrary provider objects.</p>
+<p>Provider setup is documented in the
+<a href="https://openai.github.io/openai-agents-python/tracing/">OpenAI Agents tracing guide</a>,
+<a href="https://pydantic.dev/docs/ai/api/models/instrumented/">Pydantic AI instrumentation settings</a>,
+and <a href="https://google.github.io/adk-docs/observability/traces/">Google ADK trace guide</a>.</p>
 <p>The broker cockpit supports saved tasks, handoffs, request seen state and
 review decisions alongside remote history. These user-owned records live
 under the client's state directory. Their namespace binds the authenticated

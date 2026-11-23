@@ -4,6 +4,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from observatory.integrations.otel_payload import join_text
+
 try:
     from langchain_core.callbacks import BaseCallbackHandler
 except ImportError as exc:  # pragma: no cover - depends on optional integration extra
@@ -38,6 +40,14 @@ class LangChainCallbackHandler(BaseCallbackHandler):
 
     def _content(self, value):
         return str(value)[:self.max_content_chars]
+
+    def _payload_enabled(self):
+        return self.capture_content and self.run is not None and self.run.client.capture_content
+
+    def _model_input(self, attributes, parts):
+        text = join_text(parts)
+        if text is not None:
+            attributes["agenturm.payload.input"] = text
 
     @staticmethod
     def _run_key(run_id):
@@ -141,7 +151,9 @@ class LangChainCallbackHandler(BaseCallbackHandler):
         model = self._model(serialized, kwargs)
         if model:
             attrs["gen_ai.request.model"] = model
-        if self.capture_content:
+        if self._payload_enabled():
+            self._model_input(attrs, prompts)
+        elif self.capture_content:
             attrs["langchain.input"] = self._content(prompts)
         self._start("llm", "llm.call", run_id, parent_run_id, attrs)
 
@@ -151,7 +163,12 @@ class LangChainCallbackHandler(BaseCallbackHandler):
         model = self._model(serialized, kwargs)
         if model:
             attrs["gen_ai.request.model"] = model
-        if self.capture_content:
+        if self._payload_enabled():
+            self._model_input(attrs, (
+                message.content for group in messages for message in group
+                if getattr(message, "type", None) in ("human", "ai")
+            ))
+        elif self.capture_content:
             attrs["langchain.input"] = self._content(messages)
         self._start("llm", "chat.call", run_id, parent_run_id, attrs)
 
@@ -191,7 +208,15 @@ class LangChainCallbackHandler(BaseCallbackHandler):
             value = usage.get(source)
             if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
                 span.set_attribute(target, int(value))
-        if self.capture_content:
+        if self._payload_enabled():
+            text = join_text(
+                getattr(generation, "text", None)
+                for group in (getattr(response, "generations", None) or ()) for generation in group
+                if getattr(getattr(generation, "message", None), "type", "ai") == "ai"
+            )
+            if text is not None:
+                span.set_attribute("agenturm.payload.output", text)
+        elif self.capture_content:
             self._capture_output(span, response)
         self._finish(run_id)
 

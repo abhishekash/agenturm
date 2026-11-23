@@ -275,6 +275,7 @@ jobs:
         run: >-
           python -m unittest -v
           tests.test_rust_vendor_sdk_e2e.RustVendorSdkTests.test_pydantic_ai_native_instrumentation_flushes_model_and_tool_spans
+          tests.test_rust_telemetry_payloads.RustTelemetryPayloadTests.test_pydantic_ai_model_text
         env:
           AGENTURM_RUST_APP_BIN: ${{ runner.temp }}/rust-vendor/agenturm
           AGENTURM_REQUIRE_VENDOR_SDK_TESTS: "1"
@@ -300,6 +301,7 @@ jobs:
         run: >-
           python -m unittest -v
           tests.test_rust_vendor_sdk_e2e.RustVendorSdkTests.test_google_adk_native_instrumentation_flushes_agent_and_tool_spans
+          tests.test_rust_telemetry_payloads.RustTelemetryPayloadTests.test_google_adk_model_text
         env:
           AGENTURM_RUST_APP_BIN: ${{ runner.temp }}/rust-vendor/agenturm
           AGENTURM_REQUIRE_VENDOR_SDK_TESTS: "1"
@@ -325,6 +327,7 @@ jobs:
         run: >-
           python -m unittest -v
           tests.test_rust_vendor_sdk_e2e.RustVendorSdkTests.test_openai_agents_real_tool_workflow_preserves_normalized_sdk_identity
+          tests.test_rust_telemetry_payloads.RustTelemetryPayloadTests.test_openai_agents_model_text
         env:
           AGENTURM_RUST_APP_BIN: ${{ runner.temp }}/rust-vendor/agenturm
           AGENTURM_REQUIRE_VENDOR_SDK_TESTS: "1"
@@ -351,6 +354,8 @@ jobs:
           python -m unittest -v
           tests.test_rust_vendor_sdk_e2e.RustVendorSdkTests.test_langchain_automatic_instrumentation_preserves_its_callback_hierarchy
           tests.test_rust_vendor_sdk_e2e.RustVendorSdkTests.test_langgraph_real_callbacks_retain_graph_node_and_model_spans
+          tests.test_rust_telemetry_payloads.RustTelemetryPayloadTests.test_langchain_model_message_text
+          tests.test_rust_telemetry_payloads.RustTelemetryPayloadTests.test_langgraph_callback_model_text
         env:
           AGENTURM_RUST_APP_BIN: ${{ runner.temp }}/rust-vendor/agenturm
           AGENTURM_REQUIRE_VENDOR_SDK_TESTS: "1"
@@ -377,7 +382,10 @@ jobs:
           python -m unittest -v
           tests.test_rust_vendor_sdk_e2e.RustVendorSdkTests.test_openai_sync_stream_and_error_flush_through_automatic_launcher
           tests.test_rust_vendor_sdk_e2e.RustVendorSdkTests.test_anthropic_messages_flush_through_automatic_launcher
-          tests.test_rust_telemetry_payloads
+          tests.test_rust_telemetry_payloads.RustTelemetryPayloadTests.test_openai_automatic_capture_selects_only_message_text
+          tests.test_rust_telemetry_payloads.RustTelemetryPayloadTests.test_anthropic_message_text
+          tests.test_rust_telemetry_payloads.RustTelemetryPayloadTests.test_standalone_payload_uses_exact_grant_and_snapshot
+          tests.test_rust_telemetry_payloads.RustTelemetryPayloadTests.test_node_explicit_payload
         env:
           AGENTURM_RUST_APP_BIN: ${{ runner.temp }}/rust-vendor/agenturm
           AGENTURM_REQUIRE_VENDOR_SDK_TESTS: "1"
