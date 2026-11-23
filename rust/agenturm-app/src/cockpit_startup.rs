@@ -84,8 +84,7 @@ impl ActiveCollector {
         let worker_notice = Arc::clone(&notice);
         let (requests, work) = mpsc::sync_channel::<CollectorRequest>(2);
         let receiver_notice = Arc::new(Mutex::new(None));
-        let bound_receiver =
-            super::trace_receiver::TraceReceiver::bind_cockpit(collector.database.clone());
+        let bound_receiver = super::trace_receiver::TraceReceiver::bind_cockpit();
         let worker = thread::Builder::new()
             .name("agenturm-cockpit-collector".into())
             .spawn(move || {
@@ -245,7 +244,7 @@ pub(super) fn prepare_cockpit_store(db: Option<&Path>) -> Result<CockpitStartup,
         .create(directory)
         .map_err(|error| format!("create cockpit state directory failed: {error}"))?;
 
-    let store = match Store::open_collector(&db) {
+    let mut store = match Store::open_collector(&db) {
         Ok(store) => store,
         Err(StoreError::WriterLease(error)) if error.kind() == ErrorKind::WouldBlock => {
             Store::open_read_only(&db).map_err(|error| error.to_string())?;
@@ -259,8 +258,12 @@ pub(super) fn prepare_cockpit_store(db: Option<&Path>) -> Result<CockpitStartup,
         }
         Err(error) => return Err(format!("open cockpit database failed: {error}")),
     };
+    store
+        .initialize_managed_retention()
+        .map_err(|_| "Could not initialize the managed retention policy")?;
     let stop = Arc::new(AtomicBool::new(false));
-    let mut collector = ConfiguredCollector::with_store(config, db.clone(), store, Some(&stop))?;
+    let mut collector =
+        ConfiguredCollector::with_local_store(config, db.clone(), store, Some(&stop))?;
     let report = collector.refresh();
     let collection = ActiveCollector::start(collector, stop, report)?;
     Ok(CockpitStartup {

@@ -1,6 +1,7 @@
 //! Formats a bounded Review page from the metadata-only history projection.
 
 use crate::handoff_export::{export_documents, html_sections, markdown_sections};
+use agenturm_kernel::ReadSnapshot;
 use serde_json::{Value, json};
 use std::path::PathBuf;
 
@@ -42,7 +43,7 @@ pub(super) struct ReviewScope<'a> {
 pub(super) fn render(
     mut page: Value,
     scope: ReviewScope<'_>,
-    snapshot_id: u64,
+    snapshot_id: ReadSnapshot,
     output: &ReviewOutput,
 ) -> Result<String, String> {
     let encode = |value: &Value| {

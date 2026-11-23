@@ -11,7 +11,8 @@ mod workspace;
 
 pub use workbench::{
     HandoffEntry, OperationDetailEntry, OperationDetailKind, PromptDelivery, PromptEntry,
-    RequestEntry, ReviewNoteEntry, TaskEntry, WorkAnchor, WorkCommand, WorkResult,
+    RequestEntry, ReviewNoteEntry, TaskEntry, TelemetrySpanEntry, WorkAnchor, WorkCommand,
+    WorkResult,
 };
 
 pub use workspace::{
@@ -19,7 +20,8 @@ pub use workspace::{
     WorkspaceRequest, WorkspaceResponse, WorkspaceView, run_workspace,
 };
 
-use agenturm_kernel::{ExtensionId, MetricRow, ObservationPosition, Snapshot};
+use agenturm_kernel::ReadSnapshot;
+use agenturm_kernel::{ExtensionId, MetricRow, ObservationKind, ObservationPosition, Snapshot};
 use crossterm::event::{self, Event, KeyCode, KeyEventKind, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Direction, Layout, Rect};
@@ -239,7 +241,7 @@ pub struct RecordedTurn {
     pub session_id: String,
     pub turn_id: String,
     pub worker_id: Option<String>,
-    pub snapshot_id: u64,
+    pub snapshot_id: ReadSnapshot,
     pub lifecycle: Option<(String, Option<String>)>,
 }
 
@@ -249,6 +251,7 @@ pub struct HistoryPage {
     pub initial_pane: Option<ExtensionId>,
     pub review_pane: Option<ExtensionId>,
     pub operation_details: Vec<OperationDetailEntry>,
+    pub private_telemetry: bool,
 }
 
 struct PageView {
@@ -258,6 +261,7 @@ struct PageView {
     review_pane: Option<ExtensionId>,
     operation_details: Vec<OperationDetailEntry>,
     operation_picker: Option<(OperationDetailKind, ListState)>,
+    telemetry_spans: Vec<TelemetrySpanEntry>,
 }
 
 impl PageView {
@@ -266,6 +270,30 @@ impl PageView {
             .initial_pane
             .as_ref()
             .and_then(|pane| page.snapshot.panes.keys().position(|id| id == pane));
+        let telemetry_spans = if page.private_telemetry {
+            page.snapshot
+                .observations
+                .iter()
+                .rev()
+                .filter_map(|observation| {
+                    let ObservationKind::TraceSpan(span) = &observation.kind else {
+                        return None;
+                    };
+                    Some(TelemetrySpanEntry {
+                        source_id: observation.harness_id.clone(),
+                        native_source_id: span.target_source_id.clone(),
+                        trace_id: span.trace_id.clone(),
+                        span_id: span.span_id.clone(),
+                        session_id: observation.identity.session_id.clone()?,
+                        turn_id: observation.identity.turn_id.clone(),
+                        worker_id: observation.identity.worker_id.clone(),
+                        snapshot_id: page.snapshot.history_snapshot_id,
+                    })
+                })
+                .collect()
+        } else {
+            Vec::new()
+        };
         let mut ui = UiModel::from_snapshot(page.snapshot);
         if let Some(selected) = selected {
             ui.selected = selected;
@@ -279,6 +307,7 @@ impl PageView {
             review_pane: page.review_pane,
             operation_details: page.operation_details,
             operation_picker: None,
+            telemetry_spans,
         }
     }
     fn reviewing(&self) -> bool {
@@ -303,6 +332,7 @@ pub fn run_with_history(
         initial_pane: None,
         review_pane: None,
         operation_details: Vec::new(),
+        private_telemetry: false,
     };
     run_with_turn_activity(initial, |_, before| {
         let Some(cursor) = before else {
@@ -314,6 +344,7 @@ pub fn run_with_history(
             initial_pane: None,
             review_pane: None,
             operation_details: Vec::new(),
+            private_telemetry: false,
         }))
     })
 }
@@ -680,7 +711,7 @@ mod tests {
     fn older_history_cursor_is_exact_and_keeps_the_query_snapshot() {
         let mut snapshot = snapshot_with_panes();
         snapshot.observations_truncated = true;
-        snapshot.history_snapshot_id = 77;
+        snapshot.history_snapshot_id = 77.into();
         snapshot.observations.push(agenturm_kernel::Observation {
             harness_id: ExtensionId::parse("harness.codex").unwrap(),
             event_id: "event-1".into(),
@@ -704,7 +735,7 @@ mod tests {
                 harness_id: "harness.codex".into(),
                 event_id: "event-1".into(),
                 revision: 2,
-                snapshot_id: 77,
+                snapshot_id: 77.into(),
             })
         );
     }

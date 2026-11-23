@@ -17,10 +17,12 @@ const WORKFLOW_EVIDENCE_LIMIT: usize = 5000;
 const MAX_REQUESTS: usize = 200;
 
 fn review_notes(
+    store: &impl super::HistoryReader,
     db: &Path,
     session: RecordedSession,
     note: Option<&str>,
 ) -> Result<WorkResult, String> {
+    verify_review_snapshot(store, &session)?;
     let key = ReviewKey {
         harness_id: ExtensionId::parse(&session.harness_id).map_err(|error| error.to_string())?,
         session_id: session.session_id.clone(),
@@ -30,6 +32,7 @@ fn review_notes(
         let version = StoredReviewVersion {
             receipt_sequence: session.review_version.receipt_sequence,
             retained_observations: session.review_version.retained_observations,
+            read_incarnation: session.snapshot_id.incarnation(),
         };
         ledger
             .save_decision_note(&key, version, session.snapshot_id, note)
@@ -44,10 +47,29 @@ fn review_notes(
                 receipt_sequence: item.version.receipt_sequence,
                 retained_observations: item.version.retained_observations,
             },
+            read_incarnation: item.version.read_incarnation,
             note: item.note,
         })
         .collect();
     Ok(WorkResult::ReviewNotes { session, items })
+}
+
+pub(super) fn verify_review_snapshot(
+    store: &impl super::HistoryReader,
+    session: &RecordedSession,
+) -> Result<(), String> {
+    let page = store
+        .query_observations(&ObservationQuery {
+            harness_id: Some(session.harness_id.clone()),
+            session_id: Some(session.session_id.clone()),
+            snapshot_id: Some(session.snapshot_id),
+            ..ObservationQuery::latest(1)
+        })
+        .map_err(|error| format!("Read review evidence failed: {error}"))?;
+    if page.observations.is_empty() {
+        return Err("The selected review evidence is unavailable".into());
+    }
+    Ok(())
 }
 
 pub(super) fn execute(
@@ -56,8 +78,17 @@ pub(super) fn execute(
     command: WorkCommand,
 ) -> Result<WorkResult, String> {
     match command {
-        WorkCommand::ReviewNotes(session) => review_notes(db, session, None),
-        WorkCommand::SaveReviewNote { session, note } => review_notes(db, session, Some(&note)),
+        WorkCommand::HostHistory(before) => store
+            .query_host_history(&ObservationQuery {
+                snapshot_id: before.as_ref().map(|position| position.snapshot_id),
+                before,
+                ..ObservationQuery::latest(agenturm_store::MAX_HOST_HISTORY_PAGE)
+            })
+            .map(WorkResult::HostHistory),
+        WorkCommand::ReviewNotes(session) => review_notes(store, db, session, None),
+        WorkCommand::SaveReviewNote { session, note } => {
+            review_notes(store, db, session, Some(&note))
+        }
         WorkCommand::Tasks(before) => tasks(&store.workspace_ledger(db)?, before),
         WorkCommand::Handoffs(before) => handoffs(&store.workspace_ledger(db)?, before),
         WorkCommand::SaveTask {
@@ -204,6 +235,7 @@ pub(super) fn is_prompt_command(command: &WorkCommand) -> bool {
         WorkCommand::Prompts(_)
             | WorkCommand::RevealPrompt(_, _)
             | WorkCommand::RevealOperation(_, _)
+            | WorkCommand::RevealTelemetry(_, _)
     )
 }
 
@@ -276,6 +308,23 @@ pub(super) fn execute_prompt(
                 &mut delivery,
                 writer,
             )?;
+            Ok(WorkResult::Status(String::new()))
+        }
+        WorkCommand::RevealTelemetry(span, mut delivery) => {
+            let selection = super::telemetry_payload_cli::modal_selection(*span)?;
+            let opened;
+            let store = if let Some(writer) = writer {
+                writer
+            } else {
+                opened = Store::open_collector(db).map_err(string)?;
+                &opened
+            };
+            store
+                .with_telemetry_payload(&selection, |payload| {
+                    super::telemetry_payload_cli::deliver_modal(payload, &mut delivery)
+                })
+                .map_err(string)?
+                .ok_or("Exact retained telemetry payload is unavailable")??;
             Ok(WorkResult::Status(String::new()))
         }
         _ => Err("Unsupported prompt request".into()),

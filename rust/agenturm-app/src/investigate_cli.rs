@@ -1,5 +1,6 @@
 //! Bounded investigation over native, grant-verified source records.
 
+use agenturm_kernel::ReadSnapshot;
 use agenturm_kernel::{ExtensionId, ObservationPosition};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeMap;
@@ -684,7 +685,7 @@ mod linux {
         row: &Observation,
         kind: EvidenceKind,
         history: &str,
-        snapshot_id: u64,
+        snapshot_id: ReadSnapshot,
     ) -> Option<SourceReference> {
         if row.identity.scope != ObservationScope::Session {
             return None;
@@ -723,7 +724,7 @@ mod linux {
         })
     }
 
-    fn position(row: &Observation, snapshot_id: u64) -> ObservationPosition {
+    fn position(row: &Observation, snapshot_id: ReadSnapshot) -> ObservationPosition {
         ObservationPosition {
             observed_at_unix_ns: row.observed_at_unix_ns,
             harness_id: row.harness_id.as_str().into(),

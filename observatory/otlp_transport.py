@@ -1,4 +1,4 @@
-"""Bounded metadata-only OTLP/HTTP export to a literal loopback endpoint."""
+"""Bounded OTLP/HTTP export to a literal loopback endpoint."""
 from __future__ import annotations
 
 import http.client
@@ -9,18 +9,129 @@ import os
 import re
 import socket
 import time
+from collections.abc import Mapping
 from dataclasses import dataclass
-from urllib.parse import urlsplit
+from urllib.parse import unquote, urlsplit
 
 MAX_EXPORT_SPANS = 1024
 MAX_EXPORT_BYTES = 4 * 1024 * 1024
 MAX_REPLY_BYTES = 4096
+MAX_PAYLOAD_TEXT_BYTES = 2048
+MAX_PAYLOAD_BATCH_BYTES = 64 * 1024
+PAYLOAD_KEYS = ("agenturm.payload.input", "agenturm.payload.output")
+_CREDENTIAL_MARKERS = re.compile(
+    r"private key|sk-|[sr]k_(?:live|test)_|gh[pousr]_|github_pat_|akia|aiza|xox[baprs]-|\bbearer\b",
+    re.IGNORECASE,
+)
+_CREDENTIAL_FIELD = re.compile(
+    r"authorization|password|passwd|token|secret|credential|api[_-]?key",
+    re.IGNORECASE,
+)
+
 _PREFIX = b'{"resourceSpans":[{"scopeSpans":[{"scope":{"name":"agenturm.python"},"spans":['
 _SUFFIX = b']}]}]}'
 _STATUS = {"UNSET": 0, "OK": 1, "ERROR": 2}
 _SESSION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:-]{0,511}")
 _EXECUTION = re.compile(r"[A-Za-z0-9][A-Za-z0-9._:/-]{0,511}")
 _HARNESS = re.compile(r"[a-z][a-z0-9._/-]{0,95}")
+_BEARER = re.compile(r"Bearer [0-9a-f]{64}")
+_COST_AMOUNT = "agenturm.reported_cost.amount"
+_COST_CURRENCY = "agenturm.reported_cost.currency"
+_COST_FIELDS = (
+    (_COST_AMOUNT, _COST_CURRENCY),
+    ("gen_ai.usage.cost", "gen_ai.usage.cost.currency"),
+    ("llm.cost.total", "llm.cost.currency"),
+)
+_USD_COST = "llm.cost_usd"
+_COST_DECIMAL = re.compile(r"([0-9]+)(?:\.([0-9]*))?(?:[eE]([+-]?[0-9]+))?")
+_CURRENCY = re.compile(r"[A-Z]{3}")
+_NANOUNITS = 10**9
+_TOKEN_FIELDS = (
+    ("gen_ai.usage.input_tokens", "llm.usage.input_tokens", "llm.token_count.prompt"),
+    ("gen_ai.usage.output_tokens", "llm.usage.output_tokens", "llm.token_count.completion"),
+    ("gen_ai.usage.cache_read.input_tokens", "gen_ai.usage.cache_read_input_tokens",
+     "gen_ai.usage.cached_input_tokens", "llm.usage.cache_read_input_tokens",
+     "llm.token_count.prompt_details.cache_read", "cache_read_input_tokens", "cached_input_tokens"),
+    ("gen_ai.usage.cache_write.input_tokens", "gen_ai.usage.cache_write_input_tokens",
+     "gen_ai.usage.cache_creation.input_tokens", "gen_ai.usage.cache_creation_input_tokens",
+     "llm.usage.cache_creation_input_tokens", "llm.token_count.prompt_details.cache_write",
+     "cache_creation_input_tokens"),
+    ("gen_ai.usage.reasoning.output_tokens", "gen_ai.usage.reasoning_tokens",
+     "llm.usage.reasoning_tokens", "llm.token_count.completion_details.reasoning", "reasoning_tokens"),
+    ("gen_ai.usage.total_tokens", "llm.usage.total_tokens", "llm.token_count.total"),
+)
+_TOKEN_DECIMAL = re.compile(r"[0-9]{1,19}")
+
+
+def _token_integer(value):
+    if type(value) is str:
+        if len(value) > 19 or not _TOKEN_DECIMAL.fullmatch(value):
+            return None
+        value = int(value)
+    return value if type(value) is int and 0 <= value < 1 << 63 else None
+
+
+def _reported_token_values(attributes):
+    if not isinstance(attributes, Mapping):
+        return {}
+    reported = {}
+    for aliases in _TOKEN_FIELDS:
+        values = {_token_integer(attributes[key]) for key in aliases if key in attributes}
+        if len(values) == 1 and None not in values:
+            reported[aliases[0]] = str(values.pop())
+    return reported
+
+
+def _cost_nanounits(value):
+    if type(value) not in (int, float, str) or (type(value) is int and value.bit_length() > 64):
+        return None
+    text = str(value)
+    match = _COST_DECIMAL.fullmatch(text) if len(text) <= 48 else None
+    if match is None:
+        return None
+    whole, fraction, exponent = match.groups()
+    exponent = int(exponent or 0)
+    if not -64 <= exponent <= 64:
+        return None
+    fraction = fraction or ""
+    digits = whole + fraction
+    significant = digits.strip("0")
+    if not significant:
+        return 0
+    shift = 9 + exponent + len(digits) - len(digits.rstrip("0")) - len(fraction)
+    if not 0 <= shift <= 19 - len(significant):
+        return None
+    result = int(significant) * 10**shift
+    return result if result < 1 << 63 else None
+
+
+def _reported_cost_attributes(attributes):
+    if not isinstance(attributes, Mapping):
+        return []
+    if "llm.cost_known" in attributes and attributes["llm.cost_known"] is not True:
+        return []
+    amounts, currencies = set(), set()
+    if _USD_COST in attributes:
+        amounts.add(_cost_nanounits(attributes[_USD_COST]))
+        currencies.add("USD")
+    for amount_field, currency_field in _COST_FIELDS:
+        if amount_field in attributes:
+            if currency_field not in attributes:
+                return []
+            amounts.add(_cost_nanounits(attributes[amount_field]))
+        if currency_field in attributes:
+            value = attributes[currency_field]
+            if not isinstance(value, str) or not _CURRENCY.fullmatch(value):
+                return []
+            currencies.add(value)
+    if len(amounts) != 1 or None in amounts or len(currencies) != 1:
+        return []
+    amount = amounts.pop()
+    text = f"{amount // _NANOUNITS}.{amount % _NANOUNITS:09d}".rstrip("0").rstrip(".")
+    return [
+        {"key": _COST_AMOUNT, "value": {"stringValue": text}},
+        {"key": _COST_CURRENCY, "value": {"stringValue": currencies.pop()}},
+    ]
 
 
 @dataclass(frozen=True)
@@ -63,12 +174,7 @@ class TraceScope:
         ]
 
 
-def _trace_endpoint(endpoint):
-    raw = endpoint
-    if raw is None:
-        raw = (os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
-               or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
-               or "http://127.0.0.1:14318")
+def _trace_endpoint(raw):
     try:
         if not isinstance(raw, str) or not raw or any(ch.isspace() or ord(ch) < 32 for ch in raw):
             raise ValueError
@@ -90,6 +196,27 @@ def _trace_endpoint(endpoint):
     return str(host), port, f"http://{address}:{port}/v1/traces"
 
 
+def _trace_authorization(endpoint, configured_endpoint):
+    if not configured_endpoint:
+        return None
+    try:
+        if _trace_endpoint(configured_endpoint)[2] != endpoint:
+            return None
+    except ValueError:
+        return None
+    headers = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_HEADERS", "")
+    if len(headers) > 4096:
+        return None
+    authorization = []
+    for item in headers.split(","):
+        key, _, value = item.partition("=")
+        if key.strip().lower() == "authorization":
+            authorization.append(unquote(value))
+    if len(authorization) == 1 and _BEARER.fullmatch(authorization[0]):
+        return authorization[0]
+    return None
+
+
 def _span_id(value, width):
     if (
         not isinstance(value, str) or len(value) != width
@@ -100,7 +227,45 @@ def _span_id(value, width):
     return value.lower()
 
 
-def _project(span, attributes):
+def _payload_text(value):
+    if not isinstance(value, str) or not value or len(value) > MAX_PAYLOAD_TEXT_BYTES:
+        raise ValueError("OTLP captured text is invalid or exceeds its byte limit")
+    try:
+        size = len(value.encode("utf-8"))
+    except UnicodeError:
+        raise ValueError("OTLP captured text is not valid Unicode") from None
+    if size > MAX_PAYLOAD_TEXT_BYTES:
+        raise ValueError("OTLP captured text exceeds its byte limit")
+    if _CREDENTIAL_MARKERS.search(value) or any(
+        (":" in line or "=" in line) and _CREDENTIAL_FIELD.search(line)
+        for line in value.splitlines()
+    ) or re.search(r"://[^/\s]+:[^/\s]+@", value):
+        raise ValueError("OTLP captured text was withheld")
+    if any(
+        (ord(ch) < 32 and ch not in "\n\t") or 127 <= ord(ch) <= 159
+        or ch in "\u061c\u200e\u200f"
+        or "\u2028" <= ch <= "\u202e" or "\u2066" <= ch <= "\u2069"
+        for ch in value
+    ):
+        raise ValueError("OTLP captured text was withheld")
+    return size
+
+
+def _payload_attributes(span, scope):
+    attributes = span.get("attributes") or {}
+    payload = []
+    size = 0
+    for key in PAYLOAD_KEYS:
+        if key in attributes:
+            if scope.session_id is None:
+                raise ValueError("OTLP captured text requires an explicit session identity")
+            text = attributes[key]
+            size += _payload_text(text)
+            payload.append({"key": key, "value": {"stringValue": text}})
+    return payload, size
+
+
+def _project(span, scope, attributes, capture_content):
     if span is None:
         raise ValueError("OTLP span context is unavailable")
     start = span["start_unix_nano"]
@@ -110,6 +275,8 @@ def _project(span, attributes):
     status = _STATUS.get(span["status"])
     if status is None:
         raise ValueError("Invalid OTLP span status")
+    payload, payload_bytes = _payload_attributes(span, scope) if capture_content else ([], 0)
+    native_attributes = span.get("attributes")
     result = {
         "traceId": _span_id(span["trace_id"], 32),
         "spanId": _span_id(span["span_id"], 16),
@@ -117,14 +284,19 @@ def _project(span, attributes):
         "startTimeUnixNano": str(start),
         "endTimeUnixNano": str(end),
         "status": {"code": status},
-        "attributes": attributes,
+        "attributes": [
+            *attributes, *_reported_cost_attributes(native_attributes),
+            *({"key": key, "value": {"intValue": value}}
+              for key, value in _reported_token_values(native_attributes).items()),
+            *payload,
+        ],
     }
     if span.get("parent_span_id") is not None:
         parent = _span_id(span["parent_span_id"], 16)
         if parent == result["spanId"]:
             raise ValueError("Invalid OTLP parent span identity")
         result["parentSpanId"] = parent
-    return json.dumps(result, separators=(",", ":")).encode("ascii")
+    return json.dumps(result, separators=(",", ":")).encode("ascii"), payload_bytes
 
 
 def _check_reply(response):
@@ -199,8 +371,18 @@ class _DeadlineConnection(http.client.HTTPConnection):
 class OtlpTransport:
     """Send structural span evidence without inherited proxies or redirects."""
 
-    def __init__(self, endpoint, timeout):
+    def __init__(self, endpoint, timeout, *, capture_content=False):
+        configured_endpoint = os.environ.get("OTEL_EXPORTER_OTLP_TRACES_ENDPOINT")
+        if endpoint is None:
+            endpoint = (configured_endpoint or os.environ.get("OTEL_EXPORTER_OTLP_ENDPOINT")
+                        or "http://127.0.0.1:14318")
         self.host, self.port, self.endpoint = _trace_endpoint(endpoint)
+        self._authorization = _trace_authorization(self.endpoint, configured_endpoint)
+        self._authorization_target = (self.host, self.port)
+        self.capture_content = bool(capture_content)
+        if self.capture_content and self._authorization is None:
+            raise ValueError("OTLP captured text requires an authenticated trace receiver")
+
         try:
             self.timeout = float(timeout)
         except (ValueError, TypeError, OverflowError):
@@ -213,6 +395,7 @@ class OtlpTransport:
         batch = []
         overhead = len(_PREFIX) + len(_SUFFIX)
         size = overhead
+        captured_bytes = 0
         failure = None
 
         def send():
@@ -226,7 +409,7 @@ class OtlpTransport:
 
         for span in spans:
             try:
-                item = _project(span, attributes)
+                item, item_payload_bytes = _project(span, scope, attributes, self.capture_content)
                 if overhead + len(item) > MAX_EXPORT_BYTES:
                     raise ValueError("OTLP span exceeds the request byte limit")
             except (KeyError, TypeError, ValueError) as exc:
@@ -234,11 +417,16 @@ class OtlpTransport:
                     raise
                 failure = exc
                 continue
-            if batch and (len(batch) == MAX_EXPORT_SPANS or size + len(item) + 1 > MAX_EXPORT_BYTES):
+            if batch and (
+                len(batch) == MAX_EXPORT_SPANS or size + len(item) + 1 > MAX_EXPORT_BYTES
+                or captured_bytes + item_payload_bytes > MAX_PAYLOAD_BATCH_BYTES
+            ):
                 send()
                 batch = []
                 size = overhead
+                captured_bytes = 0
             size += len(item) + bool(batch)
+            captured_bytes += item_payload_bytes
             batch.append(item)
         if batch:
             send()
@@ -247,12 +435,13 @@ class OtlpTransport:
 
     def _send(self, batch):
         body = _PREFIX + b",".join(batch) + _SUFFIX
-        connection = _DeadlineConnection(self.host, self.port, self.timeout)
+        target = (self.host, self.port)
+        headers = {"Content-Type": "application/json", "Connection": "close"}
+        if self._authorization is not None and target == self._authorization_target:
+            headers["Authorization"] = self._authorization
+        connection = _DeadlineConnection(*target, self.timeout)
         try:
-            connection.request(
-                "POST", "/v1/traces", body=body,
-                headers={"Content-Type": "application/json", "Connection": "close"},
-            )
+            connection.request("POST", "/v1/traces", body=body, headers=headers)
             with connection.getresponse() as response:
                 _check_reply(response)
         except http.client.HTTPException:

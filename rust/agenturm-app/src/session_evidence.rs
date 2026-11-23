@@ -1,6 +1,6 @@
 use agenturm_kernel::{
     ExtensionId, MetricRow, Observation, ObservationKind, ObservationScope, PaneModel, Snapshot,
-    TraceSpan, format_credits,
+    TraceSpan, format_credits, format_reported_cost,
 };
 use std::collections::{BTreeMap, BTreeSet};
 
@@ -363,12 +363,15 @@ fn usage_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
             .filter(|row| {
                 matches!(
                     row.kind,
-                    ObservationKind::Usage { .. } | ObservationKind::CreditUsage { .. }
+                    ObservationKind::Usage { .. }
+                        | ObservationKind::CreditUsage { .. }
+                        | ObservationKind::ReportedCost(_)
+                        | ObservationKind::SpanTokenUsage(_)
                 )
             })
             .map(|row| activity_row(row, scope))
             .collect(),
-        "No reported token or credit usage on this page",
+        "No reported usage on this page",
     )
 }
 
@@ -582,6 +585,10 @@ pub(super) fn describe_observation(kind: &ObservationKind) -> (&'static str, Str
     match kind {
         ObservationKind::SessionStarted => ("Session", "started".into()),
         ObservationKind::SessionEnded => ("Session", "ended".into()),
+        ObservationKind::HostSample(sample) => (
+            "Host sample",
+            format!("{} recorded processes", sample.processes.len()),
+        ),
         ObservationKind::Activity { category } => ("Activity", category.clone()),
         ObservationKind::Usage {
             input_tokens,
@@ -608,6 +615,29 @@ pub(super) fn describe_observation(kind: &ObservationKind) -> (&'static str, Str
             "Credit usage",
             format!("{} credits", format_credits(*nanocredits)),
         ),
+        ObservationKind::ReportedCost(cost) => {
+            let mut value = format_reported_cost(cost);
+            if let Some(span) = &cost.span {
+                value.push_str(&format!(" · span {}", span.span_id));
+            }
+            ("Reported cost", value)
+        }
+        ObservationKind::SpanTokenUsage(usage) => {
+            let counters = [
+                ("input", usage.input_tokens),
+                ("output", usage.output_tokens),
+                ("cache read input", usage.cache_read_input_tokens),
+                ("cache write input", usage.cache_write_input_tokens),
+                ("reasoning output", usage.reasoning_output_tokens),
+                ("total", usage.total_tokens),
+            ];
+            let mut fields: Vec<_> = counters
+                .into_iter()
+                .filter_map(|(label, value)| value.map(|value| format!("{label} {value}")))
+                .collect();
+            fields.push(format!("span {}", usage.span.span_id));
+            ("Span token usage", fields.join(" · "))
+        }
         ObservationKind::Tool { category, result } => ("Tool", format!("{category} · {result}")),
         ObservationKind::FileEdit(edit) => {
             let summary = [
@@ -937,7 +967,7 @@ mod tests {
     }
 
     #[test]
-    fn workspace_panes_scope_operations_and_keep_credit_and_token_units_separate() {
+    fn workspace_panes_scope_operations_and_keep_currency_credit_and_token_units_separate() {
         let mut elsewhere = tool(2, "mcp", "failed", Some("turn-1"));
         elsewhere.harness_id = ExtensionId::parse("harness.pi").unwrap();
         let mut other_session = tool(3, "mcp", "succeeded", Some("turn-1"));
@@ -963,8 +993,28 @@ mod tests {
             Some("turn-1"),
         );
         let credits = observation(6, ObservationKind::CreditUsage { nanocredits: 123 }, None);
+        let usd = observation(
+            7,
+            ObservationKind::ReportedCost(agenturm_kernel::ReportedCost {
+                currency: "USD".into(),
+                nanounits: 0,
+                span: None,
+            }),
+            None,
+        );
+        let eur = observation(
+            8,
+            ObservationKind::ReportedCost(agenturm_kernel::ReportedCost {
+                currency: "EUR".into(),
+                nanounits: 1_234_567_890,
+                span: None,
+            }),
+            None,
+        );
         let mut snapshot = Snapshot {
             observations: vec![
+                eur,
+                usd,
                 credits,
                 gap,
                 other_session,
@@ -975,7 +1025,7 @@ mod tests {
             ..Snapshot::default()
         };
         let panes = add_workspace_panes(&mut snapshot);
-        assert_eq!(snapshot.panes[&panes.activity].rows.len(), 6);
+        assert_eq!(snapshot.panes[&panes.activity].rows.len(), 8);
         assert_eq!(snapshot.panes[&panes.mcp].rows.len(), 2);
         let findings = &snapshot.panes[&panes.findings].rows;
         assert_eq!(findings.len(), 1);
@@ -995,10 +1045,13 @@ mod tests {
             ]
         );
         let usage = &snapshot.panes[&panes.usage].rows;
-        assert_eq!(usage.len(), 2);
+        assert_eq!(usage.len(), 4);
         assert!(usage[0].value.contains("input 0 · turn turn-1"));
         assert!(!usage[0].value.contains("output"));
         assert!(usage[1].value.contains("0.000000123 credits"));
         assert!(!usage[1].value.contains("turn "));
+        assert_eq!(usage[2].label, "Reported cost");
+        assert!(usage[2].value.contains(" · 0 USD · "));
+        assert!(usage[3].value.contains(" · 1.23456789 EUR · "));
     }
 }

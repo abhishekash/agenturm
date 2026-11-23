@@ -27,6 +27,8 @@ pub enum ContentKind {
     CodexEditDetail,
     #[serde(rename = "codex.command_detail")]
     CodexCommandDetail,
+    #[serde(rename = "telemetry.span_payload")]
+    TelemetrySpanPayload,
 }
 
 impl ContentKind {
@@ -40,6 +42,7 @@ impl ContentKind {
             Self::CodexMcpPayload => "codex.mcp_payload",
             Self::CodexEditDetail => "codex.edit_detail",
             Self::CodexCommandDetail => "codex.command_detail",
+            Self::TelemetrySpanPayload => "telemetry.span_payload",
         }
     }
 }
@@ -154,8 +157,11 @@ pub(super) fn create_schema(connection: &Connection, version: i64) -> Result<()>
         13 => {
             "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail')"
         }
-        14 => {
+        14 | 15 => {
             "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'codex.command_detail')"
+        }
+        16 => {
+            "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'codex.command_detail', 'telemetry.span_payload')"
         }
         _ => return Err(StoreError::UnsupportedSchema(version)),
     };
@@ -456,15 +462,20 @@ impl Store {
         self.verify_content_grant(scope, grant)?;
         self.connection
             .query_row(
-                "SELECT state.cursor, proof.cursor, o.turn_id, o.observed_at_unix_ns
+                "SELECT state.cursor, COALESCE(proof.cursor, state.cursor), o.turn_id, o.observed_at_unix_ns
                  FROM agenturm_observations AS o
                  JOIN agenturm_source_state AS state ON state.source_id = o.source_id
-                 JOIN agenturm_content_cursor_proofs AS proof ON proof.request_id = o.request_id
+                 LEFT JOIN agenturm_content_cursor_proofs AS proof ON proof.request_id = o.request_id
                  WHERE o.source_id = ?1 AND o.event_id = ?2 AND o.revision = ?3
                    AND o.session_id = ?4 AND o.operation_id = ?5
                    AND o.scope = 'session' AND o.worker_id IS NULL AND o.turn_id IS NOT NULL
                    AND (?6 IS NULL OR o.turn_id = ?6)
-                   AND proof.cursor GLOB 'v2:*' AND json_extract(o.kind_json, '$.kind') = ?7
+                   AND (proof.cursor GLOB 'v2:*' OR (state.cursor GLOB 'v2:*' AND o.request_id = (
+                       SELECT newest.request_id FROM agenturm_history_batches AS newest
+                       JOIN agenturm_ingest_receipts AS receipt USING (request_id)
+                       WHERE receipt.source_id = o.source_id ORDER BY newest.sequence DESC LIMIT 1
+                   )))
+                   AND json_extract(o.kind_json, '$.kind') = ?7
                    AND (?7 <> 'tool' OR json_extract(o.kind_json, '$.category') = 'shell')
                    AND NOT EXISTS (
                        SELECT 1 FROM agenturm_observations AS newer
@@ -521,6 +532,7 @@ impl Store {
             ContentKind::CodexMcpPayload
                 | ContentKind::CodexEditDetail
                 | ContentKind::CodexCommandDetail
+                | ContentKind::TelemetrySpanPayload
         ) {
             return Err(StoreError::StaleContentGrant);
         }
@@ -594,6 +606,121 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn command_only_receipts_remain_provable_after_followup_and_unrelated_pruning() {
+        use agenturm_kernel::{
+            Observation, ObservationIdentity, ObservationKind, ObservationStore,
+        };
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "agenturm-command-only-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let db = directory.join("history.sqlite");
+        let mut store = Store::open(&db).unwrap();
+        let source = ExtensionId::parse("harness.codex").unwrap();
+        let scope =
+            ContentGrantScope::new(source.clone(), ContentKind::CodexCommandDetail, [7; 32]);
+        let grant = store.grant_content(&scope).unwrap();
+        let cursor = format!(
+            "v2:1:2:3:{}:{}:{}:opaque",
+            "a".repeat(64),
+            "b".repeat(64),
+            "c".repeat(64)
+        );
+        let mut identity = ObservationIdentity::session("session-one");
+        identity.turn_id = Some("turn-one".into());
+        identity.operation_id = Some("command-one".into());
+        let command = Observation {
+            harness_id: source.clone(),
+            event_id: "command-event".into(),
+            revision: 0,
+            identity,
+            observed_at_unix_ns: 30,
+            kind: ObservationKind::Tool {
+                category: "shell".into(),
+                result: "succeeded".into(),
+            },
+        };
+        store
+            .commit(source.as_str(), None, &cursor, &[command])
+            .unwrap();
+        let selection = CodexOperationSelection {
+            session_id: "session-one",
+            event_id: "command-event",
+            revision: 0,
+            operation_id: "command-one",
+            turn_id: Some("turn-one"),
+        };
+        let proven = |store: &Store| {
+            store
+                .with_user_content_fence(|store| {
+                    store
+                        .current_codex_operation_evidence(&scope, &grant, &selection)
+                        .unwrap()
+                        .is_some()
+                })
+                .unwrap()
+        };
+        assert!(proven(&store));
+        // Older v14 stores did not retain proofs for command-only batches.
+        // Only their latest batch may use its current native cursor as proof.
+        store
+            .connection
+            .execute("DELETE FROM agenturm_content_cursor_proofs", [])
+            .unwrap();
+        assert!(proven(&store));
+        let command = Observation {
+            harness_id: source.clone(),
+            event_id: "command-event-two".into(),
+            revision: 0,
+            identity: ObservationIdentity::session("session-two"),
+            observed_at_unix_ns: 31,
+            kind: ObservationKind::SessionStarted,
+        };
+        // Record the original proof again as new collection now does, then
+        // advance the source beyond it with a non-content batch.
+        let receipt: String = store
+            .connection
+            .query_row(
+                "SELECT request_id FROM agenturm_history_batches ORDER BY sequence DESC LIMIT 1",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        record_receipt_proof(&store.connection, &receipt, &cursor).unwrap();
+        store
+            .commit(source.as_str(), Some(&cursor), "followup", &[command])
+            .unwrap();
+        let unrelated = Observation {
+            harness_id: ExtensionId::parse("harness.pi").unwrap(),
+            event_id: "old-unrelated".into(),
+            revision: 0,
+            identity: ObservationIdentity::session("other"),
+            observed_at_unix_ns: 1,
+            kind: ObservationKind::SessionStarted,
+        };
+        store
+            .commit("harness.pi", None, "one", &[unrelated])
+            .unwrap();
+        assert_eq!(
+            store
+                .prune_observations_before(20)
+                .unwrap()
+                .removed_observations,
+            1
+        );
+        assert!(proven(&store));
+        store.prune_observations_before(31).unwrap();
+        assert!(!proven(&store));
+        drop(store);
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn content_delivery_serializes_same_process_revocation() {

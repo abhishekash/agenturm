@@ -76,6 +76,13 @@ producer. Use a literal loopback IP. An explicit `endpoint` overrides the enviro
 `OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` nor `OTEL_EXPORTER_OTLP_ENDPOINT` set,
 the transport uses that same loopback address.
 
+The broker launcher sets `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` for its producer. The authorization
+value travels directly to the matching numeric loopback trace endpoint.
+For a separately started broker receiver, set both variables for the
+authorized producer. Use `authorization=Bearer%20<token>` with the
+receiver's 64-digit lowercase hexadecimal token.
+
 OTLP/HTTP JSON exports trace IDs, parent relationships, timestamps, status
 and optional session, harness, turn, and worker identity. Payloads use fixed span names
 and omit custom attributes, events and task text. The `agenturm` transport

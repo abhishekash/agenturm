@@ -2,8 +2,9 @@
 
 use agenturm_content::{OperationDetailKind, PromptReference, ResolvedSource};
 use agenturm_kernel::ExtensionId;
+use agenturm_kernel::ReadSnapshot;
 use agenturm_storage_service_contract::native;
-use agenturm_store::{CodexOperationSelection, Store, StoreError};
+use agenturm_store::{CodexOperationSelection, Store, StoreError, TelemetryPayloadSelection};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -35,7 +36,7 @@ pub(crate) struct PrivatePromptSelection {
     pub(crate) event_id: String,
     pub(crate) revision: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
-    pub(crate) snapshot_id: Option<u64>,
+    pub(crate) snapshot_id: Option<ReadSnapshot>,
 }
 
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -366,7 +367,7 @@ pub(crate) fn verify_operation(
     config: Option<&PrivateConfig>,
     allowed: &BTreeSet<ExtensionId>,
     selection: &PrivateEvidenceSelection,
-    snapshot_id: u64,
+    snapshot_id: ReadSnapshot,
     output: &mut Disclosure<'_>,
 ) -> Result<(), PrivateEvidenceFailure> {
     let config = config.ok_or(PrivateEvidenceFailure::Unavailable)?;
@@ -397,6 +398,22 @@ pub(crate) fn verify_operation(
         OperationDetailKind::Mcp => return Err(PrivateEvidenceFailure::Unavailable),
     }
     .map_err(|_| PrivateEvidenceFailure::Unavailable)?
+}
+
+pub(crate) fn disclose_telemetry(
+    store: &Store,
+    selected: &TelemetryPayloadSelection,
+    output: &mut Disclosure<'_>,
+) -> Result<(), PrivateEvidenceFailure> {
+    store
+        .with_telemetry_payload(selected, |payload| output.publish(payload))
+        .map_err(|error| match error {
+            StoreError::SnapshotReplaced => PrivateEvidenceFailure::HistoryReplaced,
+            StoreError::ExpiredHistorySnapshot { .. } => PrivateEvidenceFailure::SnapshotExpired,
+            _ => PrivateEvidenceFailure::Unavailable,
+        })?
+        .ok_or(PrivateEvidenceFailure::Unavailable)?
+        .map_err(|_| PrivateEvidenceFailure::Unavailable)
 }
 
 pub(crate) struct Disclosure<'a> {
@@ -430,7 +447,7 @@ impl<'a> Disclosure<'a> {
     fn publish_proof(
         &mut self,
         store: &Store,
-        snapshot_id: Option<u64>,
+        snapshot_id: Option<ReadSnapshot>,
         occurrence: (&ExtensionId, &str, u32),
         payload: impl Serialize,
     ) -> Result<(), PrivateEvidenceFailure> {
@@ -785,6 +802,7 @@ mod tests {
                 &fixture.sources,
                 role,
                 Some(&fixture.config),
+                &[],
                 &mut output,
             );
             assert_eq!(result, Err(failure));
@@ -808,6 +826,7 @@ mod tests {
                     &fixture.sources,
                     Role::Reader,
                     Some(&fixture.config),
+                    &[],
                     &mut output,
                 );
                 output.complete(result);

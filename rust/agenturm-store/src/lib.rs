@@ -11,25 +11,42 @@
 
 #![forbid(unsafe_code)]
 
+mod automatic_retention;
 mod backup;
 mod content_grant;
+mod eval_outcome;
 mod linked_trace;
+mod private_text;
 mod retention;
 mod review_ledger;
 mod session_catalog;
+mod telemetry_payload;
 mod workspace_ledger;
 
+pub use automatic_retention::{
+    AutomaticRetentionPolicy, AutomaticRetentionSchedule, AutomaticRetentionStatus,
+    DEFAULT_RETENTION_AGE_NS,
+};
 pub use backup::BackupError;
 pub use content_grant::{
     CodexOperationEvidence, CodexOperationSelection, ContentGrant, ContentGrantScope, ContentKind,
     UserTextEvidence,
 };
+pub use eval_outcome::{
+    EvalImportReport, EvalOutcome, EvalPage, EvalQuery, EvalScore, MAX_EVAL_OUTCOMES,
+    RetainedEvalOutcome,
+};
 pub use linked_trace::{ResolvedTraceReview, ResolvedTraceTurn, TraceReviewQuery, TraceTurnQuery};
+pub use private_text::bounded_text_preview;
 pub use retention::RetentionOutcome;
 pub use review_ledger::{ReviewDecisionNote, ReviewError, ReviewKey, ReviewLedger, ReviewVersion};
 pub use session_catalog::{
     MAX_SESSION_PAGE_SIZE, SessionLifecycle, SessionPage, SessionPosition, SessionQuery,
     SessionSummary,
+};
+pub use telemetry_payload::{
+    MAX_TELEMETRY_PAYLOAD_TEXT_BYTES, TelemetryBinding, TelemetryPayload, TelemetryPayloadRecord,
+    TelemetryPayloadSelection,
 };
 pub use workspace_ledger::{
     ApprovedTaskDraft, MAX_WORKSPACE_GIT_DIFF_BYTES, MAX_WORKSPACE_PAGE_SIZE, SavedHandoff,
@@ -38,6 +55,7 @@ pub use workspace_ledger::{
     WorkspaceGitDiff, WorkspaceGitSnapshot, WorkspaceHistory, WorkspaceLedger, WorkspacePage,
 };
 
+use agenturm_kernel::ReadSnapshot;
 use agenturm_kernel::{
     ExtensionId, MAX_DURABLE_SNAPSHOT_OBSERVATIONS, Observation,
     ObservationKind as KernelObservationKind, ObservationPage, ObservationQuery,
@@ -46,13 +64,15 @@ use agenturm_kernel::{
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 14;
+const SCHEMA_VERSION: i64 = 16;
+pub const MAX_HOST_HISTORY_PAGE: usize = 64;
 const MAX_BATCH_EVENTS: usize = 2_048;
+pub const MAX_OTLP_BATCH_SPANS: usize = 1_024;
 const MAX_SOURCE_ID_BYTES: usize = 96;
 const MAX_REQUEST_ID_BYTES: usize = 128;
 const MAX_EVENT_ID_BYTES: usize = 256;
@@ -63,7 +83,9 @@ const STORE_MARKER_V10: &str = "agenturm.observation-store.v10";
 const STORE_MARKER_V11: &str = "agenturm.observation-store.v11";
 const STORE_MARKER_V12: &str = "agenturm.observation-store.v12";
 const STORE_MARKER_V13: &str = "agenturm.observation-store.v13";
-const STORE_MARKER: &str = "agenturm.observation-store.v14";
+const STORE_MARKER_V14: &str = "agenturm.observation-store.v14";
+const STORE_MARKER_V15: &str = "agenturm.observation-store.v15";
+const STORE_MARKER: &str = "agenturm.observation-store.v16";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -94,6 +116,7 @@ pub enum ObservationKind {
         result: String,
     },
     TraceSpan(agenturm_kernel::TraceSpan),
+    HostSample(agenturm_kernel::HostSample),
     Lifecycle {
         state: String,
         reason_code: Option<String>,
@@ -127,6 +150,8 @@ pub enum ObservationKind {
     CreditUsage {
         nanocredits: u64,
     },
+    ReportedCost(agenturm_kernel::ReportedCost),
+    SpanTokenUsage(agenturm_kernel::SpanTokenUsage),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -267,6 +292,9 @@ impl ObservationBatch {
                     KernelObservationKind::TraceSpan(span) => {
                         ObservationKind::TraceSpan(span.clone())
                     }
+                    KernelObservationKind::HostSample(sample) => {
+                        ObservationKind::HostSample(sample.clone())
+                    }
                     KernelObservationKind::Lifecycle { state, reason_code } => {
                         ObservationKind::Lifecycle {
                             state: state.clone(),
@@ -297,6 +325,12 @@ impl ObservationBatch {
                         ObservationKind::CreditUsage {
                             nanocredits: *nanocredits,
                         }
+                    }
+                    KernelObservationKind::ReportedCost(cost) => {
+                        ObservationKind::ReportedCost(cost.clone())
+                    }
+                    KernelObservationKind::SpanTokenUsage(usage) => {
+                        ObservationKind::SpanTokenUsage(usage.clone())
                     }
                     KernelObservationKind::Diagnostic { code, severity } => {
                         ObservationKind::Diagnostic {
@@ -347,7 +381,9 @@ pub enum StoreError {
     RequestConflict,
     StaleCursor,
     StaleContentGrant,
-    ExpiredHistorySnapshot { minimum_snapshot_id: u64 },
+    EvalTraceNotRetained,
+    ExpiredHistorySnapshot { minimum_snapshot_id: ReadSnapshot },
+    SnapshotReplaced,
     TraceScopeTooLarge { max_rows: usize },
     EventConflict { event_id: String },
     UnrecognizedDatabase,
@@ -365,11 +401,20 @@ impl Display for StoreError {
             Self::RequestConflict => write!(f, "request ID was reused with different content"),
             Self::StaleCursor => write!(f, "source cursor changed since batch preparation"),
             Self::StaleContentGrant => write!(f, "content grant is stale or denied"),
+            Self::EvalTraceNotRetained => {
+                write!(
+                    f,
+                    "an evaluation trace is absent from the selected retained source"
+                )
+            }
             Self::ExpiredHistorySnapshot {
                 minimum_snapshot_id,
             } => write!(
                 f,
                 "history snapshot expired after retention; start a new query at snapshot {minimum_snapshot_id} or later"
+            ),
+            Self::SnapshotReplaced => f.write_str(
+                "history snapshot belongs to a restored or replaced history; start a new query",
             ),
             Self::TraceScopeTooLarge { max_rows } => write!(
                 f,
@@ -457,6 +502,16 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
             "agenturm_content_cursor_proofs".to_owned(),
         ));
     }
+    if version >= 15 {
+        expected.push((
+            "index".to_owned(),
+            "agenturm_observations_by_trace".to_owned(),
+        ));
+        expected.push(("table".to_owned(), "agenturm_eval_outcomes".to_owned()));
+    }
+    if version >= 16 {
+        expected.push(("table".to_owned(), "agenturm_telemetry_payloads".to_owned()));
+    }
     expected.sort();
     if objects != expected {
         return Err(StoreError::UnrecognizedDatabase);
@@ -481,7 +536,9 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         11 => STORE_MARKER_V11,
         12 => STORE_MARKER_V12,
         13 => STORE_MARKER_V13,
-        14 => STORE_MARKER,
+        14 => STORE_MARKER_V14,
+        15 => STORE_MARKER_V15,
+        16 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -565,6 +622,32 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         expected_tables.push((
             "agenturm_content_cursor_proofs",
             vec![("request_id", "TEXT", 1, 1), ("cursor", "TEXT", 1, 0)],
+        ));
+    }
+    if version >= 15 {
+        expected_tables.push((
+            "agenturm_eval_outcomes",
+            vec![
+                ("trace_source_id", "TEXT", 1, 1),
+                ("trace_id", "TEXT", 1, 2),
+                ("revision", "INTEGER", 1, 3),
+                ("outcome_digest", "BLOB", 1, 0),
+                ("outcome_json", "TEXT", 0, 0),
+            ],
+        ));
+        eval_outcome::validate_trace_index(connection)?;
+    }
+    if version >= 16 {
+        expected_tables.push((
+            "agenturm_telemetry_payloads",
+            vec![
+                ("source_id", "TEXT", 1, 1),
+                ("event_id", "TEXT", 1, 2),
+                ("revision", "INTEGER", 1, 3),
+                ("request_id", "TEXT", 1, 0),
+                ("payload_digest", "BLOB", 1, 0),
+                ("payload_json", "TEXT", 0, 0),
+            ],
         ));
     }
     for (table, expected_columns) in expected_tables {
@@ -737,6 +820,7 @@ fn migrate_v7_to_v8(connection: &mut Connection) -> Result<()> {
 /// transactions. Read-only connections do not take the lease.
 pub struct Store {
     connection: Connection,
+    created_new: bool,
     #[cfg(target_os = "linux")]
     writer_lease: Option<agenturm_storage_lease::WriterLease>,
 }
@@ -757,16 +841,16 @@ impl Store {
             let path = std::path::absolute(path).map_err(StoreError::WriterLease)?;
             // The lease binds an inode, so make the fresh database file before
             // attempting the lease. SQLite schema writes happen after acquisition.
-            match OpenOptions::new()
+            let created_new = match OpenOptions::new()
                 .write(true)
                 .create_new(true)
                 .mode(0o600)
                 .open(&path)
             {
-                Ok(_) => {}
-                Err(error) if error.kind() == ErrorKind::AlreadyExists => {}
+                Ok(_) => true,
+                Err(error) if error.kind() == ErrorKind::AlreadyExists => false,
                 Err(error) => return Err(StoreError::WriterLease(error)),
-            }
+            };
             let lease = agenturm_storage_lease::WriterLease::acquire(&path)
                 .map_err(StoreError::WriterLease)?;
             let connection = Self::open_leased_connection(&lease)?;
@@ -774,6 +858,7 @@ impl Store {
             lease.verify_admission().map_err(StoreError::WriterLease)?;
             return Ok(Self {
                 connection,
+                created_new,
                 writer_lease: Some(lease),
             });
         }
@@ -783,6 +868,7 @@ impl Store {
         )?;
         Ok(Self {
             connection: Self::initialize_writable_connection(connection)?,
+            created_new: false,
             #[cfg(target_os = "linux")]
             writer_lease: None,
         })
@@ -825,7 +911,13 @@ impl Store {
         read_history_identity(&self.connection)
     }
 
-    /// Opens a v8 through v14 store through a read-only connection. This path
+    /// Read provenance changes on backup publication while the logical identity
+    /// used for workspace state stays stable.
+    pub fn read_incarnation(&self) -> Result<Option<agenturm_kernel::ReadIncarnation>> {
+        retention::read_incarnation(&self.connection)
+    }
+
+    /// Opens a v8 through v16 store through a read-only connection. This path
     /// never initializes, migrates, changes journal mode, or creates a DB.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -839,6 +931,7 @@ impl Store {
         transaction.commit()?;
         Ok(Self {
             connection,
+            created_new: false,
             #[cfg(target_os = "linux")]
             writer_lease: None,
         })
@@ -925,6 +1018,8 @@ impl Store {
             content_grant::create_schema(&transaction, SCHEMA_VERSION)?;
             content_grant::create_receipt_proof_schema(&transaction)?;
             retention::create_schema(&transaction)?;
+            eval_outcome::create_schema(&transaction)?;
+            telemetry_payload::create_schema(&transaction)?;
             transaction.commit()?;
         } else if schema_version == 2 {
             validate_marked_shape(&connection, 2)?;
@@ -1150,10 +1245,35 @@ impl Store {
             transaction.commit()?;
             validate_marked_shape(&connection, 13)?;
         }
-        if (2..SCHEMA_VERSION).contains(&schema_version) {
+        if (2..14).contains(&schema_version) {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             content_grant::migrate_v13(&transaction)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V14],
+            )?;
+            transaction.pragma_update(None, "user_version", 14)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 14)?;
+        }
+        if (2..15).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            eval_outcome::create_schema(&transaction)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V15],
+            )?;
+            transaction.pragma_update(None, "user_version", 15)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 15)?;
+        }
+        if (2..SCHEMA_VERSION).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            content_grant::migrate_grant_schema(&transaction, SCHEMA_VERSION)?;
+            telemetry_payload::create_schema(&transaction)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],
@@ -1165,6 +1285,7 @@ impl Store {
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "FULL")?;
         connection.pragma_update(None, "foreign_keys", "ON")?;
+        connection.pragma_update(None, "secure_delete", "ON")?;
         Ok(connection)
     }
 
@@ -1183,6 +1304,23 @@ impl Store {
         self.commit_batch_inner(
             batch,
             None,
+            None,
+            #[cfg(test)]
+            None,
+        )
+    }
+
+    pub fn commit_telemetry_batch(
+        &mut self,
+        batch: &ObservationBatch,
+        binding: &TelemetryBinding,
+        payloads: &[TelemetryPayloadRecord],
+    ) -> Result<CommitOutcome> {
+        self.verify_telemetry_storage()?;
+        self.commit_batch_inner(
+            batch,
+            Some((binding, payloads)),
+            None,
             #[cfg(test)]
             None,
         )
@@ -1191,10 +1329,15 @@ impl Store {
     fn commit_batch_inner(
         &mut self,
         batch: &ObservationBatch,
+        telemetry: Option<(&TelemetryBinding, &[TelemetryPayloadRecord])>,
         fail_after_insert: Option<usize>,
         #[cfg(test)] before_commit: Option<fn()>,
     ) -> Result<CommitOutcome> {
         validate_batch(batch)?;
+        let payloads = telemetry
+            .map(|(binding, records)| telemetry_payload::build_admission(batch, binding, records))
+            .transpose()?
+            .unwrap_or_default();
         let digest = batch_digest(batch)?;
         self.verify_write_admission()?;
         let transaction = self
@@ -1209,6 +1352,9 @@ impl Store {
             .optional()?;
         if let Some((source_id, prior_digest)) = prior {
             if source_id == batch.source_id && prior_digest == digest {
+                for (event_id, payload) in &payloads {
+                    payload.verify_replay(&transaction, &batch.source_id, event_id)?;
+                }
                 return Ok(CommitOutcome::Replay);
             }
             return Err(StoreError::RequestConflict);
@@ -1225,9 +1371,12 @@ impl Store {
             return Err(StoreError::StaleCursor);
         }
 
+        let validating_telemetry_replay =
+            !payloads.is_empty() && current_cursor.as_deref() == Some(batch.next_cursor.as_str());
         let retention_cutoff = retention::read_state(&transaction)?.cutoff_unix_ns;
         let mut inserted = 0;
         for observation in &batch.observations {
+            let payload = payloads.get(observation.event_id.as_str());
             let event_hash = event_digest(&batch.source_id, observation)?;
             let prior_digest: Option<String> = transaction.query_row(
                 "SELECT COALESCE(
@@ -1240,14 +1389,32 @@ impl Store {
             )?;
             if let Some(prior_digest) = prior_digest {
                 if prior_digest == event_hash {
+                    if let Some(payload) = payload {
+                        payload.verify_replay(
+                            &transaction,
+                            &batch.source_id,
+                            &observation.event_id,
+                        )?;
+                    }
                     continue;
                 }
                 return Err(StoreError::EventConflict {
                     event_id: observation.event_id.clone(),
                 });
             }
+            if validating_telemetry_replay {
+                return Err(StoreError::RequestConflict);
+            }
             let timestamp = i64::try_from(observation.observed_at_unix_ns)
                 .map_err(|_| StoreError::Invalid("timestamp exceeds SQLite INTEGER"))?;
+            if let Some(payload) = payload {
+                payload.insert(
+                    &transaction,
+                    batch,
+                    &observation.event_id,
+                    timestamp >= retention_cutoff,
+                )?;
+            }
             if timestamp < retention_cutoff {
                 transaction.execute(
                     "INSERT INTO agenturm_retired_observations
@@ -1286,6 +1453,9 @@ impl Store {
                 return Err(StoreError::InjectedFailure);
             }
         }
+        if validating_telemetry_replay {
+            return Ok(CommitOutcome::Replay);
+        }
         transaction.execute(
             "INSERT INTO agenturm_ingest_receipts (request_id, source_id, batch_digest, event_count)
              VALUES (?1, ?2, ?3, ?4)",
@@ -1299,6 +1469,7 @@ impl Store {
         )?;
         if batch.observations.iter().any(|row| {
             matches!(&row.kind, ObservationKind::Message { role } if role == "user")
+                || matches!(&row.kind, ObservationKind::Tool { category, .. } if category == "shell")
                 || matches!(
                     &row.kind,
                     ObservationKind::McpCall { .. } | ObservationKind::FileEdit(_)
@@ -1411,6 +1582,42 @@ impl Store {
         self.query_history(query, None, None, false, Some(allowed_sources))
     }
 
+    /// Reads exact retained host samples under the normal history watermark.
+    pub fn query_host_history(
+        &self,
+        query: &ObservationQuery,
+        allowed_sources: Option<&BTreeSet<ExtensionId>>,
+    ) -> Result<ObservationPage> {
+        if query.limit > MAX_HOST_HISTORY_PAGE
+            || query.session_id.is_some()
+            || query
+                .harness_id
+                .as_deref()
+                .is_some_and(|id| !agenturm_kernel::is_host_source(id))
+            || query.before.as_ref().is_some_and(|position| {
+                !agenturm_kernel::is_host_source(position.harness_id.as_str())
+                    || query
+                        .harness_id
+                        .as_deref()
+                        .is_some_and(|id| id != position.harness_id.as_str())
+            })
+        {
+            return Err(StoreError::Invalid(
+                "invalid host history scope or page limit",
+            ));
+        }
+        let transaction = self.connection.unchecked_transaction()?;
+        Self::query_history_in(
+            &transaction,
+            query,
+            None,
+            None,
+            false,
+            allowed_sources,
+            true,
+        )
+    }
+
     /// Reads a bounded history page for one exact native turn.
     pub fn query_turn_observations(
         &self,
@@ -1506,6 +1713,7 @@ impl Store {
             worker_filter,
             linked_traces,
             allowed_sources,
+            false,
         )
     }
 
@@ -1516,6 +1724,7 @@ impl Store {
         worker_filter: Option<Option<&str>>,
         linked_traces: bool,
         allowed_sources: Option<&BTreeSet<ExtensionId>>,
+        host_history: bool,
     ) -> Result<ObservationPage> {
         if query.limit == 0 || query.limit > MAX_DURABLE_SNAPSHOT_OBSERVATIONS {
             return Err(StoreError::Invalid("observation page limit is invalid"));
@@ -1589,6 +1798,10 @@ impl Store {
                AND (?9 IS NULL OR observation.turn_id=?9)
                AND (?10 = 0 OR observation.worker_id IS ?11)
                AND (?13 IS NULL OR observation.source_id IN (SELECT value FROM json_each(?13)))
+               AND ((?14 = 1 AND substr(observation.source_id,1,5)='host.'
+                     AND json_extract(observation.kind_json,'$.kind')='host_sample')
+                    OR (?14 = 0 AND (substr(observation.source_id,1,5)<>'host.'
+                          OR json_extract(observation.kind_json,'$.kind')<>'host_sample')))
                AND (?4 IS NULL OR
                     (observation.observed_at_unix_ns,observation.source_id,
                      observation.event_id,observation.revision) <
@@ -1615,6 +1828,7 @@ impl Store {
                 worker_filter.flatten(),
                 linked_traces,
                 allowed_sources.map(serde_json::to_string).transpose()?,
+                host_history,
             ],
             |row| {
                 let revision: i64 = row.get(2)?;
@@ -1710,6 +1924,9 @@ impl Store {
                         result,
                     },
                     ObservationKind::TraceSpan(span) => KernelObservationKind::TraceSpan(span),
+                    ObservationKind::HostSample(sample) => {
+                        KernelObservationKind::HostSample(sample)
+                    }
                     ObservationKind::Lifecycle { state, reason_code } => {
                         KernelObservationKind::Lifecycle { state, reason_code }
                     }
@@ -1729,6 +1946,12 @@ impl Store {
                     ObservationKind::Message { role } => KernelObservationKind::Message { role },
                     ObservationKind::CreditUsage { nanocredits } => {
                         KernelObservationKind::CreditUsage { nanocredits }
+                    }
+                    ObservationKind::ReportedCost(cost) => {
+                        KernelObservationKind::ReportedCost(cost)
+                    }
+                    ObservationKind::SpanTokenUsage(usage) => {
+                        KernelObservationKind::SpanTokenUsage(usage)
                     }
                     ObservationKind::Diagnostic { code, severity } => {
                         KernelObservationKind::Diagnostic { code, severity }
@@ -1860,8 +2083,13 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
     if let Some(cursor) = &batch.expected_cursor {
         validate_cursor(cursor)?;
     }
-    if batch.observations.len() > MAX_BATCH_EVENTS {
-        return Err(StoreError::Invalid("batch exceeds event count limit"));
+    if batch.observations.len() > MAX_BATCH_EVENTS
+        || batch
+            .observations
+            .iter()
+            .any(|row| matches!(row.kind, ObservationKind::SpanTokenUsage(_)))
+    {
+        validate_otlp_metadata_batch(batch)?;
     }
     let mut event_ids = std::collections::BTreeSet::new();
     for observation in &batch.observations {
@@ -1882,8 +2110,10 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
                 "session ID",
             )?,
             StoredScope::Source
-                if matches!(observation.kind, ObservationKind::Diagnostic { .. })
-                    && observation.identity.session_id.is_none()
+                if matches!(
+                    observation.kind,
+                    ObservationKind::Diagnostic { .. } | ObservationKind::HostSample(_)
+                ) && observation.identity.session_id.is_none()
                     && observation.identity.worker_id.is_none()
                     && observation.identity.turn_id.is_none()
                     && observation.identity.operation_id.is_none() => {}
@@ -1904,6 +2134,15 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
         }
         if observation.observed_at_unix_ns > i64::MAX as u64 {
             return Err(StoreError::Invalid("timestamp exceeds SQLite INTEGER"));
+        }
+        if let ObservationKind::HostSample(sample) = &observation.kind
+            && (observation.identity.scope != StoredScope::Source
+                || !agenturm_kernel::is_host_source(&batch.source_id)
+                || !sample.is_valid())
+        {
+            return Err(StoreError::Invalid(
+                "host sample requires a valid host source and source-scoped metrics",
+            ));
         }
         if let ObservationKind::Activity { category } = &observation.kind
             && (category.is_empty()
@@ -2024,6 +2263,16 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
         {
             return Err(StoreError::Invalid("credit usage exceeds supported range"));
         }
+        if let ObservationKind::ReportedCost(cost) = &observation.kind
+            && (observation.identity.scope != StoredScope::Session
+                || !cost.is_valid()
+                || !cost.matches_event(&observation.event_id)
+                || (cost.span.is_some() && !batch.source_id.starts_with("otlp.")))
+        {
+            return Err(StoreError::Invalid(
+                "reported cost metadata or event identity is invalid",
+            ));
+        }
         if let ObservationKind::Diagnostic { code, severity } = &observation.kind
             && (!agenturm_kernel::is_safe_diagnostic_code(code)
                 || !matches!(severity.as_str(), "info" | "warning" | "error"))
@@ -2031,6 +2280,91 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
             return Err(StoreError::Invalid(
                 "diagnostic code or severity is invalid",
             ));
+        }
+    }
+    Ok(())
+}
+
+fn validate_otlp_metadata_batch(batch: &ObservationBatch) -> Result<()> {
+    let rows = &batch.observations;
+    if rows.len() > MAX_OTLP_BATCH_SPANS * 3 {
+        return Err(StoreError::Invalid("batch exceeds event count limit"));
+    }
+    if !batch.source_id.starts_with("otlp.") || ExtensionId::parse(&batch.source_id).is_err() {
+        return Err(StoreError::Invalid(if rows.len() > MAX_BATCH_EVENTS {
+            "batch exceeds event count limit"
+        } else {
+            "span token usage requires an OTLP source"
+        }));
+    }
+    let mut spans = BTreeMap::new();
+    for row in rows {
+        if let ObservationKind::TraceSpan(span) = &row.kind {
+            let span_key = (span.trace_id.as_str(), span.span_id.as_str());
+            if row.revision != 0
+                || row.identity.operation_id.is_some()
+                || row
+                    .event_id
+                    .strip_prefix("otlp:")
+                    .and_then(|id| id.split_once(':'))
+                    != Some(span_key)
+                || spans.insert(span_key, (row, span)).is_some()
+                || spans.len() > MAX_OTLP_BATCH_SPANS
+            {
+                return Err(StoreError::Invalid(
+                    "OTLP structural spans exceed limits or have invalid identities",
+                ));
+            }
+        }
+    }
+    let matching_span = |row: &StoredObservation, span: &agenturm_kernel::TraceSpanIdentity| {
+        let key = (span.trace_id.as_str(), span.span_id.as_str());
+        spans.get(&key).is_some_and(|(anchor, structural)| {
+            row.revision == anchor.revision
+                && row.identity == anchor.identity
+                && row.observed_at_unix_ns == anchor.observed_at_unix_ns
+                && match &row.kind {
+                    ObservationKind::SpanTokenUsage(usage) => {
+                        usage.target_source_id == structural.target_source_id
+                    }
+                    _ => true,
+                }
+        })
+    };
+    for row in rows {
+        match &row.kind {
+            ObservationKind::TraceSpan(_) => {}
+            ObservationKind::ReportedCost(cost) => {
+                if !cost.matches_event(&row.event_id)
+                    || !cost
+                        .span
+                        .as_ref()
+                        .is_some_and(|span| matching_span(row, span))
+                {
+                    return Err(StoreError::Invalid(
+                        "OTLP reported cost has no exact structural span",
+                    ));
+                }
+            }
+            ObservationKind::SpanTokenUsage(usage) => {
+                let valid = agenturm_kernel::is_span_usage_anchor_valid(
+                    usage,
+                    &row.event_id,
+                    row.identity.turn_id.as_deref(),
+                    row.identity.worker_id.as_deref(),
+                    row.identity.operation_id.as_deref(),
+                );
+                if !valid || !matching_span(row, &usage.span) {
+                    return Err(StoreError::Invalid(
+                        "OTLP span token usage has no exact structural span",
+                    ));
+                }
+            }
+            _ => {
+                return Err(StoreError::Invalid(
+                    "OTLP metadata batch contains an unrelated observation",
+                ));
+            }
         }
     }
     Ok(())
@@ -2137,7 +2471,88 @@ mod tests {
         }
     }
 
+    fn downgrade_fixture_to_v14(connection: &Connection) {
+        connection.execute_batch(
+            "DROP INDEX agenturm_observations_by_trace;
+             DROP TABLE agenturm_eval_outcomes;
+             DROP TABLE agenturm_telemetry_payloads;
+             UPDATE agenturm_store_meta SET value='agenturm.observation-store.v14' WHERE key='format';
+             PRAGMA user_version=14;"
+        ).unwrap();
+    }
+
+    #[test]
+    fn mismatched_span_usage_scope_rejects_the_entire_batch() {
+        use agenturm_kernel::{
+            ObservationIdentity, ReportedCost, SpanTokenUsage, TraceSpan, TraceSpanIdentity,
+            TraceStatus,
+        };
+
+        let db = TempDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        let source = ExtensionId::parse("otlp.usage").unwrap();
+        let trace = TraceSpanIdentity {
+            trace_id: "11".repeat(16),
+            span_id: "22".repeat(8),
+        };
+        let mut identity = ObservationIdentity::session("session");
+        identity.turn_id = Some("turn".into());
+        identity.worker_id = Some("worker".into());
+        let row = |prefix: &str, kind| Observation {
+            harness_id: source.clone(),
+            event_id: format!("{prefix}:{}:{}", trace.trace_id, trace.span_id),
+            revision: 0,
+            identity: identity.clone(),
+            observed_at_unix_ns: 2,
+            kind,
+        };
+        let structural = row(
+            "otlp",
+            KernelObservationKind::TraceSpan(TraceSpan {
+                trace_id: trace.trace_id.clone(),
+                span_id: trace.span_id.clone(),
+                parent_span_id: None,
+                target_source_id: Some("harness.pi".into()),
+                started_at_unix_ns: 1,
+                status: TraceStatus::Ok,
+            }),
+        );
+        let cost = row(
+            "otlp-cost",
+            KernelObservationKind::ReportedCost(ReportedCost {
+                currency: "USD".into(),
+                nanounits: 0,
+                span: Some(trace.clone()),
+            }),
+        );
+        let mut usage = row(
+            "otlp-usage",
+            KernelObservationKind::SpanTokenUsage(SpanTokenUsage {
+                span: trace.clone(),
+                target_source_id: Some("harness.pi".into()),
+                input_tokens: Some(0),
+                output_tokens: None,
+                cache_read_input_tokens: None,
+                cache_write_input_tokens: None,
+                reasoning_output_tokens: None,
+                total_tokens: None,
+            }),
+        );
+        usage.identity.worker_id = Some("sibling".into());
+        let result = ObservationStore::commit(
+            &mut store,
+            source.as_str(),
+            None,
+            "next",
+            &[structural, cost, usage],
+        );
+        assert!(result.unwrap_err().contains("has no exact structural span"));
+        assert!(store.source_cursor(source.as_str()).unwrap().is_none());
+        assert!(store.observation_page(10).unwrap().observations.is_empty());
+    }
+
     fn downgrade_fixture_to_v9(connection: &Connection) {
+        downgrade_fixture_to_v14(connection);
         connection
             .execute_batch(
                 "DROP TABLE agenturm_content_cursor_proofs;
@@ -2151,6 +2566,84 @@ mod tests {
     }
 
     #[test]
+    fn v14_migration_retains_trace_membership_and_command_approval() {
+        use agenturm_kernel::{ExtensionId, ObservationIdentity, TraceSpan, TraceStatus};
+
+        let db = TempDb::new();
+        let source = ExtensionId::parse("otlp.evaluation").unwrap();
+        let trace_id = "11111111111111111111111111111111";
+        let span_id = "2222222222222222";
+        let command = ContentGrantScope::new(
+            ExtensionId::parse("harness.codex").unwrap(),
+            ContentKind::CodexCommandDetail,
+            [1; 32],
+        );
+        let mut store = Store::open(&db.0).unwrap();
+        let grant = store.grant_content(&command).unwrap();
+        store
+            .commit(
+                source.as_str(),
+                None,
+                "trace",
+                &[Observation {
+                    harness_id: source.clone(),
+                    event_id: format!("otlp:{trace_id}:{span_id}"),
+                    revision: 0,
+                    identity: ObservationIdentity::session("session-1"),
+                    observed_at_unix_ns: 2,
+                    kind: agenturm_kernel::ObservationKind::TraceSpan(TraceSpan {
+                        trace_id: trace_id.into(),
+                        span_id: span_id.into(),
+                        parent_span_id: None,
+                        target_source_id: None,
+                        started_at_unix_ns: 1,
+                        status: TraceStatus::Ok,
+                    }),
+                }],
+            )
+            .unwrap();
+        downgrade_fixture_to_v14(&store.connection);
+        drop(store);
+
+        let reader = Store::open_read_only(&db.0).unwrap();
+        assert!(reader.eval_outcome(&source, trace_id).unwrap().is_none());
+        reader.verify_content_grant(&command, &grant).unwrap();
+        drop(reader);
+
+        let outcome = EvalOutcome {
+            trace_id: trace_id.into(),
+            passed: false,
+            task_id: None,
+            provider_model: None,
+            scores: Vec::new(),
+        };
+        let mut store = Store::open_collector(&db.0).unwrap();
+        store.verify_content_grant(&command, &grant).unwrap();
+        assert_eq!(
+            store
+                .import_eval_outcomes(&source, std::slice::from_ref(&outcome))
+                .unwrap()
+                .inserted,
+            1
+        );
+        let stored = store.eval_outcome(&source, trace_id).unwrap().unwrap();
+        assert_eq!(stored.outcome, outcome);
+        assert_eq!(stored.revision, 1);
+        store.prune_observations_before(3).unwrap();
+        assert_eq!(
+            store
+                .connection
+                .query_row(
+                    "SELECT count(*), count(outcome_json) FROM agenturm_eval_outcomes",
+                    [],
+                    |row| Ok((row.get::<_, u64>(0)?, row.get::<_, u64>(1)?)),
+                )
+                .unwrap(),
+            (1, 0)
+        );
+    }
+
+    #[test]
     fn v11_approval_survives_upgrade_without_authorizing_mcp_payloads() {
         let db = TempDb::new();
         let source = agenturm_kernel::ExtensionId::parse("harness.codex").unwrap();
@@ -2160,6 +2653,7 @@ mod tests {
         let mut store = Store::open(&db.0).unwrap();
         let existing = store.grant_content(&prompt).unwrap();
         let transaction = store.connection.transaction().unwrap();
+        downgrade_fixture_to_v14(&transaction);
         content_grant::migrate_grant_schema(&transaction, 11).unwrap();
         transaction
             .execute(
@@ -2187,6 +2681,7 @@ mod tests {
         let mut store = Store::open(&db.0).unwrap();
         let existing = store.grant_content(&mcp).unwrap();
         let transaction = store.connection.transaction().unwrap();
+        downgrade_fixture_to_v14(&transaction);
         content_grant::migrate_grant_schema(&transaction, 12).unwrap();
         transaction
             .execute(
@@ -2213,6 +2708,7 @@ mod tests {
         let mut store = Store::open(&db.0).unwrap();
         let existing = store.grant_content(&edit).unwrap();
         let transaction = store.connection.transaction().unwrap();
+        downgrade_fixture_to_v14(&transaction);
         content_grant::migrate_grant_schema(&transaction, 13).unwrap();
         transaction
             .execute(
@@ -2312,6 +2808,82 @@ mod tests {
             next_cursor: "cursor-1".into(),
             observations,
         }
+    }
+
+    #[test]
+    fn host_history_enforces_type_scope_and_pins_pages() {
+        let mut store = Store::open(":memory:").unwrap();
+        let host = "host.fixture";
+        let make_batch = |source: &str, event_id: &str, timestamp, previous: Option<&str>| {
+            let mut row = event(event_id, "unused", timestamp);
+            row.identity = ObservationIdentity {
+                scope: StoredScope::Source,
+                session_id: None,
+                worker_id: None,
+                turn_id: None,
+                operation_id: None,
+            };
+            row.kind = ObservationKind::HostSample(agenturm_kernel::HostSample {
+                boot_id: "12345678-1234-1234-1234-123456789abc".into(),
+                clock_ticks_per_second: Some(100),
+                cpu: None,
+                load_1m_milli: Some(0),
+                load_5m_milli: None,
+                load_15m_milli: None,
+                memory_total_bytes: Some(1024),
+                memory_available_bytes: None,
+                processes: Vec::new(),
+                processes_partial: false,
+            });
+            ObservationBatch {
+                source_id: source.into(),
+                request_id: event_id.into(),
+                expected_cursor: previous.map(str::to_owned),
+                next_cursor: event_id.into(),
+                observations: vec![row],
+            }
+        };
+        let mut invalid = make_batch("harness.codex", "invalid", 1, None);
+        assert!(matches!(
+            store.commit_batch(&invalid),
+            Err(StoreError::Invalid(_))
+        ));
+        invalid.source_id = host.into();
+        invalid.observations[0].identity = event("unused", "session", 1).identity;
+        assert!(matches!(
+            store.commit_batch(&invalid),
+            Err(StoreError::Invalid(_))
+        ));
+
+        store
+            .commit_batch(&make_batch(host, "first", 1, None))
+            .unwrap();
+        store
+            .commit_batch(&make_batch(host, "second", 2, Some("first")))
+            .unwrap();
+        assert!(store.observation_page(20).unwrap().observations.is_empty());
+        let page = store
+            .query_host_history(&ObservationQuery::latest(1), None)
+            .unwrap();
+        assert_eq!(page.observations[0].event_id, "second");
+        let next = page.older_position().unwrap();
+        store
+            .commit_batch(&make_batch(host, "third", 3, Some("second")))
+            .unwrap();
+        let query = ObservationQuery {
+            before: Some(next),
+            snapshot_id: Some(page.snapshot_id),
+            ..ObservationQuery::latest(1)
+        };
+        let page = store.query_host_history(&query, None).unwrap();
+        assert_eq!(page.observations[0].event_id, "first");
+        assert!(
+            store
+                .query_host_history(&query, Some(&BTreeSet::new()))
+                .unwrap()
+                .observations
+                .is_empty()
+        );
     }
 
     fn batch_after(
@@ -2452,7 +3024,7 @@ mod tests {
         assert!(!older.has_more);
 
         let second = writer.prune_observations_before(25).unwrap();
-        assert!(second.minimum_snapshot_id > prune.minimum_snapshot_id);
+        assert!(second.minimum_snapshot_id.watermark() > prune.minimum_snapshot_id.watermark());
         assert!(matches!(
             reader.query_observations(&next),
             Err(StoreError::ExpiredHistorySnapshot { .. })
@@ -2678,7 +3250,7 @@ mod tests {
 
         let store = Store::open(&db.0).unwrap();
         let page = store.observation_page(10).unwrap();
-        assert_eq!(page.snapshot_id, 1);
+        assert_eq!(page.snapshot_id, 1.into());
         assert_eq!(page.observations.len(), 1);
         let version: i64 = store
             .connection
@@ -2707,7 +3279,7 @@ mod tests {
         }
         let store = Store::open(&db.0).unwrap();
         let page = store.observation_page(10).unwrap();
-        assert_eq!(page.snapshot_id, 1);
+        assert_eq!(page.snapshot_id, 1.into());
         assert_eq!(page.observations.len(), 1);
         assert_eq!(
             store
@@ -2738,7 +3310,7 @@ mod tests {
         }
         let store = Store::open(&db.0).unwrap();
         let page = store.observation_page(10).unwrap();
-        assert_eq!(page.snapshot_id, 1);
+        assert_eq!(page.snapshot_id, 1.into());
         assert_eq!(page.observations.len(), 1);
         assert_eq!(
             store
@@ -2769,7 +3341,7 @@ mod tests {
         }
         let store = Store::open(&db.0).unwrap();
         let page = store.observation_page(10).unwrap();
-        assert_eq!(page.snapshot_id, 1);
+        assert_eq!(page.snapshot_id, 1.into());
         assert_eq!(page.observations.len(), 1);
         assert_eq!(
             store
@@ -2800,7 +3372,7 @@ mod tests {
         }
         let store = Store::open(&db.0).unwrap();
         let page = store.observation_page(10).unwrap();
-        assert_eq!(page.snapshot_id, 1);
+        assert_eq!(page.snapshot_id, 1.into());
         assert_eq!(page.observations.len(), 1);
         assert_eq!(
             store
@@ -2823,7 +3395,7 @@ mod tests {
         }
         let store = Store::open(&db.0).unwrap();
         let page = store.observation_page(10).unwrap();
-        assert_eq!(page.snapshot_id, 1);
+        assert_eq!(page.snapshot_id, 1.into());
         assert_eq!(page.observations.len(), 1);
         assert_eq!(
             page.observations[0].identity.scope,
@@ -3497,9 +4069,9 @@ mod tests {
                     harness_id: "harness.codex".into(),
                     event_id: "bad event".into(),
                     revision: 0,
-                    snapshot_id: 1,
+                    snapshot_id: 1.into(),
                 }),
-                snapshot_id: Some(1),
+                snapshot_id: Some(1.into()),
                 limit: 1,
             },
         ];
@@ -3641,7 +4213,7 @@ mod tests {
             ],
         );
         assert!(matches!(
-            store.commit_batch_inner(&input, Some(1), None),
+            store.commit_batch_inner(&input, None, Some(1), None),
             Err(StoreError::InjectedFailure)
         ));
         assert!(store.observations().unwrap().is_empty());
@@ -3687,6 +4259,7 @@ mod tests {
             store
                 .commit_batch_inner(
                     &input,
+                    None,
                     None,
                     Some(|| {
                         fs::write(std::env::var_os(CHILD_MARKER).unwrap(), b"ready").unwrap();

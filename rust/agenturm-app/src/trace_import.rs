@@ -1,13 +1,19 @@
 //! Explicit, bounded import of structural OTLP trace evidence.
 
+pub(super) mod cost;
 mod proto;
+pub(super) mod token_usage;
 
 use agenturm_kernel::{
-    ExtensionId, Observation, ObservationIdentity, ObservationKind, ObservationStore, TraceSpan,
-    TraceStatus,
+    ExtensionId, Observation, ObservationIdentity, ObservationKind, ObservationStore, ReportedCost,
+    TraceSpan, TraceSpanIdentity, TraceStatus,
 };
-use agenturm_store::Store;
+use agenturm_store::{
+    CommitOutcome, ObservationBatch, Store, TelemetryBinding, TelemetryPayload,
+    TelemetryPayloadRecord,
+};
 use serde::Deserialize;
+use serde_json::value::RawValue;
 use sha2::{Digest, Sha256};
 use std::collections::BTreeMap;
 use std::fs::File;
@@ -15,10 +21,13 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 pub(super) const MAX_EXPORT_BYTES: u64 = 4 * 1024 * 1024;
-const MAX_EXPORT_SPANS: usize = 1_024;
+pub(super) const MAX_EXPORT_SPANS: usize = agenturm_store::MAX_OTLP_BATCH_SPANS;
 const CURSOR_PREFIX: &str = "otlp-json/1:";
 const TURN_KEY: &str = "agenturm.turn.id";
 const WORKER_KEY: &str = "agenturm.worker.id";
+const PAYLOAD_INPUT: &str = "agenturm.payload.input";
+const PAYLOAD_OUTPUT: &str = "agenturm.payload.output";
+
 pub(super) const TRACE_IMPORT_USAGE: &str =
     "agenturm import-traces --file <otlp-json-path|-> --db <path> --source-id otlp.<id>";
 
@@ -65,24 +74,82 @@ pub(super) fn parse_source_id(value: &str) -> Result<ExtensionId, String> {
 }
 
 pub fn execute_trace_import(options: &TraceImportOptions) -> Result<String, String> {
-    let (observations, unscoped) = if options.file.as_os_str() == "-" {
-        prepare(io::stdin().lock(), &options.source_id)?
-    } else {
-        let metadata = options
-            .file
-            .metadata()
-            .map_err(|error| format!("cannot open OTLP export: {error}"))?;
-        if !metadata.is_file() || metadata.len() > MAX_EXPORT_BYTES {
-            return Err("OTLP export must be a regular file of at most 4 MiB".into());
-        }
-        let file = File::open(&options.file)
-            .map_err(|error| format!("cannot open OTLP export: {error}"))?;
-        prepare(file, &options.source_id)?
-    };
+    let (observations, unscoped) = prepare_export(options)?;
     let inserted = commit(&options.db, &options.source_id, &observations)?;
-    Ok(format!(
-        "Imported {inserted} spans. Skipped {unscoped} without session identity.\n"
-    ))
+    Ok(report(inserted, unscoped, &observations))
+}
+
+#[cfg(target_os = "linux")]
+pub(super) fn execute_with_store(
+    options: &TraceImportOptions,
+    store: &mut impl ObservationStore,
+) -> Result<String, String> {
+    let (observations, unscoped) = prepare_export(options)?;
+    let inserted = commit_with_store(store, &options.source_id, &observations)?;
+    Ok(report(inserted, unscoped, &observations))
+}
+
+fn report(inserted: usize, unscoped: usize, observations: &[Observation]) -> String {
+    if let Some(evidence) = metadata_evidence_summary(observations) {
+        format!(
+            "Imported {inserted} observations from {evidence}. Skipped {unscoped} without session identity.\n"
+        )
+    } else {
+        format!("Imported {inserted} spans. Skipped {unscoped} without session identity.\n")
+    }
+}
+
+pub(super) fn metadata_evidence_summary(observations: &[Observation]) -> Option<String> {
+    let mut cost = 0;
+    let mut usage = 0;
+    for row in observations {
+        match row.kind {
+            ObservationKind::ReportedCost(_) => cost += 1,
+            ObservationKind::SpanTokenUsage(_) => usage += 1,
+            _ => {}
+        }
+    }
+    if cost == 0 && usage == 0 {
+        return None;
+    }
+    let mut labels = vec![format!("{} spans", observations.len() - cost - usage)];
+    if cost > 0 {
+        labels.push(format!("{cost} reported cost records"));
+    }
+    if usage > 0 {
+        labels.push(format!("{usage} token usage records"));
+    }
+    let last = labels.pop().expect("a metadata label exists");
+    Some(format!("{} and {last}", labels.join(", ")))
+}
+
+fn prepare_export(options: &TraceImportOptions) -> Result<(Vec<Observation>, usize), String> {
+    if options.file.as_os_str() == "-" {
+        return prepare(io::stdin().lock(), &options.source_id);
+    }
+    let file = open_regular_export(&options.file, "OTLP export")?;
+    prepare(file, &options.source_id)
+}
+
+pub(super) fn open_regular_export(path: &Path, format: &str) -> Result<File, String> {
+    let mut options = File::options();
+    options.read(true);
+    #[cfg(unix)]
+    {
+        use std::os::unix::fs::OpenOptionsExt;
+        // Open without blocking on a FIFO. Validate the opened inode.
+        options.custom_flags(libc::O_NONBLOCK);
+    }
+    let file = options
+        .open(path)
+        .map_err(|_| format!("Cannot open {format}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|_| format!("Cannot inspect {format}"))?;
+    if !metadata.is_file() || metadata.len() > MAX_EXPORT_BYTES {
+        return Err(format!("{format} must be a regular file of at most 4 MiB"));
+    }
+    Ok(file)
 }
 
 pub(super) fn commit(
@@ -95,11 +162,14 @@ pub(super) fn commit(
     }
     let mut store =
         Store::open_collector(db).map_err(|error| format!("open history failed: {error}"))?;
+    store
+        .apply_current_automatic_retention()
+        .map_err(|_| "Automatic retention could not run")?;
     commit_with_store(&mut store, source_id, observations)
 }
 
 pub(super) fn commit_with_store(
-    store: &mut Store,
+    store: &mut impl ObservationStore,
     source_id: &ExtensionId,
     observations: &[Observation],
 ) -> Result<usize, String> {
@@ -107,35 +177,93 @@ pub(super) fn commit_with_store(
         return Ok(0);
     }
     let cursor = import_cursor(observations)?;
-    let source = source_id.as_str();
-    let prior = ObservationStore::source_cursor(store, source)?;
+    let prior = admission_cursor(store, source_id)?;
+    if prior.as_deref() == Some(cursor.as_str()) {
+        Ok(0)
+    } else {
+        ObservationStore::commit(
+            store,
+            source_id.as_str(),
+            prior.as_deref(),
+            &cursor,
+            observations,
+        )
+        .map(|receipt| receipt.inserted)
+    }
+}
+
+pub(super) fn prepare_payload_batch(
+    store: &impl ObservationStore,
+    binding: &TelemetryBinding,
+    rows: &[Observation],
+) -> Result<ObservationBatch, String> {
+    let prior = admission_cursor(store, &binding.source_id)?;
+    let next = import_cursor(rows)?;
+    ObservationBatch::from_observations(binding.source_id.as_str(), prior.as_deref(), &next, rows)
+}
+
+pub(super) fn commit_payloads(
+    db: &Path,
+    binding: &TelemetryBinding,
+    rows: &[Observation],
+    payloads: &[TelemetryPayloadRecord],
+) -> Result<(), String> {
+    if payloads.is_empty() {
+        return commit(db, &binding.source_id, rows).map(|_| ());
+    }
+    let mut store =
+        Store::open_collector(db).map_err(|error| format!("open history failed: {error}"))?;
+    store
+        .apply_current_automatic_retention()
+        .map_err(|_| "Automatic retention could not run")?;
+    let batch = prepare_payload_batch(&store, binding, rows)?;
+    match store.commit_telemetry_batch(&batch, binding, payloads) {
+        Ok(CommitOutcome::Replay | CommitOutcome::Committed { .. }) => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
+}
+
+pub(super) fn admission_cursor(
+    store: &impl ObservationStore,
+    source_id: &ExtensionId,
+) -> Result<Option<String>, String> {
+    let prior = ObservationStore::source_cursor(store, source_id.as_str())?;
     if prior
         .as_deref()
         .is_some_and(|checkpoint| !checkpoint.starts_with(CURSOR_PREFIX))
     {
         return Err("OTLP source identifier already belongs to another collector".into());
     }
-    if prior.as_deref() == Some(cursor.as_str()) {
-        Ok(0)
-    } else {
-        ObservationStore::commit(store, source, prior.as_deref(), &cursor, observations)
-            .map(|receipt| receipt.inserted)
-    }
+    Ok(prior)
 }
 
 fn import_cursor(observations: &[Observation]) -> Result<String, String> {
     let mut hasher = Sha256::new();
     for row in observations {
-        let ObservationKind::TraceSpan(span) = &row.kind else {
-            return Err("invalid trace import observation".into());
-        };
-        let session_id = row.identity.session_id.as_deref();
-        let legacy = (session_id, row.observed_at_unix_ns, span);
-        let serial = match row.identity.turn_id.as_deref() {
-            Some(turn_id) => {
-                serde_json::to_vec(&(legacy, turn_id, row.identity.worker_id.as_deref()))
+        let serial = match &row.kind {
+            ObservationKind::TraceSpan(span) => {
+                let session_id = row.identity.session_id.as_deref();
+                let legacy = (session_id, row.observed_at_unix_ns, span);
+                match row.identity.turn_id.as_deref() {
+                    Some(turn_id) => {
+                        serde_json::to_vec(&(legacy, turn_id, row.identity.worker_id.as_deref()))
+                    }
+                    None => serde_json::to_vec(&legacy),
+                }
             }
-            None => serde_json::to_vec(&legacy),
+            ObservationKind::ReportedCost(cost) => serde_json::to_vec(&(
+                "reported_cost",
+                &row.identity,
+                row.observed_at_unix_ns,
+                cost,
+            )),
+            ObservationKind::SpanTokenUsage(usage) => serde_json::to_vec(&(
+                "span_token_usage",
+                &row.identity,
+                row.observed_at_unix_ns,
+                usage,
+            )),
+            _ => return Err("invalid trace import observation".into()),
         }
         .map_err(|_| "cannot encode trace import metadata".to_owned())?;
         hasher.update(serial);
@@ -160,20 +288,24 @@ pub(super) fn decode(
     bytes: &[u8],
     source_id: &ExtensionId,
 ) -> Result<(Vec<Observation>, usize), String> {
-    decode_json(bytes, source_id, None)
+    let (observations, skipped, _) = decode_json(bytes, source_id, None, None)?;
+    Ok((observations, skipped))
 }
+
+pub(super) type DecodedExport = (Vec<Observation>, usize, Vec<TelemetryPayloadRecord>);
 
 pub(super) fn decode_json(
     bytes: &[u8],
     source_id: &ExtensionId,
     launch_session: Option<&str>,
-) -> Result<(Vec<Observation>, usize), String> {
+    payload_binding: Option<&TelemetryBinding>,
+) -> Result<DecodedExport, String> {
     if bytes.len() as u64 > MAX_EXPORT_BYTES {
         return Err("OTLP export exceeds 4 MiB".into());
     }
     let export: Export =
         serde_json::from_slice(bytes).map_err(|_| "invalid OTLP JSON trace export".to_owned())?;
-    project(
+    project_payloads(
         export
             .resource_spans
             .into_iter()
@@ -181,6 +313,7 @@ pub(super) fn decode_json(
             .flat_map(|scope| scope.spans),
         source_id,
         launch_session,
+        payload_binding,
     )
 }
 
@@ -188,29 +321,65 @@ pub(super) fn decode_protobuf(
     bytes: &[u8],
     source_id: &ExtensionId,
     launch_session: Option<&str>,
-) -> Result<(Vec<Observation>, usize), String> {
+    payload_binding: Option<&TelemetryBinding>,
+) -> Result<DecodedExport, String> {
     if bytes.len() as u64 > MAX_EXPORT_BYTES {
         return Err("OTLP export exceeds 4 MiB".into());
     }
-    project(proto::decode(bytes)?, source_id, launch_session)
+    project_payloads(
+        proto::decode(bytes)?,
+        source_id,
+        launch_session,
+        payload_binding,
+    )
 }
 
 pub(super) fn protobuf_response(rejected: usize) -> Vec<u8> {
     proto::response(rejected)
 }
 
-fn project(
+pub(super) fn project(
     spans: impl IntoIterator<Item = OtlpSpan>,
     source_id: &ExtensionId,
     launch_session: Option<&str>,
 ) -> Result<(Vec<Observation>, usize), String> {
+    let (observations, skipped, _) = project_payloads(spans, source_id, launch_session, None)?;
+    Ok((observations, skipped))
+}
+
+fn project_payloads(
+    spans: impl IntoIterator<Item = OtlpSpan>,
+    source_id: &ExtensionId,
+    launch_session: Option<&str>,
+    payload_binding: Option<&TelemetryBinding>,
+) -> Result<DecodedExport, String> {
     let mut observations = BTreeMap::new();
     let mut unscoped = 0;
     for (index, span) in spans.into_iter().enumerate() {
         if index >= MAX_EXPORT_SPANS {
             return Err("OTLP export exceeds 1024 spans".into());
         }
-        let scope = trace_scope(span.attributes)?;
+        let reported = cost::reported_amount(&span.attributes);
+        let scope = trace_scope(&span.attributes)?;
+        let payload = match (scope.input, scope.output) {
+            (None, None) => None,
+            (input, output) => {
+                let binding = payload_binding.ok_or("OTLP payload capture is disabled")?;
+                if scope.session_id.is_none()
+                    || scope.target_source_id.as_deref()
+                        != binding.native_source_id.as_ref().map(ExtensionId::as_str)
+                {
+                    return Err(
+                        "OTLP payload requires its configured explicit source and session".into(),
+                    );
+                }
+                let payload = TelemetryPayload { input, output };
+                payload
+                    .validate()
+                    .map_err(|_| "OTLP payload text was withheld")?;
+                Some(payload)
+            }
+        };
         if scope.turn_id.is_some()
             && (scope.target_source_id.is_none() || scope.session_id.is_none())
         {
@@ -256,6 +425,42 @@ fn project(
         let mut identity = ObservationIdentity::session(session_id);
         identity.turn_id = scope.turn_id;
         identity.worker_id = scope.worker_id;
+        if let Some((currency, nanounits)) = reported {
+            let cost_event = format!("otlp-cost:{}:{}", native.trace_id, native.span_id);
+            insert_projected(
+                &mut observations,
+                Observation {
+                    harness_id: source_id.clone(),
+                    event_id: cost_event,
+                    revision: 0,
+                    identity: identity.clone(),
+                    observed_at_unix_ns: ended_at,
+                    kind: ObservationKind::ReportedCost(ReportedCost {
+                        currency,
+                        nanounits,
+                        span: Some(TraceSpanIdentity {
+                            trace_id: native.trace_id.clone(),
+                            span_id: native.span_id.clone(),
+                        }),
+                    }),
+                },
+                None,
+            )?;
+        }
+        if let Some(usage) = token_usage::reported(&span.attributes, &native) {
+            insert_projected(
+                &mut observations,
+                Observation {
+                    harness_id: source_id.clone(),
+                    event_id: format!("otlp-usage:{}:{}", native.trace_id, native.span_id),
+                    revision: 0,
+                    identity: identity.clone(),
+                    observed_at_unix_ns: ended_at,
+                    kind: ObservationKind::SpanTokenUsage(usage),
+                },
+                None,
+            )?;
+        }
         let observation = Observation {
             harness_id: source_id.clone(),
             event_id: event_id.clone(),
@@ -266,16 +471,42 @@ fn project(
         };
         match observations.entry(event_id) {
             std::collections::btree_map::Entry::Vacant(entry) => {
-                entry.insert(observation);
+                entry.insert((observation, payload));
             }
             std::collections::btree_map::Entry::Occupied(entry) => {
-                if entry.get() != &observation {
+                if entry.get() != &(observation, payload) {
                     return Err("OTLP export contains a conflicting span identity".into());
                 }
             }
         }
     }
-    Ok((observations.into_values().collect(), unscoped))
+    let mut rows = Vec::with_capacity(observations.len());
+    let mut payloads = Vec::new();
+    for (event_id, (row, payload)) in observations {
+        rows.push(row);
+        if let Some(payload) = payload {
+            payloads.push(TelemetryPayloadRecord { event_id, payload });
+        }
+    }
+    Ok((rows, unscoped, payloads))
+}
+
+fn insert_projected(
+    observations: &mut BTreeMap<String, (Observation, Option<TelemetryPayload>)>,
+    observation: Observation,
+    payload: Option<TelemetryPayload>,
+) -> Result<(), String> {
+    match observations.entry(observation.event_id.clone()) {
+        std::collections::btree_map::Entry::Vacant(entry) => {
+            entry.insert((observation, payload));
+        }
+        std::collections::btree_map::Entry::Occupied(entry) => {
+            if entry.get() != &(observation, payload) {
+                return Err("OTLP export contains conflicting span metadata evidence".into());
+            }
+        }
+    }
+    Ok(())
 }
 
 #[derive(Default)]
@@ -284,9 +515,11 @@ struct TraceScope {
     target_source_id: Option<String>,
     turn_id: Option<String>,
     worker_id: Option<String>,
+    input: Option<String>,
+    output: Option<String>,
 }
 
-fn trace_scope(attributes: Vec<Attribute>) -> Result<TraceScope, String> {
+fn trace_scope(attributes: &[Attribute]) -> Result<TraceScope, String> {
     let mut scope = TraceScope::default();
     for attribute in attributes {
         let (slot, valid, error): (_, fn(&str) -> bool, _) = match attribute.key.as_str() {
@@ -310,11 +543,22 @@ fn trace_scope(attributes: Vec<Attribute>) -> Result<TraceScope, String> {
                 valid_execution_id,
                 "invalid or conflicting OTLP span worker identity",
             ),
+            PAYLOAD_INPUT => (
+                &mut scope.input,
+                valid_payload_size,
+                "invalid OTLP input text",
+            ),
+            PAYLOAD_OUTPUT => (
+                &mut scope.output,
+                valid_payload_size,
+                "invalid OTLP output text",
+            ),
             _ => continue,
         };
         let value = attribute
             .value
-            .and_then(|value| value.string_value)
+            .as_ref()
+            .and_then(|value| value.string_value.as_str().map(str::to_owned))
             .filter(|value| valid(value))
             .ok_or(error)?;
         if slot.as_ref().is_some_and(|prior| prior != &value) {
@@ -325,13 +569,17 @@ fn trace_scope(attributes: Vec<Attribute>) -> Result<TraceScope, String> {
     Ok(scope)
 }
 
-fn valid_session_id(value: &str) -> bool {
+pub(super) fn valid_session_id(value: &str) -> bool {
     !value.is_empty()
         && value.len() <= 512
         && value.as_bytes()[0].is_ascii_alphanumeric()
         && value
             .bytes()
             .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
+}
+
+fn valid_payload_size(value: &str) -> bool {
+    !value.is_empty() && value.len() <= agenturm_store::MAX_TELEMETRY_PAYLOAD_TEXT_BYTES
 }
 
 fn valid_execution_id(value: &str) -> bool {
@@ -364,20 +612,20 @@ struct ScopeSpans {
 
 #[derive(Deserialize)]
 #[serde(rename_all = "camelCase")]
-struct OtlpSpan {
-    trace_id: String,
-    span_id: String,
-    parent_span_id: Option<String>,
-    start_time_unix_nano: Timestamp,
-    end_time_unix_nano: Timestamp,
-    status: Option<Status>,
+pub(super) struct OtlpSpan {
+    pub(super) trace_id: String,
+    pub(super) span_id: String,
+    pub(super) parent_span_id: Option<String>,
+    pub(super) start_time_unix_nano: Timestamp,
+    pub(super) end_time_unix_nano: Timestamp,
+    pub(super) status: Option<Status>,
     #[serde(default)]
-    attributes: Vec<Attribute>,
+    pub(super) attributes: Vec<Attribute>,
 }
 
 #[derive(Deserialize)]
 #[serde(untagged)]
-enum Timestamp {
+pub(super) enum Timestamp {
     Decimal(String),
     Number(u64),
 }
@@ -395,20 +643,54 @@ impl Timestamp {
 }
 
 #[derive(Deserialize)]
-struct Status {
-    code: Option<u8>,
+pub(super) struct Status {
+    pub(super) code: Option<u8>,
 }
 
 #[derive(Deserialize)]
-struct Attribute {
+pub(super) struct Attribute {
     key: String,
     value: Option<AttributeValue>,
 }
 
-#[derive(Deserialize)]
+impl Attribute {
+    pub(super) fn text(key: &str, value: String) -> Self {
+        Self {
+            key: key.into(),
+            value: Some(AttributeValue {
+                string_value: value.into(),
+                ..AttributeValue::default()
+            }),
+        }
+    }
+
+    pub(super) fn raw_literal(key: &str, value: Box<RawValue>) -> Self {
+        let mut scalar = AttributeValue::default();
+        match value.get().as_bytes()[0] {
+            b'"' => scalar.string_value = serde_json::from_str(value.get()).unwrap_or_default(),
+            b't' | b'f' => scalar.bool_value = (value.get() == "true").into(),
+            b'0'..=b'9' if value.get().bytes().all(|byte| byte.is_ascii_digit()) => {
+                scalar.int_value = Some(value);
+            }
+            b'-' | b'0'..=b'9' => scalar.double_value = Some(value),
+            _ => {}
+        }
+        Self {
+            key: key.into(),
+            value: Some(scalar),
+        }
+    }
+}
+
+#[derive(Default, Deserialize)]
 #[serde(rename_all = "camelCase")]
 struct AttributeValue {
-    string_value: Option<String>,
+    #[serde(default)]
+    string_value: serde_json::Value,
+    int_value: Option<Box<RawValue>>,
+    double_value: Option<Box<RawValue>>,
+    #[serde(default)]
+    bool_value: serde_json::Value,
 }
 
 #[cfg(test)]
@@ -630,6 +912,7 @@ mod tests {
                 export.to_string().as_bytes(),
                 &ExtensionId::parse("otlp.synthetic").unwrap(),
                 launch_session,
+                None,
             )?
             .0
             .pop()

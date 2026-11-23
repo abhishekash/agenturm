@@ -3,10 +3,22 @@
 use super::*;
 use agenturm_storage_service::NativeStore;
 use serde::Deserialize;
+use std::ffi::OsString;
 use std::path::{Path, PathBuf};
+use std::process::ExitCode;
 
 const USAGE: &str = concat!(
     "agenturm broker <collect|query|review|investigate|cockpit|task> --broker-config <json> [command options]\n",
+    "       agenturm broker cockpit --broker-config <json> [--new-window]\n",
+    "       agenturm broker import-traces --broker-config <json> --file <otlp-json-path|-> --source-id otlp.<id>\n",
+    "       agenturm broker import-jsonl --broker-config <json> --file <span-jsonl-path|-> --source-id otlp.<id> [--session-id <id>]\n",
+    "       agenturm broker serve-traces --broker-config <json> --listen <loopback-IP:port> --source-id otlp.<id> --token-file <path>\n",
+    "       agenturm broker run --broker-config <json> --source-id otlp.<id> -- <program> [args...]\n",
+    "       agenturm broker import-evals --broker-config <json> --file <results.json|-> --source-id otlp.<id>\n",
+    "       agenturm broker evals --broker-config <json> --source-id otlp.<id> --trace-id <id> [--json]\n",
+    "       agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path>\n",
+    "       agenturm broker host <record|history> --broker-config <json> [options]\n",
+    "       agenturm broker trace-payload <snapshot|preview> --broker-config <json> [options]\n",
     "       agenturm broker grant <check|approve|revoke> --broker-config <json> --binding <json>\n",
     "       agenturm broker content list --broker-config <json> --source-id <id> --session-id <id>\n",
     "       agenturm broker content preview --broker-config <json> --selection <json>\n",
@@ -63,7 +75,13 @@ pub struct BrokerOptions {
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum BrokerCommand {
     Application(Box<Command>),
+    ServeTraces(trace_receiver::BrokerTraceReceiverOptions),
+    ServeHistory(remote_history::ReadServerOptions),
+    TracePayload(telemetry_payload_cli::PayloadRead),
+    Run(trace_run::TraceInvocation),
     Investigation(Box<InvestigationOptions>),
+    Retention(RetentionOptions),
+    Host(HostOptions),
     Grant {
         verb: String,
         binding: PathBuf,
@@ -91,7 +109,11 @@ struct BrokerConfig {
 }
 
 pub(super) fn parse(args: &[String]) -> Result<BrokerOptions, String> {
-    if args.len() == 1 && matches!(args[0].as_str(), "--help" | "-h" | "help") {
+    parse_os(&args.iter().map(OsString::from).collect::<Vec<_>>())
+}
+
+pub(super) fn parse_os(args: &[OsString]) -> Result<BrokerOptions, String> {
+    if args.len() == 1 && matches!(args[0].to_str(), Some("--help" | "-h" | "help")) {
         return Ok(BrokerOptions {
             config: PathBuf::new(),
             command: BrokerCommand::Application(Box::new(Command::Help)),
@@ -100,11 +122,16 @@ pub(super) fn parse(args: &[String]) -> Result<BrokerOptions, String> {
     let mut command = Vec::new();
     let mut config = None;
     let mut index = 0;
-    while let Some(argument) = args.get(index) {
+    let delimiter = args
+        .iter()
+        .position(|argument| argument == "--")
+        .unwrap_or(args.len());
+    let (flags, child) = args.split_at(delimiter);
+    while let Some(argument) = flags.get(index) {
         if argument == "--broker-config" {
-            let value = args
+            let value = flags
                 .get(index + 1)
-                .filter(|value| !value.starts_with("--"))
+                .filter(|value| !value.as_encoded_bytes().starts_with(b"--"))
                 .ok_or(USAGE)?;
             if config.replace(PathBuf::from(value)).is_some() {
                 return Err(USAGE.into());
@@ -116,6 +143,40 @@ pub(super) fn parse(args: &[String]) -> Result<BrokerOptions, String> {
         }
     }
     let config = config.ok_or(USAGE)?;
+    command.extend_from_slice(child);
+    if command.first().is_some_and(|verb| verb == "run") {
+        return Ok(BrokerOptions {
+            config,
+            command: BrokerCommand::Run(trace_run::parse_broker_run(&command[1..])?),
+        });
+    }
+    let mut command = command
+        .into_iter()
+        .map(|arg| {
+            arg.into_string()
+                .map_err(|_| "Agenturm options must be UTF-8")
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if command.first().is_some_and(|verb| verb == "serve-traces") {
+        return Ok(BrokerOptions {
+            config,
+            command: BrokerCommand::ServeTraces(trace_receiver::parse_broker(&command[1..])?),
+        });
+    }
+    if command.first().is_some_and(|verb| verb == "trace-payload") {
+        return Ok(BrokerOptions {
+            config,
+            command: BrokerCommand::TracePayload(telemetry_payload_cli::parse_broker(
+                &command[1..],
+            )?),
+        });
+    }
+    if command.first().is_some_and(|verb| verb == "serve-history") {
+        return Ok(BrokerOptions {
+            config,
+            command: BrokerCommand::ServeHistory(remote_history::parse_server(&command[1..])?),
+        });
+    }
     if command.first().is_some_and(|verb| verb == "investigate") {
         return Ok(BrokerOptions {
             config,
@@ -123,6 +184,18 @@ pub(super) fn parse(args: &[String]) -> Result<BrokerOptions, String> {
                 &command[1..],
                 true,
             )?)),
+        });
+    }
+    if command.first().is_some_and(|verb| verb == "retention") {
+        return Ok(BrokerOptions {
+            config,
+            command: BrokerCommand::Retention(retention_cli::parse(&command[1..], true)?),
+        });
+    }
+    if command.first().is_some_and(|verb| verb == "host") {
+        return Ok(BrokerOptions {
+            config,
+            command: BrokerCommand::Host(host_cli::parse(&command[1..], true)?),
         });
     }
     let management = match command.as_slice() {
@@ -175,11 +248,24 @@ pub(super) fn parse(args: &[String]) -> Result<BrokerOptions, String> {
     }
     if !matches!(
         command.first().map(String::as_str),
-        Some("collect" | "query" | "review" | "inspect" | "cockpit" | "task")
+        Some(
+            "collect"
+                | "query"
+                | "review"
+                | "inspect"
+                | "cockpit"
+                | "task"
+                | "import-traces"
+                | "import-jsonl"
+                | "import-evals"
+                | "evals"
+        )
     ) {
         return Err(USAGE.into());
     }
-    if command.first().is_some_and(|verb| verb == "cockpit") {
+    if command.first().is_some_and(|verb| verb == "cockpit")
+        && !command.iter().any(|argument| argument == "--once")
+    {
         command[0] = "inspect".into();
     }
     command.extend(["--db".into(), "broker-history".into()]);
@@ -220,7 +306,6 @@ fn workspace_identity(
     state: &Path,
 ) -> Result<PathBuf, String> {
     use sha2::{Digest, Sha256};
-    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
 
     if history_identity.len() != 32
         || !history_identity
@@ -240,19 +325,28 @@ fn workspace_identity(
     .map_err(|error| error.to_string())?;
     let namespace = format!("{:x}", Sha256::digest(encoded));
     let directory = state.join("brokers").join(&namespace);
+    let expected = format!("agenturm-broker-workspace/1\n{namespace}\n");
+    private_workspace_marker(&directory, &expected)
+}
+
+pub(super) fn private_workspace_marker(
+    directory: &Path,
+    expected: &str,
+) -> Result<PathBuf, String> {
+    use std::os::unix::fs::{DirBuilderExt, MetadataExt, OpenOptionsExt};
+
     std::fs::DirBuilder::new()
         .recursive(true)
         .mode(0o700)
-        .create(&directory)
-        .map_err(|error| format!("Create broker workspace: {error}"))?;
-    let metadata = std::fs::symlink_metadata(&directory).map_err(|error| error.to_string())?;
+        .create(directory)
+        .map_err(|error| format!("Create history workspace: {error}"))?;
+    let metadata = std::fs::symlink_metadata(directory).map_err(|error| error.to_string())?;
     // SAFETY: geteuid has no arguments or preconditions.
     let uid = unsafe { libc::geteuid() };
     if !metadata.is_dir() || metadata.uid() != uid || metadata.mode() & 0o077 != 0 {
-        return Err("Broker workspace directory must be private and owned by the client".into());
+        return Err("History workspace directory must be private and owned by the client".into());
     }
     let marker = directory.join("identity");
-    let expected = format!("agenturm-broker-workspace/1\n{namespace}\n");
     let nonce = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|error| error.to_string())?
@@ -289,7 +383,7 @@ fn workspace_identity(
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.to_string()),
     }
-    File::open(&directory)
+    File::open(directory)
         .and_then(|file| file.sync_all())
         .map_err(|error| error.to_string())?;
     let mut file = std::fs::OpenOptions::new()
@@ -303,7 +397,7 @@ fn workspace_identity(
         || metadata.nlink() != 1
         || metadata.mode() & 0o077 != 0
     {
-        return Err("Invalid broker workspace identity file".into());
+        return Err("Invalid history workspace identity file".into());
     }
     let mut contents = String::new();
     (&mut file)
@@ -311,7 +405,7 @@ fn workspace_identity(
         .read_to_string(&mut contents)
         .map_err(|error| error.to_string())?;
     if contents != expected {
-        return Err("Broker workspace identity changed".into());
+        return Err("History workspace identity changed".into());
     }
     Ok(marker)
 }
@@ -335,17 +429,53 @@ fn open_workspace(
     Ok((store, workspace))
 }
 
-pub fn execute(options: &BrokerOptions) -> Result<(), BrokerExecutionError> {
+pub fn execute(options: &BrokerOptions) -> Result<ExitCode, BrokerExecutionError> {
     if matches!(&options.command, BrokerCommand::Application(command) if matches!(command.as_ref(), Command::Help))
     {
         println!(
             "{USAGE}\nThe broker configuration pins its socket, receiver and service UID/GID.\nUse collect --config <sources.json> [--watch], query paging options, or inspect."
         );
-        return Ok(());
+        return Ok(ExitCode::SUCCESS);
     }
-    let (store, config) = connect(&options.config)?;
+    let (mut store, config) = connect(&options.config)?;
     let command = match &options.command {
         BrokerCommand::Application(command) => command.as_ref(),
+        BrokerCommand::TracePayload(options) => {
+            telemetry_payload_cli::execute_broker(options, store)?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        BrokerCommand::ServeHistory(options) => {
+            remote_history::execute_server(options, store)?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        BrokerCommand::ServeTraces(options) => {
+            let commit = trace_commit(
+                store,
+                &options.settings.source,
+                options.settings.payload_binding.clone(),
+            )?;
+            let token = trace_receiver::ProducerToken::from_file(&options.token_file)?;
+            trace_receiver::execute_with_commit(&options.settings, Some(token), commit)?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        BrokerCommand::Run(invocation) => {
+            let commit = trace_commit(
+                store,
+                &invocation.source,
+                invocation.payload_binding.clone(),
+            )?;
+            let token = trace_receiver::ProducerToken::generate()?;
+            return trace_run::execute_with_commit(invocation, Some(token), commit)
+                .map_err(Into::into);
+        }
+        BrokerCommand::Retention(options) => {
+            print!("{}", retention_cli::execute_broker(options, &store)?);
+            return Ok(ExitCode::SUCCESS);
+        }
+        BrokerCommand::Host(options) => {
+            host_cli::execute_broker(options, store, std::io::stdout().lock())?;
+            return Ok(ExitCode::SUCCESS);
+        }
         BrokerCommand::Investigation(options) => {
             return crate::with_private_stdout(|output| {
                 investigate_cli::execute_broker(
@@ -360,6 +490,7 @@ pub fn execute(options: &BrokerOptions) -> Result<(), BrokerExecutionError> {
                     output,
                 )
             })
+            .map(|()| ExitCode::SUCCESS)
             .map_err(|message| BrokerExecutionError {
                 message,
                 exit_code: 2,
@@ -379,7 +510,7 @@ pub fn execute(options: &BrokerOptions) -> Result<(), BrokerExecutionError> {
                 "{}",
                 serde_json::to_string(&prompts).map_err(|error| error.to_string())?
             );
-            return Ok(());
+            return Ok(ExitCode::SUCCESS);
         }
         BrokerCommand::ContentPreview { selection } => {
             let file = File::open(selection).map_err(|error| error.to_string())?;
@@ -403,7 +534,7 @@ pub fn execute(options: &BrokerOptions) -> Result<(), BrokerExecutionError> {
                     .reveal_private(&selection, false, output)
                     .map_err(|error| error.to_string())
             })?;
-            return Ok(());
+            return Ok(ExitCode::SUCCESS);
         }
         BrokerCommand::Grant { verb, binding } => {
             let file = File::open(binding).map_err(|error| error.to_string())?;
@@ -436,7 +567,7 @@ pub fn execute(options: &BrokerOptions) -> Result<(), BrokerExecutionError> {
             }
             .map_err(|error| error.to_string())?;
             println!("{result}");
-            return Ok(());
+            return Ok(ExitCode::SUCCESS);
         }
         BrokerCommand::Prune(cutoff) => {
             let result = store
@@ -446,7 +577,7 @@ pub fn execute(options: &BrokerOptions) -> Result<(), BrokerExecutionError> {
                 "{}",
                 serde_json::to_string(&result).map_err(|error| error.to_string())?
             );
-            return Ok(());
+            return Ok(ExitCode::SUCCESS);
         }
         BrokerCommand::Backup => {
             let receipt = store.backup().map_err(|error| error.to_string())?;
@@ -454,15 +585,16 @@ pub fn execute(options: &BrokerOptions) -> Result<(), BrokerExecutionError> {
                 "{}",
                 serde_json::to_string(&receipt).map_err(|error| error.to_string())?
             );
-            return Ok(());
+            return Ok(ExitCode::SUCCESS);
         }
         BrokerCommand::Integrity => {
             store.check_integrity().map_err(|error| error.to_string())?;
             println!("{{\"ok\":true}}");
-            return Ok(());
+            return Ok(ExitCode::SUCCESS);
         }
     };
     match command {
+        Command::Summary(options) => print!("{}", summary_cli::from_reader(&store, options, None)?),
         Command::Collect(options) => {
             let config = load_collection_config(&options.config)?;
             let stop = Arc::new(AtomicBool::new(false));
@@ -488,6 +620,18 @@ pub fn execute(options: &BrokerOptions) -> Result<(), BrokerExecutionError> {
             if had_failures {
                 return Err("Broker collection reported source or storage failures".into());
             }
+        }
+        Command::ImportTraces(options) => {
+            print!("{}", trace_import::execute_with_store(options, &mut store)?);
+        }
+        Command::ImportJsonl(options) => {
+            print!(
+                "{}",
+                span_jsonl_import::execute_with_store(options, &mut store)?
+            );
+        }
+        Command::Evals(options) => {
+            print!("{}", eval_import::execute_with_store(options, &store)?);
         }
         Command::Query(query) => println!("{}", query_from_store(&store, query)?),
         Command::Review {
@@ -530,7 +674,46 @@ pub fn execute(options: &BrokerOptions) -> Result<(), BrokerExecutionError> {
         }
         _ => return Err(USAGE.into()),
     }
-    Ok(())
+    Ok(ExitCode::SUCCESS)
+}
+
+type BrokerTraceCommit = Box<
+    dyn FnMut(
+            &ExtensionId,
+            Vec<Observation>,
+            Vec<agenturm_store::TelemetryPayloadRecord>,
+        ) -> Result<(), String>
+        + Send,
+>;
+
+fn trace_commit(
+    mut store: NativeStore,
+    source: &ExtensionId,
+    binding: Option<agenturm_store::TelemetryBinding>,
+) -> Result<BrokerTraceCommit, String> {
+    trace_import::admission_cursor(&store, source)?;
+    if let Some(binding) = &binding {
+        store
+            .check_telemetry_admission(binding)
+            .map_err(|err| err.to_string())?;
+    }
+    Ok(Box::new(
+        move |source: &ExtensionId,
+              rows: Vec<Observation>,
+              payloads: Vec<agenturm_store::TelemetryPayloadRecord>| {
+            if payloads.is_empty() {
+                return trace_import::commit_with_store(&mut store, source, &rows).map(|_| ());
+            }
+            let binding = binding
+                .as_ref()
+                .ok_or("private trace capture is disabled")?;
+            let batch = trace_import::prepare_payload_batch(&store, binding, &rows)?;
+            store
+                .commit_telemetry_batch(binding, batch, payloads)
+                .map(|_| ())
+                .map_err(|error| error.to_string())
+        },
+    ))
 }
 
 fn execute_private_cockpit(
@@ -576,6 +759,15 @@ fn execute_private_cockpit(
             Ok(WorkResult::Status(
                 "Prompt shown from the verified current source".into(),
             ))
+        }
+        WorkCommand::RevealTelemetry(span, mut output) => {
+            let selection = telemetry_payload_cli::modal_selection(*span)?;
+            store
+                .with_telemetry_payload(&selection, |payload| {
+                    telemetry_payload_cli::deliver_modal(payload, &mut output)
+                })
+                .map_err(|error| error.to_string())?;
+            Ok(WorkResult::Status(String::new()))
         }
         WorkCommand::RevealOperation(operation, mut output) => {
             let kind = match operation.kind {
@@ -683,6 +875,8 @@ mod tests {
             "task list",
             "collect --config sources.json",
             "collect --config sources.json --watch",
+            "import-traces --file trace.json --source-id otlp.imported",
+            "import-jsonl --file - --source-id otlp.imported --session-id session",
             "content list --source-id harness.pi --session-id session",
             "content preview --selection selection.json",
         ] {
@@ -693,6 +887,8 @@ mod tests {
             "query --broker-config",
             "query --broker-config one --broker-config two",
             "query --broker-config one --db private.sqlite",
+            "import-traces --file trace.json --source-id otlp.imported --db path --broker-config one",
+            "import-jsonl --file trace.jsonl --source-id otlp.imported --db path --broker-config one",
             "backup --broker-config one --output arbitrary.sqlite",
             "review --broker-config one",
             "content preview --selection selection.json --db private.sqlite --broker-config one",
@@ -700,5 +896,50 @@ mod tests {
         ] {
             assert!(parse_words(command).is_err());
         }
+    }
+
+    #[test]
+    fn broker_trace_commands_require_explicit_sources_and_keep_child_arguments_literal() {
+        use std::os::unix::ffi::OsStringExt;
+
+        assert!(parse_words("serve-traces --broker-config one --listen [::1]:0 --source-id otlp.live --token-file token").is_ok());
+        for invalid in [
+            "serve-traces --broker-config one --listen 0.0.0.0:4318 --source-id otlp.live --token-file token",
+            "serve-traces --broker-config one --listen 127.0.0.1:0 --token-file token",
+            "serve-traces --broker-config one --listen 127.0.0.1:0 --source-id otlp.live",
+            "serve-traces --broker-config one --listen 127.0.0.1:0 --source-id otlp.live --token-file token --db unused.sqlite",
+            "run --broker-config one -- echo literal",
+            "run --source-id otlp.launch -- echo --broker-config child.json",
+            "run --broker-config one --source-id otlp.launch --db unused.sqlite -- echo literal",
+        ] {
+            assert!(parse_words(invalid).is_err());
+        }
+
+        let child = [
+            "program",
+            "--db",
+            "child.sqlite",
+            "--broker-config",
+            "child.json",
+        ]
+        .map(OsString::from);
+        let binary_argument = OsString::from_vec(vec![0xff]);
+        let mut flags = ["--source-id", "otlp.launch", "--"]
+            .map(OsString::from)
+            .to_vec();
+        flags.extend(child);
+        flags.push(binary_argument);
+        let mut arguments = ["broker", "--broker-config", "parent.json", "run"]
+            .map(OsString::from)
+            .to_vec();
+        arguments.extend(flags.clone());
+        let Command::Broker(options) = crate::parse_os_command(&arguments).unwrap() else {
+            panic!("Expected broker run");
+        };
+        assert_eq!(options.config, PathBuf::from("parent.json"));
+        assert_eq!(
+            options.command,
+            BrokerCommand::Run(trace_run::parse_broker_run(&flags).unwrap())
+        );
     }
 }

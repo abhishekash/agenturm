@@ -72,6 +72,19 @@ pub struct OperationDetailEntry {
     pub label: String,
 }
 
+/// Exact metadata for a producer-captured span text request.
+#[derive(Clone, Debug)]
+pub struct TelemetrySpanEntry {
+    pub source_id: ExtensionId,
+    pub native_source_id: Option<String>,
+    pub trace_id: String,
+    pub span_id: String,
+    pub session_id: String,
+    pub turn_id: Option<String>,
+    pub worker_id: Option<String>,
+    pub snapshot_id: agenturm_kernel::ReadSnapshot,
+}
+
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationDetailKind {
     Mcp,
@@ -146,7 +159,10 @@ impl io::Write for PromptDelivery {
     }
 }
 
+mod host;
+
 pub enum WorkCommand {
+    HostHistory(Option<agenturm_kernel::ObservationPosition>),
     ReviewNotes(RecordedSession),
     SaveReviewNote {
         session: RecordedSession,
@@ -195,14 +211,17 @@ pub enum WorkCommand {
     Prompts(WorkAnchor),
     RevealPrompt(PromptEntry, PromptDelivery),
     RevealOperation(OperationDetailEntry, PromptDelivery),
+    RevealTelemetry(Box<TelemetrySpanEntry>, PromptDelivery),
 }
 
 pub struct ReviewNoteEntry {
     pub version: ReviewVersion,
+    pub read_incarnation: Option<agenturm_kernel::ReadIncarnation>,
     pub note: String,
 }
 
 pub enum WorkResult {
+    HostHistory(agenturm_kernel::ObservationPage),
     ReviewNotes {
         session: RecordedSession,
         items: Vec<ReviewNoteEntry>,
@@ -229,6 +248,7 @@ pub enum WorkResult {
         partial: bool,
     },
     Prompts(Vec<PromptEntry>),
+    TelemetrySpans(Vec<TelemetrySpanEntry>),
     Seen(RequestEntry),
     Status(String),
 }
@@ -264,6 +284,7 @@ enum Draft {
 
 pub(super) enum WorkInput {
     Reveal(PromptEntry),
+    RevealTelemetry(TelemetrySpanEntry),
     None,
     Close,
     Command(WorkCommand),
@@ -276,6 +297,7 @@ pub(super) struct Workbench {
     target: Option<WorkAnchor>,
     help: bool,
     review_note_scroll: u16,
+    host_level: host::HostLevel,
 }
 
 impl Workbench {
@@ -287,6 +309,7 @@ impl Workbench {
             target,
             help: false,
             review_note_scroll: 0,
+            host_level: host::HostLevel::default(),
         };
         work.reset_cursor();
         work
@@ -304,6 +327,7 @@ impl Workbench {
         };
         self.draft = None;
         self.data = data;
+        self.host_level = host::HostLevel::default();
         self.reset_cursor();
         if let (Some(id), WorkResult::Tasks { items, .. }) = (previous, &self.data)
             && let Some(index) = items.iter().position(|item| item.id == id)
@@ -343,6 +367,7 @@ impl Workbench {
 
     fn len(&self) -> usize {
         match &self.data {
+            WorkResult::HostHistory(page) => self.host_level.len(page),
             WorkResult::ReviewNotes { items, .. } => items.len(),
             WorkResult::Tasks { items, .. } => items.len(),
             WorkResult::Handoffs { items, .. } => items.len(),
@@ -350,6 +375,7 @@ impl Workbench {
             WorkResult::TaskWorkspace { .. } => 0,
             WorkResult::Workflow { items, .. } => items.len(),
             WorkResult::Prompts(items) => items.len(),
+            WorkResult::TelemetrySpans(spans) => spans.len(),
             WorkResult::Seen(_) | WorkResult::Status(_) => 0,
         }
     }
@@ -377,6 +403,14 @@ impl Workbench {
             return WorkInput::None;
         }
         let selected = self.cursor.selected().unwrap_or_default();
+        if let WorkResult::HostHistory(page) = &self.data
+            && !matches!(
+                key.code,
+                KeyCode::Down | KeyCode::Up | KeyCode::Char('j' | 'k')
+            )
+        {
+            return self.host_level.action(page, &mut self.cursor, key.code);
+        }
         match key.code {
             KeyCode::Esc => WorkInput::Close,
             KeyCode::PageDown if matches!(self.data, WorkResult::ReviewNotes { .. }) => {
@@ -570,6 +604,11 @@ impl Workbench {
             {
                 return WorkInput::Reveal(item.clone());
             }
+            (WorkResult::TelemetrySpans(spans), KeyCode::Enter)
+                if let Some(span) = spans.get(selected) =>
+            {
+                return WorkInput::RevealTelemetry(span.clone());
+            }
             _ => {}
         }
         WorkInput::None
@@ -692,7 +731,7 @@ impl Workbench {
         if self.help {
             frame.render_widget(Paragraph::new(" Workbench keys"), header);
             frame.render_widget(
-                Paragraph::new("Tasks · n new linked · N blank · e edit · c done\nl link selected session or turn · r links · Del delete\nG capture Git · g saved Git · h new handoff · o handoffs\nHandoffs · e edit · x export MD+HTML · Del delete · b tasks\nWorkflow · s seen · l locate · r refresh\nPrompts · Enter reveal · ↑↓ scroll · Esc close")
+                Paragraph::new("Tasks · n new linked · N blank · e edit · c done\nl link selected session or turn · r links · Del delete\nG capture Git · g saved Git · h new handoff · o handoffs\nHandoffs · e edit · x export MD+HTML · Del delete · b tasks\nWorkflow · s seen · l locate · r refresh\nPrompts · Enter reveal · ↑↓ scroll · Esc close\nHost history · Enter drill down · ] older · Esc back")
                     .wrap(Wrap { trim: false }).block(Block::bordered()),
                 body,
             );
@@ -748,13 +787,25 @@ impl Workbench {
         }
         let selected = self.cursor.selected().unwrap_or_default();
         let (title, keys, options, details, empty) = match &self.data {
+            WorkResult::HostHistory(page) => {
+                let view = self.host_level.present(page, selected);
+                (
+                    view.title,
+                    view.keys,
+                    view.options,
+                    view.details,
+                    view.empty,
+                )
+            }
             WorkResult::ReviewNotes { session, items } => (
                 "Review decisions",
                 "e new · ↑↓ select · PgUp/PgDn read · Esc review",
                 items
                     .iter()
                     .map(|item| {
-                        let scope = if item.version == session.review_version {
+                        let scope = if item.read_incarnation != session.snapshot_id.incarnation() {
+                            "Prior history evidence"
+                        } else if item.version == session.review_version {
                             "Current evidence"
                         } else {
                             "Other evidence version"
@@ -863,6 +914,34 @@ impl Workbench {
                     .map(|item| anchor_details(&item.anchor))
                     .unwrap_or_default(),
                 "No eligible prompts",
+            ),
+            WorkResult::TelemetrySpans(spans) => (
+                "Captured span text",
+                "Enter reveal · ↑↓ select · Esc traces",
+                spans
+                    .iter()
+                    .map(|span| format!("{} · span {}", span.source_id.as_str(), span.span_id))
+                    .collect(),
+                spans
+                    .get(selected)
+                    .map(|span| {
+                        let mut detail = vec![
+                            Line::from(format!("Trace  {}", span.trace_id)),
+                            Line::from(format!("Session  {}", span.session_id)),
+                        ];
+                        if let Some(source) = &span.native_source_id {
+                            detail.push(Line::from(format!("Native source  {source}")));
+                        }
+                        if let Some(turn) = &span.turn_id {
+                            detail.push(Line::from(format!("Turn  {turn}")));
+                        }
+                        if let Some(worker) = &span.worker_id {
+                            detail.push(Line::from(format!("Worker  {worker}")));
+                        }
+                        detail
+                    })
+                    .unwrap_or_default(),
+                "No spans in the loaded trace page",
             ),
             WorkResult::Seen(_) | WorkResult::Status(_) => return,
         };

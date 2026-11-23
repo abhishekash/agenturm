@@ -2,7 +2,7 @@
 
 use super::*;
 use crate::workbench::{PromptReceiver, WorkInput, Workbench, prompt_channel};
-use agenturm_kernel::RelationshipKind;
+use agenturm_kernel::{ReadSnapshot, RelationshipKind};
 use std::collections::{BTreeSet, HashMap, VecDeque};
 use std::sync::{Arc, Mutex, mpsc};
 use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
@@ -12,7 +12,7 @@ pub struct RecordedSession {
     pub harness_id: String,
     pub session_id: String,
     pub updated_at_unix_ns: u64,
-    pub snapshot_id: u64,
+    pub snapshot_id: ReadSnapshot,
     pub state: Option<String>,
     pub reason: Option<String>,
     pub turn_id: Option<String>,
@@ -33,7 +33,7 @@ pub struct SessionCursor {
     pub harness_id: String,
     pub session_id: String,
     pub updated_at_unix_ns: u64,
-    pub snapshot_id: u64,
+    pub snapshot_id: ReadSnapshot,
 }
 
 pub struct SessionCatalog {
@@ -620,6 +620,20 @@ impl Workspace {
                     self.queued_prompt = Some(entry)
                 }
                 WorkInput::Reveal(_) => {}
+                WorkInput::RevealTelemetry(span) if self.pending.is_none() => {
+                    let (delivery, mut receiver) = prompt_channel();
+                    receiver.title = "Producer-captured text";
+                    self.request(
+                        sender,
+                        WorkspaceRequest::Work(WorkCommand::RevealTelemetry(
+                            Box::new(span),
+                            delivery,
+                        )),
+                        Change::Work(None),
+                    );
+                    self.prompt_receiver = Some(receiver);
+                }
+                WorkInput::RevealTelemetry(_) => {}
                 WorkInput::None => {}
                 WorkInput::Close => {
                     self.discard_work_result = matches!(self.pending, Some(Change::Work(_)));
@@ -713,6 +727,14 @@ impl Workspace {
             return false;
         }
 
+        if key.code == KeyCode::Char('d') && self.pending.is_none() && telemetry_details(view) {
+            self.work = Some(Workbench::new(
+                WorkResult::TelemetrySpans(view.page.telemetry_spans.clone()),
+                None,
+            ));
+            self.message = None;
+            return false;
+        }
         let detail = match key.code {
             KeyCode::Char('m') => Some(OperationDetailKind::Mcp),
             KeyCode::Char('e') if view.page.reviewing() || view.page.ui.in_turn => {
@@ -833,6 +855,7 @@ impl Workspace {
             return key == KeyCode::Char('q') && !self.agents.editing;
         }
         if self.agents.editing {
+            let identity = self.agents.current().map(session_key);
             match key {
                 KeyCode::Enter | KeyCode::Esc => self.agents.editing = false,
                 KeyCode::Char(c) if self.agents.search.len() < 128 => self.agents.search.push(c),
@@ -841,7 +864,7 @@ impl Workspace {
                 }
                 _ => return false,
             }
-            self.agents.apply_filters(None);
+            self.agents.apply_filters(identity.as_ref());
             return false;
         }
         match key {
@@ -859,9 +882,10 @@ impl Workspace {
             KeyCode::Left => self.agents.expand(false),
             KeyCode::Right => self.agents.expand(true),
             KeyCode::Char('x') => {
+                let identity = self.agents.current().map(session_key);
                 self.agents.search.clear();
                 self.agents.filter = Filter::All;
-                self.agents.apply_filters(None);
+                self.agents.apply_filters(identity.as_ref());
             }
             KeyCode::Char('f') => {
                 self.agents.filter = self.agents.filter.next();
@@ -893,13 +917,18 @@ impl Workspace {
                     );
                 }
             }
-            KeyCode::Char('g' | '2'..='8') => {
+            KeyCode::Char('6') => self.request(
+                sender,
+                WorkspaceRequest::Work(WorkCommand::HostHistory(None)),
+                Change::Work(None),
+            ),
+            KeyCode::Char('g' | 'H' | '2'..='5' | '7' | '8') => {
                 let view = match key {
                     KeyCode::Char('2') => WorkspaceView::Activity,
                     KeyCode::Char('3') => WorkspaceView::Mcp,
                     KeyCode::Char('4') => WorkspaceView::Operations,
                     KeyCode::Char('5') => WorkspaceView::Findings,
-                    KeyCode::Char('6') => WorkspaceView::Host,
+                    KeyCode::Char('H') => WorkspaceView::Host,
                     KeyCode::Char('7') => WorkspaceView::Usage,
                     KeyCode::Char('8') => WorkspaceView::Traces,
                     _ => WorkspaceView::Overview,
@@ -1161,6 +1190,8 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
                 error
             } else if workspace.pending.is_some() {
                 "Loading history…"
+            } else if telemetry_details(view) {
+                "d captured text · Esc back · [ ] pages"
             } else if let HistorySelection::Session(session, _) = &view.selection
                 && view.page.reviewing()
             {
@@ -1238,6 +1269,15 @@ pub(super) fn age(nanos: u64) -> String {
     }
 }
 
+fn telemetry_details(view: &HistoryView) -> bool {
+    !view.page.telemetry_spans.is_empty()
+        && matches!(
+            view.selection,
+            HistorySelection::All(WorkspaceView::Traces)
+                | HistorySelection::Session(_, SessionView::Traces)
+        )
+}
+
 fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message: Option<&str>) {
     let area = frame.area();
     if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
@@ -1294,7 +1334,7 @@ fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message
     };
     if agents.help {
         frame.render_widget(
-            Paragraph::new("Enter Overview · a Activity · v Review · u Usage\n2 Activity · 3 MCP · 4 Operations · 5 Findings\n6 Host · 7 Usage · 8 Traces · g History\nb Tasks · w Workflow · p Prompts\n/ Search · x Clear · f Filter · s Sort · r Refresh\n←/→ Collapse/expand · h Flat/tree · [ ] Page · q Quit")
+            Paragraph::new("Enter Overview · a Activity · v Review · u Usage\n2 Activity · 3 MCP · 4 Operations · 5 Findings\n6 Host history · H Live host · 7 Usage · 8 Traces\ng History · b Tasks · w Workflow · p Prompts\n/ Search · x Clear · f Filter · s Sort · r Refresh\n←/→ Collapse/expand · h Flat/tree · [ ] Page · q Quit")
                 .wrap(Wrap { trim: false })
                 .block(Block::bordered().title(HELP_CLOSE_HINT)),
             content,
@@ -1405,7 +1445,7 @@ mod tests {
             harness_id: source.into(),
             session_id: id.into(),
             updated_at_unix_ns: 1,
-            snapshot_id: 9,
+            snapshot_id: 9.into(),
             state: Some(state.into()),
             reason: None,
             turn_id: None,
@@ -1500,6 +1540,7 @@ mod tests {
                 initial_pane: None,
                 review_pane: None,
                 operation_details: Vec::new(),
+                private_telemetry: false,
             })));
             let _ = frame(&mut workspace);
             assert!(!press(&mut workspace, KeyCode::Right));
@@ -1521,6 +1562,40 @@ mod tests {
             assert!(!press(&mut workspace, KeyCode::F(1)));
             assert!(press(&mut workspace, KeyCode::Char('q')));
         }
+    }
+
+    #[test]
+    fn agents_search_keeps_the_selected_source_when_session_ids_match() {
+        let mut workspace = Workspace::new();
+        let (sender, requests) = mpsc::channel();
+        let selected = session("harness.codex", "d3-main", "completed", None);
+        workspace.agents.update(catalog(vec![
+            session("otlp.d3", "d3-main", "unknown", None),
+            selected.clone(),
+            session("harness.pi", "other", "running", None),
+        ]));
+        let press = |workspace: &mut Workspace, code| {
+            workspace.key(&sender, event::KeyEvent::new(code, KeyModifiers::NONE))
+        };
+        assert!(!press(&mut workspace, KeyCode::Down));
+        assert_eq!(workspace.agents.current(), Some(&selected));
+        assert!(!press(&mut workspace, KeyCode::Char('/')));
+        for ch in "d3-main".chars() {
+            assert!(!press(&mut workspace, KeyCode::Char(ch)));
+            assert_eq!(workspace.agents.current(), Some(&selected));
+        }
+        assert!(!press(&mut workspace, KeyCode::Esc));
+        assert_eq!(workspace.agents.visible.len(), 2);
+        assert_eq!(workspace.agents.current(), Some(&selected));
+        assert!(!press(&mut workspace, KeyCode::Char('x')));
+        assert_eq!(workspace.agents.visible.len(), 3);
+        assert_eq!(workspace.agents.current(), Some(&selected));
+        assert!(!press(&mut workspace, KeyCode::Enter));
+        assert!(
+            matches!(requests.try_recv().unwrap(), WorkspaceRequest::History {
+            selection: HistorySelection::Session(ref session, _), before: None,
+        } if session == &selected)
+        );
     }
 
     #[test]

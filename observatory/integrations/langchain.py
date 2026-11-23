@@ -4,6 +4,8 @@ from __future__ import annotations
 from collections.abc import Mapping
 from typing import Any
 
+from observatory.integrations.otel_payload import join_text
+
 try:
     from langchain_core.callbacks import BaseCallbackHandler
 except ImportError as exc:  # pragma: no cover - depends on optional integration extra
@@ -38,6 +40,14 @@ class LangChainCallbackHandler(BaseCallbackHandler):
 
     def _content(self, value):
         return str(value)[:self.max_content_chars]
+
+    def _payload_enabled(self):
+        return self.capture_content and self.run is not None and self.run.client.capture_content
+
+    def _model_input(self, attributes, parts):
+        text = join_text(parts)
+        if text is not None:
+            attributes["agenturm.payload.input"] = text
 
     @staticmethod
     def _run_key(run_id):
@@ -141,7 +151,9 @@ class LangChainCallbackHandler(BaseCallbackHandler):
         model = self._model(serialized, kwargs)
         if model:
             attrs["gen_ai.request.model"] = model
-        if self.capture_content:
+        if self._payload_enabled():
+            self._model_input(attrs, prompts)
+        elif self.capture_content:
             attrs["langchain.input"] = self._content(prompts)
         self._start("llm", "llm.call", run_id, parent_run_id, attrs)
 
@@ -151,7 +163,12 @@ class LangChainCallbackHandler(BaseCallbackHandler):
         model = self._model(serialized, kwargs)
         if model:
             attrs["gen_ai.request.model"] = model
-        if self.capture_content:
+        if self._payload_enabled():
+            self._model_input(attrs, (
+                message.content for group in messages for message in group
+                if getattr(message, "type", None) in ("human", "ai")
+            ))
+        elif self.capture_content:
             attrs["langchain.input"] = self._content(messages)
         self._start("llm", "chat.call", run_id, parent_run_id, attrs)
 
@@ -181,17 +198,72 @@ class LangChainCallbackHandler(BaseCallbackHandler):
         return {"input_tokens": usage.get("input_tokens", usage.get("prompt_tokens")),
                 "output_tokens": usage.get("output_tokens", usage.get("completion_tokens"))}
 
+    @staticmethod
+    def _reported_token_attributes(response):
+        usages = []
+        for group in getattr(response, "generations", None) or []:
+            if group:
+                message = getattr(group[0], "message", None)
+                usage = getattr(message, "usage_metadata", None)
+                if isinstance(usage, Mapping) and usage:
+                    usages.append(usage)
+        if len(usages) > 1:
+            return {}
+        if usages:
+            usage = usages[0]
+        else:
+            output = getattr(response, "llm_output", None)
+            usage = (output.get("token_usage") or output.get("usage")) if isinstance(output, Mapping) else None
+            if not isinstance(usage, Mapping):
+                return {}
+        attributes = {
+            target: usage[source]
+            for source, target in (
+                ("input_tokens", "gen_ai.usage.input_tokens"),
+                ("output_tokens", "gen_ai.usage.output_tokens"),
+                ("total_tokens", "gen_ai.usage.total_tokens"),
+                ("prompt_tokens", "llm.token_count.prompt"),
+                ("completion_tokens", "llm.token_count.completion"),
+            )
+            if source in usage
+        }
+        for area, field, target in (
+            ("input_token_details", "cache_read", "gen_ai.usage.cache_read.input_tokens"),
+            ("input_token_details", "cache_creation", "gen_ai.usage.cache_write.input_tokens"),
+            ("output_token_details", "reasoning", "gen_ai.usage.reasoning.output_tokens"),
+            ("prompt_tokens_details", "cached_tokens", "llm.token_count.prompt_details.cache_read"),
+            ("completion_tokens_details", "reasoning_tokens", "llm.token_count.completion_details.reasoning"),
+        ):
+            details = usage.get(area)
+            if isinstance(details, Mapping) and field in details:
+                attributes[target] = details[field]
+        from observatory.otlp_transport import _reported_token_values
+
+        return _reported_token_values(attributes)
+
     def on_llm_end(self, response, *, run_id, **kwargs):
         span = self._spans.get(self._run_key(run_id))
         if span is None:
             return
-        usage = self._token_usage(response)
-        for source, target in (("input_tokens", "gen_ai.usage.input_tokens"),
-                               ("output_tokens", "gen_ai.usage.output_tokens")):
-            value = usage.get(source)
-            if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
-                span.set_attribute(target, int(value))
-        if self.capture_content:
+        if getattr(getattr(self.run, "client", None), "transport", None) == "otlp":
+            for key, value in self._reported_token_attributes(response).items():
+                span.set_attribute(key, value)
+        else:
+            usage = self._token_usage(response)
+            for source, target in (("input_tokens", "gen_ai.usage.input_tokens"),
+                                   ("output_tokens", "gen_ai.usage.output_tokens")):
+                value = usage.get(source)
+                if isinstance(value, (int, float)) and not isinstance(value, bool) and value >= 0:
+                    span.set_attribute(target, int(value))
+        if self._payload_enabled():
+            text = join_text(
+                getattr(generation, "text", None)
+                for group in (getattr(response, "generations", None) or ()) for generation in group
+                if getattr(getattr(generation, "message", None), "type", "ai") == "ai"
+            )
+            if text is not None:
+                span.set_attribute("agenturm.payload.output", text)
+        elif self.capture_content:
             self._capture_output(span, response)
         self._finish(run_id)
 

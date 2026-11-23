@@ -7,6 +7,10 @@ on:
     tags: ["rust-v*"]
   workflow_dispatch:
 
+concurrency:
+  group: ${{ github.workflow }}-${{ github.event.pull_request.number || github.ref }}
+  cancel-in-progress: ${{ github.event_name == 'pull_request' }}
+
 permissions:
   contents: read
 
@@ -44,8 +48,8 @@ jobs:
           compression-level: 0
 
   bundle-arm64:
+    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch' || github.ref_type == 'tag'
     name: Qualify Linux arm64 candidate
-    if: github.event_name == 'pull_request' || github.event_name == 'workflow_dispatch'
     runs-on: ubuntu-24.04-arm
     steps:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
@@ -66,6 +70,7 @@ jobs:
             prior-rust-release/scripts/build-rust-linux-bundle.sh "$RUNNER_TEMP/agenturm-arm64-prior"
           CARGO_TARGET_DIR="$RUNNER_TEMP/agenturm-arm64-candidate-target" \
             scripts/build-rust-linux-bundle.sh "$RUNNER_TEMP/agenturm-arm64-candidate"
+          git rev-parse HEAD > "$RUNNER_TEMP/agenturm-arm64-candidate/source-commit.txt"
       - name: Qualify the arm64 archive and Linux user service
         shell: bash
         run: |
@@ -82,6 +87,10 @@ jobs:
           systemctl --user show-environment >/dev/null
           archives=("$RUNNER_TEMP"/agenturm-arm64-candidate/agenturm-*-linux-aarch64.tar.gz)
           [[ ${#archives[@]} -eq 1 && -f ${archives[0]} ]]
+          if [[ $GITHUB_REF_TYPE == tag ]]; then
+            expected="agenturm-${GITHUB_REF_NAME#rust-v}-linux-aarch64.tar.gz"
+            [[ ${archives[0]##*/} == "$expected" ]]
+          fi
           scripts/verify-rust-linux-bundle.sh "${archives[0]}" \
             --previous "$RUNNER_TEMP/agenturm-arm64-prior/agenturm-0.2.0-linux-aarch64.tar.gz" \
             --systemd-user
@@ -91,3 +100,53 @@ jobs:
           path: ${{ runner.temp }}/agenturm-arm64-candidate/
           if-no-files-found: error
           compression-level: 0
+
+  publish-arm64:
+    name: Attach qualified arm64 release archive
+    if: github.ref_type == 'tag' && startsWith(github.ref, 'refs/tags/rust-v')
+    needs: [bundle, bundle-arm64]
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@9000827ccba6bdab643e8b6fd33ac0654aef8333 # v8.0.2
+        with:
+          name: agenturm-rust-linux-aarch64-qualification
+          path: release
+      - name: Attach the exact qualified archive without replacing assets
+        shell: bash
+        env:
+          GH_TOKEN: ${{ github.token }}
+          GH_REPO: ${{ github.repository }}
+        run: |
+          set -euo pipefail
+          cd release
+          asset="agenturm-${GITHUB_REF_NAME#rust-v}-linux-aarch64.tar.gz"
+          [[ -f $asset && -f $asset.sha256 ]]
+          sha256sum --check "$asset.sha256"
+          expected_commit=$(cat source-commit.txt)
+          [[ $expected_commit =~ ^[0-9a-f]{40}$ ]]
+          live_commit=$(gh api "repos/$GH_REPO/commits/refs/tags/$GITHUB_REF_NAME" --jq .sha)
+          if [[ $live_commit != "$expected_commit" ]]; then
+            echo 'Release tag moved after archive qualification' >&2
+            exit 1
+          fi
+          if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
+            gh release create "$GITHUB_REF_NAME" --verify-tag --draft --latest=false \
+              --title "Agenturm Rust ${GITHUB_REF_NAME#rust-v}" \
+              --notes 'Qualified Linux arm64 archive. Release publication awaits the release owner.'
+          fi
+          for file in "$asset" "$asset.sha256"; do
+            digest="sha256:$(sha256sum -- "$file" | cut -d ' ' -f 1)"
+            existing=$(gh release view "$GITHUB_REF_NAME" --json assets \
+              --jq ".assets[] | select(.name == \"$file\") | .digest")
+            if [[ -n $existing ]]; then
+              if [[ $existing != "$digest" ]]; then
+                echo "Existing release asset has different bytes: $file" >&2
+                exit 1
+              fi
+              echo "Verified existing release asset: $file"
+            else
+              gh release upload "$GITHUB_REF_NAME" "$file"
+            fi
+          done

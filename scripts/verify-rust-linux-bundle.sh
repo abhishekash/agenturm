@@ -57,6 +57,7 @@ trap 'exit 143' TERM
 test_home="$scratch/home"
 state="$scratch/state"
 empty_path="$scratch/empty-path"
+fixture_date=$(date -u +%Y-%m-%d)
 codex="$test_home/.codex/sessions/2026/11/20"
 pi="$test_home/.pi/agent/sessions/project"
 mkdir -p -- "$codex" "$pi" "$state" "$empty_path"
@@ -98,6 +99,7 @@ cat > "$pi/session.jsonl" <<'JSONL'
 {"type":"session","id":"bundle-pi-session"}
 {"type":"message","id":"assistant-1","timestamp":"2026-11-20T12:00:01Z","message":{"role":"assistant","stopReason":"stop","usage":{"input":8,"output":3},"content":[]}}
 JSONL
+sed -i "s/2026-11-20/$fixture_date/g" "$codex/session.jsonl" "$pi/session.jsonl"
 
 expect_usage() {
     jq -e '
@@ -190,6 +192,7 @@ cat > "$kiro/messages.jsonl" <<'JSONL'
 {"id":"user-1","timestamp":"2026-11-20T12:00:00Z","payload":{"type":"user","content":"Synthetic prompt"}}
 {"id":"end-1","timestamp":"2026-11-20T12:00:01Z","payload":{"type":"turn_end","stopReason":"end_turn"}}
 JSONL
+sed -i "s/2026-11-20/$fixture_date/g" "$claude/session.jsonl" "$kiro/messages.jsonl"
 harness_isolated=(env -i HOME="$harness_home" PATH="$empty_path" "$agenturm")
 harness_config="$state/additional-harnesses.json"
 harness_db="$state/additional-harnesses.sqlite"

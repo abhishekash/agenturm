@@ -1,10 +1,11 @@
 use agenturm_app::{
     AgenturmApp, Command, discover, execute_attention, execute_backup, execute_backup_workspace,
-    execute_cockpit_with_extensions, execute_collect, execute_content_stdout, execute_ingest,
-    execute_inspect_ui, execute_investigation, execute_prune, execute_query,
-    execute_restore_workspace, execute_selected_review, execute_service, execute_task_stdout,
-    execute_trace_import, execute_trace_receiver, execute_trace_run, execute_watch,
-    parse_os_command, render, with_private_stdout,
+    execute_cockpit_with_extensions, execute_collect, execute_content_stdout, execute_evals,
+    execute_ingest, execute_inspect_ui, execute_investigation, execute_payload_stdout,
+    execute_prune, execute_query, execute_restore_workspace, execute_retention,
+    execute_selected_review, execute_service, execute_span_jsonl_import, execute_summary,
+    execute_task_stdout, execute_trace_import, execute_trace_receiver, execute_trace_run,
+    execute_watch, parse_os_command, render, with_private_stdout,
 };
 use std::io::IsTerminal;
 use std::process::ExitCode;
@@ -33,14 +34,40 @@ fn main() -> ExitCode {
         },
         #[cfg(target_os = "linux")]
         Command::Broker(options) => {
-            if let Err(message) = agenturm_app::execute_broker(&options) {
-                eprintln!("broker failed: {message}");
-                return ExitCode::from(message.exit_code());
-            }
+            return match agenturm_app::execute_broker(&options) {
+                Ok(code) => code,
+                Err(message) => {
+                    eprintln!("broker failed: {message}");
+                    ExitCode::from(message.exit_code())
+                }
+            };
         }
         Command::Attention(options) => {
             if let Err(message) = execute_attention(&options, std::io::stdout().lock()) {
                 eprintln!("attention failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Command::Host(options) => {
+            if let Err(message) = agenturm_app::execute_host(&options, std::io::stdout().lock()) {
+                eprintln!("host failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
+        #[cfg(target_os = "linux")]
+        Command::Window(options) => {
+            return match agenturm_app::execute_new_window(&options) {
+                Ok(code) => code,
+                Err(message) => {
+                    eprintln!("cockpit failed: {message}");
+                    ExitCode::FAILURE
+                }
+            };
+        }
+        #[cfg(target_os = "linux")]
+        Command::RemoteCockpit(options) => {
+            if let Err(message) = agenturm_app::execute_remote_cockpit(&options) {
+                eprintln!("cockpit failed: {message}");
                 return ExitCode::FAILURE;
             }
         }
@@ -50,6 +77,20 @@ fn main() -> ExitCode {
                 return ExitCode::from(message.exit_code());
             }
         }
+        Command::Retention(options) => match execute_retention(&options) {
+            Ok(output) => print!("{output}"),
+            Err(message) => {
+                eprintln!("retention failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        },
+        Command::Summary(options) => match execute_summary(&options) {
+            Ok(output) => print!("{output}"),
+            Err(message) => {
+                eprintln!("summary failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        },
         Command::Investigate(options) => {
             if let Err(message) =
                 with_private_stdout(|output| execute_investigation(&options, output))
@@ -96,6 +137,20 @@ fn main() -> ExitCode {
             Ok(summary) => print!("{summary}"),
             Err(message) => {
                 eprintln!("trace import failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        },
+        Command::ImportJsonl(options) => match execute_span_jsonl_import(&options) {
+            Ok(summary) => print!("{summary}"),
+            Err(message) => {
+                eprintln!("span JSONL import failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        },
+        Command::Evals(options) => match execute_evals(&options) {
+            Ok(result) => print!("{result}"),
+            Err(message) => {
+                eprintln!("evaluation failed: {message}");
                 return ExitCode::FAILURE;
             }
         },
@@ -151,6 +206,12 @@ fn main() -> ExitCode {
         Command::Content(options) => {
             if let Err(message) = execute_content_stdout(&options) {
                 eprintln!("content preview failed: {message}");
+                return ExitCode::FAILURE;
+            }
+        }
+        Command::TracePayload(options) => {
+            if let Err(message) = execute_payload_stdout(&options) {
+                eprintln!("telemetry payload failed: {message}");
                 return ExitCode::FAILURE;
             }
         }

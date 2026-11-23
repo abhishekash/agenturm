@@ -141,7 +141,10 @@ impl Store {
         let mut snapshot =
             Connection::open_with_flags(&snapshot_path, OpenFlags::SQLITE_OPEN_READ_WRITE)?;
         copy_committed_snapshot(&self.connection, &mut snapshot)?;
-        crate::content_grant::disable_backup_grants(&snapshot)?;
+        let staged = snapshot.transaction()?;
+        crate::content_grant::disable_backup_grants(&staged)?;
+        crate::retention::renew_read_incarnation(&staged)?;
+        staged.commit()?;
         let journal_mode: String =
             snapshot.query_row("PRAGMA journal_mode = DELETE", [], |row| row.get(0))?;
         if !journal_mode.eq_ignore_ascii_case("delete") {

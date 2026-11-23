@@ -13,6 +13,9 @@
 
 #![forbid(unsafe_code)]
 
+mod read_snapshot;
+pub use read_snapshot::{ReadIncarnation, ReadSnapshot};
+
 use serde::{Deserialize, Deserializer, Serialize};
 use std::collections::{BTreeMap, BTreeSet};
 use std::panic::{AssertUnwindSafe, catch_unwind};
@@ -239,6 +242,7 @@ pub enum ObservationKind {
         result: String,
     },
     TraceSpan(TraceSpan),
+    HostSample(HostSample),
     Lifecycle {
         state: String,
         reason_code: Option<String>,
@@ -272,6 +276,8 @@ pub enum ObservationKind {
     CreditUsage {
         nanocredits: u64,
     },
+    ReportedCost(ReportedCost),
+    SpanTokenUsage(SpanTokenUsage),
 }
 
 /// Returns whether a source lifecycle state can be admitted and stored.
@@ -295,8 +301,13 @@ pub fn is_anchored_pull_request(
         && is_github_pull_request(repository, number)
 }
 
+pub use agenturm_protocol::host::{
+    HostCpu, HostProcess, HostProcessState, HostRuntime, HostSample, MAX_HOST_PROCESSES,
+    is_host_source,
+};
 pub use agenturm_protocol::observation::{
-    FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, RelationshipKind, TraceSpan, TraceStatus,
+    FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, NANOUNITS_PER_CURRENCY_UNIT, RelationshipKind,
+    ReportedCost, SpanTokenUsage, TraceSpan, TraceSpanIdentity, TraceStatus,
     is_github_pull_request, is_valid_mcp_metadata,
 };
 
@@ -317,10 +328,30 @@ pub fn is_file_edit_operation(identity: &ObservationIdentity) -> bool {
 /// is an independent, exact harness identifier rather than source ownership.
 pub fn is_trace_source_link_valid(import_source_id: &str, span: &TraceSpan) -> bool {
     span.target_source_id.as_deref().is_none_or(|target| {
-        import_source_id.starts_with("otlp.")
-            && !target.starts_with("otlp.")
-            && ExtensionId::parse(target).is_ok()
+        import_source_id.starts_with("otlp.") && is_native_trace_target(target)
     })
+}
+
+fn is_native_trace_target(target: &str) -> bool {
+    !target.starts_with("otlp.") && ExtensionId::parse(target).is_ok()
+}
+
+pub fn is_span_usage_anchor_valid(
+    usage: &SpanTokenUsage,
+    event_id: &str,
+    turn_id: Option<&str>,
+    worker_id: Option<&str>,
+    operation_id: Option<&str>,
+) -> bool {
+    usage.is_valid()
+        && usage.matches_event(event_id)
+        && usage
+            .target_source_id
+            .as_deref()
+            .is_none_or(is_native_trace_target)
+        && operation_id.is_none()
+        && (turn_id.is_some() || worker_id.is_none())
+        && (turn_id.is_none() || usage.target_source_id.is_some())
 }
 
 /// A turn-scoped trace must explicitly identify the native harness. A worker
@@ -347,8 +378,20 @@ pub fn is_trace_turn_link_valid(
 
 /// Formats native credits without introducing floating-point rounding.
 pub fn format_credits(nanocredits: u64) -> String {
-    let whole = nanocredits / NANOCREDITS_PER_CREDIT;
-    let fraction = nanocredits % NANOCREDITS_PER_CREDIT;
+    format_nano_quantity(nanocredits, NANOCREDITS_PER_CREDIT)
+}
+
+pub fn format_reported_cost(cost: &ReportedCost) -> String {
+    format!(
+        "{} {}",
+        format_nano_quantity(cost.nanounits, NANOUNITS_PER_CURRENCY_UNIT),
+        cost.currency
+    )
+}
+
+fn format_nano_quantity(value: u64, units: u64) -> String {
+    let whole = value / units;
+    let fraction = value % units;
     if fraction == 0 {
         return whole.to_string();
     }
@@ -417,7 +460,20 @@ pub struct ObservationPage {
     pub observations: Vec<Observation>,
     pub has_more: bool,
     /// Highest durable batch receipt visible when this query began.
-    pub snapshot_id: u64,
+    pub snapshot_id: ReadSnapshot,
+}
+
+impl ObservationPage {
+    pub fn older_position(&self) -> Option<ObservationPosition> {
+        let row = self.observations.first().filter(|_| self.has_more)?;
+        Some(ObservationPosition {
+            observed_at_unix_ns: row.observed_at_unix_ns,
+            harness_id: row.harness_id.as_str().to_owned(),
+            event_id: row.event_id.clone(),
+            revision: row.revision,
+            snapshot_id: self.snapshot_id,
+        })
+    }
 }
 
 /// Exclusive keyset cursor for deterministic paging through durable history.
@@ -428,7 +484,7 @@ pub struct ObservationPosition {
     pub harness_id: String,
     pub event_id: String,
     pub revision: u32,
-    pub snapshot_id: u64,
+    pub snapshot_id: ReadSnapshot,
 }
 
 /// Bounded durable-history query. `before` selects rows older than its exact
@@ -439,7 +495,7 @@ pub struct ObservationQuery {
     pub harness_id: Option<String>,
     pub session_id: Option<String>,
     pub before: Option<ObservationPosition>,
-    pub snapshot_id: Option<u64>,
+    pub snapshot_id: Option<ReadSnapshot>,
     pub limit: usize,
 }
 
@@ -617,7 +673,7 @@ pub struct Snapshot {
     pub panes: BTreeMap<ExtensionId, PaneModel>,
     pub admissions: BTreeMap<ExtensionId, AdmissionStatus>,
     pub observations_truncated: bool,
-    pub history_snapshot_id: u64,
+    pub history_snapshot_id: ReadSnapshot,
     pub failures: Vec<ExtensionFailure>,
 }
 
@@ -944,8 +1000,12 @@ impl Kernel {
                         });
                     ordered.push(observation);
                 }
-                for rows in grouped.values() {
-                    match validate_raw_observation_slice(rows, MAX_DURABLE_SNAPSHOT_OBSERVATIONS) {
+                for (source, rows) in &grouped {
+                    match validate_raw_observation_slice(
+                        source,
+                        rows,
+                        MAX_DURABLE_SNAPSHOT_OBSERVATIONS,
+                    ) {
                         Ok(_) => {}
                         Err(message) => {
                             conversion_error = Some(message);
@@ -977,7 +1037,7 @@ impl Kernel {
         for (id, harness) in &mut self.harnesses {
             let result = catch_unwind(AssertUnwindSafe(|| harness.poll()));
             match result {
-                Ok(Ok(rows)) => match validate_raw_observations(rows) {
+                Ok(Ok(rows)) => match validate_raw_observations(id, rows) {
                     Ok(rows) => {
                         snapshot
                             .observations
@@ -1079,7 +1139,7 @@ impl Kernel {
                 ));
                 continue;
             }
-            let rows = match validate_raw_observations(prepared.observations) {
+            let rows = match validate_raw_observations(id, prepared.observations) {
                 Ok(rows) => rows
                     .into_iter()
                     .map(|row| Observation {
@@ -1201,7 +1261,7 @@ impl Kernel {
         if !history_read_failed {
             let input = ObservationExtensionInput {
                 observations: &snapshot.observations,
-                snapshot_id: snapshot.history_snapshot_id,
+                snapshot_id: snapshot.history_snapshot_id.watermark(),
                 observations_truncated: snapshot.observations_truncated,
                 selection_scope,
             };
@@ -1312,19 +1372,16 @@ fn bounded(value: &str, max_bytes: usize) -> String {
     value[..end].to_owned()
 }
 
-fn validate_raw_observations(rows: Vec<RawObservation>) -> Result<Vec<RawObservation>, String> {
-    validate_raw_observations_limit(rows, MAX_OBSERVATIONS_PER_HARNESS)
-}
-
-fn validate_raw_observations_limit(
+fn validate_raw_observations(
+    source: &ExtensionId,
     rows: Vec<RawObservation>,
-    max_observations: usize,
 ) -> Result<Vec<RawObservation>, String> {
-    validate_raw_observation_slice(&rows, max_observations)?;
+    validate_raw_observation_slice(source, &rows, MAX_OBSERVATIONS_PER_HARNESS)?;
     Ok(rows)
 }
 
 fn validate_raw_observation_slice(
+    source: &ExtensionId,
     rows: &[RawObservation],
     max_observations: usize,
 ) -> Result<(), String> {
@@ -1353,8 +1410,10 @@ fn validate_raw_observation_slice(
                 .as_ref()
                 .is_some_and(|value| valid_identity_part(value, MAX_SESSION_KEY_BYTES)),
             ObservationScope::Source => {
-                matches!(row.kind, ObservationKind::Diagnostic { .. })
-                    && row.identity.session_id.is_none()
+                matches!(
+                    row.kind,
+                    ObservationKind::Diagnostic { .. } | ObservationKind::HostSample(_)
+                ) && row.identity.session_id.is_none()
                     && row.identity.worker_id.is_none()
                     && row.identity.turn_id.is_none()
                     && row.identity.operation_id.is_none()
@@ -1378,6 +1437,15 @@ fn validate_raw_observation_slice(
                 .is_none_or(|value| valid_identity_part(value, MAX_SESSION_KEY_BYTES))
         {
             return Err("native session, worker, turn, or operation identity is invalid".into());
+        }
+        if let ObservationKind::HostSample(sample) = &row.kind
+            && (row.identity.scope != ObservationScope::Source
+                || !is_host_source(source.as_str())
+                || !sample.is_valid())
+        {
+            return Err(
+                "host sample requires a valid host source and source-scoped metrics".into(),
+            );
         }
         if let ObservationKind::Activity { category } = &row.kind
             && (category.is_empty()
@@ -1468,6 +1536,25 @@ fn validate_raw_observation_slice(
             && *nanocredits > i64::MAX as u64
         {
             return Err("credit usage exceeds supported range".into());
+        }
+        if let ObservationKind::ReportedCost(cost) = &row.kind
+            && (row.identity.scope != ObservationScope::Session
+                || !cost.is_valid()
+                || !cost.matches_event(&row.event_id))
+        {
+            return Err("reported cost metadata or event identity is invalid".into());
+        }
+        if let ObservationKind::SpanTokenUsage(usage) = &row.kind
+            && (row.identity.scope != ObservationScope::Session
+                || !is_span_usage_anchor_valid(
+                    usage,
+                    &row.event_id,
+                    row.identity.turn_id.as_deref(),
+                    row.identity.worker_id.as_deref(),
+                    row.identity.operation_id.as_deref(),
+                ))
+        {
+            return Err("span token usage or event identity is invalid".into());
         }
         if let ObservationKind::Diagnostic { code, severity } = &row.kind
             && (!is_safe_diagnostic_code(code)
@@ -1698,7 +1785,7 @@ mod tests {
             Ok(ObservationPage {
                 observations: self.rows[start..].to_vec(),
                 has_more,
-                snapshot_id: 0,
+                snapshot_id: 0.into(),
             })
         }
 
@@ -1920,7 +2007,7 @@ mod tests {
         let store = OnePageStore(ObservationPage {
             observations: vec![],
             has_more: true,
-            snapshot_id: 23,
+            snapshot_id: 23.into(),
         });
         kernel.refresh_query_with_store(
             &store,
@@ -1932,9 +2019,9 @@ mod tests {
                     harness_id: "harness.pi".into(),
                     event_id: "event-9".into(),
                     revision: 1,
-                    snapshot_id: 23,
+                    snapshot_id: 23.into(),
                 }),
-                snapshot_id: Some(23),
+                snapshot_id: Some(23.into()),
                 limit: 10,
             },
         );

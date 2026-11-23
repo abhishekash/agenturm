@@ -4,6 +4,7 @@ use crate::{
     MAX_SESSION_KEY_BYTES, MAX_SOURCE_ID_BYTES, ObservationKind, Result, ReviewVersion, Store,
     StoreError, retention, validate_identifier,
 };
+use agenturm_kernel::ReadSnapshot;
 use agenturm_kernel::{ExtensionId, RelationshipKind};
 use rusqlite::{OptionalExtension, params};
 use serde::{Deserialize, Serialize};
@@ -16,7 +17,7 @@ pub const MAX_SESSION_PAGE_SIZE: usize = 256;
 pub struct SessionQuery {
     pub harness_id: Option<String>,
     pub limit: usize,
-    pub snapshot_id: Option<u64>,
+    pub snapshot_id: Option<ReadSnapshot>,
     pub before: Option<SessionPosition>,
 }
 
@@ -38,7 +39,7 @@ pub struct SessionPosition {
     pub observed_at_unix_ns: u64,
     pub harness_id: String,
     pub session_id: String,
-    pub snapshot_id: u64,
+    pub snapshot_id: ReadSnapshot,
 }
 
 #[derive(Clone, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -46,7 +47,7 @@ pub struct SessionPosition {
 pub struct SessionPage {
     /// Newest first, with descending source and session IDs as tie-breakers.
     pub sessions: Vec<SessionSummary>,
-    pub snapshot_id: u64,
+    pub snapshot_id: ReadSnapshot,
     pub next_before: Option<SessionPosition>,
 }
 
@@ -159,6 +160,7 @@ impl Store {
                     ReviewVersion {
                         receipt_sequence: row.get(3)?,
                         retained_observations: row.get(4)?,
+                        read_incarnation: snapshot_id.incarnation(),
                     },
                 ))
             },

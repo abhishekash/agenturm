@@ -60,6 +60,12 @@ Set <code>OTEL_EXPORTER_OTLP_TRACES_ENDPOINT=http://127.0.0.1:14318/v1/traces</c
 producer. Use a literal loopback IP. An explicit <code>endpoint</code> overrides the environment. With neither
 <code>OTEL_EXPORTER_OTLP_TRACES_ENDPOINT</code> nor <code>OTEL_EXPORTER_OTLP_ENDPOINT</code> set,
 the transport uses that same loopback address.</p>
+<p>The broker launcher sets <code>OTEL_EXPORTER_OTLP_TRACES_HEADERS</code> and
+<code>OTEL_EXPORTER_OTLP_TRACES_ENDPOINT</code> for its producer. The authorization
+value travels directly to the matching numeric loopback trace endpoint.
+For a separately started broker receiver, set both variables for the
+authorized producer. Use <code>authorization=Bearer%20&lt;token&gt;</code> with the
+receiver&#x27;s 64-digit lowercase hexadecimal token.</p>
 <p>OTLP/HTTP JSON exports trace IDs, parent relationships, timestamps, status
 and optional session, harness, turn, and worker identity. Payloads use fixed span names
 and omit custom attributes, events and task text. The <code>agenturm</code> transport

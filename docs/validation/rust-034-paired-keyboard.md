@@ -39,3 +39,5 @@ default-entry cutover remains gated on the remaining required workflows.
 
 The qualification host retained synthetic terminal frames and manifests under
 `/tmp/d3-journeys-python`, `/tmp/d3-journeys-rust`, and `/tmp/d3-mcp-final`.
+
+The follow-up records keyboard handoff export, live approval routing, and evidence return. [Paired Rust 0.3.5 keyboard qualification](rust-035-retained-keyboard.md)

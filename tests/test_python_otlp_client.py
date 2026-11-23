@@ -52,7 +52,7 @@ def integration(file_name, stubs):
             parent = ".".join(names[:end])
             modules.setdefault(parent, ModuleType(parent))
     path = Path(__file__).resolve().parents[1] / "observatory/integrations" / file_name
-    spec = importlib.util.spec_from_file_location(f"isolated_{path.stem}", path)
+    spec = importlib.util.spec_from_file_location(f"observatory.integrations._isolated_{path.stem}", path)
     module = importlib.util.module_from_spec(spec)
     with patch.dict("sys.modules", modules):
         spec.loader.exec_module(module)
@@ -131,6 +131,128 @@ class PythonOtlpClientTests(unittest.TestCase):
             {"session.id": "session-1", "agenturm.source.id": "harness.pi",
              "agenturm.turn.id": "turn-2", "agenturm.worker.id": "worker/one"},
         )
+
+    def test_captured_text_requires_explicit_mode_bearer_session_and_safe_text(self):
+        environment = {
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": ENDPOINT,
+            "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "authorization=Bearer%20" + "e1" * 32,
+        }
+        fields = {"agenturm.payload.input": MARKER, "input.value": "provider arguments"}
+        with patch.dict(os.environ, {}, clear=True):
+            with self.assertRaisesRegex(ValueError, "authenticated trace receiver"):
+                Client(transport="otlp", strict=True, capture_content=True)
+        with patch.dict(os.environ, environment, clear=True):
+            default = Client(transport="otlp", strict=True)
+            with default.trace(session_id="explicit", attributes=fields):
+                pass
+            self.assertNotIn(MARKER.encode(), self.requests[-1][4])
+            explicit = Client(transport="otlp", strict=True, capture_content=True)
+            with self.assertRaisesRegex(ValueError, "explicit session"):
+                with explicit.trace(attributes=fields):
+                    pass
+            with explicit.trace(session_id="explicit", attributes=fields):
+                pass
+            self.assertIn(MARKER.encode(), self.requests[-1][4])
+            self.assertNotIn(b"provider arguments", self.requests[-1][4])
+            self.assertEqual(len(self.requests), 2)
+            with self.assertRaisesRegex(ValueError, "text was withheld"):
+                with explicit.trace(session_id="explicit", attributes={
+                    "agenturm.payload.output": "Authorization: Bearer synthetic credential",
+                }):
+                    pass
+            self.assertEqual(len(self.requests), 2)
+
+    def test_structured_sdk_projection_only_reads_message_text(self):
+        from observatory.integrations.otel_payload import agents_message_text, structured_message_text
+
+        user = {"role": "user", "parts": [
+            {"type": "text", "content": MARKER},
+            {"type": "tool_call", "content": "tool private"},
+            {"type": "blob", "content": "image private"},
+        ]}
+        attrs = {
+            "gen_ai.input.messages": json.dumps([user, {"role": "system", "parts": user["parts"]}]),
+            "input.value": "provider private",
+            "gen_ai.output.messages": json.dumps([{"role": "assistant", "parts": [
+                {"type": "thinking", "content": "reasoning private"},
+                {"type": "text", "content": "assistant text"},
+            ]}]),
+        }
+        self.assertEqual(structured_message_text(attrs, "pydantic-ai"), {
+            "agenturm.payload.input": MARKER, "agenturm.payload.output": "assistant text",
+        })
+        adk = {
+            "gcp.vertex.agent.llm_request": json.dumps({"contents": [{"role": "user", "parts": [
+                {"text": MARKER}, {"text": "reasoning private", "thought": True},
+                {"function_call": {"args": "tool private"}},
+            ]}], "config": {"headers": "provider private"}}),
+            "gcp.vertex.agent.llm_response": json.dumps({"content": {
+                "role": "model", "parts": [{"text": "assistant text"}],
+            }}),
+        }
+        self.assertEqual(structured_message_text(adk, "gcp.vertex.agent"), {
+            "agenturm.payload.input": MARKER, "agenturm.payload.output": "assistant text",
+        })
+        self.assertEqual(structured_message_text(adk, "other"), {})
+        self.assertEqual(agents_message_text(None, "generation", {
+            "input": [{"role": "user", "content": MARKER}],
+            "output": [{"role": "assistant", "content": [{"type": "text", "text": "assistant text"}]}],
+            "model_config": {"headers": "provider private"},
+        }), {"agenturm.payload.input": MARKER, "agenturm.payload.output": "assistant text"})
+        self.assertEqual(agents_message_text(None, "function", {
+            "input": [{"role": "user", "content": MARKER}],
+        }), {})
+
+    def test_broker_bearer_is_sent_only_to_its_configured_trace_endpoint(self):
+        bearer = "Bearer " + "e1" * 32
+        launch_env = {
+            "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": ENDPOINT,
+            "OTEL_EXPORTER_OTLP_TRACES_HEADERS": "irrelevant=ignored,Authorization=Bearer%20" + "e1" * 32,
+            "OTEL_EXPORTER_OTLP_HEADERS": "authorization=Bearer%20" + "d2" * 32,
+            "OBSERVATORY_TOKEN": MARKER,
+        }
+        with patch.dict(os.environ, launch_env, clear=True):
+            for endpoint in (None, "http://127.0.0.1:14318", "http://127.0.0.1:14319"):
+                client = Client(endpoint, transport="otlp", strict=True)
+                with client.trace(session_id="native-session"):
+                    pass
+                *_, body, headers = self.requests[-1]
+                if endpoint == "http://127.0.0.1:14319":
+                    self.assertNotIn("Authorization", headers)
+                else:
+                    self.assertEqual(headers["Authorization"], bearer)
+                self.assertNotIn(bearer.encode(), body)
+                self.assertNotIn("irrelevant", headers)
+                self.assertNotIn(MARKER, str(headers))
+
+        with patch.dict(os.environ, {
+            "OTEL_EXPORTER_OTLP_HEADERS": launch_env["OTEL_EXPORTER_OTLP_TRACES_HEADERS"]
+        }, clear=True):
+            with Client(ENDPOINT, transport="otlp", strict=True).trace(session_id="native-session"):
+                pass
+            self.assertNotIn("Authorization", self.requests[-1][-1])
+
+    def test_broker_bearer_discards_ambiguous_or_malformed_headers(self):
+        valid = "authorization=Bearer%20" + "e1" * 32
+        for header in (
+            valid + ",Authorization=Bearer%20" + "e2" * 32,
+            valid + ",authorization",
+            valid + "%0A",
+            valid + "%ZZ",
+            valid.replace("%20", "+"),
+            valid.replace("e1", "E1"),
+            valid + "," + "x" * 4096,
+        ):
+            with patch.dict(os.environ, {
+                "OTEL_EXPORTER_OTLP_TRACES_ENDPOINT": ENDPOINT,
+                "OTEL_EXPORTER_OTLP_TRACES_HEADERS": header,
+            }, clear=True):
+                self.response = Response(status=401, body=header.encode())
+                client = Client(transport="otlp")
+                with client.trace(session_id="native-session"):
+                    pass
+                self.assertNotIn("Authorization", self.requests[-1][-1])
+                self.assertEqual(str(client.last_error), "OTLP receiver returned HTTP 401")
 
     def test_partial_failure_is_reported_and_strict_keeps_application_error(self):
         self.response = Response(json.dumps({"partialSuccess": {
@@ -231,6 +353,24 @@ class PythonOtlpClientTests(unittest.TestCase):
         self.assertEqual(len(self.requests), 2)
         self.assertIn("HTTP 503", str(client.last_error))
 
+    def test_automatic_sdk_copy_requires_vetted_message_shape_and_preserves_cost(self):
+        sdk = integration("otlp.py", {
+            "opentelemetry.sdk.trace.export": {
+                "SpanExporter": type("SpanExporter", (), {}),
+                "SpanExportResult": SimpleNamespace(SUCCESS=0, FAILURE=1),
+            },
+        })
+        span = SimpleNamespace(
+            get_span_context=lambda: SimpleNamespace(trace_id=1, span_id=2), parent=None,
+            start_time=1, end_time=2, status=SimpleNamespace(status_code=SimpleNamespace(name="OK")),
+            instrumentation_scope=SimpleNamespace(name="unrecognized.instrumentation"),
+            attributes={"agenturm.payload.input": MARKER, "input.value": MARKER, "llm.cost_usd": 0},
+        )
+        for capture in (False, True):
+            attributes = sdk._span_metadata(span, capture)["attributes"]
+            self.assertEqual(attributes, {"agenturm.reported_cost.amount": "0", "agenturm.reported_cost.currency": "USD"})
+            self.assertNotIn(MARKER, str(attributes))
+
     def test_vendor_callback_ids_preserve_existing_ancestry(self):
         client = Client(
             ENDPOINT, transport="otlp", session_id="native-session", harness_id="harness.pi",
@@ -272,6 +412,51 @@ class PythonOtlpClientTests(unittest.TestCase):
         self.assertEqual(lc_parent["parentSpanId"], lc_root["spanId"])
         self.assertEqual(lc_child["parentSpanId"], lc_parent["spanId"])
         self.assertNotIn(MARKER.encode(), self.requests[0][4])
+
+    def test_usage_whitelist_and_sdk_callback_preserve_missing_fields(self):
+        client = Client(ENDPOINT, transport="otlp", session_id="native-session", strict=True)
+        with client.trace(attributes={
+            "gen_ai.usage.input_tokens": 0,
+            "llm.token_count.prompt": "0",
+            "gen_ai.usage.output_tokens": 5,
+            "llm.token_count.completion": 6,
+            "gen_ai.usage.cached_input_tokens": "9223372036854775807",
+            "gen_ai.usage.reasoning_tokens": True,
+            "gen_ai.input.messages": MARKER,
+        }):
+            pass
+        attributes = {field["key"]: field["value"] for field in self.sent_spans()[0]["attributes"]}
+        self.assertEqual(attributes, {
+            "session.id": {"stringValue": "native-session"},
+            "gen_ai.usage.input_tokens": {"intValue": "0"},
+            "gen_ai.usage.cache_read.input_tokens": {"intValue": "9223372036854775807"},
+        })
+
+        langchain = integration("langchain.py", {
+            "langchain_core.callbacks": {"BaseCallbackHandler": type("BaseCallbackHandler", (), {})}
+        })
+        result = SimpleNamespace(generations=[[SimpleNamespace(message=SimpleNamespace(
+            usage_metadata={
+                "output_tokens": 0, "input_token_details": {"cache_read": 4},
+                "output_token_details": {"reasoning": 1.5},
+            },
+        ))]])
+        self.assertEqual(langchain.LangChainCallbackHandler._reported_token_attributes(result), {
+            "gen_ai.usage.output_tokens": "0", "gen_ai.usage.cache_read.input_tokens": "4",
+        })
+
+        agents = integration("openai_agents.py", {
+            "agents.tracing.processor_interface": {"TracingExporter": type("TracingExporter", (), {})}
+        })
+        reported = agents._safe_attributes(
+            None, "generation", {
+                "usage": {"input_tokens": 1.5, "output_tokens": 0, "cached_input_tokens": 9},
+                "input": {"input_tokens": 99, "reasoning_tokens": 100},
+            }, exact_usage=True,
+        )
+        self.assertEqual(reported, {
+            "gen_ai.usage.output_tokens": 0, "gen_ai.usage.cache_read.input_tokens": 9,
+        })
 
     def test_legacy_transport_preserves_span_and_progress_payloads(self):
         with patch("observatory.receiver_state.endpoint_token", return_value="legacy-token"), patch(

@@ -1,8 +1,9 @@
 //! Decode the structural OTLP/HTTP trace fields we retain. Unknown fields
-//! are skipped without decoding names, events, links, or payload attributes.
+//! are skipped without decoding names, events, links, or arbitrary attributes.
 
 use super::{
-    Attribute, AttributeValue, MAX_EXPORT_SPANS, OtlpSpan, Status, TURN_KEY, Timestamp, WORKER_KEY,
+    Attribute, AttributeValue, MAX_EXPORT_SPANS, OtlpSpan, PAYLOAD_INPUT, PAYLOAD_OUTPUT, Status,
+    TURN_KEY, Timestamp, WORKER_KEY,
 };
 use std::fmt::Write as _;
 
@@ -114,7 +115,7 @@ fn decode_span(input: &[u8]) -> Result<OtlpSpan, &'static str> {
             (8, Field::Fixed64(time)) => span.end_time_unix_nano = Timestamp::Number(time),
             (9, Field::Bytes(value)) => {
                 if let Some(attribute) = decode_attribute(value)? {
-                    if span.attributes.len() == 16 {
+                    if span.attributes.len() == 64 {
                         return Err(MALFORMED);
                     }
                     span.attributes.push(attribute);
@@ -148,29 +149,59 @@ fn decode_attribute(input: &[u8]) -> Result<Option<Attribute>, &'static str> {
     let Some(key) = key.and_then(|bytes| std::str::from_utf8(bytes).ok()) else {
         return Ok(None);
     };
-    if !matches!(
-        key,
-        "session.id" | "gen_ai.conversation.id" | "agenturm.source.id" | TURN_KEY | WORKER_KEY
-    ) {
+    let cost_key = super::cost::is_cost_key(key);
+    let numeric_key = cost_key || super::token_usage::is_token_key(key);
+    if !numeric_key
+        && !matches!(
+            key,
+            "session.id"
+                | "gen_ai.conversation.id"
+                | "agenturm.source.id"
+                | TURN_KEY
+                | WORKER_KEY
+                | PAYLOAD_INPUT
+                | PAYLOAD_OUTPUT
+        )
+    {
         return Ok(None);
     }
-    let mut string_value = None;
+    let max_len = if matches!(key, PAYLOAD_INPUT | PAYLOAD_OUTPUT) {
+        agenturm_store::MAX_TELEMETRY_PAYLOAD_TEXT_BYTES
+    } else {
+        512
+    };
+    let mut scalar = AttributeValue::default();
     if let Some(value) = value {
         for field in fields(value) {
             let (number, field) = field?;
             if (1..=7).contains(&number) {
-                string_value = match (number, field) {
-                    (1, Field::Bytes(data)) if data.len() <= 512 => {
-                        Some(std::str::from_utf8(data).map_err(|_| MALFORMED)?.to_owned())
+                scalar = AttributeValue::default();
+                match (number, field) {
+                    (1, Field::Bytes(data)) if data.len() <= max_len => {
+                        if let Ok(text) = std::str::from_utf8(data) {
+                            scalar.string_value = text.into();
+                        } else if !numeric_key {
+                            return Err(MALFORMED);
+                        }
                     }
-                    _ => None,
-                };
+                    (2, Field::Varint(value @ 0..=1)) if cost_key => {
+                        scalar.bool_value = (value != 0).into()
+                    }
+                    (3, Field::Varint(value)) if numeric_key => {
+                        scalar.int_value = serde_json::value::to_raw_value(&(value as i64)).ok();
+                    }
+                    (4, Field::Fixed64(value)) if cost_key => {
+                        scalar.double_value =
+                            serde_json::value::to_raw_value(&f64::from_bits(value)).ok();
+                    }
+                    _ => {}
+                }
             }
         }
     }
     Ok(Some(Attribute {
         key: key.to_owned(),
-        value: Some(AttributeValue { string_value }),
+        value: Some(scalar),
     }))
 }
 
@@ -221,6 +252,99 @@ mod tests {
     }
 
     #[test]
+    fn token_usage_projects_exact_protobuf_integer_fields() {
+        let attribute = |key: &str, scalar: &[u8]| {
+            let mut value = message(1, key.as_bytes());
+            value.extend(message(2, scalar));
+            message(9, &value)
+        };
+        let mut span = message(1, &[1; 16]);
+        span.extend(message(2, &[2; 8]));
+        span.push(7 << 3 | 1);
+        span.extend(10_u64.to_le_bytes());
+        span.push(8 << 3 | 1);
+        span.extend(20_u64.to_le_bytes());
+        span.extend(attribute("session.id", &message(1, b"usage-session")));
+        span.extend(attribute("llm.token_count.prompt", &[3 << 3, 0]));
+        span.extend(attribute(
+            "gen_ai.usage.cache_read.input_tokens",
+            &[3 << 3, 4],
+        ));
+        span.extend(attribute("gen_ai.usage.output_tokens", &[2 << 3, 1]));
+        span.extend(attribute(
+            "gen_ai.usage.total_tokens",
+            &message(1, b"9223372036854775807"),
+        ));
+        let source = agenturm_kernel::ExtensionId::parse("otlp.fixture").unwrap();
+        let export = message(1, &message(2, &message(2, &span)));
+        let (rows, unscoped, payloads) =
+            super::super::decode_protobuf(&export, &source, None, None).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(unscoped, 0);
+        assert!(payloads.is_empty());
+        let usage = rows
+            .iter()
+            .find_map(|row| match &row.kind {
+                agenturm_kernel::ObservationKind::SpanTokenUsage(usage) => Some(usage),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(usage.input_tokens, Some(0));
+        assert_eq!(usage.output_tokens, None);
+        assert_eq!(usage.cache_read_input_tokens, Some(4));
+        assert_eq!(usage.total_tokens, Some(i64::MAX as u64));
+        assert_eq!(usage.span.span_id, "02".repeat(8));
+    }
+
+    #[test]
+    fn selective_cost_attributes_preserve_protobuf_currency_and_precision() {
+        let mut span = message(1, &[3; 16]);
+        span.extend(message(2, &[4; 8]));
+        span.push(7 << 3 | 1);
+        span.extend(10_u64.to_le_bytes());
+        span.push(8 << 3 | 1);
+        span.extend(20_u64.to_le_bytes());
+
+        let attribute = |key: &str, scalar: &[u8]| {
+            let mut field = message(1, key.as_bytes());
+            field.extend(message(2, scalar));
+            message(9, &field)
+        };
+        span.extend(attribute("session.id", &message(1, b"native-session")));
+        span.extend(attribute("gen_ai.usage.cost.currency", &message(1, b"EUR")));
+        let mut amount = vec![4 << 3 | 1];
+        amount.extend(0.000000123_f64.to_bits().to_le_bytes());
+        span.extend(attribute("gen_ai.usage.cost", &amount));
+        span.extend(attribute("prompt", &message(1, b"private prompt")));
+        let id = agenturm_kernel::ExtensionId::parse("otlp.fixture").unwrap();
+        let project = |span: &[u8]| {
+            let export = message(1, &message(2, &message(2, span)));
+            super::super::decode_protobuf(&export, &id, None, None)
+                .unwrap()
+                .0
+        };
+        let rows = project(&span);
+        assert_eq!(rows.len(), 2);
+        let cost = rows
+            .iter()
+            .find_map(|row| match &row.kind {
+                agenturm_kernel::ObservationKind::ReportedCost(cost) => Some(cost),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(cost.currency, "EUR");
+        assert_eq!(cost.nanounits, 123);
+        assert_eq!(cost.span.as_ref().unwrap().span_id, "04".repeat(8));
+        assert!(
+            !serde_json::to_string(&rows)
+                .unwrap()
+                .contains("private prompt")
+        );
+        span.extend(attribute("llm.cost_known", &[2 << 3, 0]));
+        assert_eq!(project(&span).len(), 1);
+    }
+
+    #[test]
     fn decodes_exact_native_protobuf_trace_evidence() {
         let mut span = message(1, &[3; 16]);
         span.extend(message(2, &[4; 8]));
@@ -237,7 +361,7 @@ mod tests {
         let export = message(1, &message(2, &message(2, &span)));
 
         let id = agenturm_kernel::ExtensionId::parse("otlp.fixture").unwrap();
-        let (rows, skipped) = super::super::decode_protobuf(&export, &id, None).unwrap();
+        let (rows, skipped, _) = super::super::decode_protobuf(&export, &id, None, None).unwrap();
         assert_eq!(skipped, 0);
         assert_eq!(rows.len(), 1);
         assert_eq!(
@@ -252,7 +376,46 @@ mod tests {
         assert_eq!(span.started_at_unix_ns, 10);
         assert_eq!(rows[0].observed_at_unix_ns, 20);
         assert_eq!(span.status, agenturm_kernel::TraceStatus::Error);
-        assert!(super::super::decode_protobuf(&export[..export.len() - 1], &id, None).is_err());
+        assert!(
+            super::super::decode_protobuf(&export[..export.len() - 1], &id, None, None).is_err()
+        );
+    }
+
+    #[test]
+    fn explicit_payload_fields_require_a_matching_receiver_scope() {
+        let source = agenturm_kernel::ExtensionId::parse("otlp.fixture").unwrap();
+        let binding = agenturm_store::TelemetryBinding {
+            source_id: source.clone(),
+            native_source_id: None,
+        };
+        let mut span = message(1, &[3; 16]);
+        span.extend(message(2, &[4; 8]));
+        span.push(7 << 3 | 1);
+        span.extend(10_u64.to_le_bytes());
+        span.push(8 << 3 | 1);
+        span.extend(20_u64.to_le_bytes());
+        for (key, value) in [
+            ("session.id", "fixture-session"),
+            (PAYLOAD_INPUT, "recorded text"),
+            ("input.value", "excluded provider request"),
+        ] {
+            let mut attribute = message(1, key.as_bytes());
+            attribute.extend(message(2, &message(1, value.as_bytes())));
+            span.extend(message(9, &attribute));
+        }
+        let export = message(1, &message(2, &message(2, &span)));
+        assert!(super::super::decode_protobuf(&export, &source, None, None).is_err());
+
+        let (rows, skipped, private) =
+            super::super::decode_protobuf(&export, &source, None, Some(&binding)).unwrap();
+        assert_eq!(skipped, 0);
+        assert_eq!(rows.len(), 1);
+        assert_eq!(private.len(), 1);
+        assert_eq!(private[0].event_id, rows[0].event_id);
+        assert_eq!(private[0].payload.input.as_deref(), Some("recorded text"));
+        let metadata = serde_json::to_string(&rows).unwrap();
+        assert!(!metadata.contains("recorded text"));
+        assert!(!metadata.contains("excluded provider request"));
     }
 
     #[test]

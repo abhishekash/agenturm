@@ -2,7 +2,8 @@
 //! their observation rows so exact replay and restart remain deterministic.
 
 use crate::{Result, SCHEMA_VERSION, Store, StoreError};
-use rusqlite::{Connection, TransactionBehavior, params};
+use agenturm_kernel::{ReadIncarnation, ReadSnapshot};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
@@ -10,7 +11,7 @@ use serde::{Deserialize, Serialize};
 pub struct RetentionOutcome {
     pub cutoff_unix_ns: u64,
     pub removed_observations: usize,
-    pub minimum_snapshot_id: u64,
+    pub minimum_snapshot_id: ReadSnapshot,
 }
 
 #[derive(Default)]
@@ -78,15 +79,43 @@ pub(super) fn snapshot_id(receipt_sequence: i64, offset: i64) -> Result<i64> {
         .ok_or(StoreError::Invalid("history snapshot ID is exhausted"))
 }
 
+pub(super) fn read_incarnation(connection: &Connection) -> Result<Option<ReadIncarnation>> {
+    connection
+        .query_row(
+            "SELECT CASE WHEN typeof(value) = 'text' AND length(CAST(value AS BLOB)) = 32
+                      THEN value ELSE '' END
+             FROM agenturm_store_meta WHERE key = 'read_incarnation'",
+            [],
+            |row| row.get::<_, String>(0),
+        )
+        .optional()?
+        .map(|value| value.parse().map_err(StoreError::Invalid))
+        .transpose()
+}
+
+pub(super) fn renew_read_incarnation(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "INSERT INTO agenturm_store_meta(key, value)
+         VALUES ('read_incarnation', lower(hex(randomblob(16))))
+         ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+        [],
+    )?;
+    Ok(())
+}
+
 /// Resolves a read snapshot inside the transaction that reads the result rows.
 pub(super) fn resolve_read_snapshot(
     connection: &Connection,
-    requested: Option<u64>,
-) -> Result<(u64, i64)> {
+    requested: Option<ReadSnapshot>,
+) -> Result<(ReadSnapshot, i64)> {
+    let incarnation = read_incarnation(connection)?;
+    if requested.is_some_and(|id| id.incarnation() != incarnation) {
+        return Err(StoreError::SnapshotReplaced);
+    }
     let state = read_state(connection)?;
     let newest = snapshot_id(receipt_head(connection)?, state.snapshot_offset)?;
     let selected = requested
-        .map(i64::try_from)
+        .map(|snapshot| i64::try_from(snapshot.watermark()))
         .transpose()
         .map_err(|_| StoreError::Invalid("query snapshot ID is invalid"))?
         .unwrap_or(newest);
@@ -95,10 +124,13 @@ pub(super) fn resolve_read_snapshot(
     }
     if selected < state.minimum_snapshot_id {
         return Err(StoreError::ExpiredHistorySnapshot {
-            minimum_snapshot_id: state.minimum_snapshot_id as u64,
+            minimum_snapshot_id: ReadSnapshot::new(state.minimum_snapshot_id as u64, incarnation),
         });
     }
-    Ok((selected as u64, selected - state.snapshot_offset))
+    Ok((
+        ReadSnapshot::new(selected as u64, incarnation),
+        selected - state.snapshot_offset,
+    ))
 }
 
 impl Store {
@@ -109,7 +141,7 @@ impl Store {
         source: &agenturm_kernel::ExtensionId,
         event_id: &str,
         revision: u32,
-        snapshot_id: u64,
+        snapshot_id: ReadSnapshot,
     ) -> Result<bool> {
         crate::validate_identifier(event_id, crate::MAX_EVENT_ID_BYTES, "event ID")?;
         let (_, watermark) = resolve_read_snapshot(&self.connection, Some(snapshot_id))?;
@@ -136,8 +168,6 @@ impl Store {
     /// This is logical cleanup of the live store. Existing backups and SQLite
     /// file space can still contain the prior data.
     pub fn prune_observations_before(&mut self, cutoff_unix_ns: u64) -> Result<RetentionOutcome> {
-        let cutoff = i64::try_from(cutoff_unix_ns)
-            .map_err(|_| StoreError::Invalid("retention cutoff exceeds SQLite INTEGER"))?;
         #[cfg(target_os = "linux")]
         if self.writer_lease.is_none() {
             return Err(StoreError::WriterLease(std::io::Error::other(
@@ -149,52 +179,68 @@ impl Store {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        let state = read_state(&transaction)?;
-        if cutoff < state.cutoff_unix_ns {
-            return Err(StoreError::Invalid("retention cutoff cannot decrease"));
-        }
-        if cutoff == state.cutoff_unix_ns {
-            return Ok(RetentionOutcome {
-                cutoff_unix_ns,
-                removed_observations: 0,
-                minimum_snapshot_id: state.minimum_snapshot_id as u64,
-            });
-        }
-
-        let offset = snapshot_id(state.snapshot_offset, 1)?;
-        let barrier = snapshot_id(receipt_head(&transaction)?, offset)?;
-        transaction.execute(
-            "INSERT INTO agenturm_retired_observations (source_id, event_id, revision, event_digest)
-             SELECT source_id, event_id, revision, event_digest FROM agenturm_observations
-             WHERE observed_at_unix_ns < ?1",
-            [cutoff],
-        )?;
-        let removed_observations = transaction.execute(
-            "DELETE FROM agenturm_observations WHERE observed_at_unix_ns < ?1",
-            [cutoff],
-        )?;
-        if removed_observations > 0 {
-            transaction.execute(
-                "DELETE FROM agenturm_content_cursor_proofs AS proof
-                 WHERE proof.request_id NOT IN (
-                    SELECT request_id FROM agenturm_observations
-                    WHERE (json_extract(kind_json, '$.kind') = 'message'
-                           AND json_extract(kind_json, '$.role') = 'user')
-                       OR json_extract(kind_json, '$.kind') IN ('mcp_call', 'file_edit')
-                 )",
-                [],
-            )?;
-        }
-        transaction.execute(
-            "UPDATE agenturm_retention_state SET cutoff_unix_ns = ?1,
-                    snapshot_offset = ?2, minimum_snapshot_id = ?3 WHERE singleton = 1",
-            params![cutoff, offset, barrier],
-        )?;
+        let outcome = prune_in(&transaction, cutoff_unix_ns)?;
         transaction.commit()?;
-        Ok(RetentionOutcome {
-            cutoff_unix_ns,
-            removed_observations,
-            minimum_snapshot_id: barrier as u64,
-        })
+        Ok(outcome)
     }
+}
+
+/// Caller owns an immediate transaction and has verified the writer lease.
+pub(super) fn prune_in(
+    transaction: &Transaction<'_>,
+    cutoff_unix_ns: u64,
+) -> Result<RetentionOutcome> {
+    let cutoff = i64::try_from(cutoff_unix_ns)
+        .map_err(|_| StoreError::Invalid("retention cutoff exceeds SQLite INTEGER"))?;
+    let state = read_state(transaction)?;
+    let incarnation = read_incarnation(transaction)?;
+    if cutoff < state.cutoff_unix_ns {
+        return Err(StoreError::Invalid("retention cutoff cannot decrease"));
+    }
+    if cutoff == state.cutoff_unix_ns {
+        return Ok(RetentionOutcome {
+            cutoff_unix_ns,
+            removed_observations: 0,
+            minimum_snapshot_id: ReadSnapshot::new(state.minimum_snapshot_id as u64, incarnation),
+        });
+    }
+
+    let offset = snapshot_id(state.snapshot_offset, 1)?;
+    let barrier = snapshot_id(receipt_head(transaction)?, offset)?;
+    transaction.execute(
+        "INSERT INTO agenturm_retired_observations (source_id, event_id, revision, event_digest)
+         SELECT source_id, event_id, revision, event_digest FROM agenturm_observations
+         WHERE observed_at_unix_ns < ?1",
+        [cutoff],
+    )?;
+    crate::telemetry_payload::purge_before(transaction, cutoff)?;
+    let removed_observations = transaction.execute(
+        "DELETE FROM agenturm_observations WHERE observed_at_unix_ns < ?1",
+        [cutoff],
+    )?;
+    if removed_observations > 0 {
+        crate::eval_outcome::purge_unretained(transaction)?;
+        transaction.execute(
+            "DELETE FROM agenturm_content_cursor_proofs AS proof
+             WHERE proof.request_id NOT IN (
+                SELECT request_id FROM agenturm_observations
+                WHERE (json_extract(kind_json, '$.kind') = 'message'
+                       AND json_extract(kind_json, '$.role') = 'user')
+                   OR json_extract(kind_json, '$.kind') IN ('mcp_call', 'file_edit')
+                   OR (json_extract(kind_json, '$.kind') = 'tool'
+                       AND json_extract(kind_json, '$.category') = 'shell')
+             )",
+            [],
+        )?;
+    }
+    transaction.execute(
+        "UPDATE agenturm_retention_state SET cutoff_unix_ns = ?1,
+                snapshot_offset = ?2, minimum_snapshot_id = ?3 WHERE singleton = 1",
+        params![cutoff, offset, barrier],
+    )?;
+    Ok(RetentionOutcome {
+        cutoff_unix_ns,
+        removed_observations,
+        minimum_snapshot_id: ReadSnapshot::new(barrier as u64, incarnation),
+    })
 }

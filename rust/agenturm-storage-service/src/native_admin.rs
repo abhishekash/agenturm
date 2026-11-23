@@ -1,7 +1,10 @@
 //! Administrative broker operations. Request data never selects a path.
 
 use agenturm_kernel::ExtensionId;
-use agenturm_store::{ContentGrantScope, ContentKind, RetentionOutcome, Store, StoreError};
+use agenturm_store::{
+    AutomaticRetentionPolicy, AutomaticRetentionStatus, ContentGrantScope, ContentKind,
+    RetentionOutcome, Store, StoreError,
+};
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
 use std::path::Path;
@@ -61,6 +64,9 @@ pub(crate) enum AdminRequest {
     ApproveGrant { binding: GrantBinding },
     RevokeGrant { binding: GrantBinding },
     PruneBefore { cutoff_unix_ns: u64 },
+    GetRetentionPolicy {},
+    SetRetentionPolicy { policy: AutomaticRetentionPolicy },
+    ApplyRetentionPolicy {},
     Backup {},
     CheckIntegrity {},
 }
@@ -71,6 +77,8 @@ pub(crate) enum AdminReply {
     Grant { status: GrantStatus },
     Revoked { changed: bool },
     Pruned { outcome: RetentionOutcome },
+    RetentionPolicy { status: AutomaticRetentionStatus },
+    RetentionApplied { outcome: Option<RetentionOutcome> },
     BackedUp { receipt: BackupReceipt },
     IntegrityPassed,
 }
@@ -99,7 +107,10 @@ pub(crate) fn dispatch(
         AdminRequest::ApproveGrant { binding } | AdminRequest::RevokeGrant { binding } => {
             role == Role::GrantAdministrator && allowed.contains(&binding.source_id)
         }
+        AdminRequest::GetRetentionPolicy {} => role.reads_history() || role == Role::Maintenance,
         AdminRequest::PruneBefore { .. }
+        | AdminRequest::SetRetentionPolicy { .. }
+        | AdminRequest::ApplyRetentionPolicy {}
         | AdminRequest::Backup {}
         | AdminRequest::CheckIntegrity {} => role == Role::Maintenance,
     };
@@ -138,6 +149,18 @@ pub(crate) fn dispatch(
                 .map_err(failure)?;
             Ok(AdminReply::Pruned { outcome })
         }
+        AdminRequest::GetRetentionPolicy {} => Ok(AdminReply::RetentionPolicy {
+            status: store.automatic_retention_status().map_err(failure)?,
+        }),
+        AdminRequest::SetRetentionPolicy { policy } => {
+            store.set_automatic_retention(policy).map_err(failure)?;
+            Ok(AdminReply::RetentionPolicy {
+                status: store.automatic_retention_status().map_err(failure)?,
+            })
+        }
+        AdminRequest::ApplyRetentionPolicy {} => Ok(AdminReply::RetentionApplied {
+            outcome: store.apply_current_automatic_retention().map_err(failure)?,
+        }),
         AdminRequest::Backup {} => {
             let directory = backup_directory.ok_or(AdminFailure::Unavailable)?;
             let receipt = backup(store, directory)?;
@@ -243,6 +266,95 @@ mod tests {
             kind: ContentKind::PiUserText,
             source_fingerprint: [fingerprint; 32],
         }
+    }
+
+    #[test]
+    fn automatic_retention_reads_are_separate_from_maintenance_authority() {
+        let fixture = Fixture::new();
+        let mut store = Store::open_collector(fixture.0.join("history.sqlite")).unwrap();
+        let allowed = BTreeSet::from([ExtensionId::parse("harness.pi").unwrap()]);
+        let policy = AutomaticRetentionPolicy {
+            max_age_ns: Some(1_000),
+        };
+        for role in [Role::Reader, Role::Collector, Role::GrantAdministrator] {
+            assert!(matches!(
+                dispatch(
+                    &mut store,
+                    &allowed,
+                    role,
+                    AdminRequest::SetRetentionPolicy { policy },
+                    None
+                ),
+                Err(AdminFailure::Unauthorized)
+            ));
+            assert!(matches!(
+                dispatch(
+                    &mut store,
+                    &allowed,
+                    role,
+                    AdminRequest::ApplyRetentionPolicy {},
+                    None
+                ),
+                Err(AdminFailure::Unauthorized)
+            ));
+        }
+        assert!(store.automatic_retention_status().unwrap().policy.is_none());
+        assert!(matches!(
+            dispatch(
+                &mut store,
+                &allowed,
+                Role::Maintenance,
+                AdminRequest::SetRetentionPolicy { policy },
+                None
+            ),
+            Ok(AdminReply::RetentionPolicy { .. })
+        ));
+        for role in [Role::Reader, Role::Collector, Role::Maintenance] {
+            assert!(matches!(dispatch(&mut store, &allowed, role,
+                AdminRequest::GetRetentionPolicy {}, None),
+                Ok(AdminReply::RetentionPolicy { status }) if status.policy == Some(policy) && status.cutoff_unix_ns == 0));
+        }
+        assert!(matches!(
+            dispatch(
+                &mut store,
+                &allowed,
+                Role::GrantAdministrator,
+                AdminRequest::GetRetentionPolicy {},
+                None
+            ),
+            Err(AdminFailure::Unauthorized)
+        ));
+        assert!(matches!(
+            dispatch(
+                &mut store,
+                &allowed,
+                Role::Maintenance,
+                AdminRequest::ApplyRetentionPolicy {},
+                None
+            ),
+            Ok(AdminReply::RetentionApplied { outcome: Some(_) })
+        ));
+        assert!(store.automatic_retention_status().unwrap().cutoff_unix_ns > 0);
+        dispatch(
+            &mut store,
+            &allowed,
+            Role::Maintenance,
+            AdminRequest::SetRetentionPolicy {
+                policy: AutomaticRetentionPolicy { max_age_ns: None },
+            },
+            None,
+        )
+        .unwrap();
+        assert!(matches!(
+            dispatch(
+                &mut store,
+                &allowed,
+                Role::Maintenance,
+                AdminRequest::ApplyRetentionPolicy {},
+                None
+            ),
+            Ok(AdminReply::RetentionApplied { outcome: None })
+        ));
     }
 
     #[test]
@@ -474,7 +586,17 @@ mod tests {
         );
         let detached = Store::open_read_only(path).unwrap();
         assert_eq!(detached.history_identity().unwrap(), identity);
-        assert_eq!(detached.observation_page(10).unwrap().snapshot_id, snapshot);
+        let backup_snapshot = detached.observation_page(10).unwrap().snapshot_id;
+        assert_eq!(backup_snapshot.watermark(), snapshot.watermark());
+        assert_ne!(backup_snapshot.incarnation(), snapshot.incarnation());
+        assert!(
+            detached
+                .query_observations(&ObservationQuery {
+                    snapshot_id: Some(snapshot),
+                    ..ObservationQuery::latest(10)
+                })
+                .is_err()
+        );
         assert!(
             detached
                 .current_content_grant(&approved.scope())

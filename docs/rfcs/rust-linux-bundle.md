@@ -50,12 +50,57 @@ reads the same history. When the cockpit owns collection, it also receives
 OTLP/HTTP traces at `http://127.0.0.1:14318/v1/traces`. Set `AGENTURM_OTLP_PORT`
 to use another loopback port. Both stop on quit.
 
+A newly created default cockpit history uses a 14-day age policy. Existing
+histories retain their current policy; an explicitly selected database can
+receive a policy through the commands below. Active writers check the policy
+once a minute. The policy removes expired observation rows while preserving
+source checkpoints and replay receipts. Native source files and existing
+backups retain their original data.
+
+```sh
+"$agenturm" retention status --db history.sqlite
+"$agenturm" retention set --db history.sqlite --max-age-days 30
+"$agenturm" retention disable --db history.sqlite
+"$agenturm" retention run --db history.sqlite
+```
+
+`set` configures the age; `run` applies it immediately using the writer's
+clock. `disable` persists across restart. Increasing the age or disabling
+retention preserves the established cutoff and does not recover expired
+rows. Stop a local collector before changing its policy through a separate
+CLI process. A broker maintenance identity can configure, disable or apply
+the policy while the service is running:
+
+```sh
+"$agenturm" broker retention set --broker-config maintenance.json --max-age-days 30
+"$agenturm" broker retention status --broker-config reader.json
+```
+
+Reader and collector identities can inspect the broker policy. Its
+maintenance identity owns changes and explicit cleanup. Backups preserve the
+policy; a broker owner can disable it before starting a restored history.
+
 Use `↑` and `↓` to choose a session, `/` to search the loaded roster,
 and Enter to open its Overview. The newest roster page refreshes while open.
 Press `r` in Agents to refresh it immediately. Open Activity with `a` or
 Review with `v`, and open the selected session’s Usage with `u`. Press
 `y` in Review to acknowledge the displayed evidence. The acknowledgement
 is stored next to the history database and applies to the reviewed version.
+
+Print a bounded session report without entering the full-screen UI:
+
+```sh
+"$agenturm" cockpit --once --db history.sqlite
+"$agenturm" cockpit --once --db history.sqlite --json --limit 64
+"$agenturm" broker cockpit --once --broker-config reader.json --json
+```
+
+`agenturm --once` uses the default cockpit's discovery and history, then
+stops its session-owned workers after printing. An explicit `--db` reads
+retained history. The report preserves each source and session, reports an
+unknown state when no lifecycle was recorded, and indicates when older
+sessions are outside its page. A trusted remote reader supports the same
+report with `--endpoint` and `--token-file` in place of `--db`.
 
 From Agents, `g` opens the cross-source Overview. Use `2` for Activity,
 `3` for MCP, `4` for Operations, `5` for Findings, `6` for Host, and
@@ -387,7 +432,14 @@ Run the archive checks on each supported platform after building from the
 release tag. The Linux CI workflow accepts Rust tags in the form
 `rust-v<version>`. The version comes from `rust/agenturm-app/Cargo.toml`.
 The workflow verifies the tag matches the version in the archive and retains
-the qualified archive and checksum as workflow artifacts. Python releases use
+the qualified archive and checksum as workflow artifacts. The arm64 job runs
+on native Ubuntu 24.04 arm64 and checks install, restart, upgrade from Rust
+0.2.0, backup and uninstall through a systemd user service. On Rust tags,
+a separate job attaches that exact arm64 archive and checksum only after
+both architectures pass. Existing release assets are never overwritten. If
+the release does not exist yet, that job creates a draft for the release owner.
+A candidate workflow run alone does not advertise a published arm64 asset.
+Python releases use
 the separate `v<version>` tag family.
 
 ```sh

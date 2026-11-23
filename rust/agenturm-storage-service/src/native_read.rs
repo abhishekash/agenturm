@@ -1,5 +1,6 @@
 //! Scoped native history reads for an authenticated broker client.
 
+use agenturm_kernel::ReadSnapshot;
 use agenturm_kernel::{
     ExtensionId, MAX_DURABLE_SNAPSHOT_OBSERVATIONS, ObservationPage, ObservationQuery,
 };
@@ -35,8 +36,10 @@ pub enum ReadFailure {
     Unauthorized,
     InvalidRequest,
     HistoryReplaced,
-    ExpiredSnapshot { minimum_snapshot_id: u64 },
+    SnapshotReplaced,
+    ExpiredSnapshot { minimum_snapshot_id: ReadSnapshot },
     TraceScopeTooLarge { max_rows: usize },
+    EvalTraceNotRetained,
     Unavailable,
 }
 
@@ -132,6 +135,21 @@ pub fn query_sessions(
         .map_err(failure)
 }
 
+pub fn query_host_history(
+    store: &Store,
+    allowed_sources: &BTreeSet<ExtensionId>,
+    query: &ObservationQuery,
+) -> Result<ObservationPage, ReadFailure> {
+    authorize(allowed_sources, query.harness_id.as_deref())?;
+    authorize(
+        allowed_sources,
+        query.before.as_ref().map(|row| row.harness_id.as_str()),
+    )?;
+    store
+        .query_host_history(query, Some(allowed_sources))
+        .map_err(failure)
+}
+
 fn authorize(
     allowed_sources: &BTreeSet<ExtensionId>,
     source_id: Option<&str>,
@@ -146,15 +164,17 @@ fn authorize(
     Ok(())
 }
 
-fn failure(error: StoreError) -> ReadFailure {
+pub(crate) fn failure(error: StoreError) -> ReadFailure {
     match error {
         StoreError::Invalid(_) => ReadFailure::InvalidRequest,
+        StoreError::SnapshotReplaced => ReadFailure::SnapshotReplaced,
         StoreError::ExpiredHistorySnapshot {
             minimum_snapshot_id,
         } => ReadFailure::ExpiredSnapshot {
             minimum_snapshot_id,
         },
         StoreError::TraceScopeTooLarge { max_rows } => ReadFailure::TraceScopeTooLarge { max_rows },
+        StoreError::EvalTraceNotRetained => ReadFailure::EvalTraceNotRetained,
         _ => ReadFailure::Unavailable,
     }
 }

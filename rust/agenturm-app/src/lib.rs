@@ -14,14 +14,24 @@ mod cockpit_startup;
 mod cockpit_workflows;
 mod content_preview;
 mod discovery;
+mod eval_import;
 mod handoff_export;
+mod host_cli;
 mod inspector_activity;
 mod investigate_cli;
+#[cfg(target_os = "linux")]
+mod new_window;
 mod private_output;
+#[cfg(target_os = "linux")]
+mod remote_history;
+mod retention_cli;
 mod review_receipt;
 mod session_evidence;
+mod span_jsonl_import;
+mod summary_cli;
 mod task_cli;
 mod task_git;
+mod telemetry_payload_cli;
 mod trace_import;
 mod trace_receiver;
 mod trace_run;
@@ -36,14 +46,25 @@ pub use adapter_install::execute as execute_adapter_install;
 pub use attention::{AttentionOptions, execute_attention};
 pub use content_preview::{ContentOptions, execute_content, execute_content_stdout};
 pub use discovery::{discover, execute_discover};
+pub use eval_import::{EvalOptions, execute_evals};
+pub use host_cli::{HostOptions, execute as execute_host};
 pub use investigate_cli::{InvestigationOptions, execute_investigation};
+#[cfg(target_os = "linux")]
+pub use new_window::{WindowOptions, execute as execute_new_window};
 pub use private_output::with_private_stdout;
+#[cfg(target_os = "linux")]
+pub use remote_history::{RemoteHistoryOptions, execute_remote_cockpit};
+pub use retention_cli::{RetentionOptions, execute_retention};
 pub use review_receipt::ReviewOutput;
+pub use span_jsonl_import::{SpanJsonlImportOptions, execute_span_jsonl_import};
+pub use summary_cli::{SummaryOptions, execute_summary};
 pub use task_cli::{TaskOptions, execute_task, execute_task_stdout};
+pub use telemetry_payload_cli::{PayloadCommand, execute_payload_stdout};
 pub use trace_import::{TraceImportOptions, execute_trace_import};
 pub use trace_receiver::{TraceReceiverOptions, execute_trace_receiver};
 pub use trace_run::{TraceRunOptions, execute_trace_run};
 
+use agenturm_kernel::ReadSnapshot;
 use agenturm_kernel::{
     Capability, ExtensionId, ExtensionPlugin, Harness, Kernel, MAX_DURABLE_SNAPSHOT_OBSERVATIONS,
     MetricRow, Observation, ObservationExtension, ObservationKind, ObservationPosition,
@@ -192,12 +213,17 @@ pub enum Command {
     Version,
     Status,
     Attention(AttentionOptions),
+    Host(HostOptions),
     Task(TaskOptions),
     Inspect(InspectOptions),
     Cockpit {
         db: Option<PathBuf>,
         extensions: ResolvedExtensionCatalog,
     },
+    #[cfg(target_os = "linux")]
+    Window(WindowOptions),
+    #[cfg(target_os = "linux")]
+    RemoteCockpit(RemoteHistoryOptions),
     Query(HistoryQueryOptions),
     #[cfg(target_os = "linux")]
     Broker(broker_cli::BrokerOptions),
@@ -226,8 +252,13 @@ pub enum Command {
         before_unix_ns: u64,
     },
     Content(ContentOptions),
+    TracePayload(PayloadCommand),
+    Retention(RetentionOptions),
+    Summary(SummaryOptions),
     Ingest(IngestOptions),
     ImportTraces(TraceImportOptions),
+    ImportJsonl(SpanJsonlImportOptions),
+    Evals(EvalOptions),
     ServeTraces(TraceReceiverOptions),
     Run(TraceRunOptions),
     Collect(ConfiguredCollectOptions),
@@ -304,6 +335,7 @@ pub struct WatchReport {
 #[serde(deny_unknown_fields)]
 struct CollectionConfigFile {
     version: u32,
+    #[serde(default)]
     plugin_host: PathBuf,
     #[serde(default)]
     plugin_catalog: Option<PathBuf>,
@@ -311,6 +343,8 @@ struct CollectionConfigFile {
     sources: Vec<CollectionSourceInput>,
     #[serde(default)]
     follow: Option<discovery::FollowDiscovery>,
+    #[serde(default)]
+    host: Option<host_cli::HostCaptureConfig>,
 }
 
 #[derive(Debug, Deserialize, serde::Serialize)]
@@ -401,7 +435,7 @@ pub struct HistoryQueryOptions {
     pub harness_id: Option<String>,
     pub session_id: Option<String>,
     pub before: Option<ObservationPosition>,
-    pub snapshot_id: Option<u64>,
+    pub snapshot_id: Option<ReadSnapshot>,
     pub limit: usize,
 }
 
@@ -736,9 +770,33 @@ fn lifecycle_evidence_rows(
     ]
 }
 
+fn default_cockpit_flag(flag: &str) -> bool {
+    matches!(
+        flag,
+        "--db" | "--once" | "--new-window" | "--endpoint" | "--token-file"
+    )
+}
+
 pub fn parse_os_command(args: &[std::ffi::OsString]) -> Result<Command, String> {
+    if args
+        .first()
+        .and_then(|arg| arg.to_str())
+        .is_some_and(default_cockpit_flag)
+    {
+        let mut explicit = vec![std::ffi::OsString::from("cockpit")];
+        explicit.extend_from_slice(args);
+        return parse_os_command(&explicit);
+    }
+    #[cfg(target_os = "linux")]
+    if new_window::handles(args) {
+        return new_window::parse(args).map(Command::Window);
+    }
     if args.first().is_some_and(|arg| arg == "run") {
         return trace_run::parse_trace_run(&args[1..]).map(Command::Run);
+    }
+    #[cfg(target_os = "linux")]
+    if args.first().is_some_and(|arg| arg == "broker") {
+        return broker_cli::parse_os(&args[1..]).map(Command::Broker);
     }
     let args = args
         .iter()
@@ -752,6 +810,24 @@ pub fn parse_os_command(args: &[std::ffi::OsString]) -> Result<Command, String> 
 }
 
 pub fn parse_command(args: &[String]) -> Result<Command, String> {
+    if args.first().is_some_and(|arg| default_cockpit_flag(arg)) {
+        let mut explicit = vec!["cockpit".to_owned()];
+        explicit.extend_from_slice(args);
+        return parse_command(&explicit);
+    }
+    #[cfg(target_os = "linux")]
+    if new_window::handles(args) {
+        let original = args
+            .iter()
+            .map(std::ffi::OsString::from)
+            .collect::<Vec<_>>();
+        return new_window::parse(&original).map(Command::Window);
+    }
+    if args.first().is_some_and(|arg| arg == "cockpit")
+        && args[1..].iter().any(|arg| arg == "--once")
+    {
+        return summary_cli::parse(&args[1..]).map(Command::Summary);
+    }
     match args.first().map(String::as_str) {
         None => Ok(Command::Help),
         Some("--help" | "-h" | "help") if args.len() == 1 => Ok(Command::Help),
@@ -762,11 +838,20 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         #[cfg(target_os = "linux")]
         Some("adapter") => adapter_install::parse(&args[1..]).map(Command::InstallAdapter),
         Some("attention") => attention::parse(&args[1..]).map(Command::Attention),
+        Some("host") => host_cli::parse(&args[1..], false).map(Command::Host),
         Some("task") => task_cli::parse(&args[1..]).map(Command::Task),
         Some("cockpit") if args.len() == 1 => Ok(Command::Cockpit {
             db: None,
             extensions: ResolvedExtensionCatalog::default(),
         }),
+        #[cfg(target_os = "linux")]
+        Some("cockpit")
+            if args[1..]
+                .iter()
+                .any(|arg| matches!(arg.as_str(), "--endpoint" | "--token-file")) =>
+        {
+            remote_history::parse_attach(&args[1..]).map(Command::RemoteCockpit)
+        }
         Some("cockpit") => parse_inspect_options(&args[1..]).map(|options| Command::Cockpit {
             db: Some(options.db),
             extensions: options.extensions,
@@ -802,7 +887,11 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
                 .map_err(|_| "--before-unix-ns requires a Unix nanosecond timestamp".to_owned())?;
             Ok(Command::Prune { db, before_unix_ns })
         }
+        Some("retention") => retention_cli::parse(&args[1..], false).map(Command::Retention),
         Some("content") => content_preview::parse(&args[1..]).map(Command::Content),
+        Some("trace-payload") => {
+            telemetry_payload_cli::parse(&args[1..]).map(Command::TracePayload)
+        }
         Some("discover") => parse_discover_options(&args[1..]),
         Some("collect") => parse_collect_options(&args[1..]).map(Command::Collect),
         Some("service") => parse_service_options(&args[1..]).map(Command::Service),
@@ -816,6 +905,9 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         )
         .map(Command::Run),
         Some("import-traces") => trace_import::parse(&args[1..]).map(Command::ImportTraces),
+        Some("import-jsonl") => span_jsonl_import::parse(&args[1..]).map(Command::ImportJsonl),
+        Some("import-evals") => eval_import::parse(&args[1..], true).map(Command::Evals),
+        Some("evals") => eval_import::parse(&args[1..], false).map(Command::Evals),
         Some("ingest-codex-usage") => {
             parse_ingest_options(&args[1..], Some(CODEX_PLUGIN_ID)).map(Command::Ingest)
         }
@@ -1450,7 +1542,7 @@ fn parse_query_options(args: &[String], review: bool) -> Result<Command, String>
     ];
     let snapshot_id = before_snapshot_id
         .as_deref()
-        .map(|value| value.parse::<u64>().map_err(|_| usage()))
+        .map(|value| value.parse::<ReadSnapshot>().map_err(|_| usage()))
         .transpose()?;
     let before = if before_parts.iter().all(Option::is_none) {
         None
@@ -1754,6 +1846,7 @@ fn workspace_response(
             cockpit_workflows::execute(store, db, command).map(WorkspaceResponse::Work)
         }
         WorkspaceRequest::MarkReviewed(session) => {
+            cockpit_workflows::verify_review_snapshot(store, &session)?;
             let key = ReviewKey {
                 harness_id: ExtensionId::parse(session.harness_id)
                     .map_err(|error| error.to_string())?,
@@ -1762,6 +1855,7 @@ fn workspace_response(
             let version = StoredReviewVersion {
                 receipt_sequence: session.review_version.receipt_sequence,
                 retained_observations: session.review_version.retained_observations,
+                read_incarnation: session.snapshot_id.incarnation(),
             };
             let ledger =
                 ReviewLedger::open(db).map_err(|error| format!("Open reviews failed: {error}"))?;
@@ -1770,7 +1864,7 @@ fn workspace_response(
                 .map_err(|error| format!("Save review failed: {error}"))?;
             if !saved
                 && ledger
-                    .reviewed(std::slice::from_ref(&key))
+                    .reviewed_in(std::slice::from_ref(&key), version.read_incarnation)
                     .map_err(|error| format!("Read reviews failed: {error}"))?
                     .get(&key)
                     != Some(&version)
@@ -1782,7 +1876,9 @@ fn workspace_response(
             Ok(WorkspaceResponse::ReviewSaved)
         }
         WorkspaceRequest::History { selection, before } => {
-            load_workspace_history(app, store, selection, before).map(WorkspaceResponse::History)
+            let mut page = load_workspace_history(app, store, selection, before)?;
+            page.private_telemetry = store.allows_private_telemetry();
+            Ok(WorkspaceResponse::History(page))
         }
     }
 }
@@ -1811,7 +1907,8 @@ fn load_session_catalog(
             session_id: session.session_id.clone(),
         })
         .collect::<Vec<_>>();
-    let (reviewed, notice) = match ReviewLedger::open(db).and_then(|ledger| ledger.reviewed(&keys))
+    let (reviewed, notice) = match ReviewLedger::open(db)
+        .and_then(|ledger| ledger.reviewed_in(&keys, page.snapshot_id.incarnation()))
     {
         Ok(reviewed) => (reviewed, None),
         Err(error) => (
@@ -1859,6 +1956,19 @@ fn load_session_catalog(
 }
 
 trait HistoryReader: ObservationStore {
+    fn allows_private_telemetry(&self) -> bool {
+        cfg!(target_os = "linux")
+    }
+
+    fn local_host_data(&self) -> bool {
+        true
+    }
+    fn query_host_history(
+        &self,
+        _: &ObservationQuery,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        Err("Host history is unavailable from this receiver".into())
+    }
     fn workspace_ledger(
         &self,
         marker: &std::path::Path,
@@ -1881,6 +1991,12 @@ trait HistoryReader: ObservationStore {
 }
 
 impl HistoryReader for Store {
+    fn query_host_history(
+        &self,
+        query: &ObservationQuery,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        Store::query_host_history(self, query, None).map_err(|error| error.to_string())
+    }
     fn workspace_ledger(
         &self,
         marker: &std::path::Path,
@@ -1915,6 +2031,16 @@ impl HistoryReader for Store {
 
 #[cfg(target_os = "linux")]
 impl HistoryReader for agenturm_storage_service::NativeStore {
+    fn local_host_data(&self) -> bool {
+        false
+    }
+    fn query_host_history(
+        &self,
+        query: &ObservationQuery,
+    ) -> Result<agenturm_kernel::ObservationPage, String> {
+        self.query_host_history(query)
+            .map_err(|error| error.to_string())
+    }
     fn workspace_ledger(
         &self,
         marker: &std::path::Path,
@@ -2032,7 +2158,9 @@ fn load_workspace_history(
         HistorySelection::All(view) => {
             let mut snapshot = app.refresh_history_query(store, query);
             let ids = session_evidence::add_workspace_panes(&mut snapshot);
-            let host = cockpit_host::add_host_pane(&mut snapshot);
+            let host = store
+                .local_host_data()
+                .then(|| cockpit_host::add_host_pane(&mut snapshot));
             let mut page = inspector_activity::overview_page(snapshot);
             page.initial_pane = Some(match view {
                 WorkspaceView::Overview => {
@@ -2042,7 +2170,7 @@ fn load_workspace_history(
                 WorkspaceView::Mcp => ids.mcp,
                 WorkspaceView::Operations => ids.operations,
                 WorkspaceView::Findings => ids.findings,
-                WorkspaceView::Host => host,
+                WorkspaceView::Host => host.ok_or("Host data is unavailable from this receiver")?,
                 WorkspaceView::Usage => ids.usage,
                 WorkspaceView::Traces => ids.traces,
             });
@@ -2243,6 +2371,16 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                 ObservationKind::CreditUsage { nanocredits } => {
                     serde_json::json!({"kind":"credit_usage", "nanocredits":nanocredits})
                 }
+                ObservationKind::ReportedCost(cost) => serde_json::json!({
+                    "kind":"reported_cost", "currency":cost.currency,
+                    "nanounits":cost.nanounits.to_string(), "span":cost.span,
+                }),
+                ObservationKind::HostSample(sample) => serde_json::json!({"kind":"host_sample", "sample":sample}),
+                ObservationKind::SpanTokenUsage(usage) => {
+                    let mut evidence = serde_json::json!(usage);
+                    evidence["kind"] = serde_json::json!("span_token_usage");
+                    evidence
+                }
                 ObservationKind::Diagnostic { code, severity } => {
                     serde_json::json!({"kind":"diagnostic", "code":code, "severity":severity})
                 }
@@ -2371,6 +2509,8 @@ impl Drop for WatchSignalRegistrations {
     }
 }
 
+type CollectorMaintenance<S> = fn(&mut S) -> Result<(), String>;
+
 pub struct ConfiguredCollector<S = Store> {
     kernel: Kernel,
     store: S,
@@ -2385,6 +2525,9 @@ pub struct ConfiguredCollector<S = Store> {
     #[cfg(target_os = "linux")]
     validate_local_database: bool,
     next_scan: Instant,
+    local_maintenance: Option<CollectorMaintenance<S>>,
+    next_maintenance: Instant,
+    host_capture: Option<host_cli::HostCaptureSchedule>,
 }
 
 impl ConfiguredCollector {
@@ -2405,7 +2548,25 @@ impl ConfiguredCollector {
         }
         let store = Store::open_collector(&database)
             .map_err(|error| format!("open store failed: {error}"))?;
-        Self::with_store(config, database, store, stop)
+        Self::with_local_store(config, database, store, stop)
+    }
+
+    fn with_local_store(
+        config: ValidatedCollectionConfig,
+        database: PathBuf,
+        store: Store,
+        stop: Option<&Arc<AtomicBool>>,
+    ) -> Result<Self, String> {
+        let mut collector = Self::with_store(config, database, store, stop)?;
+        collector.local_maintenance = Some(|store| {
+            store
+                .apply_current_automatic_retention()
+                .map(|_| ())
+                .map_err(|_| {
+                    "Automatic retention could not run; retained history is still available".into()
+                })
+        });
+        Ok(collector)
     }
 }
 
@@ -2432,6 +2593,9 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
             #[cfg(target_os = "linux")]
             validate_local_database: true,
             next_scan: Instant::now() + FOLLOW_INTERVAL,
+            local_maintenance: None,
+            next_maintenance: Instant::now(),
+            host_capture: config.host_capture,
         };
         for source in config.sources {
             collector.add_source(source)?;
@@ -2528,13 +2692,27 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
     }
 
     pub fn refresh(&mut self) -> CollectionReport {
+        let maintenance_error = if Instant::now() >= self.next_maintenance {
+            self.next_maintenance = Instant::now() + Duration::from_secs(60);
+            self.local_maintenance
+                .and_then(|maintain| maintain(&mut self.store).err())
+        } else {
+            None
+        };
         self.retry_pending_sources();
         let snapshot = self.kernel.refresh_with_store(&mut self.store);
         let shutdown_requested = self
             .stop_flag
             .as_ref()
             .is_some_and(|stop| stop.load(Ordering::Relaxed));
-        if self.follow.is_some()
+        let host_capture = if shutdown_requested {
+            None
+        } else {
+            self.host_capture
+                .as_mut()
+                .and_then(|capture| capture.capture_due(&mut self.store))
+        };
+        let mut report = if self.follow.is_some()
             && self.stop_flag.is_some()
             && Instant::now() >= self.next_scan
             && !shutdown_requested
@@ -2545,21 +2723,29 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
             let polled_ids = self.source_ids.clone();
             let startup_failures = self.startup_failures.clone();
             let discovery_failure = self.rescan_follow_sources().err();
-            return build_collection_report_with_discovery(
+            build_collection_report_with_discovery(
                 &polled_ids,
                 &startup_failures,
                 &snapshot,
                 shutdown_requested,
                 discovery_failure,
-            );
+                host_capture,
+            )
+        } else {
+            build_collection_report_with_discovery(
+                &self.source_ids,
+                &self.startup_failures,
+                &snapshot,
+                shutdown_requested,
+                None,
+                host_capture,
+            )
+        };
+        if let Some(message) = maintenance_error {
+            report.summary.push_str(&format!("{message}\n"));
+            report.global_failures.push(message);
         }
-        build_collection_report_with_discovery(
-            &self.source_ids,
-            &self.startup_failures,
-            &snapshot,
-            shutdown_requested,
-            None,
-        )
+        report
     }
 
     fn retry_pending_sources(&mut self) {
@@ -2618,6 +2804,7 @@ fn build_collection_report(
         snapshot,
         shutdown_requested,
         None,
+        None,
     )
 }
 
@@ -2627,6 +2814,7 @@ fn build_collection_report_with_discovery(
     snapshot: &Snapshot,
     shutdown_requested: bool,
     discovery_failure: Option<String>,
+    host_capture: Option<host_cli::HostCaptureResult>,
 ) -> CollectionReport {
     let mut lines = Vec::with_capacity(source_ids.len());
     let mut failed_sources = 0;
@@ -2639,7 +2827,7 @@ fn build_collection_report_with_discovery(
     {
         global_failures.push(format!("{:?}: {}", failure.stage, failure.message));
     }
-    let source_count = source_ids.len();
+    let source_count = source_ids.len() + usize::from(host_capture.is_some());
     for source_id in source_ids {
         if let Some(message) = startup_failures.get(source_id) {
             if shutdown_requested
@@ -2701,6 +2889,16 @@ fn build_collection_report_with_discovery(
                 }
                 failed_sources += 1;
                 lines.push(format!("{}: no admission result", source_id.as_str()));
+            }
+        }
+    }
+    if let Some(capture) = host_capture {
+        let source = capture.source.as_str();
+        match capture.inserted {
+            Ok(inserted) => lines.push(format!("{source}: committed {inserted} host sample(s)")),
+            Err(error) => {
+                failed_sources += 1;
+                lines.push(format!("{source}: host capture failed: {error}"));
             }
         }
     }
@@ -2771,13 +2969,23 @@ fn validate_collection_config(
     if !matches!(config.version, 1 | 2) {
         return Err("unsupported collection config version".into());
     }
+    if config.host.is_some() && config.version != 2 {
+        return Err("Managed Host capture requires collection config v2".into());
+    }
+    let host_capture = config
+        .host
+        .take()
+        .map(host_cli::HostCaptureConfig::validate)
+        .transpose()?;
+    let needs_native_adapters = config.follow.is_some() || !config.sources.is_empty();
     if config.follow.is_some() && (config.version != 2 || !config.sources.is_empty()) {
         return Err(
             "follow discovery requires collection config v2 without explicit sources".into(),
         );
     }
     if config.follow.is_none()
-        && (config.sources.is_empty() || config.sources.len() > MAX_CONFIGURED_SOURCES)
+        && ((!needs_native_adapters && host_capture.is_none())
+            || config.sources.len() + usize::from(host_capture.is_some()) > MAX_CONFIGURED_SOURCES)
     {
         return Err(format!(
             "collection config must define 1 to {MAX_CONFIGURED_SOURCES} sources"
@@ -2792,13 +3000,16 @@ fn validate_collection_config(
         }
     };
     if config.plugin_host.as_os_str().is_empty() {
-        return Err("plugin host path must not be empty".into());
-    }
-    config.plugin_host = resolve(config.plugin_host);
-    if !valid_config_path(&config.plugin_host) || !config.plugin_host.is_absolute() {
-        return Err(
-            "plugin host path must be nonempty, bounded, and absolute after resolution".into(),
-        );
+        if needs_native_adapters {
+            return Err("plugin host path must not be empty".into());
+        }
+    } else {
+        config.plugin_host = resolve(config.plugin_host);
+        if !valid_config_path(&config.plugin_host) || !config.plugin_host.is_absolute() {
+            return Err(
+                "plugin host path must be nonempty, bounded, and absolute after resolution".into(),
+            );
+        }
     }
 
     let catalog = match (config.version, config.plugin_catalog.take()) {
@@ -2811,7 +3022,10 @@ fn validate_collection_config(
             load_adapter_catalog(&catalog_path)?
         }
         (2, None) => {
-            return Err("collection config v2 requires plugin_catalog".into());
+            if needs_native_adapters {
+                return Err("collection config v2 requires plugin_catalog".into());
+            }
+            BTreeMap::new()
         }
         _ => unreachable!("collection config version was validated"),
     };
@@ -2849,10 +3063,18 @@ fn validate_collection_config(
             None,
         ),
     };
+    if let Some(host) = &host_capture
+        && sources
+            .iter()
+            .any(|source| source.source_id == host.source.as_str())
+    {
+        return Err("Managed Host capture source ID duplicates a native adapter source".into());
+    }
     Ok(ValidatedCollectionConfig {
         plugin_host: config.plugin_host,
         sources,
         follow,
+        host_capture,
     })
 }
 
@@ -3165,6 +3387,7 @@ struct ValidatedCollectionConfig {
     plugin_host: PathBuf,
     sources: Vec<ConfiguredSource>,
     follow: Option<FollowSources>,
+    host_capture: Option<host_cli::HostCaptureSchedule>,
 }
 
 #[derive(Debug)]
@@ -3244,7 +3467,11 @@ pub fn render(command: Command) -> String {
             "Usage: agenturm [--help|--version|status]\n",
             "       agenturm adapter install --manifest <local-json> --sha256 <digest> --root <private-directory>\n",
             "       agenturm broker <collect|query|review|cockpit|task|grant|content|backup|integrity|prune> --broker-config <json> [command options]\n",
-            "       agenturm cockpit [--db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]]\n",
+            "       agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path>\n",
+            "       agenturm cockpit [--new-window] [--db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]]\n",
+            "       agenturm cockpit --once [--db <path>] [--json] [--limit <1..256>]\n",
+            "       agenturm cockpit --endpoint http://<loopback-IP:port> --token-file <path> [--new-window]\n",
+            "       agenturm broker cockpit --broker-config <json> [--new-window]\n",
             "       agenturm inspect --db <path> [--extension-catalog <json-path> --extension <plugin-id> ...]\n",
             "       agenturm query --db <path> [--harness-id <id>] [--session-id <id>] [--limit <1..16384>] [--snapshot-id <id>] [--before-timestamp-ns <ns> --before-harness-id <id> --before-event-id <id> --before-revision <n>]\n",
             "       agenturm review --db <path> --harness-id <id> --session-id <id> (--turn-id <id> | --turn-of-trace <trace-id> --trace-source-id <id>) [--worker-id <id>] [--linked-traces] [--format text|json|markdown|html] [--output <new-directory>] [query paging options]\n",
@@ -3253,12 +3480,20 @@ pub fn render(command: Command) -> String {
             "       agenturm backup --db <path> --bundle <new-directory>\n",
             "       agenturm restore --bundle <directory> --output <new-directory>\n",
             "       agenturm prune --db <path> --before-unix-ns <ns>\n",
+            "       agenturm retention <status|set|disable|run> --db <path> [--max-age-days <days>]\n",
             "       agenturm content <grant|revoke|list|preview> [options]\n",
-            "       agenturm serve-traces --listen <loopback-IP:port> --db <path> --source-id otlp.<id>\n",
-            "       agenturm run --db <path> [--source-id otlp.<id>] -- <program> [args...]\n",
+            "       agenturm serve-traces --listen <loopback-IP:port> --db <path> --source-id otlp.<id> [--payload-scope <standalone|harness-id> --token-file <path>]\n",
+            "       agenturm run --db <path> [--source-id otlp.<id>] [--payload-scope <standalone|harness-id>] -- <program> [args...]\n",
+            "       agenturm trace-payload <binding|grant|revoke|snapshot|preview> [options]\n",
             "       agenturm import-traces --file <otlp-json-path|-> --db <path> --source-id otlp.<id>\n",
+            "       agenturm import-jsonl --file <span-jsonl-path|-> --db <path> --source-id otlp.<id> [--session-id <id>]\n",
+            "       agenturm import-evals --file <results.json|-> --db <path> --source-id otlp.<id>\n",
+            "       agenturm evals --db <path> --source-id otlp.<id> --trace-id <id> [--json]\n",
             "       agenturm attention status --db <path>\n",
             "       agenturm attention watch --db <path> [--once | --max-polls <1..10000>] [--interval-ms <100..60000>]\n",
+            "       agenturm attention <status|watch> --endpoint http://<loopback-IP:port> --token-file <path> [watch options]\n",
+            "       agenturm host record --db <path> --source-id host.<label> [--watch [--interval-ms <1000..60000>]]\n",
+            "       agenturm host history --db <path> [--source-id host.<label>] [--limit <1..64>] [--before <position-json>]\n",
             "       agenturm task <list|add|show|complete|reopen|link|unlink|handoffs|export> [options]\n",
             "       agenturm discover [--follow] [--sessions-per-harness <1..8>]\n",
             "       agenturm collect --config <json-path> --db <path>\n",
@@ -3292,15 +3527,21 @@ pub fn render(command: Command) -> String {
         | Command::BackupWorkspace { .. }
         | Command::RestoreWorkspace { .. }
         | Command::Prune { .. }
-        | Command::Content(_) => String::new(),
+        | Command::Retention(_)
+        | Command::Summary(_)
+        | Command::Host(_)
+        | Command::Content(_)
+        | Command::TracePayload(_) => String::new(),
         Command::Discover { .. } | Command::Cockpit { .. } => String::new(),
+        #[cfg(target_os = "linux")]
+        Command::RemoteCockpit(_) | Command::Window(_) => String::new(),
         Command::Inspect(_) => String::new(),
         #[cfg(target_os = "linux")]
         Command::Broker(_) | Command::InstallAdapter(_) => String::new(),
         Command::Query(_) | Command::Review { .. } | Command::Attention(_) | Command::Task(_) | Command::Investigate(_) => {
             String::new()
         }
-        Command::Ingest(_) | Command::ImportTraces(_) | Command::ServeTraces(_) | Command::Run(_) => String::new(),
+        Command::Ingest(_) | Command::ImportTraces(_) | Command::ImportJsonl(_) | Command::Evals(_) | Command::ServeTraces(_) | Command::Run(_) => String::new(),
         Command::Collect(_) => String::new(),
         Command::Service(_) => String::new(),
     }
@@ -3642,7 +3883,7 @@ mod tests {
                 harness_id: None,
                 session_id: None,
                 before: None,
-                snapshot_id: Some(12),
+                snapshot_id: Some(12.into()),
                 limit: 500,
             })
         );
@@ -3678,9 +3919,9 @@ mod tests {
                     harness_id: "harness.codex".into(),
                     event_id: "event-1".into(),
                     revision: 0,
-                    snapshot_id: 1,
+                    snapshot_id: 1.into(),
                 }),
-                snapshot_id: Some(1),
+                snapshot_id: Some(1.into()),
                 limit: 10,
             })
         );
@@ -4498,6 +4739,32 @@ mod tests {
         assert!(report.summary.contains("poll cancelled by shutdown"));
         assert_eq!(report.failed_sources, 0);
         assert!(!report.has_failures());
+    }
+
+    #[test]
+    #[cfg(target_os = "linux")]
+    fn host_only_collection_validates_explicit_v2_capture_and_interval() {
+        let parse = |config: &str| {
+            let config = serde_json::from_str(config).unwrap();
+            validate_collection_config(config, std::env::current_dir().unwrap())
+        };
+        let config =
+            parse(r#"{"version":2,"host":{"source_id":"host.workstation","interval_ms":1000}}"#)
+                .unwrap();
+        assert!(config.sources.is_empty());
+        assert_eq!(
+            config.host_capture.unwrap().source.as_str(),
+            "host.workstation"
+        );
+        for invalid in [
+            r#"{"version":1,"host":{"source_id":"host.workstation"}}"#,
+            r#"{"version":2,"host":{"source_id":"host.workstation","interval_ms":999}}"#,
+            r#"{"version":2,"host":{"source_id":"host.workstation","interval_ms":60001}}"#,
+            r#"{"version":2,"host":{"source_id":"harness.outside"}}"#,
+            r#"{"version":2}"#,
+        ] {
+            assert!(parse(invalid).is_err(), "{invalid}");
+        }
     }
 
     #[test]

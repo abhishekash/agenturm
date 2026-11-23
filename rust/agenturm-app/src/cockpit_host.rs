@@ -1,5 +1,9 @@
 use agenturm_kernel::{ExtensionId, MetricRow, Snapshot};
 #[cfg(target_os = "linux")]
+mod capture;
+#[cfg(target_os = "linux")]
+pub(super) use capture::capture;
+#[cfg(target_os = "linux")]
 use std::io::Read;
 #[cfg(target_os = "linux")]
 use std::path::Path;
@@ -226,20 +230,11 @@ enum Runtime {
 
 #[cfg(target_os = "linux")]
 fn runtime(name: &str) -> Option<Runtime> {
-    match name {
-        "agenturm"
-        | "agenturm-plugin-host"
-        | "agenturm-codex-harness"
-        | "agenturm-pi-harness"
-        | "agenturm-claude-harness"
-        | "agenturm-kiro-harness"
-        | "agenturm-opencode-harness"
-        | "agenturm-connector" => Some(Runtime::Agenturm),
-        "codex" | "pi" | "claude" | "claude-code" | "kiro-cli" | "kiro-cli-chat" | "opencode" => {
-            Some(Runtime::Harness)
-        }
-        _ => None,
-    }
+    use agenturm_kernel::HostRuntime::*;
+    capture::recognized_runtime(name).map(|runtime| match runtime {
+        Codex | Pi | Claude | Kiro | OpenCode => Runtime::Harness,
+        _ => Runtime::Agenturm,
+    })
 }
 
 #[cfg(target_os = "linux")]

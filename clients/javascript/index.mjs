@@ -1,4 +1,5 @@
 import { openSync, closeSync, readFileSync, fstatSync, constants } from 'node:fs';
+import { request as httpRequest } from 'node:http';
 import { homedir } from 'node:os';
 import { join } from 'node:path';
 import { randomBytes } from 'node:crypto';
@@ -8,18 +9,212 @@ const activeSpan = new AsyncLocalStorage();
 const MAX_REQUEST_BYTES = 8 * 1024 * 1024;
 const MAX_OTLP_SPANS = 1024;
 const MAX_OTLP_REPLY_BYTES = 4096;
-const OTLP_STATUS = { UNSET: 0, OK: 1, ERROR: 2 };
+const MAX_OTLP_TEXT_BYTES = 2048;
+const MAX_OTLP_PAYLOAD_BYTES = 64 * 1024;
+const OTLP_PAYLOAD_KEYS = ['agenturm.payload.input', 'agenturm.payload.output'];
 
-function otlpTraceEndpoint(explicit) {
-  const url = new URL(explicit ?? (process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT
-    || process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://127.0.0.1:14318'));
-  if (url.protocol !== 'http:' || !['127.0.0.1', '[::1]'].includes(url.hostname)
-      || url.username || url.password || url.search || url.hash
+const OTLP_STATUS = { UNSET: 0, OK: 1, ERROR: 2 };
+const COST_AMOUNT = 'agenturm.reported_cost.amount';
+const COST_CURRENCY = 'agenturm.reported_cost.currency';
+const COST_FIELDS = [
+  [COST_AMOUNT, COST_CURRENCY],
+  ['gen_ai.usage.cost', 'gen_ai.usage.cost.currency'],
+  ['llm.cost.total', 'llm.cost.currency'],
+];
+const USD_COST = 'llm.cost_usd';
+const NANOUNITS = 1_000_000_000n;
+const TOKEN_FIELDS = [
+  ['gen_ai.usage.input_tokens', 'llm.usage.input_tokens', 'llm.token_count.prompt'],
+  ['gen_ai.usage.output_tokens', 'llm.usage.output_tokens', 'llm.token_count.completion'],
+  ['gen_ai.usage.cache_read.input_tokens', 'gen_ai.usage.cache_read_input_tokens',
+    'gen_ai.usage.cached_input_tokens', 'llm.usage.cache_read_input_tokens',
+    'llm.token_count.prompt_details.cache_read', 'cache_read_input_tokens', 'cached_input_tokens'],
+  ['gen_ai.usage.cache_write.input_tokens', 'gen_ai.usage.cache_write_input_tokens',
+    'gen_ai.usage.cache_creation.input_tokens', 'gen_ai.usage.cache_creation_input_tokens',
+    'llm.usage.cache_creation_input_tokens', 'llm.token_count.prompt_details.cache_write',
+    'cache_creation_input_tokens'],
+  ['gen_ai.usage.reasoning.output_tokens', 'gen_ai.usage.reasoning_tokens',
+    'llm.usage.reasoning_tokens', 'llm.token_count.completion_details.reasoning', 'reasoning_tokens'],
+  ['gen_ai.usage.total_tokens', 'llm.usage.total_tokens', 'llm.token_count.total'],
+];
+
+function tokenInteger(value) {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || Object.is(value, -0)) return undefined;
+    value = BigInt(value);
+  } else if (typeof value === 'string') {
+    if (value.length < 1 || value.length > 19 || /[^0-9]/.test(value)) return undefined;
+    value = BigInt(value);
+  }
+  return typeof value === 'bigint' && value >= 0n && value <= 9_223_372_036_854_775_807n
+    ? value : undefined;
+}
+
+function reportedTokenAttributes(attributes) {
+  const reported = [];
+  for (const aliases of TOKEN_FIELDS) {
+    const values = new Set(aliases.filter(key => Object.hasOwn(attributes, key))
+      .map(key => tokenInteger(attributes[key])));
+    if (values.size === 1 && !values.has(undefined)) {
+      reported.push({ key: aliases[0], value: { intValue: String(values.values().next().value) } });
+    }
+  }
+  return reported;
+}
+
+function costNanounits(value) {
+  if ((typeof value !== 'string' && typeof value !== 'number') || Object.is(value, -0)) return undefined;
+  const text = String(value);
+  if (text.length > 48) return undefined;
+  const decimal = /^([0-9]+)(?:\.([0-9]*))?(?:[eE]([+-]?[0-9]+))?$/.exec(text);
+  if (!decimal || decimal[0] !== text) return undefined;
+  const [, whole, fraction = '', exponent = '0'] = decimal;
+  const power = Number(exponent);
+  if (!Number.isInteger(power) || Math.abs(power) > 64) return undefined;
+  const digits = whole + fraction;
+  const noTrailing = digits.replace(/0+$/, '');
+  const significant = noTrailing.replace(/^0+/, '');
+  if (!significant) return 0n;
+  const shift = 9 + power + digits.length - noTrailing.length - fraction.length;
+  if (!Number.isInteger(shift) || shift < 0 || shift > 19 - significant.length) return undefined;
+  const amount = BigInt(significant) * 10n ** BigInt(shift);
+  return amount <= 9_223_372_036_854_775_807n ? amount : undefined;
+}
+
+function reportedCostAttributes(attributes) {
+  if (Object.hasOwn(attributes, 'llm.cost_known') && attributes['llm.cost_known'] !== true) return [];
+  const amounts = new Set();
+  const currencies = new Set();
+  if (Object.hasOwn(attributes, USD_COST)) {
+    amounts.add(costNanounits(attributes[USD_COST]));
+    currencies.add('USD');
+  }
+  for (const [amountField, currencyField] of COST_FIELDS) {
+    const hasCurrency = Object.hasOwn(attributes, currencyField);
+    if (Object.hasOwn(attributes, amountField)) {
+      if (!hasCurrency) return [];
+      amounts.add(costNanounits(attributes[amountField]));
+    }
+    if (!hasCurrency) continue;
+    const unit = attributes[currencyField];
+    if (typeof unit !== 'string' || unit.length !== 3 || !/^[A-Z]{3}$/.test(unit)) return [];
+    currencies.add(unit);
+  }
+  if (amounts.size !== 1 || amounts.has(undefined) || currencies.size !== 1) return [];
+  const [amount] = amounts;
+  const [currency] = currencies;
+  const fraction = String(amount % NANOUNITS).padStart(9, '0').replace(/0+$/, '');
+  const whole = String(amount / NANOUNITS);
+  return [
+    { key: COST_AMOUNT, value: { stringValue: fraction ? `${whole}.${fraction}` : whole } },
+    { key: COST_CURRENCY, value: { stringValue: currency } },
+  ];
+}
+
+function otlpTraceEndpoint(raw) {
+  const endpoint = String(raw);
+  const literal = /^http:\/\/(?:127\.0\.0\.1|\[[0-9a-f:]+\])(?::[0-9]+)?(?:\/(?:v1\/traces)?)?$/i;
+  const error = 'OTLP endpoint must be a loopback HTTP trace receiver';
+  if (!literal.test(endpoint) || /[\s\x00-\x1f]/.test(endpoint)) throw new TypeError(error);
+  let url;
+  try { url = new URL(endpoint); }
+  catch { throw new TypeError(error); }
+  if (!['127.0.0.1', '[::1]'].includes(url.hostname) || url.port === '0'
       || !['/', '/v1/traces'].includes(url.pathname)) {
-    throw new TypeError('OTLP endpoint must be a loopback HTTP trace receiver');
+    throw new TypeError(error);
   }
   url.pathname = '/v1/traces';
   return url.href;
+}
+
+function otlpAuthorization(endpoint, configuredEndpoint) {
+  if (!configuredEndpoint) return undefined;
+  try {
+    if (otlpTraceEndpoint(configuredEndpoint) !== endpoint) return undefined;
+    const headers = process.env.OTEL_EXPORTER_OTLP_TRACES_HEADERS ?? '';
+    if (headers.length > 4096) return undefined;
+    const matches = headers.split(',').map(item => item.split('='))
+      .filter(([key]) => key.trim().toLowerCase() === 'authorization');
+    if (matches.length !== 1 || matches[0].length !== 2) return undefined;
+    const value = decodeURIComponent(matches[0][1]);
+    if (value.length === 71 && /^Bearer [0-9a-f]{64}$/.test(value)) return value;
+  } catch {
+    // A malformed environment cannot supply a credential.
+  }
+  return undefined;
+}
+
+function capturedAttributes(source, sessionId) {
+  const attributes = [];
+  let bytes = 0;
+  for (const key of OTLP_PAYLOAD_KEYS) {
+    if (!Object.hasOwn(source, key)) continue;
+    if (sessionId === null) {
+      throw new TypeError('OTLP captured text requires an explicit session identity');
+    }
+    const text = source[key];
+    if (typeof text !== 'string' || !text || text.length > MAX_OTLP_TEXT_BYTES
+        || Buffer.byteLength(text) > MAX_OTLP_TEXT_BYTES) {
+      throw new TypeError('OTLP captured text is invalid or exceeds its byte limit');
+    }
+    const markers = /private key|sk-|[sr]k_(?:live|test)_|gh[pousr]_|github_pat_|akia|aiza|xox[baprs]-|\bbearer\b/i;
+    const field = /authorization|password|passwd|token|secret|credential|api[_-]?key/i;
+    const control = /[\x00-\x08\x0b-\x1f\x7f-\x9f\u061c\u200e\u200f\u2028-\u202e\u2066-\u2069]/;
+    if (markers.test(text) || control.test(text)
+        || /:\/\/[^/\s]+:[^/\s]+@/.test(text)
+        || text.split('\n').some(line => /[:=]/.test(line) && field.test(line))) {
+      throw new TypeError('OTLP captured text was withheld');
+    }
+    bytes += Buffer.byteLength(text);
+    attributes.push({ key, value: { stringValue: text } });
+  }
+  return { attributes, bytes };
+}
+
+async function postOtlpJson(endpoint, headers, body, timeoutMs) {
+  // Use a fresh direct connection. Global fetch can inherit environment proxies.
+  const response = await new Promise((resolve, reject) => {
+    const request = httpRequest(endpoint, {
+      method: 'POST', agent: false, maxHeaderSize: MAX_OTLP_REPLY_BYTES,
+      signal: AbortSignal.timeout(timeoutMs),
+      headers: { ...headers, 'content-length': Buffer.byteLength(body), connection: 'close' },
+    }, resolve);
+    request.once('error', error => {
+      const message = error.code === 'ABORT_ERR' ? 'OTLP request deadline exceeded' : 'OTLP request failed';
+      reject(new Error(message));
+    });
+    request.end(body);
+  });
+  const status = response.statusCode ?? 0;
+  if (status < 200 || status >= 300) {
+    response.destroy();
+    throw new Error(`OTLP receiver returned HTTP ${status}`);
+  }
+  const contentLength = response.headers['content-length'] ?? '';
+  const length = Number(contentLength);
+  if (!/^[0-9]+$/.test(contentLength) || length > MAX_OTLP_REPLY_BYTES) {
+    response.destroy();
+    throw new Error('OTLP receiver returned an unbounded reply');
+  }
+  const chunks = [];
+  let received = 0;
+  let reply;
+  try {
+    for await (const chunk of response) {
+      received += chunk.length;
+      if (received > length) throw new Error();
+      chunks.push(chunk);
+    }
+    if (received !== length) throw new Error();
+    reply = JSON.parse(Buffer.concat(chunks, received).toString('utf8'));
+    if (!reply || typeof reply !== 'object' || Array.isArray(reply)) throw new Error();
+  } catch {
+    response.destroy();
+    throw new Error('OTLP receiver returned an invalid reply');
+  }
+  if (Number(reply.partialSuccess?.rejectedSpans ?? 0) !== 0) {
+    throw new Error('OTLP receiver rejected one or more spans');
+  }
 }
 
 function id(bytes) {
@@ -69,18 +264,34 @@ function receiverToken(endpoint, explicit) {
 }
 
 export class Client {
+  #otlpAuthorization;
+  #otlpEndpoint;
+
   constructor({ endpoint, service = 'node-agent', token, transport = 'agenturm',
-                timeoutMs = 3000, strict = false, resourceAttributes = {} } = {}) {
+                timeoutMs = 3000, strict = false, resourceAttributes = {}, captureContent = false } = {}) {
     if (!['agenturm', 'otlp'].includes(transport)) throw new TypeError('unknown trace transport');
+    if (captureContent && transport !== 'otlp') {
+      throw new TypeError('captureContent requires OTLP transport');
+    }
     this.transport = transport;
+    this.captureContent = Boolean(captureContent);
     this.service = String(service);
     this.configurationError = null;
     this.endpoint = transport === 'otlp' ? ''
       : String(endpoint === undefined ? 'http://127.0.0.1:4318' : endpoint).replace(/\/+$/, '');
     try {
       if (transport === 'otlp') {
-        this.endpoint = otlpTraceEndpoint(endpoint);
+        const configuredEndpoint = process.env.OTEL_EXPORTER_OTLP_TRACES_ENDPOINT;
+        this.endpoint = otlpTraceEndpoint(endpoint ?? (configuredEndpoint
+          || process.env.OTEL_EXPORTER_OTLP_ENDPOINT || 'http://127.0.0.1:14318'));
+        this.#otlpEndpoint = this.endpoint;
         this.token = token;
+        if (token === undefined) {
+          this.#otlpAuthorization = otlpAuthorization(this.#otlpEndpoint, configuredEndpoint);
+        }
+        if (this.captureContent && !this.#otlpAuthorization) {
+          throw new TypeError('OTLP captured text requires an authenticated trace receiver');
+        }
       } else {
         this.token = receiverToken(this.endpoint, token);
       }
@@ -97,26 +308,18 @@ export class Client {
       if (this.configurationError) throw this.configurationError;
       const headers = { 'content-type': 'application/json' };
       if (this.token) headers.authorization = `Bearer ${this.token}`;
-      const response = await fetch(`${this.endpoint}${path}`, {
-        method: 'POST', redirect: 'error', headers, body: JSON.stringify(payload),
-        signal: AbortSignal.timeout(this.timeoutMs),
-      });
-      if (!response.ok) {
-        throw new Error(`${this.transport === 'otlp' ? 'OTLP receiver' : 'Goechala'} returned HTTP ${response.status}`);
-      }
+      const body = JSON.stringify(payload);
       if (this.transport === 'otlp') {
-        const length = response.headers.get('content-length') ?? '';
-        if (!/^\d+$/.test(length) || Number(length) > MAX_OTLP_REPLY_BYTES) {
-          await response.body?.cancel();
-          throw new Error('OTLP receiver returned an unbounded reply');
+        if (this.#otlpAuthorization && !headers.authorization) {
+          headers.authorization = this.#otlpAuthorization;
         }
-        const reply = await response.json();
-        if (!reply || typeof reply !== 'object' || Array.isArray(reply)) {
-          throw new Error('OTLP receiver returned an invalid reply');
-        }
-        if (Number(reply.partialSuccess?.rejectedSpans ?? 0) !== 0) {
-          throw new Error('OTLP receiver rejected one or more spans');
-        }
+        await postOtlpJson(this.#otlpEndpoint, headers, body, this.timeoutMs);
+      } else {
+        const response = await fetch(`${this.endpoint}${path}`, {
+          method: 'POST', redirect: 'error', headers, body,
+          signal: AbortSignal.timeout(this.timeoutMs),
+        });
+        if (!response.ok) throw new Error(`Goechala returned HTTP ${response.status}`);
       }
       this.lastError = null;
       return true;
@@ -185,12 +388,35 @@ export class Client {
       if (value !== null) attributes.push({ key, value: { stringValue: value } });
     }
     let failure = null;
-    for (let offset = 0; offset < run.spans.length; offset += MAX_OTLP_SPANS) {
-      const spans = run.spans.slice(offset, offset + MAX_OTLP_SPANS)
-        .map(span => span.exportOtlp(attributes));
-      const payload = { resourceSpans: [{ scopeSpans: [{ scope: { name: '@agenturm/client' }, spans }] }] };
+    let batch = [];
+    let privateBytes = 0;
+    const send = async () => {
+      if (!batch.length) return;
+      const payload = { resourceSpans: [{ scopeSpans: [{
+        scope: { name: '@agenturm/client' }, spans: batch,
+      }] }] };
       if (!await this._post('', payload)) failure = this.lastError;
+      batch = [];
+      privateBytes = 0;
+    };
+    for (const span of run.spans) {
+      let captured;
+      try {
+        captured = this.captureContent
+          ? capturedAttributes(span.attributes, run.sessionId)
+          : { attributes: [], bytes: 0 };
+      } catch (error) {
+        failure = error;
+        if (this.strict) throw error;
+        continue;
+      }
+      if (batch.length === MAX_OTLP_SPANS || privateBytes + captured.bytes > MAX_OTLP_PAYLOAD_BYTES) {
+        await send();
+      }
+      batch.push(span.exportOtlp([...attributes, ...captured.attributes]));
+      privateBytes += captured.bytes;
     }
+    await send();
     if (failure) this.lastError = failure;
   }
 
@@ -368,7 +594,9 @@ class Span {
       startTimeUnixNano: this.start_unix_nano,
       endTimeUnixNano: this.end_unix_nano,
       status: { code: OTLP_STATUS[this.status] },
-      attributes,
+      attributes: [
+        ...attributes, ...reportedCostAttributes(this.attributes), ...reportedTokenAttributes(this.attributes),
+      ],
     };
   }
 }

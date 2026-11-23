@@ -1,8 +1,9 @@
 //! Launch an already instrumented process with a local OTLP trace receiver.
 
-use crate::trace_import::parse_source_id;
-use crate::trace_receiver::TraceReceiver;
-use agenturm_kernel::ExtensionId;
+use crate::trace_import::{commit, commit_payloads, parse_source_id};
+use crate::trace_receiver::{ProducerToken, TraceReceiver, parse_payload_scope};
+use agenturm_kernel::{ExtensionId, Observation};
+use agenturm_store::{TelemetryBinding, TelemetryPayloadRecord};
 use std::ffi::{OsStr, OsString};
 use std::net::SocketAddr;
 use std::path::PathBuf;
@@ -14,69 +15,166 @@ use std::sync::{
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
 
-const USAGE: &str = "agenturm run --db <path> [--source-id otlp.<id>] -- <program> [args...]";
+const USAGE: &str = "agenturm run --db <path> [--source-id otlp.<id>] [--payload-scope <standalone|harness-id>] -- <program> [args...]";
+#[cfg(target_os = "linux")]
+const BROKER_USAGE: &str = "agenturm broker run --broker-config <json> --source-id otlp.<id> [--payload-scope <standalone|harness-id>] -- <program> [args...]";
 const SIGNAL_GRACE: Duration = Duration::from_secs(2);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TraceRunOptions {
     db: PathBuf,
-    source: ExtensionId,
+    invocation: TraceInvocation,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub(super) struct TraceInvocation {
+    pub source: ExtensionId,
+    pub payload_binding: Option<TelemetryBinding>,
     program: OsString,
     arguments: Vec<OsString>,
 }
 
 pub(super) fn parse_trace_run(args: &[OsString]) -> Result<TraceRunOptions, String> {
-    let delimiter = args.iter().position(|arg| arg == "--").ok_or(USAGE)?;
-    let (program, arguments) = args[delimiter + 1..].split_first().ok_or(USAGE)?;
-    if program.is_empty() {
-        return Err(USAGE.into());
-    }
-    let (flags, extras) = args[..delimiter].as_chunks::<2>();
-    if !extras.is_empty() {
-        return Err(USAGE.into());
-    }
-    let (mut db, mut source) = (None, None);
-    for [flag, value] in flags {
-        if value.is_empty() || value.as_encoded_bytes().starts_with(b"--") {
-            return Err(USAGE.into());
-        }
-        match flag.to_str() {
-            Some("--db") if db.is_none() && value != "-" && value != ":memory:" => {
-                db = Some(PathBuf::from(value))
-            }
-            Some("--source-id") if source.is_none() => {
-                source = Some(parse_source_id(value.to_str().ok_or(USAGE)?)?)
-            }
-            _ => return Err(USAGE.into()),
-        }
-    }
+    let (invocation, db) = parse_invocation(args, true, USAGE)?;
     Ok(TraceRunOptions {
         db: db.ok_or(USAGE)?,
-        source: source
-            .unwrap_or_else(|| parse_source_id("otlp.run").expect("valid default launcher source")),
-        program: program.clone(),
-        arguments: arguments.to_vec(),
+        invocation,
     })
 }
 
+#[cfg(target_os = "linux")]
+pub(super) fn parse_broker_run(args: &[OsString]) -> Result<TraceInvocation, String> {
+    parse_invocation(args, false, BROKER_USAGE).map(|(invocation, _)| invocation)
+}
+
+fn parse_invocation(
+    args: &[OsString],
+    local: bool,
+    usage: &str,
+) -> Result<(TraceInvocation, Option<PathBuf>), String> {
+    let delimiter = args.iter().position(|arg| arg == "--").ok_or(usage)?;
+    let (program, arguments) = args[delimiter + 1..].split_first().ok_or(usage)?;
+    if program.is_empty() {
+        return Err(usage.into());
+    }
+    let (flags, extras) = args[..delimiter].as_chunks::<2>();
+    if !extras.is_empty() {
+        return Err(usage.into());
+    }
+    let (mut db, mut source) = (None, None);
+    let mut payload_scope = None;
+    for [flag, value] in flags {
+        if value.is_empty() || value.as_encoded_bytes().starts_with(b"--") {
+            return Err(usage.into());
+        }
+        match flag.to_str() {
+            Some("--db") if local && db.is_none() && value != "-" && value != ":memory:" => {
+                db = Some(PathBuf::from(value))
+            }
+            Some("--source-id") if source.is_none() => {
+                source = Some(parse_source_id(value.to_str().ok_or(usage)?)?)
+            }
+            Some("--payload-scope") if payload_scope.is_none() => {
+                payload_scope = Some(value.to_str().ok_or(usage)?)
+            }
+            _ => return Err(usage.into()),
+        }
+    }
+    let source = match source {
+        Some(source) => source,
+        None if local && payload_scope.is_none() => {
+            parse_source_id("otlp.run").expect("valid default launcher source")
+        }
+        None => return Err(usage.into()),
+    };
+    let payload_binding = payload_scope
+        .map(|scope| parse_payload_scope(&source, scope))
+        .transpose()?;
+    Ok((
+        TraceInvocation {
+            source,
+            payload_binding,
+            program: program.clone(),
+            arguments: arguments.to_vec(),
+        },
+        db,
+    ))
+}
+
 pub fn execute_trace_run(options: &TraceRunOptions) -> Result<ExitCode, String> {
-    let mut signals = RunSignals::new()?;
     // Fail before spawning a program if the observation database cannot
     // accept traces, and release the writer before the receiver starts.
     drop(
         agenturm_store::Store::open_collector(&options.db)
             .map_err(|error| format!("open trace history: {error}"))?,
     );
+    let db = options.db.clone();
+    let payload = options.invocation.payload_binding.clone();
+    #[cfg(target_os = "linux")]
+    let token = if payload.is_some() {
+        Some(ProducerToken::generate()?)
+    } else {
+        None
+    };
+    #[cfg(not(target_os = "linux"))]
+    let token = if payload.is_some() {
+        return Err("Private trace capture requires Linux producer authentication".into());
+    } else {
+        None
+    };
+    execute_with_maintenance(
+        &options.invocation,
+        token,
+        Some(options.db.clone()),
+        move |source, rows, payloads| match &payload {
+            Some(binding) => commit_payloads(&db, binding, &rows, &payloads),
+            None => commit(&db, source, &rows).map(|_| ()),
+        },
+    )
+}
+
+pub(super) fn execute_with_commit(
+    invocation: &TraceInvocation,
+    token: Option<ProducerToken>,
+    commit: impl FnMut(
+        &ExtensionId,
+        Vec<Observation>,
+        Vec<TelemetryPayloadRecord>,
+    ) -> Result<(), String>
+    + Send
+    + 'static,
+) -> Result<ExitCode, String> {
+    execute_with_maintenance(invocation, token, None, commit)
+}
+
+fn execute_with_maintenance(
+    invocation: &TraceInvocation,
+    token: Option<ProducerToken>,
+    maintenance_db: Option<PathBuf>,
+    commit: impl FnMut(
+        &ExtensionId,
+        Vec<Observation>,
+        Vec<TelemetryPayloadRecord>,
+    ) -> Result<(), String>
+    + Send
+    + 'static,
+) -> Result<ExitCode, String> {
+    let mut signals = RunSignals::new()?;
     let launch_time = std::time::SystemTime::now()
         .duration_since(std::time::UNIX_EPOCH)
         .map_err(|_| "system time is outside the launcher range")?
         .as_nanos();
     let launch_session = format!("launch-{}-{launch_time}", std::process::id());
-    let receiver =
-        TraceReceiver::bind_ephemeral(options.db.clone(), options.source.clone(), launch_session)?;
-    let mut command = traced_command(options, receiver.address());
+    let receiver = TraceReceiver::bind_ephemeral(
+        invocation.source.clone(),
+        launch_session,
+        token.clone(),
+        invocation.payload_binding.clone(),
+    )?
+    .with_local_maintenance(maintenance_db);
+    let mut command = traced_command(invocation, receiver.address(), token.as_ref());
     let isolated = configure_process_group(&mut command);
-    let receiver = ReceiverTask::start(receiver)?;
+    let receiver = ReceiverTask::start(receiver, commit)?;
     let mut child = command
         .spawn()
         .map_err(|error| format!("launch program: {error}"))?;
@@ -92,12 +190,16 @@ pub fn execute_trace_run(options: &TraceRunOptions) -> Result<ExitCode, String> 
     Ok(exit_code(status))
 }
 
-fn traced_command(options: &TraceRunOptions, address: SocketAddr) -> Command {
+fn traced_command(
+    invocation: &TraceInvocation,
+    address: SocketAddr,
+    token: Option<&ProducerToken>,
+) -> Command {
     let base = format!("http://{address}");
     let endpoint = format!("{base}/v1/traces");
-    let mut child = Command::new(&options.program);
+    let mut child = Command::new(&invocation.program);
     child
-        .args(&options.arguments)
+        .args(&invocation.arguments)
         .stdin(Stdio::inherit())
         .stdout(Stdio::inherit())
         .stderr(Stdio::inherit());
@@ -124,6 +226,9 @@ fn traced_command(options: &TraceRunOptions, address: SocketAddr) -> Command {
         .env("OTEL_LOGS_EXPORTER", "none");
     let no_proxy = loopback_exclusion();
     child.env("NO_PROXY", &no_proxy).env("no_proxy", &no_proxy);
+    if let Some(token) = token {
+        child.env("OTEL_EXPORTER_OTLP_TRACES_HEADERS", token.otel_header());
+    }
     child
 }
 
@@ -213,7 +318,7 @@ fn force_stop(child: &mut Child, isolated: bool) {
     let _ = child.kill();
 }
 
-fn exit_code(status: ExitStatus) -> ExitCode {
+pub(super) fn exit_code(status: ExitStatus) -> ExitCode {
     if let Some(code) = status.code() {
         return ExitCode::from(code as u8);
     }
@@ -289,12 +394,21 @@ struct ReceiverTask {
 }
 
 impl ReceiverTask {
-    fn start(receiver: TraceReceiver) -> Result<Self, String> {
+    fn start(
+        receiver: TraceReceiver,
+        commit: impl FnMut(
+            &ExtensionId,
+            Vec<Observation>,
+            Vec<TelemetryPayloadRecord>,
+        ) -> Result<(), String>
+        + Send
+        + 'static,
+    ) -> Result<Self, String> {
         let stop = Arc::new(AtomicBool::new(false));
         let receiver_stop = Arc::clone(&stop);
         let thread = thread::Builder::new()
             .name("agenturm-run-traces".into())
-            .spawn(move || receiver.serve(&receiver_stop))
+            .spawn(move || receiver.serve_with_payloads(&receiver_stop, commit))
             .map_err(|error| format!("start trace receiver: {error}"))?;
         Ok(Self {
             stop,

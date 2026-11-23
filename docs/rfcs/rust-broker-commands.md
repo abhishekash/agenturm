@@ -51,6 +51,8 @@ Continue a traversal with the same filters and watermark. The broker limits
 source-free reads to its configured allowlist. The inspector uses the
 background workspace request loop for session and turn navigation.
 
+Pass the returned `snapshot_id` back unchanged. Backup and restore give the published history a fresh read incarnation while preserving its logical workspace identity. A cursor from an earlier branch is rejected even when new writes reach the same numeric watermark. Reopen a pinned cockpit or history gateway after restoring its broker endpoint. Unrestored histories keep their existing numeric snapshot IDs. Review acknowledgements apply to the branch where they were recorded. Earlier decision notes remain available as prior history evidence.
+
 Use `broker review --linked-traces` with an exact turn to page its linked
 spans. Use `--turn-of-trace <trace-id> --trace-source-id <otlp-source>`
 in place of `--turn-id` to select the native turn from an explicitly
@@ -58,12 +60,229 @@ scoped trace. The broker checks both source IDs against its allowlist.
 Each trace-selected Review page resolves the turn and reads its evidence
 in a single authenticated request and SQLite snapshot.
 
+### Send live OTLP traces through the broker
+
+Add each `otlp.*` import source to the broker's allowlist. Run the
+loopback receiver or launcher using the configured collector identity.
+Both commands check the selected source before opening the receiver.
+For the foreground receiver, provide a private file owned by the collector
+containing a random token of 64 lowercase hex digits. Configure each
+authorized producer to send that token in an Authorization bearer header.
+
+```sh
+agenturm broker serve-traces --broker-config broker.json \
+  --listen 127.0.0.1:4318 --source-id otlp.local --token-file producer-token
+agenturm broker run --broker-config broker.json --source-id otlp.launch \
+  -- your-instrumented-program --your-flag
+```
+
+The receiver accepts uncompressed OTLP/HTTP JSON and protobuf. The launcher
+uses an ephemeral loopback port and supplies a per-launch bearer token
+through `OTEL_EXPORTER_OTLP_TRACES_HEADERS`. It preserves the program's
+arguments and exit status. Exports receive a successful HTTP response after
+the broker admits the batch or recognizes an exact retry.
+
+Native source, session, turn and worker attributes are assertions made
+by the producer. For linked Review, the broker validates the allowed
+OTLP source and native source against its allowlist and checks that the
+exact native scope exists in the selected history snapshot.
+
+Run the Linux guest verification with
+`python3 scripts/validate_rust_broker_otlp.py --bin-dir /opt/agenturm/bin`
+to check the installed binaries with separate storage, collector and
+reader identities.
+
+### Preview opted-in telemetry text
+
+The trace receiver defaults to metadata. To accept private captured text,
+enable the exact source at the broker with
+`--native-telemetry-payload-sources otlp.example=harness.codex`. For a
+standalone SDK session, configure `otlp.example` without a native source and
+use `--payload-scope standalone` on the launcher. Names in this policy must
+also be present in `--native-sources`.
+
+```sh
+agenturm broker run --broker-config broker.json --source-id otlp.example \
+  --payload-scope harness.codex -- python -m observatory run --transport otlp \
+  --capture-content --harness-id harness.codex --session-id example-session agent.py
+agenturm trace-payload binding --source-id otlp.example \
+  --payload-scope harness.codex > payload-binding.json
+agenturm broker grant approve --broker-config broker.json --binding payload-binding.json
+agenturm broker trace-payload snapshot --broker-config broker.json \
+  --source-id otlp.example --session-id example-session
+agenturm broker trace-payload preview --broker-config broker.json --selection payload.json
+```
+
+The grant administrator approves the binding and the dedicated broker reader
+runs preview. The selection JSON names `binding` with `source_id` and
+`native_source_id` (null for a standalone session), the exact `trace_id`,
+`span_id`, `session_id`, `turn_id`, and `worker_id` (null when absent),
+and the returned `snapshot_id`. The response labels the text as
+`producer_captured_telemetry`. A claimed native linkage is a producer
+assertion. In the local or broker cockpit, open Traces with `8`, press
+`d` to select a span, and use Enter to open the private text modal. Escape
+clears the display and returns to the span list.
+
+Local `run` supports the same `--payload-scope` with an explicit
+`--source-id` and a generated bearer. Local `serve-traces` requires an
+owner-only bearer file when payload capture is enabled. Use
+`trace-payload grant|revoke|snapshot|preview --db history.sqlite` in the
+local workflow. A manual Python OTLP client uses `capture_content=True`
+and explicit `agenturm.payload.input` or `agenturm.payload.output` text.
+The automatic producer projects text from supported OpenInference user and
+assistant message fields. A text slot is limited to 2 KiB and a batch to
+64 KiB of captured text.
+
+Metadata queries, review receipts, and SSH history reads omit payload text.
+An exact retry can recover its prior admission. Changing a captured text
+slot or adding a payload to a span already admitted as metadata conflicts
+with that occurrence. A broker backup retains the data in its private
+history file. Restore rotates the read snapshot and requires a fresh
+approval. Pruning removes the retained text and keeps replay evidence.
+
+The Python and Node clients accept explicit bounded text fields. Set
+`captureContent: true` on the Node client and provide the same
+`agenturm.payload.input` and `agenturm.payload.output` attributes.
+OpenInference selects user and assistant text for OpenAI, Anthropic and
+LangChain. The LangGraph callback and OpenAI Agents exporter also require
+their own `capture_content=True` setting. Pydantic AI and Google ADK can
+supply structured GenAI message text through the Python SDK exporter.
+The Google ADK legacy trace fields are also supported when its content
+capture is enabled. These projections omit headers, tools, images,
+reasoning fields, and arbitrary provider objects.
+
+Provider setup is documented in the [OpenAI Agents tracing guide](https://openai.github.io/openai-agents-python/tracing/),
+[Pydantic AI instrumentation settings](https://pydantic.dev/docs/ai/api/models/instrumented/),
+and [Google ADK trace guide](https://google.github.io/adk-docs/observability/traces/).
+
 The broker cockpit supports saved tasks, handoffs, request seen state and
 review decisions alongside remote history. These user-owned records live
 under the client's state directory. Their namespace binds the authenticated
 endpoint and the broker's persistent history identity. A fresh database at
 the same socket opens a fresh workspace. A running cockpit pins its remote
 reads and exact link validation to the selected history identity.
+
+## Read history through an SSH tunnel
+
+Configure `--native-reader <uid>:<gid>` on the broker and run the read gateway
+as that identity. Share a randomly generated 64-digit lowercase hex token
+with the intended client. Place a copy in an owner-only file on each machine
+and grant the gateway access to the native reader socket. Each token holder
+can read metadata for the sources granted to that reader.
+
+```sh
+agenturm broker serve-history --broker-config broker.json \
+  --listen 127.0.0.1:14319 --token-file reader-token
+```
+
+Connect through an authenticated SSH session, then direct the client to the
+active local forward. The HTTP client dials the literal loopback address and
+uses the bearer file for this receiver. Keep the forward active while using
+the client, since TCP loopback does not identify the process listening on a
+port. Use a different secret for each receiver.
+
+```sh
+ssh -N -o ExitOnForwardFailure=yes \
+  -L 127.0.0.1:14329:127.0.0.1:14319 receiver-host
+agenturm cockpit --endpoint http://127.0.0.1:14329 --token-file receiver-token
+agenturm attention status --endpoint http://127.0.0.1:14329 --token-file receiver-token
+agenturm attention watch --endpoint http://127.0.0.1:14329 --token-file receiver-token --once
+```
+
+Session navigation, exact worker and turn history, Review, linked traces and
+attention read the receiver's retained metadata. Tasks, review records and
+request seen state are local to the client and scoped to the loopback endpoint
+and persistent history ID. An active client checks that ID on each request.
+Restart the gateway and reconnect after offline history restoration.
+
+The version 1 read API accepts one bearer-authenticated JSON `POST` to
+`/v1/history/read` per connection. First send `{"version":1,"request":{"op":"identity"}}`.
+Use the returned `history_identity` in subsequent requests and the returned
+snapshot ID when traversing a page. Session, observation, exact trace Review
+and workspace anchor checks follow the broker's source and history rules.
+Headers are limited to 8 KiB, request bodies to 16 KiB and replies to 4 MiB.
+The gateway applies five-second HTTP input and output budgets and disables
+response caching.
+
+Protected content, broker administration and observation admission use
+their own native broker commands. Receiver host inspection and native
+terminal routing are unavailable from the attached cockpit. Direct TLS and
+compatibility with the Python `/api/*` connection, metrics and Review
+endpoints remain open cutover work.
+
+Run `python3 scripts/validate_rust_remote_history.py --bin-dir /opt/agenturm/bin`
+in a disposable Linux guest to verify the read gateway and a separately
+credentialed 60-column cockpit and attention client.
+
+## Import trace files
+
+Add `otlp.exported` to `--native-sources` and run these commands as the configured collector UID and primary GID. The CLI reads and validates the file and submits bounded structural span records. The broker opens history and commits each import as one batch. Client files can also be read on stdin with `--file -`.
+
+```sh
+agenturm broker import-jsonl --broker-config broker.json \
+  --file spans.jsonl --source-id otlp.exported --session-id session-1
+agenturm broker import-traces --broker-config broker.json \
+  --file otlp.json --source-id otlp.exported
+```
+
+The same structural import and replay rules apply to local and broker history. [Span export format](rust-cutover-workflows.md#import-exported-spans)
+
+## Record and read Host history
+
+Run explicit Linux capture using the account that owns the processes you
+want to observe. In broker mode give that collector a `host.<label>` source
+in `--native-sources`. `--watch` records one sample per interval until
+interrupted. The default is five seconds and the range is 1–60 seconds.
+
+```sh
+agenturm host record --db history.sqlite --source-id host.workstation --watch
+agenturm host history --db history.sqlite --limit 10
+agenturm broker host record --broker-config broker.json --source-id host.workstation --watch
+agenturm broker host history --broker-config broker.json --source-id host.workstation
+```
+
+For ongoing collection, add a `host` block to a version 2 collection config.
+A Host-only config can use the following JSON. A config with native adapters
+keeps its plugin catalog and source settings alongside the Host block.
+
+```json
+{"version": 2, "host": {"source_id": "host.workstation", "interval_ms": 5000}}
+```
+
+```sh
+agenturm collect --config sources.json --db history.sqlite --watch
+agenturm broker collect --broker-config broker.json --config sources.json --watch
+agenturm service install --config sources.json --db history.sqlite
+```
+
+The collector samples at the first collection tick after the configured
+interval. It resumes the source checkpoint at restart and applies the history's
+usual retention policy. Existing configs start collecting Host samples when
+the owner adds the block.
+
+The JSON history rows preserve optional load averages in thousandths, memory
+in bytes and cumulative CPU counters in Linux clock ticks. The sample carries
+the clock tick frequency when available. A missing value is `null` and an
+observed zero is `0`. The response returns up to 64 samples and an `older`
+position for the same history snapshot. Pass that JSON object to `--before`
+with the same source filter to continue the traversal.
+
+From the cockpit's session list, press `6` for host history. Enter opens the
+selected sample's process list and Enter again opens the selected process's
+history within the loaded page. Escape returns one level. Use `]` to read
+older samples or `r` for the latest page. Press `H` from a local cockpit for
+the live summary.
+
+Each capture records up to 32 known runtime processes owned by the collector's
+effective user. It includes source, Linux boot ID, PID and process start ticks
+for exact process history. The view marks scan or row truncation as partial.
+Processes that exit during sampling can be absent. Argument strings, environment variables, working paths
+and inferred session links are absent. Native broker readers browse the
+retained samples. The HTTP history gateway omits Host sources and samples.
+
+Run `python3 scripts/validate_rust_host_history.py --bin-dir /opt/agenturm/bin`
+in a disposable Linux guest to verify process ownership, each broker role and
+the 60-column terminal drill-down.
 
 ## Grant administration
 

@@ -7,6 +7,7 @@
 
 #![forbid(unsafe_code)]
 
+pub mod host;
 pub mod observation;
 
 use std::fmt;

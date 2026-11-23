@@ -56,6 +56,24 @@ agent runs in its existing Python environment. The Python client keeps its
 legacy transport by default. Select `transport="otlp"` to send structural
 trace evidence to Rust.
 
+Install the producer from the source checkout for the chosen Rust release
+into your agent's environment. From that checkout, run:
+
+```bash
+.venv/bin/python -m pip install .
+```
+
+For automatic instrumentation, select `'.[auto]'` in that installation.
+
+Set `rust_agenturm` to the executable extracted from the Rust archive. Use
+that path for the outer launcher when the producer environment also contains
+the Python CLI.
+
+```bash
+rust_agenturm=/path/to/extracted-agenturm/bin/agenturm
+"$rust_agenturm" --version
+```
+
 ```python
 from observatory import Client
 
@@ -68,15 +86,15 @@ with telemetry.trace(session_id="thread-42", harness_id="harness.pi") as run:
 Run the script through the Rust launcher.
 
 ```bash
-agenturm run --db ./trace-history.sqlite --source-id otlp.python -- .venv/bin/python agent.py
-agenturm query --db ./trace-history.sqlite --harness-id otlp.python
+"$rust_agenturm" run --db ./trace-history.sqlite --source-id otlp.python -- .venv/bin/python agent.py
+"$rust_agenturm" query --db ./trace-history.sqlite --harness-id otlp.python
 ```
 
 To connect an existing producer, start the standalone Rust receiver and supply
 its trace endpoint in the producer's environment.
 
 ```bash
-agenturm serve-traces --db ./trace-history.sqlite --listen 127.0.0.1:14318 --source-id otlp.python
+"$rust_agenturm" serve-traces --db ./trace-history.sqlite --listen 127.0.0.1:14318 --source-id otlp.python
 ```
 
 ```bash
@@ -90,6 +108,13 @@ the exact `session_id` for a standalone receiver. The Rust launcher can assign
 a session to a run without one. To link to native history, give the exact
 `harness_id` and `session_id`. Add `turn_id` to identify a specific native
 turn and `worker_id` when the record has a worker identity.
+
+The broker launcher sets `OTEL_EXPORTER_OTLP_TRACES_HEADERS` and
+`OTEL_EXPORTER_OTLP_TRACES_ENDPOINT` for its producer. The authorization
+value travels directly to the matching numeric loopback trace endpoint.
+For a separately started broker receiver, set both variables for the
+authorized producer. Use `authorization=Bearer%20<token>` with the
+receiver's 64-digit lowercase hexadecimal token.
 
 The transport sends IDs, parent relationships, timing, status, and explicit
 native linkage. It bounds each request to 1,024 spans and 4 MiB. Delivery
@@ -110,7 +135,7 @@ To instrument an existing script automatically, use the Python launcher
 inside the Rust launcher with the `auto` extra in the producer environment.
 
 ```bash
-agenturm run --db ./trace-history.sqlite --source-id otlp.python -- \
+"$rust_agenturm" run --db ./trace-history.sqlite --source-id otlp.python -- \
   .venv/bin/python -m observatory run --transport otlp \
   --session-id thread-42 --harness-id harness.pi agent.py
 ```

@@ -106,6 +106,15 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
             assert service.poll() is None
             time.sleep(.04)
         run(COLLECTOR,'collect','--config',config)
+        # The second poll has shell activity only, without a message/edit/MCP
+        # sharing its receipt. Its proof must stand on its own after collection.
+        with codex.open('a') as stream:
+            stream.write(json.dumps({'type':'event_msg','timestamp':'2026-11-19T12:00:03Z','payload':{
+                'type':'item_completed','thread_id':'edit-session','turn_id':'solo-command',
+                'item':{'type':'CommandExecution','id':'solo-operation','status':'completed',
+                        'command':['pytest','solo-control'],'aggregated_output':'private solo output'}
+            }})+'\n')
+        run(COLLECTOR,'collect','--config',config)
         query=run(READER,'query').stdout
         assert 'Review the bounded broker fixture' not in query
         rows=json.loads(query)['observations']
@@ -114,7 +123,8 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
         run(READER,*listing,ok=False)
         instruction=['investigate','instruction','bounded broker','--source-id','harness.pi','--session-id','private-session']
         path_search=['investigate','path','src/after.txt','--source-id','harness.codex','--session-id','edit-session']
-        command_search=['investigate','command','isolated smoke','--source-id','harness.codex','--session-id','edit-session']
+        command_search=['investigate','command','isolated smoke','--source-id','harness.codex','--session-id','edit-session','--turn-id','command-turn']
+        solo_search=['investigate','command','solo-control','--source-id','harness.codex','--session-id','edit-session','--turn-id','solo-command']
         for investigation in [instruction,path_search,command_search]:
             coverage=json.loads(run(READER,*investigation).stdout)
             assert coverage['matched']==0 and coverage['unavailable_candidates']==1,coverage
@@ -159,8 +169,14 @@ with tempfile.TemporaryDirectory(prefix='broker-private-') as tmp:
         command_source=['investigate','source',command['event_id'],'--reference',command['source_reference']]
         assert json.loads(run(READER,*command_source).stdout)['evidence']=={'recorded_invocation':expected}
         assert 'private command output' not in json.dumps(command)
+        solo,solo_coverage=map(json.loads,run(READER,*solo_search).stdout.splitlines())
+        assert solo['recorded_invocation']==['pytest','solo-control'] and solo_coverage['matched']==1,(solo,solo_coverage)
+        solo_source=['investigate','source',solo['event_id'],'--reference',solo['source_reference']]
+        assert json.loads(run(READER,*solo_source).stdout)['evidence']=={'recorded_invocation':['pytest','solo-control']}
+        assert 'private solo output' not in json.dumps(solo)
         run(ADMIN,'grant','revoke','--binding',command_binding)
         run(READER,*command_source,ok=False)
+        run(READER,*solo_source,ok=False)
         draft=json.loads(run(READER,'task','draft','--source-id','harness.pi','--session-id','private-session','--turn-id','prompt-1','--event-id',prompt['event_id'],'--revision',prompt['revision']).stdout)
         assert draft['excerpt']=='Review the bounded broker fixture'
         draft['continuation']='Verify the next bounded step'
