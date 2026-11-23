@@ -23,6 +23,15 @@ pub(super) struct CockpitStartup {
 }
 
 impl CockpitStartup {
+    pub(super) fn source_authority(&self) -> Option<discovery::SourceAuthority> {
+        self.collection
+            .as_ref()?
+            .authority
+            .lock()
+            .ok()
+            .map(|authority| authority.clone())
+    }
+
     pub(super) fn prompt(&self, command: WorkCommand) -> Result<WorkResult, String> {
         let Some(collector) = &self.collection else {
             return super::cockpit_workflows::execute_prompt(&self.db, None, command);
@@ -44,12 +53,12 @@ impl CockpitStartup {
         self.collection
             .as_ref()
             .and_then(|collection| {
-                collection
-                    .notice
-                    .lock()
-                    .ok()?
-                    .clone()
-                    .or_else(|| collection.receiver_notice.lock().ok()?.clone())
+                let notice = collection.notice.lock().ok()?.clone();
+                let receiver = collection.receiver_notice.lock().ok()?.clone();
+                match (notice, receiver) {
+                    (Some(notice), Some(receiver)) => Some(format!("{notice}. {receiver}")),
+                    (notice, receiver) => notice.or(receiver),
+                }
             })
             .or_else(|| self.notice.clone())
     }
@@ -74,6 +83,7 @@ struct ActiveCollector {
     requests: Option<mpsc::SyncSender<CollectorRequest>>,
     notice: Arc<Mutex<Option<String>>>,
     receiver_notice: Arc<Mutex<Option<String>>>,
+    authority: Arc<Mutex<discovery::SourceAuthority>>,
 }
 
 impl ActiveCollector {
@@ -85,6 +95,8 @@ impl ActiveCollector {
         let worker_stop = Arc::clone(&stop);
         let notice = Arc::new(Mutex::new(collection_notice(&initial_report)));
         let worker_notice = Arc::clone(&notice);
+        let authority = Arc::new(Mutex::new(collector.source_authority()));
+        let worker_authority = Arc::clone(&authority);
         let (requests, work) = mpsc::sync_channel::<CollectorRequest>(2);
         let receiver_notice = Arc::new(Mutex::new(None));
         let bound_receiver = super::trace_receiver::TraceReceiver::bind_cockpit();
@@ -127,6 +139,9 @@ impl ActiveCollector {
                     }
                     refresh = Instant::now() + interval;
                     let report = collector.refresh();
+                    if let Ok(mut authority) = worker_authority.lock() {
+                        *authority = collector.source_authority();
+                    }
                     if let Ok(mut notice) = worker_notice.lock() {
                         *notice = collection_notice(&report);
                     }
@@ -182,6 +197,7 @@ impl ActiveCollector {
             requests: Some(requests),
             notice,
             receiver_notice,
+            authority,
         })
     }
 }
@@ -203,7 +219,7 @@ pub(super) fn prepare_cockpit_store(db: Option<&Path>) -> Result<CockpitStartup,
     if let Some(db) = db {
         return Ok(CockpitStartup {
             db: db.to_owned(),
-            notice: None,
+            notice: Some("Explicit database · saved history; discovery disabled".into()),
             collection: None,
         });
     }
@@ -277,16 +293,24 @@ pub(super) fn prepare_cockpit_store(db: Option<&Path>) -> Result<CockpitStartup,
 }
 
 fn collection_notice(report: &CollectionReport) -> Option<String> {
-    report.has_failures().then(|| {
-        format!(
+    let coverage = report.discovery.map(discovery::DiscoveryCoverage::notice);
+    if report.has_failures() {
+        let mut notice = format!(
             "Showing available history. {}",
             report
                 .summary
                 .lines()
                 .next()
                 .unwrap_or("Collection failed.")
-        )
-    })
+        );
+        if let Some(coverage) = coverage {
+            notice.push(' ');
+            notice.push_str(&coverage);
+        }
+        Some(notice)
+    } else {
+        coverage
+    }
 }
 
 pub(super) fn state_directory(

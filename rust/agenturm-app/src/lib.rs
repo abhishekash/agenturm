@@ -324,6 +324,7 @@ pub struct CollectionReport {
     pub summary: String,
     pub failed_sources: usize,
     pub global_failures: Vec<String>,
+    discovery: Option<discovery::DiscoveryCoverage>,
 }
 
 impl CollectionReport {
@@ -2646,6 +2647,7 @@ pub struct ConfiguredCollector<S = Store> {
     stop_flag: Option<Arc<AtomicBool>>,
     plugin_host: PathBuf,
     follow: Option<FollowSources>,
+    authorized_sources: Vec<discovery::AuthorizedSource>,
     #[cfg(target_os = "linux")]
     database: PathBuf,
     #[cfg(target_os = "linux")]
@@ -2714,6 +2716,7 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
             stop_flag: stop.cloned(),
             plugin_host: config.plugin_host,
             follow: config.follow,
+            authorized_sources: Vec::new(),
             #[cfg(target_os = "linux")]
             database,
             #[cfg(target_os = "linux")]
@@ -2724,6 +2727,9 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
             host_capture: config.host_capture,
         };
         for source in config.sources {
+            collector
+                .authorized_sources
+                .push(authorized_source(&source));
             collector.add_source(source)?;
         }
         Ok(collector)
@@ -2783,7 +2789,7 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
     }
 
     fn rescan_follow_sources(&mut self) -> Result<(), String> {
-        let Some(follow) = &self.follow else {
+        let Some(follow) = &mut self.follow else {
             return Ok(());
         };
         #[cfg(target_os = "linux")]
@@ -2791,6 +2797,7 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
             validate_source_root_isolation(&self.database, follow.selection.roots())?;
         }
         let selected = follow.resolve()?;
+        let authorized = selected.iter().map(authorized_source).collect();
         let selected_ids = selected
             .iter()
             .map(|source| source.source_id.as_str())
@@ -2814,7 +2821,18 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
                 self.add_source(source)?;
             }
         }
+        self.authorized_sources = authorized;
         Ok(())
+    }
+
+    fn source_authority(&self) -> discovery::SourceAuthority {
+        discovery::SourceAuthority {
+            sources: self.authorized_sources.clone(),
+            codex_home: self
+                .follow
+                .as_ref()
+                .and_then(|follow| follow.selection.codex_home()),
+        }
     }
 
     pub fn refresh(&mut self) -> CollectionReport {
@@ -2870,6 +2888,11 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
         if let Some(message) = maintenance_error {
             report.summary.push_str(&format!("{message}\n"));
             report.global_failures.push(message);
+        }
+        if let Some(follow) = &self.follow {
+            report.discovery = Some(follow.coverage);
+            report.summary.push_str(&follow.coverage.notice());
+            report.summary.push('\n');
         }
         report
     }
@@ -3064,6 +3087,7 @@ fn build_collection_report_with_discovery(
         ),
         failed_sources,
         global_failures,
+        discovery: None,
     }
 }
 
@@ -3177,10 +3201,13 @@ fn validate_collection_config(
                     ));
                 }
             }
-            let follow = FollowSources {
+            let mut follow = FollowSources {
                 selection,
                 catalog,
                 base,
+                schedule: discovery::FollowSchedule::default(),
+                capacity: MAX_CONFIGURED_SOURCES - usize::from(host_capture.is_some()),
+                coverage: discovery::DiscoveryCoverage::default(),
             };
             (follow.resolve()?, Some(follow))
         }
@@ -3521,11 +3548,27 @@ struct FollowSources {
     selection: discovery::FollowDiscovery,
     catalog: BTreeMap<String, ValidatedAdapter>,
     base: PathBuf,
+    schedule: discovery::FollowSchedule,
+    capacity: usize,
+    coverage: discovery::DiscoveryCoverage,
 }
 
 impl FollowSources {
-    fn resolve(&self) -> Result<Vec<ConfiguredSource>, String> {
-        resolve_collection_sources(self.selection.sources()?, 2, &self.catalog, &self.base)
+    fn resolve(&mut self) -> Result<Vec<ConfiguredSource>, String> {
+        let (inputs, coverage) = self
+            .selection
+            .follow_sources(&mut self.schedule, self.capacity)?;
+        let sources = resolve_collection_sources(inputs, 2, &self.catalog, &self.base)?;
+        self.coverage = coverage;
+        Ok(sources)
+    }
+}
+
+fn authorized_source(source: &ConfiguredSource) -> discovery::AuthorizedSource {
+    discovery::AuthorizedSource {
+        source_id: source.source_id.clone(),
+        plugin_id: source.plugin_id.clone(),
+        source_root: source.source_root.clone(),
     }
 }
 
