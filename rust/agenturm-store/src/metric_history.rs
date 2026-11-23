@@ -618,6 +618,58 @@ mod tests {
     }
 
     #[test]
+    fn v20_metric_point_preserves_event_and_series_identity_through_upgrade() {
+        use std::fs;
+        use std::path::PathBuf;
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        struct Scratch(PathBuf);
+        impl Drop for Scratch {
+            fn drop(&mut self) {
+                let _ = fs::remove_dir_all(&self.0);
+            }
+        }
+        let directory = std::env::temp_dir().join(format!(
+            "agenturm-metric-upgrade-{}-{}",
+            std::process::id(),
+            SystemTime::now()
+                .duration_since(UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let scratch = Scratch(directory);
+        let path = scratch.0.join("history.sqlite");
+        let mut store = Store::open(&path).unwrap();
+        let original = point(10, &"a".repeat(64), 42);
+        commit(&mut store, OPEN, None, "retained", vec![original.clone()]);
+        let expected = [(OPEN.to_owned(), original)];
+        assert_eq!(store.observations().unwrap(), expected);
+        store.connection.execute_batch(
+            "DROP INDEX agenturm_metric_descriptions_by_series;
+             ALTER TABLE agenturm_history_batches DROP COLUMN admitted_at_unix_ns;
+             UPDATE agenturm_store_meta SET value='agenturm.observation-store.v20' WHERE key='format';
+             PRAGMA user_version=20;",
+        ).unwrap();
+        drop(store);
+
+        let schema = |store: &Store| {
+            store
+                .connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap()
+        };
+        let reader = Store::open_read_only(&path).unwrap();
+        assert_eq!(schema(&reader), 20);
+        assert_eq!(reader.observations().unwrap(), expected);
+        drop(reader);
+
+        let upgraded = Store::open(&path).unwrap();
+        assert_eq!(schema(&upgraded), crate::SCHEMA_VERSION);
+        assert_eq!(upgraded.observations().unwrap(), expected);
+    }
+
+    #[test]
     fn literal_catalog_search_runs_before_paging_and_binds_cursor_and_acl() {
         let mut store = Store::open(":memory:").unwrap();
         let source = ExtensionId::parse(OPEN).unwrap();

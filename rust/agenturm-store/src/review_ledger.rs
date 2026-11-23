@@ -673,7 +673,7 @@ mod tests {
 
     #[test]
     fn selected_history_cannot_rebind_a_new_ledger_after_path_replacement() {
-        use agenturm_kernel::{ObservationQuery, ObservationStore};
+        use agenturm_kernel::ObservationQuery;
         let scratch = Scratch::new();
         let path = scratch.0.join("history.sqlite");
         let original = Store::open(&path).unwrap();

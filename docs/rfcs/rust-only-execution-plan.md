@@ -19,6 +19,21 @@ Use this status and the [detailed remaining-work plan](rust-migration-remaining-
 The 813, 819 and 833 test counts belong to successive source baselines and are **not additive**. The 833-test run predates the final Host chooser correction. No completion percentage is asserted while required workflow acceptance remains open. A real Kiro transcript and an approved production connector endpoint remain external inputs; macOS needs native runners and its D2-Mac checks. Comparative benchmarks remain deferred.
 
 
+## Synchronized test progress
+
+The [independent Q1–Q10 run and review](../validation/rust-migration-test-plan-results.md)
+qualifies the recorded **`18aa702` baseline** with its exact artifact; it does
+not qualify newer CF1–CF5 source `3135060`. Baseline 833-test Rust checks and
+named optimized journeys passed; full shell syntax, genuine point-upgrade
+identity, guest/service/restore and paired-state scope require the distinctions
+recorded there. The new real-point upgrade regression passes in the sync fix.
+
+PR #382 current-source Rust CI stopped on an unused test import before Rust
+execution and dependent SDK jobs. The import is removed and scoped Store test
+Clippy passes in the corrective change. Broader current-head, schema 22 and
+CF1–CF5 qualification stays with the separate test agent. No release/default
+switch is implied by the baseline report.
+
 ## Core feature development and delegated testing
 
 Current user direction: this implementation session owns feature development;
