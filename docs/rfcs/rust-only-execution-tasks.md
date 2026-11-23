@@ -50,7 +50,7 @@ for new assignments. The older A–E IDs retain their original acceptance criter
 | FD1 / A1–A3 | Remaining attributable Pi worker, Claude async and native check/turn shapes; require positive native evidence. | Core feature development |
 | FD2 / B3–B4 | Private edit/MCP detail beyond the implemented Codex paths. | Core feature development |
 | FD3 / B6 | Provenance-aware, duplicate-safe combined usage/cost totals. | Core feature development |
-| FD4 / B6 | **In progress in the shared checkout:** native remote cockpit route-file option and receiver-side exact-request/unique-pane verification. Focused validation, security/transport review and selection-return acceptance remain. | Core feature development |
+| FD4 / B6 | Implemented slice: native remote cockpit route-file option, exact current-request verification and receiver-side unique-pane resolution with presented attach command; routed via CF7 for installed/paired and security-review acceptance. Per-host persistence and non-ssh transports remain open. | Core feature development |
 | FD5 / B8 | Remote package discovery/download and additional decoder formats; local lifecycle is complete. | Separate extension development |
 | FD6 / C6–C8 | Additional provider transports, credential provisioning and architecture isolation profiles. | Separate connector development |
 | FD7 / D2-Mac | Mac artifacts/install/paths/launchd/signing; Apple Silicon and Intel separate. | Separate platform development |

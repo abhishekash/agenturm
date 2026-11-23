@@ -265,6 +265,19 @@ route. <code>c</code> verifies the selected exact pending main-session request a
 and copies <code>codex resume …</code> or <code>claude --resume …</code> for supported sources.
 It never launches the command; Escape restores the request selection. Respond
 in the harness terminal.</p>
+<p>When the cockpit is attached with <code>--endpoint</code> and <code>--token-file</code>, the
+recorded terminal belongs to the receiver host. An explicit authenticated
+host route can be supplied at attach time with
+<code>agenturm cockpit --endpoint http://127.0.0.1:4318 --token-file &lt;file&gt;
+--route-file &lt;route.txt&gt;</code>: one command word per line, for example <code>ssh</code> and
+<code>user@receiver-host</code>. <code>l</code> then runs Agenturm's fixed read-only tmux and
+<code>/proc</code> probes through the route, resolves the unique remote pane whose
+process tree carries the exact recorded resume command, re-verifies the
+pane's process, and presents the attach command for the operator to run.
+Agenturm never selects a remote pane, answers, or approves; ambiguous,
+unreachable, or unsupported results stay unavailable. The route must
+transport arguments the way <code>ssh</code> does, and the legacy Python receiver
+protocol does not accept a route file.</p>
 <p>Press <code>S</code> in Workflow to open notification settings. Enter toggles desktop
 notifications; Tab selects the task token, USD and elapsed-minute thresholds;
 Ctrl+S saves them. Zero disables a threshold. <code>z</code> snoozes delivery for ten

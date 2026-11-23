@@ -24,12 +24,13 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const ATTACH_USAGE: &str = "agenturm cockpit --endpoint http://<loopback-IP:port> --token-file <path> [--receiver-protocol python-v0.2.8]";
+const ATTACH_USAGE: &str = "agenturm cockpit --endpoint http://<loopback-IP:port> --token-file <path> [--route-file <path>] [--receiver-protocol python-v0.2.8]";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RemoteHistoryOptions {
     endpoint: SocketAddr,
     token_file: PathBuf,
+    route_file: Option<PathBuf>,
     python_receiver: bool,
 }
 
@@ -43,10 +44,14 @@ impl RemoteHistoryOptions {
     pub(super) fn token_file(&self) -> &Path {
         &self.token_file
     }
+    pub(super) fn route_file(&self) -> Option<&Path> {
+        self.route_file.as_deref()
+    }
 }
 
 pub(crate) fn parse(args: &[String]) -> Result<RemoteHistoryOptions, String> {
     let mut python_receiver = false;
+    let mut route_file = None;
     let mut native_args = Vec::with_capacity(args.len());
     let (pairs, extra) = args.as_chunks::<2>();
     for pair in pairs {
@@ -55,12 +60,20 @@ pub(crate) fn parse(args: &[String]) -> Result<RemoteHistoryOptions, String> {
                 return Err(ATTACH_USAGE.into());
             }
             python_receiver = true;
+        } else if pair[0] == "--route-file" {
+            if route_file.is_some() {
+                return Err(ATTACH_USAGE.into());
+            }
+            route_file = Some(PathBuf::from(&pair[1]));
         } else {
             native_args.extend_from_slice(pair);
         }
     }
     if !extra.is_empty() {
         return Err(ATTACH_USAGE.into());
+    }
+    if python_receiver && route_file.is_some() {
+        return Err("Host routes require the native receiver protocol".into());
     }
     let (address, token_file) = parse_address_and_token(&native_args, "--endpoint", ATTACH_USAGE)?;
     let address = address
@@ -70,14 +83,22 @@ pub(crate) fn parse(args: &[String]) -> Result<RemoteHistoryOptions, String> {
     Ok(RemoteHistoryOptions {
         endpoint,
         token_file,
+        route_file,
         python_receiver,
     })
 }
 
 pub fn execute_remote_cockpit(options: &RemoteHistoryOptions) -> Result<(), String> {
     if options.is_python() {
+        if options.route_file.is_some() {
+            return Err("Host routes require the native receiver protocol".into());
+        }
         return super::legacy::cockpit(options);
     }
+    let route = options
+        .route_file()
+        .map(crate::workflow_route::load_route_file)
+        .transpose()?;
     let (store, marker) = open_workspace(options)?;
     let mut app = AgenturmApp::default_composition();
     let ui_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
@@ -87,8 +108,28 @@ pub fn execute_remote_cockpit(options: &RemoteHistoryOptions) -> Result<(), Stri
             if cockpit_workflows::is_prompt_command(command) {
                 return Err("This receiver supplies metadata only. Use a local or broker content reader for protected evidence.".into());
             }
-            if matches!(command, WorkCommand::Locate(_)) {
-                return Err("The native terminal belongs to the receiver host.".into());
+            if let WorkCommand::Locate(item) = command {
+                if item.owner.worker.is_some() {
+                    return Err(
+                        "This request belongs to a worker. Its native terminal could not be verified."
+                            .into(),
+                    );
+                }
+                let Some(route) = route.as_ref() else {
+                    return Err(
+                        "The native terminal belongs to the receiver host. Configure an authenticated host route with --route-file to route there."
+                            .into(),
+                    );
+                };
+                cockpit_workflows::verify_current_request(&store, item)?;
+                let message = crate::workflow_route::remote_locate(
+                    route,
+                    &item.owner.source,
+                    &item.owner.session,
+                )?;
+                return Ok(agenturm_ui::WorkspaceResponse::Work(
+                    agenturm_ui::WorkResult::Status(message),
+                ));
             }
         }
         workspace_response(&mut app, &store, &marker, request, || None, &loader_stop)
@@ -526,5 +567,74 @@ impl WorkspaceHistory for RemoteStore {
             event_id: event_id.into(),
             revision,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn attach_options_parse_the_explicit_route_file() {
+        let options = parse(&[
+            "--endpoint".into(),
+            "http://127.0.0.1:4318".into(),
+            "--token-file".into(),
+            "receiver.token".into(),
+            "--route-file".into(),
+            "route.txt".into(),
+        ])
+        .unwrap();
+        assert_eq!(
+            options.route_file().map(Path::new),
+            Some(Path::new("route.txt"))
+        );
+        assert!(!options.is_python());
+        let plain = parse(&[
+            "--endpoint".into(),
+            "http://127.0.0.1:4318".into(),
+            "--token-file".into(),
+            "receiver.token".into(),
+        ])
+        .unwrap();
+        assert!(plain.route_file().is_none());
+        // A repeated or dangling route flag is a usage error, never a guess.
+        assert!(
+            parse(&[
+                "--endpoint".into(),
+                "http://127.0.0.1:4318".into(),
+                "--token-file".into(),
+                "receiver.token".into(),
+                "--route-file".into(),
+                "route.txt".into(),
+                "--route-file".into(),
+                "route.txt".into(),
+            ])
+            .is_err()
+        );
+        assert!(
+            parse(&[
+                "--endpoint".into(),
+                "http://127.0.0.1:4318".into(),
+                "--token-file".into(),
+                "receiver.token".into(),
+                "--route-file".into(),
+            ])
+            .is_err()
+        );
+        // The route file is never accepted for the legacy Python protocol.
+        assert!(
+            parse(&[
+                "--endpoint".into(),
+                "http://127.0.0.1:4318".into(),
+                "--token-file".into(),
+                "receiver.token".into(),
+                "--route-file".into(),
+                "route.txt".into(),
+                "--receiver-protocol".into(),
+                super::super::legacy::PROTOCOL.into(),
+            ])
+            .is_err()
+        );
     }
 }

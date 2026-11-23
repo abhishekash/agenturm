@@ -158,20 +158,6 @@ PR #383 (<code>2fea865</code>) synchronizes baseline test evidence and fixes the
 lint/upgrade-identity coverage gap. FD3's combined usage slice is merged in PR
 #385 (<code>1541481</code>). The rows below describe development still open. The SDK/CLI
 audit and test qualification are separate work categories.</p>
-<h3>Active implementation</h3>
-<p><strong>FD4 — cross-host terminal routing is in progress in the shared checkout</strong>
-(<code>main</code> at <code>1541481</code>, with uncommitted changes in
-<code>rust/agenturm-app/src/workflow_route.rs</code>,
-<code>rust/agenturm-app/src/remote_history/client.rs</code>, and
-<code>rust/agenturm-app/src/cockpit_workflows.rs</code>). The current slice adds an
-operator-supplied route file to the native remote cockpit, verifies the exact
-current request, and probes the receiver host for one unique tmux pane whose
-process ancestry matches the provider's exact resume command. Worker requests,
-unsupported providers, missing configuration, ambiguous/stale targets and
-unavailable routes fail closed. This is implementation-in-progress evidence,
-not a completed or merged feature: focused validation, return-selection review,
-security review, and confirmation of supported route transport semantics are
-still pending. The Python receiver explicitly rejects this option.</p>
 <h3>Core Linux features</h3>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -203,9 +189,9 @@ still pending. The Python receiver explicitly rejects this option.</p>
 </tr>
 <tr>
 <td>FD4</td>
-<td>Core / remote workflow — <strong>in progress</strong></td>
+<td>Core / remote workflow</td>
 <td>Cross-host terminal routing to the exact recorded remote owner/session.</td>
-<td>Current working-tree slice: native receiver <code>--route-file</code>, exact current-request check, bounded receiver-host process/tmux probes and unique-target verification. Still complete focused validation, return-selection review, security/transport review, and fail-closed acceptance. Resolve one exact target or report unavailable; routing never answers or approves. Existing local routing/resume and native/attached receiver reads are not missing features.</td>
+<td><strong>Routing slice implemented:</strong> an attached cockpit accepts an explicit operator-authored <code>--route-file</code> (one command word per line, for example <code>ssh</code> and <code>user@receiver-host</code>); <code>l</code> verifies the exact current request, runs fixed read-only tmux and <code>/proc</code> probes through the route, resolves the unique remote pane whose process ancestry carries the exact recorded resume command, re-verifies the pane's process, and presents the attach command for the operator. Routing never selects a remote pane, answers, or approves; worker requests, unsupported providers, missing configuration, ambiguous or stale targets and unreachable routes fail closed. The route must transport arguments the way <code>ssh</code> does; the legacy Python receiver protocol rejects a route file. Focused validation passed: eight routing tests including a fake-route end-to-end resolution, ambiguity and stale-pane rejection, an attach-option parse test, workspace strict Clippy and fmt. Remaining: per-host route persistence beyond attach-time configuration, transports that do not join arguments the way <code>ssh</code> does, an independent security/transport review, and installed/paired acceptance are delegated as CF7 in the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md">core feature test plan</a>. Existing local routing/resume and native/attached receiver reads are not missing features.</td>
 </tr>
 </tbody>
 </table></div>
@@ -335,8 +321,10 @@ of combined totals. Overlap that no producer identity links — for example
 two unattributed instrumentation layers describing the same call — cannot be
 detected; those totals stay unreported rather than summed speculatively.
 Preserve distinct evidence cohorts and currencies in every view.</li>
-<li>FD4 cross-host terminal routing is a confirmed missing feature. Other CLI,
-SDK and keyboard differences belong to AP1 until a concrete missing code
+<li>FD4 cross-host terminal routing is implemented for attached native
+receivers through an explicit operator-authored route file; per-host
+persistence and transports that do not join arguments the way <code>ssh</code> does
+remain open. Other CLI, SDK and keyboard differences belong to AP1 until a concrete missing code
 path is identified. Visual-state comparisons of implemented paths remain
 qualification with the separate test agent.</li>
 </ol>

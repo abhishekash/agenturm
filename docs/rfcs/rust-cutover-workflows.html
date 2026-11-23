@@ -50,7 +50,7 @@ migration of Python-era databases remains outside the Rust-only product scope.</
 </tr>
 <tr>
 <td><code>attention status</code>, <code>attention watch</code></td>
-<td>Rust reads local history or an attached Rust receiver and keeps seen state in the user's workspace. Remote watch emits a snapshot and changes from retained native lifecycle evidence. Python 0.2.8 mode reads the exact native request inventory. Local <code>status --workflow</code> or <code>watch --once --workflow</code> adds body-free current incidents, saved policy and matched delivery receipts with exact attempts, without notification or state mutation. Legacy state migration and cross-host terminal routing remain open.</td>
+<td>Rust reads local history or an attached Rust receiver and keeps seen state in the user's workspace. Remote watch emits a snapshot and changes from retained native lifecycle evidence. Python 0.2.8 mode reads the exact native request inventory. Local <code>status --workflow</code> or <code>watch --once --workflow</code> adds body-free current incidents, saved policy and matched delivery receipts with exact attempts, without notification or state mutation. Legacy state migration remains open; cross-host terminal routing is implemented for attached native receivers through an explicit operator-authored attach-time route file.</td>
 </tr>
 <tr>
 <td><code>review</code></td>
@@ -132,7 +132,7 @@ service, session and actor where supplied. Escape restores the roster selection.
 The one-shot JSON response uses <code>agenturm-python-receiver-live/1</code> and labels
 readiness and partial coverage. Reads check the receiver header and any body
 identity, then confirm the same health identity after the batch. The Python
-protocol provides live pages without a Rust history watermark. The candidate adds explicit gated private Review and Review-backed task receipts. It verifies current capture policy, exact receiver/owner/member identity and a fixed display lifetime; private viewers have no copy/export. Cross-host terminal routing remains unavailable. Ordinary client output excludes prompt, log and arbitrary provider bodies.</p>
+protocol provides live pages without a Rust history watermark. The candidate adds explicit gated private Review and Review-backed task receipts. It verifies current capture policy, exact receiver/owner/member identity and a fixed display lifetime; private viewers have no copy/export. Cross-host terminal routing requires an explicit attach-time route file; without one it stays unavailable. Ordinary client output excludes prompt, log and arbitrary provider bodies.</p>
 <p>Attention requires a ready, complete native lifecycle inventory. A partial or
 unavailable read leaves request state unconfirmed. A watch preserves the last
 exact pending evidence within its process and clears a request only when the same

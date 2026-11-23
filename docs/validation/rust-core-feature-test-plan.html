@@ -87,6 +87,12 @@ baselines, not results for the new feature slices. Every new row starts
 <td>Development branch <code>feature/combined-usage-dedup</code></td>
 <td>Separate test agent; not run on new source.</td>
 </tr>
+<tr>
+<td>CF7</td>
+<td>Implemented: cross-host terminal routing through an explicit operator-authored attach-time route file; fixed read-only tmux and <code>/proc</code> probes resolve one exact remote pane or report unavailable.</td>
+<td>Development branch (see PR)</td>
+<td>Separate test agent; not run on new source.</td>
+</tr>
 </tbody>
 </table></div>
 <p>Worktree paths identify current ownership, not release artifacts. The developer
@@ -431,6 +437,36 @@ developer checks, not installed qualification.</p>
 </tbody>
 </table>
 <p>All CF6 scenarios are <strong>not run</strong> until the test owner records actual results
+on the frozen integrated head.</p>
+<h2>CF7 — cross-host terminal routing</h2>
+<p>Implemented with the FD4 routing slice. An attached native cockpit accepts an
+explicit operator-authored <code>--route-file</code> (one command word per line, for
+example <code>ssh</code> and <code>user@receiver-host</code>); the legacy Python receiver protocol
+rejects it. <code>l</code> verifies the exact current request, then runs three fixed,
+read-only, bounded probes through the route: a remote <code>/proc</code> snapshot whose
+matching processes are proved by exact byte comparison of the resume command
+tail (NUL-count, basename and length all checked), the tmux pane inventory,
+and a pane-process re-verification. The unique resolved target is presented as
+an attach command; Agenturm never selects a remote pane, answers, or approves.</p>
+<p><strong>Developer handoff:</strong> eight focused routing tests including a fake-route
+end-to-end that emulates <code>ssh</code> argument joining — unique resolution, ambiguous
+snapshot rejection, stale pane rejection, base64 round-trip, route-file
+validation — plus the attach-option parse test, workspace all-target strict
+Clippy and fmt. These are developer checks against synthetic routes, not a
+qualification of any real transport.</p>
+<table>
+<thead><tr><th>Scenario</th><th>Required observation</th><th>Status</th></tr></thead>
+<tbody>
+<tr><td>Attached cockpit with a real route to a receiver host</td><td>One unique verified pane resolves; the presented attach command opens the exact recorded owner's terminal.</td><td>Not run</td></tr>
+<tr><td>Route semantics</td><td>A route that does not join arguments the way <code>ssh</code> does fails closed with unavailable, never a guessed target.</td><td>Not run</td></tr>
+<tr><td>Ambiguous, stale or missing remote state</td><td>Two candidate panes, a changed pane process between probes, or no matching process report unavailable with the request selection preserved.</td><td>Not run</td></tr>
+<tr><td>Worker/unsupported provider/missing configuration</td><td>Worker requests, non-Codex/Claude/Kiro sources, unsafe session identifiers and absent route files fail closed with exact reasons.</td><td>Not run</td></tr>
+<tr><td>Probe hygiene</td><td>Probes are read-only, bounded in output and time, carry no session bytes in script text, and leave no temporary files behind on the receiver host.</td><td>Not run</td></tr>
+<tr><td>Return selection at all three sizes</td><td>120×32, 80×24 and 60×18 preserve the Workflow selection after routing results and errors.</td><td>Not run</td></tr>
+<tr><td>Python receiver protocol</td><td><code>--route-file</code> with <code>--receiver-protocol python-v0.2.8</code> is rejected at parse time.</td><td>Not run</td></tr>
+</tbody>
+</table>
+<p>All CF7 scenarios are <strong>not run</strong> until the test owner records actual results
 on the frozen integrated head.</p>
 <h2>Related Review identity fixes — delegated regression</h2>
 <p>Typed broker Review receipts now pin the authenticated history identity for
