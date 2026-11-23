@@ -7,6 +7,54 @@ use std::path::{Path, PathBuf};
 use std::process::{Command, Output};
 use std::sync::atomic::{AtomicU64, Ordering};
 
+#[cfg(target_os = "linux")]
+#[test]
+fn task_backup_publishes_a_private_file_and_refuses_existing_destinations() {
+    use std::os::unix::fs::{PermissionsExt, symlink};
+
+    let scratch = Scratch::new();
+    let db = scratch.0.join("history.sqlite");
+    let _writer = Store::open(&db).unwrap();
+    let backup = scratch.0.join("task-backup.sqlite");
+    let backup_args = ["backup", "--destination", backup.to_str().unwrap()];
+    assert_failure(run(&db, &backup_args));
+    assert!(!backup.exists());
+    json(
+        &db,
+        &[
+            "add",
+            "--title",
+            "Keep this task",
+            "--notes",
+            "Private work note",
+        ],
+    );
+    let report = json(&db, &backup_args);
+    assert_eq!(report["format"], "agenturm-rust-task-backup/1");
+    assert_eq!(report["path"], backup.to_str().unwrap());
+    assert!(!report.to_string().contains("Private work note"));
+    assert_eq!(
+        std::fs::metadata(&backup).unwrap().permissions().mode() & 0o777,
+        0o600
+    );
+    let original = std::fs::read(&backup).unwrap();
+    assert_failure(run(&db, &backup_args));
+    let link = scratch.0.join("link.sqlite");
+    symlink(&backup, &link).unwrap();
+    assert_failure(run(
+        &db,
+        &["backup", "--destination", link.to_str().unwrap()],
+    ));
+    let blocked = scratch.0.join("blocked.sqlite");
+    std::fs::write(scratch.0.join("blocked.sqlite-wal"), "existing file").unwrap();
+    assert_failure(run(
+        &db,
+        &["backup", "--destination", blocked.to_str().unwrap()],
+    ));
+    assert!(!blocked.exists());
+    assert_eq!(std::fs::read(&backup).unwrap(), original);
+}
+
 #[test]
 fn tasks_share_the_cockpit_ledger_and_validate_exact_history_links() {
     let scratch = Scratch::new();

@@ -75,6 +75,7 @@ impl Store {
                 Sidecar::Workspace,
                 workspace.backup_binding(),
                 ARCHIVE_BINDING,
+                false,
             )?;
             let has_review = copy_optional(
                 review.open_for_backup().map_err(sidecar_error)?,
@@ -82,6 +83,7 @@ impl Store {
                 Sidecar::Review,
                 review.backup_binding(),
                 ARCHIVE_BINDING,
+                false,
             )?;
             history.backup_to(staging.join(HISTORY))?;
             if WorkspaceLedger::open(&history_path)
@@ -147,12 +149,106 @@ impl Store {
                     path,
                     OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NOFOLLOW,
                 )?;
-                if !copy_optional(Some(database), staging, kind, ARCHIVE_BINDING, binding)? {
+                if !copy_optional(
+                    Some(database),
+                    staging,
+                    kind,
+                    ARCHIVE_BINDING,
+                    binding,
+                    false,
+                )? {
                     return Err(BackupError::InvalidBundle);
                 }
             }
             Ok(())
         })
+    }
+}
+
+impl WorkspaceLedger {
+    /// Publish an online SQLite archive of saved tasks, handoffs and their
+    /// attached workbench data for the current history binding.
+    pub fn backup_tasks_to(&self, destination: impl AsRef<Path>) -> Result<()> {
+        #[cfg(not(target_os = "linux"))]
+        {
+            let _ = destination;
+            Err(io::Error::new(ErrorKind::Unsupported, "task backup requires Linux").into())
+        }
+        #[cfg(target_os = "linux")]
+        {
+            use rustix::fs::{Mode, OFlags, RenameFlags, open, renameat_with};
+            use std::os::unix::fs::MetadataExt;
+
+            let destination = std::path::absolute(destination.as_ref())?;
+            let name = destination
+                .file_name()
+                .ok_or(BackupError::InvalidDestination)?;
+            let parent = destination
+                .parent()
+                .ok_or(BackupError::InvalidDestination)?;
+            if parent.canonicalize()? != parent {
+                return Err(io::Error::new(
+                    ErrorKind::InvalidInput,
+                    "task archive parent must be an existing directory without symlinks",
+                )
+                .into());
+            }
+            let flags = OFlags::RDONLY | OFlags::DIRECTORY | OFlags::NOFOLLOW | OFlags::CLOEXEC;
+            let parent_fd =
+                File::from(open(parent, flags, Mode::empty()).map_err(io::Error::from)?);
+            let parent_identity = parent_fd.metadata()?;
+            ensure_destination_is_fresh(&destination)?;
+            let identity = self
+                .task_archive_identity()
+                .map_err(sidecar_error)?
+                .ok_or_else(|| sidecar_error("no saved task ledger exists"))?;
+            let source = self.open_for_backup().map_err(sidecar_error)?;
+            if self.task_archive_identity().map_err(sidecar_error)? != Some(identity) {
+                return Err(BackupError::InvalidSnapshot);
+            }
+            let staging = StagingDirectory::new(parent)?;
+            let staging_fd = open(&staging.0, flags, Mode::empty()).map_err(io::Error::from)?;
+            let binding = self.backup_binding();
+            if !copy_optional(
+                source,
+                &staging.0,
+                Sidecar::Workspace,
+                binding,
+                binding,
+                true,
+            )? {
+                return Err(sidecar_error("no saved task ledger exists"));
+            }
+            if self.task_archive_identity().map_err(sidecar_error)? != Some(identity) {
+                return Err(BackupError::InvalidSnapshot);
+            }
+            let current_parent = parent.symlink_metadata()?;
+            if !current_parent.is_dir()
+                || (current_parent.dev(), current_parent.ino())
+                    != (parent_identity.dev(), parent_identity.ino())
+            {
+                return Err(BackupError::InvalidDestination);
+            }
+            ensure_destination_is_fresh(&destination)?;
+            renameat_with(
+                &staging_fd,
+                Sidecar::Workspace.filename(),
+                &parent_fd,
+                name,
+                RenameFlags::NOREPLACE,
+            )
+            .map_err(|error| {
+                if error == rustix::io::Errno::EXIST {
+                    BackupError::DestinationExists
+                } else {
+                    io::Error::from(error).into()
+                }
+            })?;
+            parent_fd
+                .sync_all()
+                .map_err(BackupError::PublishedDirectorySync)?;
+            Ok(())
+        }
     }
 }
 
@@ -166,6 +262,7 @@ fn copy_optional(
     kind: Sidecar,
     source_binding: [u8; 32],
     destination_binding: [u8; 32],
+    tasks_only: bool,
 ) -> Result<bool> {
     let Some(database) = database else {
         return Ok(false);
@@ -206,6 +303,9 @@ fn copy_optional(
             &format!("UPDATE {table} SET history_binding = ?2 WHERE history_binding = ?1"),
             params![source_binding, destination_binding],
         )?;
+    }
+    if tasks_only {
+        transaction.execute("DELETE FROM agenturm_seen_requests", [])?;
     }
     transaction.commit()?;
     // Remove freed pages which may contain a replaced history's private notes.
@@ -331,6 +431,90 @@ mod tests {
         WorkspaceGitDiff, WorkspaceGitSnapshot,
     };
     use agenturm_kernel::ExtensionId;
+
+    #[test]
+    fn task_archive_copies_committed_tasks_and_handoffs_for_its_history_only() {
+        let scratch = StagingDirectory::new(&std::env::temp_dir()).unwrap();
+        let history = scratch.0.join("history.sqlite");
+        let stale = {
+            let _writer = Store::open_collector(&history).unwrap();
+            let stale = WorkspaceLedger::open(&history).unwrap();
+            stale
+                .create_task(None, "Old task", "OBSOLETE_PRIVATE_TASK_NOTE")
+                .unwrap();
+            stale
+        };
+        fs::rename(&history, scratch.0.join("old.sqlite")).unwrap();
+        let mut writer = Store::open_collector(&history).unwrap();
+        let first = seed(&mut writer, "harness.pi", "first");
+        let second = seed(&mut writer, "harness.kiro", "second");
+        let ledger = WorkspaceLedger::open(&history).unwrap();
+        let task = ledger
+            .create_task(Some(&first), "Committed title", "Keep this task note")
+            .unwrap();
+        ledger
+            .create_handoff(&first, &second, "Keep this handoff")
+            .unwrap();
+        assert!(ledger.mark_request_seen(&second, "request", 0).unwrap());
+
+        let archive = scratch.0.join("tasks.sqlite");
+        assert!(stale.backup_tasks_to(&archive).is_err());
+        assert!(!archive.exists());
+        let mut task_writer =
+            Connection::open(scratch.0.join("history.sqlite.workspace.sqlite")).unwrap();
+        task_writer
+            .execute_batch("PRAGMA journal_mode=WAL")
+            .unwrap();
+        let uncommitted = task_writer.transaction().unwrap();
+        uncommitted
+            .execute(
+                "UPDATE agenturm_saved_tasks SET title='New title' WHERE id=?1",
+                [task.id],
+            )
+            .unwrap();
+        ledger.backup_tasks_to(&archive).unwrap();
+        uncommitted.commit().unwrap();
+        let next = scratch.0.join("next.sqlite");
+        ledger.backup_tasks_to(&next).unwrap();
+        let contents = fs::read(&archive).unwrap();
+        assert!(
+            !contents
+                .windows(b"OBSOLETE_PRIVATE_TASK_NOTE".len())
+                .any(|part| part == b"OBSOLETE_PRIVATE_TASK_NOTE")
+        );
+        for (path, expected_title) in [(archive, "Committed title"), (next, "New title")] {
+            let copy = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY).unwrap();
+            let (binding, title, note): (Vec<u8>, String, String) = copy
+                .query_row(
+                    "SELECT history_binding, title, note FROM agenturm_saved_tasks",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(binding, ledger.backup_binding());
+            assert_eq!(title, expected_title);
+            assert_eq!(note, "Keep this task note");
+            for (table, expected) in [
+                ("agenturm_saved_tasks", 1),
+                ("agenturm_saved_handoffs", 1),
+                ("agenturm_seen_requests", 0),
+            ] {
+                let count: i64 = copy
+                    .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                        row.get(0)
+                    })
+                    .unwrap();
+                assert_eq!(count, expected);
+            }
+        }
+        let key = (second, "request".to_owned(), 0);
+        assert!(
+            ledger
+                .seen_requests(std::slice::from_ref(&key))
+                .unwrap()
+                .contains(&key)
+        );
+    }
 
     #[test]
     fn a_copied_bundle_restores_active_workbench_and_reviews_beside_history() {

@@ -37,9 +37,11 @@ pub(super) const USAGE: &str = concat!(
     "       agenturm task <link|unlink> <task-id> --db <history> --source-id <id> --session-id <id> [--turn-id <id> [--worker-id <id>]] [--expected-revision <n>]\n",
     "       agenturm task handoffs --db <history> [--limit <1..200>] [--before <id>]\n",
     "       agenturm task export <handoff-id> --db <history>\n",
+    "       agenturm task backup --db <history> --destination <new-sqlite-file>\n",
     "\nBrief fields are intent, acceptance_criteria, constraints, open_questions and next_action. Use hyphens in flags.\n",
     "Create is an alias for add. Results are JSON except task handoff, which defaults to Markdown.\n",
     "Handoff --output and export write private Markdown and HTML pairs.\n",
+    "Task backup writes saved tasks, handoffs and their attached workbench data as a private SQLite file.\n",
 );
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -49,6 +51,7 @@ pub struct TaskOptions {
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum TaskAction {
+    Backup(PathBuf),
     List {
         limit: usize,
         before: Option<u64>,
@@ -200,6 +203,7 @@ pub(super) fn parse(args: &[String]) -> Result<TaskOptions, String> {
     let db = required_flag(&mut flags, "--db")?.into();
     let json_output = flags.remove("--json").is_some();
     let action = match (verb.as_str(), id) {
+        ("backup", None) => TaskAction::Backup(required_flag(&mut flags, "--destination")?.into()),
         (verb @ ("list" | "handoffs"), None) => {
             let limit = flags
                 .remove("--limit")
@@ -559,6 +563,10 @@ pub(super) fn execute_ledger(
         verifier: source_verifier,
     };
     let result = match action {
+        TaskAction::Backup(destination) => {
+            ledger.backup_tasks_to(destination).map_err(string)?;
+            json!({"format": "agenturm-rust-task-backup/1", "path": destination})
+        }
         TaskAction::List { limit, before, all } => {
             let page = ledger.list_tasks_including_archived(*limit, *before, *all)?;
             json!({

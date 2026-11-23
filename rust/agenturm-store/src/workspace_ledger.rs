@@ -307,6 +307,21 @@ impl WorkspaceLedger {
         self.connect(false)
     }
 
+    #[cfg(target_os = "linux")]
+    pub(super) fn task_archive_identity(&self) -> Result<Option<(u64, u64)>> {
+        use std::os::unix::fs::MetadataExt;
+
+        self.verify_history()?;
+        match fs::symlink_metadata(&self.path) {
+            Ok(file) if file.is_file() && file.nlink() == 1 && file.mode() & 0o077 == 0 => {
+                Ok(Some((file.dev(), file.ino())))
+            }
+            Ok(_) => Err(WorkspaceError::UnrecognizedLedger),
+            Err(error) if error.kind() == io::ErrorKind::NotFound => Ok(None),
+            Err(error) => Err(error.into()),
+        }
+    }
+
     pub fn open(history_path: impl AsRef<Path>) -> Result<Self> {
         let history = history_path.as_ref().canonicalize()?;
         let binding = history_binding(&history)?;
