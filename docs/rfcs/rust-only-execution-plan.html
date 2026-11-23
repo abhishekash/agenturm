@@ -122,6 +122,8 @@ separately in the validation record.</li>
 <h3>Step 2 — Prove the installed Linux workflow</h3>
 <p>Build a standalone bundle containing the Rust app, plugin host and default harness adapters. Wire discovery for supported local harness data and exercise the collector as a systemd user service on a managed Linux host.</p>
 <p><strong>Acceptance.</strong> Install the bundle on a clean host without Python. Discover real Pi and Codex data, collect one session from each, stop and restart collection, and open both sessions in the inspector. Verify that uninstall leaves collected data available.</p>
+<p><strong>macOS target (D2-Mac).</strong> Qualify Apple Silicon (<code>aarch64-apple-darwin</code>) and Intel (<code>x86_64-apple-darwin</code>) as separate targets when native runners are available. Define and publish the minimum supported macOS version, bundle format, install/update/uninstall behavior, data/config locations, supported local harness discovery, and whether collection is foreground-only or also managed by <code>launchd</code>. The installer must not assume Linux paths, <code>systemd</code>, or Linux-only process controls. Verify Gatekeeper behavior and use signed/notarized release artifacts wherever required for a normal documented install; do not instruct users to bypass platform protections as the standard path.</p>
+<p><strong>D2-Mac acceptance.</strong> On each advertised architecture, use the exact checksum-identified release artifact on a clean supported macOS host. Install without Python or a Rust toolchain; launch in a standard terminal; discover and collect supported native harness data; restart and reopen history; exercise query, inspect, backup, upgrade, and uninstall with history retained. If <code>launchd</code> collection is advertised, install, restart, and remove that service separately. Run the required cockpit journeys at normal and narrow terminal sizes, verify terminal restoration, and record unsupported harnesses or OS limitations before advertising support.</p>
 <p><strong>Verified on Ubuntu 24.04.5 x86-64.</strong> The extracted bundle discovered and collected actual local Pi and Codex sessions under a user service, reopened both after restart, rendered them in a terminal, and retained history after uninstall. Discovery, collection and reopen also passed in an isolated filesystem without Python. Discovery can write a fixed configuration or configure watch to follow new files in the bounded selection.</p>
 <h3>Step 3 — Complete harness evidence and inspector behavior</h3>
 <p>Use a coverage matrix for each supported harness. Finish the typed lifecycle, activity, relationships, usage, coverage gaps and content grant paths. Keep terminal layout, navigation and focus in the UI. Prove an independently packaged capability can add a metric and pane using the existing extension catalog.</p>
@@ -146,6 +148,8 @@ full native MCP payloads still require more coverage.</p>
 <h3>Step 5 — Ship the standalone Rust release</h3>
 <p>Build and publish versioned Rust artifacts with checksums, install and uninstall instructions, and a support matrix for platform and service manager coverage. Use the Linux workflow above as the first release gate and verify each additional platform before advertising support.</p>
 <p><strong>Acceptance.</strong> From a tagged artifact, run install, collect, restart, query, inspect and uninstall on each supported platform. Check upgrades using the previous Rust release database when available. Report performance changes only when measured.</p>
+<p><strong>macOS target (D2-Mac).</strong> Qualify Apple Silicon (<code>aarch64-apple-darwin</code>) and Intel (<code>x86_64-apple-darwin</code>) as separate targets when native runners are available. Define and publish the minimum supported macOS version, bundle format, install/update/uninstall behavior, data/config locations, supported local harness discovery, and whether collection is foreground-only or also managed by <code>launchd</code>. The installer must not assume Linux paths, <code>systemd</code>, or Linux-only process controls. Verify Gatekeeper behavior and use signed/notarized release artifacts wherever required for a normal documented install; do not instruct users to bypass platform protections as the standard path.</p>
+<p><strong>D2-Mac acceptance.</strong> On each advertised architecture, use the exact checksum-identified release artifact on a clean supported macOS host. Install without Python or a Rust toolchain; launch in a standard terminal; discover and collect supported native harness data; restart and reopen history; exercise query, inspect, backup, upgrade, and uninstall with history retained. If <code>launchd</code> collection is advertised, install, restart, and remove that service separately. Run the required cockpit journeys at normal and narrow terminal sizes, verify terminal restoration, and record unsupported harnesses or OS limitations before advertising support.</p>
 <p><strong>Verified on Ubuntu 24.04.5 x86-64.</strong> The <a href="https://github.com/abhishekash/agenturm/releases/tag/rust-v0.1.0">first standalone Rust release</a> ships the exact archive and checksum from the successful tag build. The archive passed install, rolling discovery, collection, restart, query, inspection, backup, and uninstall. The database upgrade used an earlier local candidate because this is the first tagged Rust release. Additional platforms require their own qualification.</p>
 <p><strong>Rust 0.3.1 qualified and published.</strong> The tag points to commit
 <code>4661eae53a288d091688597f539c8a1167595e59</code>. The exact Ubuntu 24.04.5
@@ -176,6 +180,57 @@ revocation, replay after commit before ACK, accept-then-timeout recovery
 using the same key, and confirmed-absence retry. The bundled driver exposes
 collection and delivery commands. Untrusted connector activation remains
 gated on OS isolation and credential control.</p>
+<h2>Final journey integration — 23 November 2026</h2>
+<p>The integration branch implements the following selected Python 0.2.8 journeys. This is a development candidate; final archive qualification is pending and the default distribution remains gated. The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-journey-parity.md">paired cockpit audit</a> records tested behavior and remaining differences.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Journey</th>
+<th>Implemented and checked</th>
+<th>Remaining qualification or work</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Command center E4/E5</td>
+<td>Task title, then native nickname, then concise provider/role/project fallback; newest-updated ordering for groups and rows, deterministic ties and identity-preserving selection. Status sorting cannot override recency. UI tests passed.</td>
+<td>Joined installed refresh, pagination and restart checks. Header-only sessions require a truthful discovery fact, not invented Working state.</td>
+</tr>
+<tr>
+<td>MCP</td>
+<td>Authorized configured idle inventory; exact call-to-trace links pinned to source/session/turn/worker/operation and snapshot; retained text search filters before pagination, with literal case-insensitive matching; server selection carries through pages.</td>
+<td>Joined retained-search and return-path PTY, final extracted bundle.</td>
+</tr>
+<tr>
+<td>Metric history and Usage</td>
+<td>All five typed OTLP metric kinds via JSON/protobuf; series/points/exemplar browsing; page-local catalog search; seven UTC days, per-currency costs, representative trace counters, run/error/log evidence and overlap suppression. Authenticated ingestion and three terminal sizes passed.</td>
+<td>Final archive and updated paired journeys. Descriptions are outside retained typed metric fields.</td>
+</tr>
+<tr>
+<td>Findings and Host</td>
+<td>Source-scoped finding groups/counts and exact occurrence navigation; page-local filters; same-user pinned live processes and retained process working-directory basename, with no arguments or environment.</td>
+<td>Joined live Host/filter/refresh PTY. General Python finding-source body navigation, parent PID and host/platform display remain differences.</td>
+</tr>
+<tr>
+<td>Native requests</td>
+<td>Typed native requests and separate guardian review records; default-off persisted review visibility; bind/send/hook/retry bridges for native and explicit Python receivers; durable opt-in desktop delivery with receiver-clock, identity and exact-request checks. Separate-account guest bridge replay and restore fencing passed.</td>
+<td>Final joined guest and installed request visibility/notification runs. Review completion never implies approval. Integrated notification settings remain open.</td>
+</tr>
+<tr>
+<td>Storage and Review</td>
+<td>Schema 19 upgrades prior history and retains idempotent native-attention receipts. Native remote and standalone trace Review; explicit Python 0.2.8 receiver Review with bounded output and live capture-policy checks.</td>
+<td>Final prior-release archive upgrade, packaged remote APIs and private Review UI.</td>
+</tr>
+<tr>
+<td>Import, launcher and tasks</td>
+<td>Durable checkpointed span-JSONL following; typed activity-log ingestion; optional installed Python SDK auto instrumentation with cached real SDK witnesses; exact Rust review-file task drafts and task-only backup.</td>
+<td>Packaged checks. Python private Review-to-task drafting and remote investigations are still being integrated; they are not retired.</td>
+</tr>
+</tbody>
+</table></div>
+<p>The earlier joined workspace passed 693 tests in 93 suites. Subsequent focused UI, Store, broker, HTTP, desktop, Python-receiver and real SDK checks passed on their stated source revisions. The complete joined workspace and strict Clippy are being rerun; these earlier counts are not a final release certificate. The guest qualification found a trace endpoint filtering after the page limit; the candidate now filters before pagination and has focused Store/broker/HTTP regressions, with the guest rerun pending.</p>
+<p>The remaining required workflows include integrated Workflow resume/settings, the protected finding-source and private receiver Review views, and private Python Review task drafting. Continue implementation and record intentional differences; do not retire them without explicit user approval. Typed native HTTP is not a claim of Python 0.2.8 wire compatibility.</p>
+<p>A real Kiro transcript and an approved production connector endpoint remain external acceptance inputs. Local implementation and qualification continue. macOS D2-Mac is planned but unsupported until its native architecture, installer and cockpit gates pass. Comparative performance benchmarking remains deferred. Public release cadence remains at most one release in any rolling 24 hours; no new public release or default switch is authorized by this candidate record.</p>
 <h2>Remaining work and acceptance</h2>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
