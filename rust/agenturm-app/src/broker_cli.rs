@@ -16,6 +16,7 @@ const USAGE: &str = concat!(
     "       agenturm broker run --broker-config <json> --source-id otlp.<id> -- <program> [args...]\n",
     "       agenturm broker import-evals --broker-config <json> --file <results.json|-> --source-id otlp.<id> [--include-detail]\n",
     "       agenturm broker evals --broker-config <json> --source-id otlp.<id> --trace-id <id> [--json]\n",
+    "       agenturm broker evals --list --broker-config <json> --source-id otlp.<id> [--source-id otlp.<id> ...] [--json]\n",
     "       agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path> [--include-host]\n",
     "       agenturm broker host <record|history> --broker-config <json> [options]\n",
     "       agenturm broker trace-payload <snapshot|preview> --broker-config <json> [options]\n",

@@ -3528,6 +3528,7 @@ pub fn render(command: Command) -> String {
             "       agenturm import-jsonl --file <span-jsonl-path|-> --db <path> --source-id otlp.<id> [--session-id <id>] [--payload-scope <standalone|harness-id> [--payload-format agent-harness]]\n",
             "       agenturm import-evals --file <results.json|-> --db <path> --source-id otlp.<id> [--include-detail]\n",
             "       agenturm evals --db <path> --source-id otlp.<id> [--trace-id <id> [--history [--before-revision <n>]] | --summary [--after-trace-id <id>]] [--limit <1..256>] [--json]\n",
+            "       agenturm evals --list --db <path> --source-id otlp.<id> [--source-id otlp.<id> ...] [--json]\n",
             "       agenturm attention status --db <path>\n",
             "       agenturm attention watch --db <path> [--once | --max-polls <1..10000>] [--interval-ms <100..60000>]\n",
             "       agenturm attention <status|watch> --endpoint http://<loopback-IP:port> --token-file <path> [watch options]\n",

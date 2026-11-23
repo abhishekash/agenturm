@@ -225,6 +225,7 @@ fn handle(
                 .map_err(|failure| match failure {
                     ReadFailure::Unauthorized | ReadFailure::HostHistoryDisabled => "403 Forbidden",
                     ReadFailure::InvalidRequest => "400 Bad Request",
+                    ReadFailure::EvalInventoryTooLarge { .. } => "413 Content Too Large",
                     ReadFailure::HistoryReplaced
                     | ReadFailure::SnapshotReplaced
                     | ReadFailure::ExpiredSnapshot { .. } => "409 Conflict",

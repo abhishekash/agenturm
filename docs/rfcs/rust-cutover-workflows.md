@@ -18,7 +18,7 @@ migration of Python-era databases remains outside the Rust-only product scope.
 | `serve` | Keep local OTLP collection and source watch through `serve-traces`, `discover --follow` and `collect --watch` or the Linux user service. `broker serve-history` serves the native broker's retained metadata on loopback through a dedicated reader. The Python `/api/*` wire surface, direct remote TLS and arbitrary legacy JSONL tail remain open. |
 | `run` | Keep command launch, exit status, local trace delivery and exact source/session linkage. Rust `run` configures OTLP for an instrumented producer. Python-specific script and module injection requires a product decision. |
 | `import-jsonl` | Use `import-jsonl` for supported native span exports and `import-traces` for OTLP JSON. Both retain structural trace metadata with exact session scope. JSONL can also capture supported private text with explicit opt-in. Legacy amounts without a currency remain unknown. |
-| `import-evals` | Import bounded `agent-evals` result metadata into an exact retained OTLP trace source. Use `evals` to read the current outcome in text or JSON. `evals --history` pages retained revisions and `evals --summary` reports current source outcomes with page counts. In the cockpit, `E` opens evaluations and `d` opens approved private result text. Cross-source aggregation remains open. |
+| `import-evals` | Import bounded `agent-evals` result metadata into an exact retained OTLP trace source. Use `evals` to read the current outcome in text or JSON. `evals --history` pages retained revisions, `evals --summary` reports current source outcomes with page counts, and `evals --list` inventories the latest retained outcome per trace across explicit OTLP sources. In the cockpit, `E` opens evaluations and `d` opens approved private result text. |
 | `migrate-db` | Retired by the Rust-only product decision. Rust `backup` and `restore` operate on Rust-owned state. |
 | `prune` | Keep explicit age-based retention. Rust `prune --before-unix-ns` and persisted `retention set\|disable\|run\|status` are available. New default cockpit histories use 14 days; existing histories retain their policy. Collector, cockpit, local receiver and broker writer ticks apply it, while receipts and checkpoints survive cleanup. Broker policy changes require maintenance authority. |
 | `attention status`, `attention watch` | Rust reads local history or an attached Rust receiver and keeps seen state in the user's workspace. Remote watch emits a snapshot and changes from retained native lifecycle evidence. Python receiver observation and cross-host terminal routing remain open. |
@@ -236,7 +236,23 @@ fields. These views read current state on each invocation; concurrent changes
 can change a later page. Counts describe the displayed page, not a whole-history
 total. Pruned bodies stay absent from both views even if a trace ID reappears.
 The same options work through the broker and keep its source allowlist.
-Cross-source, provider and scorer aggregation remain open.
+
+Use `evals --list` with one to 16 distinct `--source-id` flags for a complete,
+bounded inventory of current outcomes. Each result identifies its exact source,
+trace and latest retained revision. The same trace ID can appear independently
+in different sources. All results share the transaction's trace evidence
+snapshot, and evaluation metadata reflects current revisions at that read.
+
+```sh
+agenturm evals --list --db history.sqlite --source-id otlp.exported \
+  --source-id otlp.ci --json
+```
+
+The inventory checks up to 1,024 candidate source/trace keys, including retired
+keys kept for replay protection, and allows up to 2 MiB of serialized rows. If
+either limit is exceeded, the command fails without a partial inventory. The
+list includes neither private text nor private reveal selections.
+[Broker CLI and authenticated HTTP inventory](rust-broker-commands.md#read-source-aware-metadata-with-http-get)
 
 ### Private evaluation text
 

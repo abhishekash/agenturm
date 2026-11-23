@@ -5,7 +5,8 @@ use agenturm_kernel::{
     ExtensionId, MAX_DURABLE_SNAPSHOT_OBSERVATIONS, ObservationPage, ObservationQuery,
 };
 use agenturm_store::{
-    ResolvedTraceReview, SessionPage, SessionQuery, Store, StoreError, TraceReviewQuery,
+    EvalInventory, EvalInventoryQuery, ResolvedTraceReview, SessionPage, SessionQuery, Store,
+    StoreError, TraceReviewQuery,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -20,6 +21,22 @@ pub fn query_selected_evals(
     store
         .query_selected_eval_outcomes(source, query)
         .map_err(failure)
+}
+
+pub fn query_eval_inventory(
+    store: &Store,
+    allowed_sources: &BTreeSet<ExtensionId>,
+    query: &EvalInventoryQuery,
+) -> Result<EvalInventory, ReadFailure> {
+    query.validate().map_err(failure)?;
+    if !query
+        .source_ids
+        .iter()
+        .all(|source| allowed_sources.contains(source))
+    {
+        return Err(ReadFailure::Unauthorized);
+    }
+    store.query_eval_inventory(query).map_err(failure)
 }
 
 /// Fits the version 1 frame even when lawful observation metadata is large.
@@ -49,9 +66,17 @@ pub enum ReadFailure {
     InvalidRequest,
     HistoryReplaced,
     SnapshotReplaced,
-    ExpiredSnapshot { minimum_snapshot_id: ReadSnapshot },
-    TraceScopeTooLarge { max_rows: usize },
+    ExpiredSnapshot {
+        minimum_snapshot_id: ReadSnapshot,
+    },
+    TraceScopeTooLarge {
+        max_rows: usize,
+    },
     EvalTraceNotRetained,
+    EvalInventoryTooLarge {
+        max_trace_keys: usize,
+        max_row_bytes: usize,
+    },
     HostHistoryDisabled,
     Unavailable,
 }
@@ -188,6 +213,13 @@ pub(crate) fn failure(error: StoreError) -> ReadFailure {
         },
         StoreError::TraceScopeTooLarge { max_rows } => ReadFailure::TraceScopeTooLarge { max_rows },
         StoreError::EvalTraceNotRetained => ReadFailure::EvalTraceNotRetained,
+        StoreError::EvalInventoryTooLarge {
+            max_trace_keys,
+            max_row_bytes,
+        } => ReadFailure::EvalInventoryTooLarge {
+            max_trace_keys,
+            max_row_bytes,
+        },
         _ => ReadFailure::Unavailable,
     }
 }

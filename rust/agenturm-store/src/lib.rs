@@ -15,6 +15,7 @@ mod automatic_retention;
 mod backup;
 mod content_grant;
 mod eval_detail;
+mod eval_inventory;
 mod eval_outcome;
 mod linked_trace;
 mod private_text;
@@ -36,6 +37,10 @@ pub use content_grant::{
 pub use eval_detail::{
     EvalDetailRecord, EvalDetailSelection, EvalResultDetail, EvalScoreDetail,
     eval_detail_grant_scope,
+};
+pub use eval_inventory::{
+    EvalInventory, EvalInventoryQuery, EvalInventoryRow, EvaluationMetadata,
+    MAX_EVAL_INVENTORY_SOURCES,
 };
 pub use eval_outcome::{
     EvalImportReport, EvalOutcome, EvalPage, EvalQuery, EvalScore, MAX_EVAL_OUTCOMES,
@@ -392,10 +397,20 @@ pub enum StoreError {
     StaleCursor,
     StaleContentGrant,
     EvalTraceNotRetained,
-    ExpiredHistorySnapshot { minimum_snapshot_id: ReadSnapshot },
+    EvalInventoryTooLarge {
+        max_trace_keys: usize,
+        max_row_bytes: usize,
+    },
+    ExpiredHistorySnapshot {
+        minimum_snapshot_id: ReadSnapshot,
+    },
     SnapshotReplaced,
-    TraceScopeTooLarge { max_rows: usize },
-    EventConflict { event_id: String },
+    TraceScopeTooLarge {
+        max_rows: usize,
+    },
+    EventConflict {
+        event_id: String,
+    },
     UnrecognizedDatabase,
     UnsupportedSchema(i64),
     Sqlite(rusqlite::Error),
@@ -417,6 +432,13 @@ impl Display for StoreError {
                     "an evaluation trace is absent from the selected retained source"
                 )
             }
+            Self::EvalInventoryTooLarge {
+                max_trace_keys,
+                max_row_bytes,
+            } => write!(
+                f,
+                "evaluation inventory exceeds its {max_trace_keys} candidate trace key or {max_row_bytes} outcome byte budget",
+            ),
             Self::ExpiredHistorySnapshot {
                 minimum_snapshot_id,
             } => write!(

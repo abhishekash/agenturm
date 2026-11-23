@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Rust 0.3.6 candidate</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">Markdown source ↗</a></nav><h1>Rust cutover workflow inventory</h1>
+</style></head><body><main><nav><strong>Agenturm / Rust 0.3.7 candidate</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">Markdown source ↗</a></nav><h1>Rust cutover workflow inventory</h1>
 <p>Baseline is the Python <code>v0.2.8</code> tag and the published Rust 0.3.1 Linux bundle. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.</p>
 <p>The current implementation scope retains the remaining workflows. Remote
 receiver access, remaining eval views, automatic retention, recorded cost and
@@ -38,7 +38,7 @@ migration of Python-era databases remains outside the Rust-only product scope.</
 </tr>
 <tr>
 <td><code>import-evals</code></td>
-<td>Import bounded <code>agent-evals</code> result metadata into an exact retained OTLP trace source. Use <code>evals</code> to read the current outcome in text or JSON. <code>evals --history</code> pages retained revisions and <code>evals --summary</code> reports current source outcomes with page counts. In the cockpit, <code>E</code> opens evaluations and <code>d</code> opens approved private result text. Cross-source aggregation remains open.</td>
+<td>Import bounded <code>agent-evals</code> result metadata into an exact retained OTLP trace source. Use <code>evals</code> to read the current outcome in text or JSON. <code>evals --history</code> pages retained revisions, <code>evals --summary</code> reports current source outcomes with page counts, and <code>evals --list</code> inventories the latest retained outcome per trace across explicit OTLP sources. In the cockpit, <code>E</code> opens evaluations and <code>d</code> opens approved private result text.</td>
 </tr>
 <tr>
 <td><code>migrate-db</code></td>
@@ -113,7 +113,7 @@ options as in the current terminal. The command reports terminal launcher
 errors and returns the launcher's status. tmux returns after creating the
 window. The cockpit exits in the new window.</p>
 <p>Use <code>cockpit --once</code> for a report in the current shell.</p>
-<h3 id="import-exported-spans">Import exported spans</h3>
+<h3>Import exported spans</h3>
 <p>Use <code>import-jsonl</code> with one exported native span object per line. The importer accepts a regular file or stdin (<code>--file -</code>) up to 4 MiB and 1,024 span records. It validates the complete batch before opening history for admission.</p>
 <pre><code class="language-sh">agenturm import-jsonl --file spans.jsonl --db history.sqlite --source-id otlp.exported
 </code></pre>
@@ -125,7 +125,7 @@ window. The cockpit exits in the new window.</p>
   --session-id demo --payload-scope standalone
 </code></pre>
 <p>Add <code>--payload-format agent-harness</code> to select the legacy agent-harness fields instead. For <code>agent.run</code>, <code>agent.task</code> and <code>agent.summary</code> fill Input and Output. For <code>tool.call</code>, the exported executed <code>tool.arguments</code> and <code>tool.result</code> fill those slots. Empty legacy slots are omitted. The format excludes proposed arguments, approval rationales, exceptions, other attributes, and event bodies. Agent-harness exports without a session ID need the explicit <code>--session-id</code> option.</p>
-<p>Text is stored with its exact span occurrence in the private telemetry vault. A <a href="rust-broker-commands.html#preview-opted-in-telemetry-text">telemetry text grant</a> is required to view it. Select capture on the first import. Replaying the same text deduplicates, changing the text or adding it to a metadata-only occurrence conflicts, and reimporting pruned text leaves it retired. Metadata queries and import output omit text.</p>
+<p>Text is stored with its exact span occurrence in the private telemetry vault. A <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md#preview-opted-in-telemetry-text">telemetry text grant</a> is required to view it. Select capture on the first import. Replaying the same text deduplicates, changing the text or adding it to a metadata-only occurrence conflicts, and reimporting pruned text leaves it retired. Metadata queries and import output omit text.</p>
 <h3>Publish live progress</h3>
 <p>The Python and Node manual SDKs publish <code>Run.progress</code> immediately to the
 Rust trace receiver. The progress route uses the same loopback authority
@@ -237,8 +237,20 @@ cursor continues in trace-ID order. JSON includes the page and continuation
 fields. These views read current state on each invocation; concurrent changes
 can change a later page. Counts describe the displayed page, not a whole-history
 total. Pruned bodies stay absent from both views even if a trace ID reappears.
-The same options work through the broker and keep its source allowlist.
-Cross-source, provider and scorer aggregation remain open.</p>
+The same options work through the broker and keep its source allowlist.</p>
+<p>Use <code>evals --list</code> with one to 16 distinct <code>--source-id</code> flags for a complete,
+bounded inventory of current outcomes. Each result identifies its exact source,
+trace and latest retained revision. The same trace ID can appear independently
+in different sources. All results share the transaction's trace evidence
+snapshot, and evaluation metadata reflects current revisions at that read.</p>
+<pre><code class="language-sh">agenturm evals --list --db history.sqlite --source-id otlp.exported \
+  --source-id otlp.ci --json
+</code></pre>
+<p>The inventory checks up to 1,024 candidate source/trace keys, including retired
+keys kept for replay protection, and allows up to 2 MiB of serialized rows. If
+either limit is exceeded, the command fails without a partial inventory. The
+list includes neither private text nor private reveal selections.
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md#read-source-aware-metadata-with-http-get">Broker CLI and authenticated HTTP inventory</a></p>
 <h3>Private evaluation text</h3>
 <p>Use <code>--include-detail</code> to capture the <code>error</code> string on a result and the
 <code>detail</code> string on each score. The capture records the original score position.

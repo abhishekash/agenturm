@@ -44,7 +44,12 @@ pub(super) fn deserialize_eval_scores<'de, D: serde::Deserializer<'de>, T: Deser
     deserialize_capped::<D, T, MAX_EVAL_SCORES>(deserializer)
 }
 
-fn deserialize_capped<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>, const LIMIT: usize>(
+pub(super) fn deserialize_capped<
+    'de,
+    D: serde::Deserializer<'de>,
+    T: Deserialize<'de>,
+    const LIMIT: usize,
+>(
     deserializer: D,
 ) -> std::result::Result<Vec<T>, D::Error> {
     struct Capped<T, const LIMIT: usize>(std::marker::PhantomData<T>);

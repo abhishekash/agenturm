@@ -434,8 +434,8 @@ crossing a replaced database. Ordinary queries retain metadata only.
 An authorized collector can opt in to the string-valued result `error` and
 score `detail` fields for an allowlisted OTLP source. Each private capture is
 admitted atomically with its exact outcome revision. The broker stores this
-text in its owned history database. Evaluation queries and the authenticated
-HTTP reader return structural metadata and a body-free detail selection.
+text in its owned history database. Selected-trace evaluation queries return
+structural metadata and a body-free detail selection.
 
 ```sh
 agenturm broker import-evals --broker-config collector.json --source-id otlp.exported \
@@ -448,7 +448,7 @@ agenturm broker eval-detail preview --broker-config reader.json --selection sele
 agenturm broker grant revoke --broker-config grant-admin.json --binding eval-binding.json
 ```
 
-Copy the revision's `detail_selection` object into `selection.json`. The
+Copy the selected revision's `detail_selection` object into `selection.json`. The
 separate reader delivers text under its current `eval.result_detail` approval.
 The final sink acknowledges delivery after flushing, or after the cockpit
 clears its private frame. The client deadline is 25 seconds. The broker waits
@@ -560,9 +560,10 @@ before Escape, quit and Ctrl-C return control to the terminal.
 
 ## Read source-aware metadata with HTTP GET
 
-The dedicated `broker serve-history` listener also provides these authenticated
-metadata routes: `/api/health`, `/api/sessions`, `/api/activity`, `/api/traces`,
-`/api/traces/<trace-id>/spans`, `/api/traces/<trace-id>/progress`, `/api/mcp`, `/api/metrics`, and `/api/hierarchy`.
+The dedicated `broker serve-history` listener also provides authenticated
+metadata routes including `/api/health`, `/api/sessions`, `/api/activity`,
+`/api/traces`, `/api/traces/<trace-id>/spans`, `/api/traces/<trace-id>/progress`,
+`/api/mcp`, `/api/metrics`, `/api/hierarchy` and `/api/outcomes`.
 The response format is `agenturm.http-history/1`. It exposes Rust evidence
 and coverage rather than a Python receiver compatibility layer.
 
@@ -582,6 +583,31 @@ duplicate, unknown, malformed and over-limit selectors reject the request.
 filtered empty page can still have more evidence. Counts cover the current
 page. Token counters, cost/credit units, nanosecond times and snapshot tokens
 are strings to preserve exact integers in JavaScript clients.
+
+For a current evaluation inventory, give `/api/outcomes` one `source_ids`
+parameter with one to 16 comma-separated, distinct `otlp.*` source IDs. For
+example, `/api/outcomes?source_ids=otlp.exported,otlp.ci`. This route accepts
+only `source_ids`. It authorizes the entire set before collecting any outcomes.
+Each row identifies its source, latest retained revision and outcome metadata.
+`trace_evidence_snapshot` and revision numbers are strings. The
+`evaluation_metadata` value is `current`. Evaluation metadata reflects the
+read transaction, and the snapshot identifies its trace evidence. Zero scores
+remain numeric zero, and unknown scores remain `null`. The inventory carries
+no private text or reveal selection.
+
+A request that exceeds 1,024 candidate source/trace keys or 2 MiB of serialized
+rows returns 413 without a partial inventory. Candidate keys include retired
+keys preserved for replay protection. The broker CLI applies the same rules.
+
+```sh
+agenturm broker evals --broker-config reader.json --list \
+  --source-id otlp.exported --source-id otlp.ci --json
+```
+
+Run the evaluation inventory fixture in a disposable Linux guest with the
+candidate app and storage service. It checks separate UIDs, scope, private
+field exclusion, restore, and overflow.
+[Evaluation inventory fixture](../../scripts/validate_rust_eval_inventory.py)
 
 Ordinary metadata endpoints exclude Host samples as well as private content.
 An explicitly enabled `/api/host` route returns recorded Host samples under the

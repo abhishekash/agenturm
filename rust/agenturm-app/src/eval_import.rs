@@ -2,8 +2,9 @@
 
 use agenturm_kernel::ExtensionId;
 use agenturm_store::{
-    EvalDetailRecord, EvalImportReport, EvalOutcome, EvalPage, EvalQuery, EvalResultDetail,
-    EvalScore, EvalScoreDetail, MAX_EVAL_OUTCOMES, RetainedEvalOutcome, Store,
+    EvalDetailRecord, EvalImportReport, EvalInventory, EvalInventoryQuery, EvalOutcome, EvalPage,
+    EvalQuery, EvalResultDetail, EvalScore, EvalScoreDetail, MAX_EVAL_INVENTORY_SOURCES,
+    MAX_EVAL_OUTCOMES, RetainedEvalOutcome, Store,
 };
 use serde::Deserialize;
 use serde_json::Number;
@@ -12,26 +13,45 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 pub(super) const IMPORT_USAGE: &str = "agenturm import-evals --file <results.json|-> --db <path> --source-id otlp.<id> [--include-detail]";
-pub(super) const QUERY_USAGE: &str = "agenturm evals --db <path> --source-id otlp.<id> [--trace-id <id> [--history [--before-revision <n>]] | --summary [--after-trace-id <id>]] [--limit <1..256>] [--json]";
+pub(super) const QUERY_USAGE: &str = concat!(
+    "agenturm evals --db <path> --source-id otlp.<id> [--trace-id <id> [--history [--before-revision <n>]] | --summary [--after-trace-id <id>]] [--limit <1..256>] [--json]\n",
+    "agenturm evals --list --db <path> --source-id otlp.<id> [--source-id otlp.<id> ...] [--json]",
+);
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct EvalOptions {
     db: PathBuf,
-    source_id: ExtensionId,
     action: Action,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 enum Action {
-    Import { path: PathBuf, include_detail: bool },
-    Read { trace_id: String, json: bool },
-    Browse { query: EvalQuery, json: bool },
+    Import {
+        source_id: ExtensionId,
+        path: PathBuf,
+        include_detail: bool,
+    },
+    Read {
+        source_id: ExtensionId,
+        trace_id: String,
+        json: bool,
+    },
+    Browse {
+        source_id: ExtensionId,
+        query: EvalQuery,
+        json: bool,
+    },
+    List {
+        query: EvalInventoryQuery,
+        json: bool,
+    },
 }
 
 pub(super) fn parse(arguments: &[String], import: bool) -> Result<EvalOptions, String> {
     let usage = if import { IMPORT_USAGE } else { QUERY_USAGE };
-    let (mut db, mut source, mut value) = (None, None, None);
-    let (mut json, mut history, mut summary) = (false, false, false);
+    let (mut db, mut value) = (None, None);
+    let mut source_ids = Vec::new();
+    let (mut json, mut history, mut summary, mut list) = (false, false, false, false);
     let mut include_detail = false;
     let (mut limit, mut before, mut after) = (None, None, None);
     let mut arguments = arguments.iter();
@@ -41,6 +61,7 @@ pub(super) fn parse(arguments: &[String], import: bool) -> Result<EvalOptions, S
             ("--json", false) => Some(&mut json),
             ("--history", false) => Some(&mut history),
             ("--summary", false) => Some(&mut summary),
+            ("--list", false) => Some(&mut list),
             _ => None,
         };
         if let Some(boolean) = boolean {
@@ -56,7 +77,10 @@ pub(super) fn parse(arguments: &[String], import: bool) -> Result<EvalOptions, S
             .ok_or(usage)?;
         let slot = match flag.as_str() {
             "--db" if argument != "-" && argument != ":memory:" => &mut db,
-            "--source-id" => &mut source,
+            "--source-id" if source_ids.len() < MAX_EVAL_INVENTORY_SOURCES => {
+                source_ids.push(crate::trace_import::parse_source_id(argument)?);
+                continue;
+            }
             "--file" if import => &mut value,
             "--trace-id" if !import => &mut value,
             "--limit" if !import => &mut limit,
@@ -68,8 +92,28 @@ pub(super) fn parse(arguments: &[String], import: bool) -> Result<EvalOptions, S
             return Err(usage.into());
         }
     }
+    let db = PathBuf::from(db.ok_or(usage)?);
+    if list {
+        if history
+            || summary
+            || value.is_some()
+            || limit.is_some()
+            || before.is_some()
+            || after.is_some()
+        {
+            return Err(usage.into());
+        }
+        let query = EvalInventoryQuery { source_ids };
+        query.validate().map_err(|_| usage)?;
+        return Ok(EvalOptions {
+            db,
+            action: Action::List { query, json },
+        });
+    }
+    let [source_id] = source_ids.try_into().map_err(|_| usage)?;
     let action = if import {
         Action::Import {
+            source_id,
             path: PathBuf::from(value.ok_or(usage)?),
             include_detail,
         }
@@ -108,26 +152,28 @@ pub(super) fn parse(arguments: &[String], import: bool) -> Result<EvalOptions, S
                 limit,
             }
         };
-        Action::Browse { query, json }
+        Action::Browse {
+            source_id,
+            query,
+            json,
+        }
     } else {
         if limit.is_some() || before.is_some() || after.is_some() {
             return Err(usage.into());
         }
         Action::Read {
+            source_id,
             trace_id: value.ok_or(usage)?.to_ascii_lowercase(),
             json,
         }
     };
-    Ok(EvalOptions {
-        db: PathBuf::from(db.ok_or(usage)?),
-        source_id: crate::trace_import::parse_source_id(source.ok_or(usage)?)?,
-        action,
-    })
+    Ok(EvalOptions { db, action })
 }
 
 pub fn execute_evals(options: &EvalOptions) -> Result<String, String> {
     match &options.action {
         Action::Import {
+            source_id,
             path,
             include_detail,
         } => {
@@ -139,23 +185,38 @@ pub fn execute_evals(options: &EvalOptions) -> Result<String, String> {
             Store::open_read_only(&options.db).map_err(history_error)?;
             let mut store = Store::open_collector(&options.db).map_err(history_error)?;
             let imported = store
-                .import_eval_outcomes_with_details(&options.source_id, &outcomes, &details)
+                .import_eval_outcomes_with_details(source_id, &outcomes, &details)
                 .map_err(|error| error.to_string())?;
             Ok(report(imported))
         }
-        Action::Browse { query, json } => {
+        Action::Browse {
+            source_id,
+            query,
+            json,
+        } => {
             let store = Store::open_read_only(&options.db).map_err(history_error)?;
             let page = store
-                .query_eval_outcomes(&options.source_id, query)
+                .query_eval_outcomes(source_id, query)
                 .map_err(|error| error.to_string())?;
             display_page(page, query, *json)
         }
-        Action::Read { trace_id, json } => {
+        Action::Read {
+            source_id,
+            trace_id,
+            json,
+        } => {
             let store = Store::open_read_only(&options.db).map_err(history_error)?;
             let outcome = store
-                .eval_outcome(&options.source_id, trace_id)
+                .eval_outcome(source_id, trace_id)
                 .map_err(|error| error.to_string())?;
             display(outcome.as_ref(), *json)
+        }
+        Action::List { query, json } => {
+            let store = Store::open_read_only(&options.db).map_err(history_error)?;
+            let inventory = store
+                .query_eval_inventory(query)
+                .map_err(|error| error.to_string())?;
+            display_inventory(&inventory, *json)
         }
     }
 }
@@ -167,29 +228,51 @@ pub(super) fn execute_with_store(
 ) -> Result<String, String> {
     match &options.action {
         Action::Import {
+            source_id,
             path,
             include_detail,
         } => {
             let Prepared { outcomes, details } = prepare(path, *include_detail)?;
             let imported = if details.is_empty() {
-                store.import_eval_outcomes(&options.source_id, &outcomes)
+                store.import_eval_outcomes(source_id, &outcomes)
             } else {
-                store.import_eval_outcomes_with_details(&options.source_id, &outcomes, &details)
+                store.import_eval_outcomes_with_details(source_id, &outcomes, &details)
             }
             .map_err(|error| error.to_string())?;
             Ok(report(imported))
         }
-        Action::Browse { query, json } => {
+        Action::Browse {
+            source_id,
+            query,
+            json,
+        } => {
             let page = store
-                .query_eval_outcomes(&options.source_id, query)
+                .query_eval_outcomes(source_id, query)
                 .map_err(|error| error.to_string())?;
             display_page(page, query, *json)
         }
-        Action::Read { trace_id, json } => {
+        Action::Read {
+            source_id,
+            trace_id,
+            json,
+        } => {
             let outcome = store
-                .eval_outcome(&options.source_id, trace_id)
+                .eval_outcome(source_id, trace_id)
                 .map_err(|error| error.to_string())?;
             display(outcome.as_ref(), *json)
+        }
+        Action::List { query, json } => {
+            let identity = store
+                .history_identity()
+                .map_err(|error| error.to_string())?;
+            let store = store
+                .clone()
+                .with_workspace_identity(&identity)
+                .map_err(|error| error.to_string())?;
+            let inventory = store
+                .query_eval_inventory(query)
+                .map_err(|error| error.to_string())?;
+            display_inventory(&inventory, *json)
         }
     }
 }
@@ -359,13 +442,20 @@ fn display(evaluation: Option<&RetainedEvalOutcome>, json: bool) -> Result<Strin
     let Some(evaluation) = evaluation else {
         return Ok("No retained evaluation for this trace.\n".into());
     };
-    let outcome = &evaluation.outcome;
+    Ok(display_outcome(
+        &evaluation.trace_source_id,
+        evaluation.revision,
+        &evaluation.outcome,
+    ))
+}
+
+fn display_outcome(source: &ExtensionId, revision: u64, outcome: &EvalOutcome) -> String {
     let status = if outcome.passed { "passed" } else { "failed" };
     let mut output = format!(
         "Evaluation {status}\nTrace {} {}\nRevision {}\n",
-        evaluation.trace_source_id.as_str(),
+        source.as_str(),
         outcome.trace_id,
-        evaluation.revision,
+        revision,
     );
     if let Some(task) = &outcome.task_id {
         let _ = writeln!(&mut output, "Task {task}");
@@ -383,7 +473,35 @@ fn display(evaluation: Option<&RetainedEvalOutcome>, json: bool) -> Result<Strin
         }
         output.push('\n');
     }
-    Ok(output)
+    output
+}
+
+fn display_inventory(inventory: &EvalInventory, json: bool) -> Result<String, String> {
+    if json {
+        return serde_json::to_string(inventory)
+            .map(|text| text + "\n")
+            .map_err(|_| "Cannot encode evaluation inventory".into());
+    }
+    let sources = inventory
+        .source_ids
+        .iter()
+        .map(ExtensionId::as_str)
+        .collect::<Vec<_>>()
+        .join(", ");
+    let mut text = format!(
+        "Current evaluation metadata\nSources {sources}\nTrace evidence snapshot {}\nRetained outcomes {}\n",
+        inventory.trace_evidence_snapshot,
+        inventory.outcomes.len()
+    );
+    for row in &inventory.outcomes {
+        text.push('\n');
+        text.push_str(&display_outcome(
+            &row.trace_source_id,
+            row.revision,
+            &row.outcome,
+        ));
+    }
+    Ok(text)
 }
 
 fn display_page(page: EvalPage, query: &EvalQuery, json: bool) -> Result<String, String> {

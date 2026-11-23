@@ -6,8 +6,8 @@ use crate::native_store::{NativeSelection, verify_read_binding};
 use agenturm_kernel::{ExtensionId, ObservationPage, ObservationQuery};
 use agenturm_kernel::{ObservationKind, is_host_source};
 use agenturm_store::{
-    ResolvedTraceReview, SelectedEvalPage, SelectedEvalQuery, SessionPage, SessionQuery, Store,
-    TraceReviewQuery, WorkspaceAnchor, WorkspaceHistory,
+    EvalInventory, EvalInventoryQuery, ResolvedTraceReview, SelectedEvalPage, SelectedEvalQuery,
+    SessionPage, SessionQuery, Store, TraceReviewQuery, WorkspaceAnchor, WorkspaceHistory,
 };
 use serde::{Deserialize, Serialize};
 use std::collections::BTreeSet;
@@ -33,6 +33,9 @@ pub enum ReaderHistoryRequest {
         source_id: ExtensionId,
         query: SelectedEvalQuery,
     },
+    EvalInventory {
+        query: EvalInventoryQuery,
+    },
     CheckAnchor {
         anchor: WorkspaceAnchor,
     },
@@ -57,6 +60,7 @@ pub enum ReaderHistoryReply {
     HostHistory(ObservationPage),
     TraceReview(Option<ResolvedTraceReview>),
     SelectedEvals(Option<SelectedEvalPage>),
+    EvalInventory(EvalInventory),
     Contains(bool),
 }
 
@@ -116,6 +120,10 @@ pub(crate) fn dispatch(
         ReaderHistoryRequest::SelectedEvals { source_id, query } => {
             native_read::query_selected_evals(store, allowed, &source_id, &query)
                 .map(ReaderHistoryReply::SelectedEvals)
+        }
+        ReaderHistoryRequest::EvalInventory { query } => {
+            native_read::query_eval_inventory(store, allowed, &query)
+                .map(ReaderHistoryReply::EvalInventory)
         }
         ReaderHistoryRequest::CheckAnchor { anchor } => {
             allow_anchor(allowed, &anchor)?;

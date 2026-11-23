@@ -214,6 +214,12 @@ fn read_error(error: ReadFailure) -> String {
         }
         ReadFailure::Unavailable => "History receiver is unavailable".into(),
         ReadFailure::EvalTraceNotRetained => "Evaluation trace is no longer retained".into(),
+        ReadFailure::EvalInventoryTooLarge {
+            max_trace_keys,
+            max_row_bytes,
+        } => format!(
+            "Evaluation inventory exceeds the {max_trace_keys}-key or {max_row_bytes}-byte limit"
+        ),
         ReadFailure::HostHistoryDisabled => {
             "Recorded Host history is disabled. The receiver can enable it with --include-host."
                 .into()

@@ -17,11 +17,11 @@ use agenturm_kernel::{ReadIncarnation, ReadSnapshot};
 use agenturm_storage_service_contract::{ContractError, ServerPolicy, native};
 use agenturm_store::{
     AutomaticRetentionPolicy, AutomaticRetentionStatus, EvalDetailRecord, EvalDetailSelection,
-    EvalImportReport, EvalOutcome, EvalPage, EvalQuery, EvalResultDetail, ObservationBatch,
-    ResolvedTraceReview, RetainedEvalOutcome, RetentionOutcome, SelectedEvalPage,
-    SelectedEvalQuery, SessionPage, SessionQuery, Store, TelemetryBinding, TelemetryPayload,
-    TelemetryPayloadRecord, TelemetryPayloadSelection, TraceReviewQuery, WorkspaceAnchor,
-    WorkspaceHistory,
+    EvalImportReport, EvalInventory, EvalInventoryQuery, EvalOutcome, EvalPage, EvalQuery,
+    EvalResultDetail, ObservationBatch, ResolvedTraceReview, RetainedEvalOutcome, RetentionOutcome,
+    SelectedEvalPage, SelectedEvalQuery, SessionPage, SessionQuery, Store, TelemetryBinding,
+    TelemetryPayload, TelemetryPayloadRecord, TelemetryPayloadSelection, TraceReviewQuery,
+    WorkspaceAnchor, WorkspaceHistory,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeSet;
@@ -89,6 +89,10 @@ pub(crate) enum NativeOperation {
         source_id: ExtensionId,
         query: EvalQuery,
         expected_history_identity: Option<String>,
+    },
+    EvalInventory {
+        query: EvalInventoryQuery,
+        expected_history_identity: String,
     },
     SelectedEvalPage {
         source_id: ExtensionId,
@@ -194,6 +198,7 @@ pub(crate) enum NativeReply {
     EvalImported(Result<EvalImportReport, ReadFailure>),
     EvalOutcome(Result<Option<RetainedEvalOutcome>, ReadFailure>),
     EvalPage(Result<EvalPage, ReadFailure>),
+    EvalInventory(Result<EvalInventory, ReadFailure>),
     SelectedEvalPage(Result<Option<SelectedEvalPage>, ReadFailure>),
     Identity(Result<String, ReadFailure>),
     ReadBinding(Result<String, ReadFailure>),
@@ -457,6 +462,15 @@ pub(crate) fn dispatch(
                 Err(ReadFailure::Unauthorized)
             });
         }
+        NativeOperation::EvalInventory {
+            query,
+            expected_history_identity,
+        } => {
+            return NativeReply::EvalInventory(
+                authorize_read(store, role, Some(&expected_history_identity))
+                    .and_then(|()| native_read::query_eval_inventory(store, allowed, &query)),
+            );
+        }
         NativeOperation::SelectedEvalPage {
             source_id,
             query,
@@ -716,6 +730,13 @@ impl Display for NativeClientError {
             ),
             Self::Read(ReadFailure::EvalTraceNotRetained) => formatter
                 .write_str("an evaluation trace is absent from the selected retained source"),
+            Self::Read(ReadFailure::EvalInventoryTooLarge {
+                max_trace_keys,
+                max_row_bytes,
+            }) => write!(
+                formatter,
+                "evaluation inventory exceeds its {max_trace_keys} candidate trace key or {max_row_bytes} outcome byte budget",
+            ),
             Self::Read(ReadFailure::HostHistoryDisabled) => {
                 formatter.write_str("recorded Host history is disabled on the receiver")
             }
@@ -838,6 +859,21 @@ impl NativeStore {
                 expected_history_identity,
             },
         )?
+        .map_err(NativeClientError::Read)
+    }
+
+    pub fn query_eval_inventory(
+        &self,
+        query: &EvalInventoryQuery,
+    ) -> Result<EvalInventory, NativeClientError> {
+        let expected_history_identity = self
+            .read_binding
+            .clone()
+            .ok_or(NativeClientError::InvalidHistoryIdentity)?;
+        self.exchange::<Result<EvalInventory, ReadFailure>>(NativeOperation::EvalInventory {
+            query: query.clone(),
+            expected_history_identity,
+        })?
         .map_err(NativeClientError::Read)
     }
 
@@ -1606,6 +1642,79 @@ mod tests {
         assert_eq!(evaluation.trace_source_id, allowed_source);
         assert_eq!(evaluation.outcome.trace_id, trace_id);
         assert!(!evaluation.outcome.passed);
+
+        let binding = store.ensure_history_identity().unwrap();
+        let query = |source_ids| EvalInventoryQuery { source_ids };
+        let operation = |source_ids| NativeOperation::EvalInventory {
+            query: query(source_ids),
+            expected_history_identity: binding.clone(),
+        };
+        let both = vec![allowed_source.clone(), sibling_source];
+        let visible = vec![allowed_source.clone()];
+        for (role, sources) in [
+            (Role::Reader, both.clone()),
+            (Role::GrantAdministrator, visible.clone()),
+        ] {
+            assert!(matches!(
+                dispatch(&mut store, &allowed, role, operation(sources), None, None),
+                NativeReply::EvalInventory(Err(ReadFailure::Unauthorized))
+            ));
+        }
+        let request = serde_json::to_vec(&operation(visible.clone())).unwrap();
+        let NativeReply::EvalInventory(Ok(inventory)) = dispatch(
+            &mut store,
+            &allowed,
+            Role::Reader,
+            serde_json::from_slice(&request).unwrap(),
+            None,
+            None,
+        ) else {
+            panic!("reader should receive the complete authorized inventory");
+        };
+        assert_eq!(inventory.source_ids, visible);
+        assert_eq!(inventory.outcomes[0].outcome, evaluation.outcome);
+        let gateway = |sources| crate::reader_history::ReaderHistoryRequest::EvalInventory {
+            query: query(sources),
+        };
+        assert!(matches!(
+            crate::reader_history::dispatch(
+                &store,
+                &allowed,
+                Role::Reader,
+                Some(&binding),
+                gateway(both)
+            ),
+            Err(ReadFailure::Unauthorized)
+        ));
+        assert!(matches!(
+            crate::reader_history::dispatch(&store, &allowed, Role::Reader, Some(&binding), gateway(visible.clone())),
+            Ok(crate::reader_history::ReaderHistoryReply::EvalInventory(value)) if value == inventory
+        ));
+        let backup = directory.join("restored.sqlite");
+        store.backup_to(&backup).unwrap();
+        let restored = Store::open_read_only(&backup).unwrap();
+        assert_eq!(restored.history_identity().unwrap(), binding);
+        assert!(matches!(
+            crate::reader_history::dispatch(
+                &restored,
+                &allowed,
+                Role::Reader,
+                Some(&binding),
+                gateway(visible.clone())
+            ),
+            Err(ReadFailure::SnapshotReplaced)
+        ));
+        let fresh_binding = format!(
+            "{binding}:{}",
+            restored.read_incarnation().unwrap().unwrap()
+        );
+        assert!(matches!(
+            crate::reader_history::dispatch(&restored, &allowed, Role::Reader, Some(&fresh_binding), gateway(visible)),
+            Ok(crate::reader_history::ReaderHistoryReply::EvalInventory(value))
+                if value.outcomes == inventory.outcomes
+                    && value.trace_evidence_snapshot != inventory.trace_evidence_snapshot
+        ));
+        drop(restored);
         drop(store);
         std::fs::remove_dir_all(&directory).unwrap();
     }
