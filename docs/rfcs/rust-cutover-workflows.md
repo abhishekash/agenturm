@@ -125,9 +125,12 @@ agenturm investigate command 'cargo check' --failed --source-id harness.codex \
 
 `failures` scans authorized observation metadata, with optional exact
 `--source-id`, `--session-id` and `--kind` filters. Supported kinds are
-`lifecycle`, `tool`, `mcp`, `check` and `trace`. It reports explicit failed
+`lifecycle`, `tool`, `mcp`, `check`, `trace` and `log`. It reports explicit failed
 lifecycle and check states, failed or denied tool and MCP calls, and error
-span statuses. Eval outcomes are available separately through `evals`.
+span statuses. Log candidates include ordinary OTLP ERROR/FATAL metadata and
+activity records explicitly reporting an error. `--kind log` selects these
+without revealing bodies or granting a private source route. Eval outcomes
+remain separately available through `evals`.
 
 Each newline-delimited JSON page ends in a coverage record. `--limit` sets
 the number of observations examined, from 1 to 100. Pass `next_cursor` as

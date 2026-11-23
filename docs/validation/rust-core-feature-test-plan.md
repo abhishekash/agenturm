@@ -1,0 +1,159 @@
+# Core feature development: delegated test plan
+
+Updated 23 November 2026. The user assigned this implementation session to
+**core feature development** and a separate agent to test execution. This plan
+is the handoff contract. It supplements Q1–Q10 in the
+[remaining-work plan](../rfcs/rust-migration-remaining-plan.md).
+
+## Ownership and execution
+
+- **Feature developers:** implement the four slices below; run only focused
+  compile/parser/state checks that protect the changed behavior; provide source
+  head, exact patch scope, focused result and known limitations.
+- **Test execution agent:** own joined workspace/Clippy, actual native collection,
+  broad terminal/privacy journeys, schema/upgrade, SDK matrix and artifact/KVM
+  qualification. Record executable hashes and results in this plan or linked
+  validation records. Return defects with exact scope and reproduction.
+- **Integration owner:** combine reviewed changes, publish the exact source head
+  for testing and fix returned defects. Do not duplicate the test agent's
+  campaigns or call an implemented feature release-qualified prematurely.
+
+The base is merged `18aa7026be1041b93a0b8517874f5b518da44777` (PR #381).
+Its existing 833-test and development terminal/KVM results are historical
+baselines, not results for the new feature slices. Every new row starts
+**not run** until the test agent records evidence against the integrated head.
+
+## Feature handoff board
+
+| ID | Developer scope | Implementation worktree | Test owner/status |
+| --- | --- | --- | --- |
+| CF1 | Exact native Claude/Pi presence before ordinary activity; existing SessionDiscovered contract. Codex already implements header discovery. | `/tmp/agenturm-native-presence` | Separate test agent; not run on new source. |
+| CF2 | Whole-session paged Review edit browser pinned to selected history, source/session, ReviewVersion and snapshot; reuse existing private edit proof. | `/tmp/agenturm-review-session-edits` | Separate test agent; not run on new source. |
+| CF3 | Trusted installed-adapter list/show/remove with pin-checked removal and atomic catalog publication. Install already exists. | `/tmp/agenturm-adapter-lifecycle` | Separate test agent; not run on new source. |
+| CF4 | Body-free OTLP error/fatal logs in failure investigation, including explicit `--kind log`; existing Findings private log view unchanged. | `/tmp/agenturm-core-development` | Separate test agent; not run on new source. |
+
+Worktree paths identify current ownership, not release artifacts. The developer
+must supply the final integrated commit before the test owner freezes a binary.
+Do not build different sources concurrently into one Cargo target directory.
+
+## CF1 — native session presence
+
+**Expected product behavior.** A supported, exact, timestamped native record
+can register a session even when ordinary activity has not arrived. Discovery
+is neutral recorded evidence; it must not create Working, completed, approval
+or current process-liveness claims. Existing native name/project provenance and
+newest-updated selection rules continue to apply.
+
+| Scenario | Required observation | Status |
+| --- | --- | --- |
+| Pi exact session header without messages | One neutral presence fact; correct source/session/native timestamp; roster after commit/reopen. | Not run |
+| Claude supported timestamped metadata without activity | One neutral presence fact for exact native session; native names remain separately verified. | Not run |
+| Claude snapshot prelude without bound identity | No invented session, identity or execution state. | Not run |
+| Missing/invalid timestamp, duplicate/conflicting identity | Unsupported input remains absent or diagnosed; no file-mtime/zero fallback. | Not run |
+| Header plus normal facts or relationship | No duplicate session registration/count; ordinary lifecycle remains authoritative. | Not run |
+| Poll replay/restart/old cursor | Stable event identity and idempotent admission; only verified original header can backfill. | Not run |
+| Guardian/internal-review exclusion and legacy decoder mode | Existing exclusions and legacy wire compatibility retained. | Not run |
+| Actual simultaneous Codex and Claude/Pi sessions | Account for selected, queued and absent sources; distinguish actual native witnesses from disposable fixture cases. | Not run |
+
+Exercise cold collection, empty history, reopen, later user/tool/lifecycle
+activity and renamed metadata. At 120×32, 80×24 and 60×18 verify human names,
+neutral fallback status, recency ordering, selected source/session stability and
+correct inspector return. Codex header discovery is a regression, not new work.
+
+## CF2 — complete session edit browsing
+
+**Expected product behavior.** Review can find an older supported Codex edit
+behind unrelated activity rather than being limited to its loaded overview.
+The existing per-turn edit picker and exact `codex.edit_detail` preview continue
+to work. A metadata selector is not private-content authority.
+
+| Scenario | Required observation | Status |
+| --- | --- | --- |
+| Earlier edit beyond initial examined range | Explicit examined/partial coverage, continuation and eventual exact result. Empty matching page can still be partial. | Not run |
+| Multiple turns/operations with same labels | Correct source/session/turn/worker/event/revision retained; no sibling edit substitution. | Not run |
+| Paging while new writes arrive | Same read snapshot, no shifted/duplicated traversal; stable selection and return. | Not run |
+| Review decisions and overlays | Enter/escape through browser/private preview returns to original Review and unchanged decision version. | Not run |
+| Local edit reveal | Exact retained-at-snapshot membership, current grant and original source proof required. | Not run |
+| Broker edit reveal | Existing verified-edit broker authority retained; no fingerprint/private body exposed as metadata. | Not run |
+| Revoked grant, changed source/history, prune/restore | Deny or redact; no stale body publication or silent move to newer evidence. | Not run |
+| Unsupported worker/provider/edit shape | Clear bounded unavailable/coverage result; no invented proof. | Not run |
+
+Run actual keyboard journeys at all three terminal sizes. Check query-key
+ownership, loading/error/empty states, long paths, terminal restoration and
+private output lifetime/ACK fences. Private body stays out of copy/export,
+ordinary metadata, diagnostics and saved decision content unless separately
+explicitly authorized by the existing workflow.
+
+## CF3 — installed adapter lifecycle
+
+**Expected commands.** `adapter list --root DIR [--json]`,
+`adapter show --root DIR --plugin-id ID [--json]`, and
+`adapter remove --root DIR --plugin-id ID --sha256 CURRENT [--json]`.
+The existing trusted local install/replace flow remains compatible.
+
+| Scenario | Required observation | Status |
+| --- | --- | --- |
+| List/show populated valid private root | Exact catalog identities/pins and deterministic machine-readable output; no executable starts. | Not run |
+| Absent root or entry; invalid flags/ID | Useful error and exit status; reads never create directories/catalogs. | Not run |
+| Correct removal pin | Only selected entry unregisters atomically; unrelated entries remain byte-equivalent in meaning. | Not run |
+| Stale pin during replacement | Compare-and-swap fails under lock; newly installed pin remains registered. | Not run |
+| Last entry removal | Valid empty versioned catalog, with defined list/show/collector behavior. | Not run |
+| Failure before catalog publication or held lock | Original catalog remains usable; no partial publication. | Not run |
+| Symlink/ownership/mode/path substitution | Reuse existing private-root/path/pin validation; no traversal or unsafe read/write. | Not run |
+| Artifact/history/grant preservation | Removal retains artifacts and all unrelated history/content approvals; no garbage collection or service mutation. | Not run |
+
+After install, remove, list and reinstall, explicitly select the supported
+adapter in collection and prove changed/missing pins fail closed. This is
+trusted local lifecycle management, not a remote downloader or sandbox claim.
+
+## CF4 — OTLP log failure investigation
+
+**Developer handoff:** implementation complete in the accompanying source.
+One focused process regression passed, exercising ordinary error/fatal logs,
+explicit activity-error flags, source/session separation, no body/source
+reference output, kind filters and cursor/query binding. This is a development
+check only; the delegated acceptance rows below remain not run.
+
+**Expected product behavior.** `investigate failures` and its cockpit overlay
+include retained ordinary OTLP error/fatal log metadata and activity logs that
+explicitly report an error. `--kind log` selects only these log candidates.
+Public rows carry closed labels and exact recorded metadata, never log bodies.
+
+| Scenario | Required observation | Status |
+| --- | --- | --- |
+| Ordinary ERROR/FATAL severity with/without trace | Correct closed error/fatal result and optional exact trace/span IDs; source-only records remain discoverable. | Not run |
+| Activity log reported_error true/false | Only explicitly reported errors match; normal usage/cost/activity logs remain absent. | Not run |
+| Source/session/turn/worker filters | Exact scope retained; source-only log not attributed to a selected session without evidence. | Not run |
+| `--kind log`, another kind, changed cursor filter | Typed kind filtering and query/snapshot-bound cursor denial; no cross-query continuation. | Not run |
+| Empty page followed by older error log | Examined/matched counts and continuation remain honest; no false exhausted scope. | Not run |
+| Authenticated/broker allowlist and restart | No hidden-source metadata; durable results after reopen. | Not run |
+| Captured text, unsafe severity label or secret body | Ordinary output/JSON/copy/export has no body or producer-supplied severity label; no new private source authority. | Not run |
+| Shared UI/CLI behavior | Body-free label, exact occurrence and prior selection return; existing failed command source route unchanged. | Not run |
+
+Do not merge evaluation outcome inventory into this test's claim. Evaluation
+revisions are a separate current-outcome contract and need their own design if
+later added to unified failure investigation.
+
+## Joined and release checks delegated unchanged
+
+After the integrated head is supplied, execute relevant Q1–Q10 from the
+[remaining-work plan](../rfcs/rust-migration-remaining-plan.md): joined Rust
+checks, actual producer/SDK interoperability, Linux x86-64/ARM64, current exact
+artifact install/upgrade/recovery, paired Python-quality UI journeys and
+separate-UID privacy/authority checks. Real Kiro, production endpoints and
+native macOS retain their external dependencies; do not fabricate a pass.
+
+No public release/default switch is requested by this development handoff.
+The one-release-per-rolling-24-hours rule and unsupported-profile limits remain.
+
+## Results and defect handoff template
+
+For each execution record: feature/test ID; source commit; executable/archive
+SHA-256; OS/architecture; native producer/version or fixture; terminal size;
+expected and actual result; PASS/FAIL/BLOCKED; exact log/artifact path. Do not
+combine results from different source heads into one qualified candidate.
+
+For each defect return: minimal reproduction, exact owner/source/session scope,
+last expected state, failed invariant, and affected feature paths. Developers
+fix that defect and return the new source head. The test owner decides the
+necessary regression breadth; developers do not restart the entire campaign.

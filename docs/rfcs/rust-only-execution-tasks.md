@@ -7,6 +7,22 @@ Progress updated 23 November 2026 against merged native PR #379 (`52ec13b`), Fin
 - **Host/Metrics joined baseline:** 833 tests / 96 suites, strict Clippy and all binaries; real metric HTTP and three-size terminal checks passed. The final Host refresh/context correction passed its 14 focused tests and the joined 833-test / 96-suite run with strict workspace Clippy/all binaries; the updated separate-UID Host KVM/three-size fixture also passed. Final optimized artifact qualification remains.
 - **Full migration:** incomplete. Do not add successive test totals or equate implemented code with final artifact acceptance. Default cutover and one-release-per-24-hours rules remain in force.
 
+## Core feature development and delegated testing
+
+Current user direction: this implementation session owns feature development;
+a separate agent owns broad test execution. Follow the
+[core feature test handoff](../validation/rust-core-feature-test-plan.md).
+
+| Feature lane | Development status | Testing responsibility |
+| --- | --- | --- |
+| CF1 Claude/Pi neutral native presence | In progress; Codex header discovery already exists. | Separate test agent: actual collection/replay/roster journeys. |
+| CF2 Whole-session paged Review edits | In progress; exact existing Codex preview reused with history/snapshot/ReviewVersion binding. | Separate test agent: terminal/private/broker and selection-return acceptance. |
+| CF3 Trusted adapter list/show/remove | In progress; local install/replacement already exists; removal uses exact-pin CAS and preserves artifacts. | Separate test agent: CLI/atomicity/security/collection regression. |
+| CF4 OTLP log failure investigation | Implemented; one focused process regression passed. Metadata only, explicit log kind, scope/cursor binding retained. | Separate test agent: broad failure inventory/remote/terminal privacy regression. |
+
+Feature developers run focused checks needed for implementation. Q1–Q10 and
+release qualification remain delegated; no broad campaign is duplicated here.
+
 ## Review of the existing plan
 
 | Plan area | Scheduling decision |
@@ -43,7 +59,7 @@ Each ID retains its original acceptance requirement. Assign only unfinished work
 | B5 | Selected jobs green — five SDK jobs passed on ef3d647; broader producer inventory F2 and final-head Q7. | Implement required SDK instrumentation | B1 selects SDKs. Parallel per SDK. | Each selected SDK can emit a real trace through the documented launch path and reopen a span linked to the correct source and session. |
 | B6 | Selected commands implemented — remaining workflow inventory F2 and installed Q5/Q6. | Close remaining required CLI workflows | B1. Parallel per independent command. | Each retained workflow has a Rust entry point and an installed end-to-end scenario. Record accepted retirements and any unresolved user-facing differences. |
 | B7 | Implemented/verified native baseline — packaged final combined artifact rerun Q5. | Qualify default cockpit capability loading | Start now | Launch the packaged bare cockpit with an explicitly enabled independent capability. Observe its pane and metric, then verify disabled and mismatched-pin cases. |
-| B8 | Open feature — automatic decoder install/trust flow F3; pinned explicit catalog loading exists. | Define and implement automatic decoder installation | Start design now. Activation depends on the approved trust model. | An independent supported decoder can be installed, selected and verified through the declared format and pin. Unsupported formats or changed artifacts fail closed. Keep untrusted activation behind its isolation gate. |
+| B8 | Local trusted install/replace already implemented; CF3 list/show/pin-CAS removal in progress. Remote package discovery and new formats remain separate. | Define and implement automatic decoder installation | Start design now. Activation depends on the approved trust model. | An independent supported decoder can be installed, selected and verified through the declared format and pin. Unsupported formats or changed artifacts fail closed. Keep untrusted activation behind its isolation gate. |
 
 ### C. Storage authority and connector isolation
 

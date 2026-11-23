@@ -8,6 +8,116 @@ use std::process::{Command, Output};
 use std::time::{SystemTime, UNIX_EPOCH};
 
 #[test]
+fn failure_investigation_includes_only_reported_log_errors_with_exact_scope() {
+    use agenturm_kernel::telemetry_summary::{OtlpActivityLog, OtlpErrorLog};
+    use agenturm_kernel::{
+        ExtensionId, Observation, ObservationIdentity, ObservationKind, ObservationStore,
+    };
+    use agenturm_store::Store;
+
+    let scratch = Scratch::new();
+    let db = scratch.0.join("logs.sqlite");
+    let db_arg = db.to_str().unwrap();
+    let mut store = Store::open(&db).unwrap();
+    let source = ExtensionId::parse("otlp.logs").unwrap();
+    let row = |identity, event_id, time, kind| Observation {
+        harness_id: source.clone(),
+        event_id,
+        revision: 0,
+        identity,
+        observed_at_unix_ns: time,
+        kind,
+    };
+    let error = |severity_number, time| {
+        ObservationKind::OtlpErrorLog(OtlpErrorLog {
+            severity_number,
+            source_time_unix_ns: Some(time),
+            observed_time_unix_ns: None,
+            trace_id: Some("aa".repeat(16)),
+            span_id: Some("bb".repeat(8)),
+            target_source_id: None,
+        })
+    };
+    let activity = |reported_error| {
+        ObservationKind::OtlpActivityLog(OtlpActivityLog {
+            reported_error,
+            target_source_id: None,
+            usage: None,
+            cost: None,
+        })
+    };
+    ObservationStore::commit(
+        &mut store,
+        source.as_str(),
+        None,
+        "one",
+        &[
+            row(
+                ObservationIdentity::source(),
+                format!("otlp-error-log:{}", "1".repeat(64)),
+                10,
+                error(24, 10),
+            ),
+            row(
+                ObservationIdentity::session("recorded-session"),
+                format!("otlp-error-log:{}", "2".repeat(64)),
+                20,
+                error(17, 20),
+            ),
+            row(
+                ObservationIdentity::session("recorded-session"),
+                format!("otlp-log:{}", "3".repeat(64)),
+                30,
+                activity(true),
+            ),
+            row(
+                ObservationIdentity::session("recorded-session"),
+                format!("otlp-log:{}", "4".repeat(64)),
+                40,
+                activity(false),
+            ),
+        ],
+    )
+    .unwrap();
+    let search = |flags: &[&str]| {
+        let mut args = vec!["investigate", "failures", "--db", db_arg];
+        args.extend_from_slice(flags);
+        run(&args)
+    };
+    let all = records(search(&["--kind", "log"]));
+    assert_eq!(all.len(), 4);
+    assert_eq!(all[0]["reported_result"], "error");
+    assert_eq!(all[1]["severity_number"], 17);
+    assert_eq!(all[1]["trace_id"], "aa".repeat(16));
+    assert_eq!(all[2]["reported_result"], "fatal");
+    assert_eq!(all[2]["identity"]["scope"], "source");
+    assert_eq!(all[3]["matched"], 3);
+    for item in &all[..3] {
+        assert_eq!(item["kind"], "log");
+        assert!(item.get("source_reference").is_none());
+        assert!(item.get("body").is_none());
+        assert!(item.get("severity_text").is_none());
+    }
+    let scoped = records(search(&["--session-id", "recorded-session"]));
+    assert_eq!(scoped.last().unwrap()["matched"], 2);
+    let other = records(search(&["--kind", "trace"]));
+    assert_eq!(other.len(), 1);
+    assert_eq!(other[0]["matched"], 0);
+    let first = records(search(&["--limit", "1"]));
+    assert_eq!(first.len(), 1);
+    assert_eq!(first[0]["matched"], 0);
+    assert_eq!(first[0]["scope_exhausted"], false);
+    let cursor = first[0]["next_cursor"].as_str().unwrap();
+    denied(
+        search(&["--kind", "log", "--cursor", cursor]),
+        "another query",
+    );
+    let next = records(search(&["--limit", "1", "--cursor", cursor]));
+    assert_eq!(next[0]["kind"], "log");
+    assert_eq!(next[1]["matched"], 1);
+}
+
+#[test]
 fn failure_candidates_page_retained_metadata_at_one_snapshot() {
     use agenturm_kernel::{
         ExtensionId, Observation, ObservationIdentity, ObservationKind, ObservationStore,

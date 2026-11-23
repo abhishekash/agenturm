@@ -14,7 +14,7 @@ pub(super) const USAGE: &str = concat!(
     "[--turn-id <id> [--worker-id <id>]] [--limit 1..100] [--cursor <token>] --db <path> --config <json>\n",
     "Use --failed with command to require a source-confirmed failure.\n",
     "agenturm investigate failures [--source-id <id>] [--session-id <id>] ",
-    "[--kind lifecycle|tool|mcp|check|trace] [--limit 1..100] [--cursor <token>] --db <path>\n",
+    "[--kind lifecycle|tool|mcp|check|trace|log] [--limit 1..100] [--cursor <token>] --db <path>\n",
     "agenturm investigate source <event-id> --reference <token> --db <path> --config <json>\n",
     "Python receivers use --receiver-protocol python-v0.2.8 --endpoint <loopback-http-url> --token-file <path>.\n",
     "Python searches accept --service, --pages 1..5, --cursor and --format text|json.\n",

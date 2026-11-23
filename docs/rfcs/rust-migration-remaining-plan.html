@@ -2,12 +2,25 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Rust migration remaining work — 23 November 2026</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md">Markdown source ↗</a></nav><h1>Rust migration: remaining development and validation</h1>
+</style></head><body><main><nav><strong>Agenturm / Core feature development</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md">Markdown source ↗</a></nav><h1>Rust migration: remaining development and validation</h1>
 <p>Updated 23 November 2026. This is the detailed remaining-work plan for the
 <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md">Rust execution plan</a> and
 <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-tasks.md">task board</a>. It separates unfinished features,
 completed code awaiting integration, and tests still needed for acceptance.
 The migration is <strong>not complete</strong>, and the default distribution has not switched.</p>
+<h2>Development and test ownership — current user direction</h2>
+<p>This implementation session owns core feature development. A separate agent
+owns broad testing and release qualification. The
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md">delegated core-feature test plan</a>
+tracks CF1 Claude/Pi presence, CF2 paged session edit browsing, CF3 adapter
+list/show/pin-CAS removal and CF4 body-free OTLP log failure investigation.
+Developers run focused compile/regression checks only. The test agent executes
+Q1–Q10 and the new acceptance matrix on the supplied integrated source head.</p>
+<p>Codex header discovery and trusted local adapter installation already exist;
+these lanes extend uncovered provider presence and lifecycle operations rather
+than replacing implemented features. C6/C7 local connector boundaries remain
+implemented within their documented profile. Broad tests are delegated, not
+removed from acceptance.</p>
 <h2>1. Current progress and evidence</h2>
 <p>These results belong to different source revisions. A passing earlier bundle
 does not qualify later changes. Test totals below are successive baselines,
@@ -45,7 +58,7 @@ workflow inventory and acceptance scope are not yet closed.</p>
 <td>Metric descriptions and full-catalog search</td>
 <td>Implemented in the joined source accompanying this plan.</td>
 <td>Joined Host/Metrics baseline passed <strong>833 tests across 96 suites</strong>, strict Clippy and all binaries. Authenticated JSON/protobuf HTTP proved descriptor replay and unchanged old point records. Real terminal search found a series beyond the first 32 rows, displayed its description and preserved snapshot/selection at all three sizes.</td>
-<td>Merge; qualify schema 21 upgrade and installed behavior on the final artifact.</td>
+<td>Merged PR #381; test owner qualifies schema 21 and final installed behavior.</td>
 </tr>
 <tr>
 <td>Remote Host inventory and reported host metadata</td>
@@ -89,8 +102,9 @@ become a passed/failed check.</li>
 with explicit exits are implemented. Preserve session-only scope and unknown
 outcomes where boundaries or exits are absent; qualify further native shapes
 rather than treating every missing field as a decoder bug.</li>
-<li>Header-only native recordings: a discovered source with no admitted session
-facts still has no retained roster row. Define and implement an evidence-backed
+<li>Header-only native recordings: Codex already admits neutral SessionDiscovered
+from verified headers. Claude/Pi metadata-only presence needs the remaining
+provider-specific support. Define and implement an evidence-backed
 placeholder if the running-session roster must include it. Preserve exact
 source identity and neutral status; an open file must not invent a Working
 lifecycle. This is an open behavior gap, not only an archive rerun.</li>
@@ -136,10 +150,11 @@ silently retired. Native approval evidence must retain its exact source and
 default-off internal-review visibility; an internal review is not an approval.</p>
 <h3>F3. Automatic decoder installation and extension trust</h3>
 <p><strong>Existing task:</strong> B8. <strong>Owner:</strong> extension runtime.</p>
-<p>Pinned explicit catalog selection and independent capability loading exist.
-Automatic decoder installation remains separate work: define the supported
-package format, version/feature negotiation, artifact verification, selection,
-update/removal and failure behavior. Changed artifacts and unsupported formats
+<p>Trusted local manifest installation, expected-pin verification, atomic catalog
+publication, explicit selection/replacement and independent capability loading
+already exist. CF3 adds installed-adapter list/show and pin-CAS removal. Remote
+automatic package discovery/download and new decoder formats remain separate;
+do not reimplement the existing supported local installer. Changed artifacts and unsupported formats
 must fail closed. Do not equate a checksum with an OS sandbox.</p>
 <p><strong>Done when:</strong> an independent supported decoder installs through the declared
 flow, runs only when selected and verified, and fails closed on malformed or
@@ -197,14 +212,14 @@ separate from Linux release acceptance.</p>
 </tr>
 <tr>
 <td>I2</td>
-<td><strong>Joined source complete:</strong> Metrics and remote Host; integration owner</td>
+<td><strong>Merged PR #381 (<code>18aa702</code>):</strong> Metrics and remote Host; integration owner</td>
 <td>Final Host runtime/fixture corrections integrated with existing Findings and Metrics changes.</td>
 <td>833 tests / 96 suites, strict Clippy/all binaries, actual metric HTTP/three-size PTY and separate-UID Host KVM passed. Final optimized archive remains Q5.</td>
 </tr>
 <tr>
 <td>I3</td>
-<td>Source, schema and documentation; integration owner</td>
-<td>Commit/push the coherent joined source, then qualify it.</td>
+<td>Source/plans merged in PR #381; integration owner</td>
+<td>Supply each subsequent feature head to the separate test agent.</td>
 <td>Current plan, task board, paired journey record, schema/support notes and HTML companions name the same source/artifact. Current-head CI passes. Earlier artifact evidence remains labeled with its original revision.</td>
 </tr>
 </tbody>

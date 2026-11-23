@@ -19,6 +19,22 @@ Use this status and the [detailed remaining-work plan](rust-migration-remaining-
 The 813, 819 and 833 test counts belong to successive source baselines and are **not additive**. The 833-test run predates the final Host chooser correction. No completion percentage is asserted while required workflow acceptance remains open. A real Kiro transcript and an approved production connector endpoint remain external inputs; macOS needs native runners and its D2-Mac checks. Comparative benchmarks remain deferred.
 
 
+## Core feature development and delegated testing
+
+Current user direction: this implementation session owns feature development;
+a separate agent owns broad test execution. Follow the
+[core feature test handoff](../validation/rust-core-feature-test-plan.md).
+
+| Feature lane | Development status | Testing responsibility |
+| --- | --- | --- |
+| CF1 Claude/Pi neutral native presence | In progress; Codex header discovery already exists. | Separate test agent: actual collection/replay/roster journeys. |
+| CF2 Whole-session paged Review edits | In progress; exact existing Codex preview reused with history/snapshot/ReviewVersion binding. | Separate test agent: terminal/private/broker and selection-return acceptance. |
+| CF3 Trusted adapter list/show/remove | In progress; local install/replacement already exists; removal uses exact-pin CAS and preserves artifacts. | Separate test agent: CLI/atomicity/security/collection regression. |
+| CF4 OTLP log failure investigation | Implemented; one focused process regression passed. Metadata only, explicit log kind, scope/cursor binding retained. | Separate test agent: broad failure inventory/remote/terminal privacy regression. |
+
+Feature developers run focused checks needed for implementation. Q1–Q10 and
+release qualification remain delegated; no broad campaign is duplicated here.
+
 ## Product decision
 
 Agenturm is being rebuilt as a Rust application. Python is not part of the target runtime. Do not preserve Python runtime compatibility, create dual-runtime paths, route Python clients through a Rust bridge, or build data-migration tooling. The Rust application starts with its own clean data directory. Existing Python-era state is out of scope for automatic import.
