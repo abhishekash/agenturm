@@ -120,6 +120,28 @@ window. The cockpit exits in the new window.</p>
 <p>Rows carry <code>trace_id</code>, <code>span_id</code>, optional <code>parent_span_id</code>, <code>start_unix_nano</code> and <code>end_unix_nano</code>, and optional <code>status</code> (<code>UNSET</code>, <code>OK</code> or <code>ERROR</code>). Timestamps accept integers or decimal strings. IDs use 32 hexadecimal characters for the trace and 16 for each span. A parent outside the file is valid for a partial export.</p>
 <p>A span needs an exact session ID from its <code>attributes</code> or the explicit <code>--session-id</code> argument. Span-level session aliases must agree, including <code>session.id</code>, <code>gen_ai.conversation.id</code>, and the legacy session, conversation and thread aliases. The argument fills missing session IDs and must match any IDs carried by the file. A native turn link requires <code>agenturm.source.id</code> and <code>agenturm.turn.id</code>. A worker link adds <code>agenturm.worker.id</code>.</p>
 <p>Imports retain trace structure, timing, status, exact scope, and explicitly reported cost and token usage. Import discards span names, payloads, events, links, and eval results. Those legacy fields and workflows have separate cutover coverage. Exact structural replays deduplicate across JSONL and OTLP JSON under the same source ID. Conflicting retained identities reject the entire import.</p>
+<h3>Publish live progress</h3>
+<p>The Python and Node manual SDKs publish <code>Run.progress</code> immediately to the
+Rust trace receiver. The progress route uses the same loopback authority
+and producer bearer as spans. The direct JSON route is
+<code>POST /native/v1/progress</code> with one event per request and a 4 KiB limit.</p>
+<p>Each event carries a nonzero 32-digit hexadecimal <code>event_id</code> and <code>trace_id</code>,
+a decimal-string <code>observed_at_unix_ns</code>, and a public <code>stage</code> of 1 to 64 ASCII
+letters, digits, periods, underscores, or hyphens beginning with a letter.
+Send optional integer <code>percent_basis_points</code> from 0 to 10000. Each basis
+point is 0.01 percent. Zero is an explicit value and omission means unknown.
+The SDK sends no progress message or arbitrary attributes.</p>
+<p>The receiver selects the storage source. A standalone receiver requires
+<code>session_id</code>. The launcher may supply its existing local run identity
+when the event targets no native harness. Native linkage uses an explicit
+<code>session_id</code> and <code>target_source_id</code>, plus <code>turn_id</code> and <code>worker_id</code> when
+applicable. Linked reads require a retained native anchor. The event ID is
+immutable within its storage source, including after retention expires
+the event.</p>
+<p>Activity shows the retained events. Traces shows the latest report per
+exact scope on the loaded page, even while the parent span is still open.
+Progress records express reported stages and percentages. Span completion
+and native lifecycle state have their own evidence.</p>
 <h3>Reported token usage</h3>
 <p>OTLP JSON, OTLP protobuf and native JSONL retain explicit input, output, total,
 cache-read input, cache-write input, and reasoning-output token counts. The

@@ -131,7 +131,7 @@ from observatory.client import Client
 client = Client(transport="otlp")
 with client.trace() as run:
     assert not run.progress("synthetic private progress")
-    assert "does not export progress" in str(client.last_error)
+    assert "safe identifier" in str(client.last_error)
 assert "rejected one or more spans" in str(client.last_error)
 with client.trace(session_id="python-large") as run:
     for index in range(1024):
@@ -169,6 +169,56 @@ assert client.last_error is None, client.last_error
         spans = [row["observation"] for row in rows]
         root = next(span for span in spans if span.get("parent_span_id") is None)
         self.assertEqual({span.get("parent_span_id") for span in spans}, {None, root["span_id"]})
+
+    def test_progress_is_durable_before_the_python_run_flushes_spans(self):
+        self.producer.write_text("""
+import sys
+from observatory.client import Client
+client = Client(transport="otlp", strict=True)
+with client.trace(session_id="progress-session", harness_id="harness.pi",
+                  turn_id="progress-turn", worker_id="worker/one") as run:
+    assert run.progress("planning", "synthetic private progress", 0)
+    assert run.progress("awaiting-input", "synthetic private progress")
+    print(run.trace_id, flush=True)
+    assert sys.stdin.readline() == "\\n"
+""")
+        child = subprocess.Popen(
+            [RUST_APP, "run", "--db", self.database, "--source-id", "otlp.python-progress",
+             "--", sys.executable, self.producer],
+            env=self.environment, stdin=subprocess.PIPE, stdout=subprocess.PIPE,
+            stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            self.assertTrue(select.select([child.stdout], [], [], 10)[0])
+            trace_id = child.stdout.readline().strip()
+            self.assertRegex(trace_id, "^[a-f0-9]{32}$")
+            rows = self.observations("otlp.python-progress")
+            self.assertEqual(len(rows), 2)
+            for row in rows:
+                evidence = row["observation"]
+                self.assertEqual(evidence["kind"], "trace_progress")
+                self.assertEqual(evidence["trace_id"], trace_id)
+                self.assertEqual(evidence["target_source_id"], "harness.pi")
+                self.assertEqual(row["identity"]["session_id"], "progress-session")
+                self.assertEqual(row["identity"]["turn_id"], "progress-turn")
+                self.assertEqual(row["identity"]["worker_id"], "worker/one")
+                self.assertEqual(row["revision"], 0)
+            self.assertEqual(
+                {row["observation"]["stage"]: row["observation"].get("percent_basis_points")
+                 for row in rows},
+                {"planning": 0, "awaiting-input": None},
+            )
+            _, errors = child.communicate("\n", timeout=15)
+            self.assertEqual(child.returncode, 0, errors)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.communicate()
+        reopened = self.observations("otlp.python-progress")
+        self.assertEqual([row for row in reopened if row["observation"]["kind"] == "trace_progress"],
+                         rows)
+        self.assertEqual(len(reopened), 3)
+        self.assertEqual({row["observation"]["trace_id"] for row in reopened}, {trace_id})
 
     def test_slow_reply_cannot_extend_the_request_deadline(self):
         from observatory.client import Client

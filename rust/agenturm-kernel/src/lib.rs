@@ -242,6 +242,7 @@ pub enum ObservationKind {
         result: String,
     },
     TraceSpan(TraceSpan),
+    TraceProgress(TraceProgress),
     HostSample(HostSample),
     Lifecycle {
         state: String,
@@ -307,8 +308,8 @@ pub use agenturm_protocol::host::{
 };
 pub use agenturm_protocol::observation::{
     FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, NANOUNITS_PER_CURRENCY_UNIT, NativeCostBasis,
-    RelationshipKind, ReportedCost, SpanTokenUsage, TraceSpan, TraceSpanIdentity, TraceStatus,
-    is_github_pull_request, is_valid_mcp_metadata, parse_currency_nanounits,
+    RelationshipKind, ReportedCost, SpanTokenUsage, TraceProgress, TraceSpan, TraceSpanIdentity,
+    TraceStatus, is_github_pull_request, is_valid_mcp_metadata, parse_currency_nanounits,
 };
 
 pub fn is_mcp_operation(identity: &ObservationIdentity) -> bool {
@@ -334,6 +335,21 @@ pub fn is_trace_source_link_valid(import_source_id: &str, span: &TraceSpan) -> b
 
 fn is_native_trace_target(target: &str) -> bool {
     !target.starts_with("otlp.") && ExtensionId::parse(target).is_ok()
+}
+
+pub fn is_trace_progress_scope_valid(
+    progress: &TraceProgress,
+    turn_id: Option<&str>,
+    worker_id: Option<&str>,
+    operation_id: Option<&str>,
+) -> bool {
+    progress
+        .target_source_id
+        .as_deref()
+        .is_none_or(is_native_trace_target)
+        && operation_id.is_none()
+        && (turn_id.is_some() || worker_id.is_none())
+        && (turn_id.is_none() || progress.target_source_id.is_some())
 }
 
 pub fn is_span_usage_anchor_valid(
@@ -1543,6 +1559,19 @@ fn validate_raw_observation_slice(
                 || !cost.matches_evidence(&row.event_id, row.identity.operation_id.as_deref()))
         {
             return Err("reported cost metadata or event identity is invalid".into());
+        }
+        if let ObservationKind::TraceProgress(progress) = &row.kind
+            && (row.identity.scope != ObservationScope::Session
+                || row.revision != 0
+                || !progress.is_valid(&row.event_id, row.observed_at_unix_ns)
+                || !is_trace_progress_scope_valid(
+                    progress,
+                    row.identity.turn_id.as_deref(),
+                    row.identity.worker_id.as_deref(),
+                    row.identity.operation_id.as_deref(),
+                ))
+        {
+            return Err("trace progress metadata or event identity is invalid".into());
         }
         if let ObservationKind::SpanTokenUsage(usage) = &row.kind
             && (row.identity.scope != ObservationScope::Session

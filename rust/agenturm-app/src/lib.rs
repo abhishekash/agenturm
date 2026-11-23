@@ -34,6 +34,7 @@ mod task_cli;
 mod task_git;
 mod telemetry_payload_cli;
 mod trace_import;
+mod trace_progress;
 mod trace_receiver;
 mod trace_run;
 mod workflow_route;
@@ -2373,6 +2374,11 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                     if let Some(target) = &span.target_source_id {
                         evidence["target_source_id"] = serde_json::json!(target);
                     }
+                    evidence
+                }
+                ObservationKind::TraceProgress(progress) => {
+                    let mut evidence = serde_json::json!(progress);
+                    evidence["kind"] = serde_json::json!("trace_progress");
                     evidence
                 }
                 ObservationKind::Lifecycle { state, reason_code } => {

@@ -11,6 +11,9 @@ const MAX_OTLP_SPANS = 1024;
 const MAX_OTLP_REPLY_BYTES = 4096;
 const MAX_OTLP_TEXT_BYTES = 2048;
 const MAX_OTLP_PAYLOAD_BYTES = 64 * 1024;
+const OTLP_PROGRESS_PATH = '/native/v1/progress';
+const PROGRESS_STAGE = /^[A-Za-z][A-Za-z0-9._-]{0,63}$/;
+const PROGRESS_CREDENTIAL = /(?:^|[._-])(?:sk-|[sr]k_(?:live|test)_|gh[pousr]_|github_pat_|akia|aiza|xox[baprs]-|(?:bearer|authorization|password|api_key|secret)[_-])/i;
 const OTLP_PAYLOAD_KEYS = ['agenturm.payload.input', 'agenturm.payload.output'];
 
 const OTLP_STATUS = { UNSET: 0, OK: 1, ERROR: 2 };
@@ -142,6 +145,33 @@ function otlpAuthorization(endpoint, configuredEndpoint) {
     // A malformed environment cannot supply a credential.
   }
   return undefined;
+}
+
+function progressPayload(run, stage, percent) {
+  if (typeof stage !== 'string' || !PROGRESS_STAGE.test(stage) || /[^A-Za-z0-9._-]/.test(stage)
+      || PROGRESS_CREDENTIAL.test(stage) || /^[0-9a-f]{32,64}$/i.test(stage)) {
+    throw new TypeError('Progress stage must be a safe identifier');
+  }
+  const payload = {
+    trace_id: run.trace_id, event_id: id(16), observed_at_unix_ns: nowNs(), stage,
+  };
+  if (percent !== undefined && percent !== null) {
+    if (!Number.isFinite(percent) || percent < 0 || percent > 100) {
+      throw new RangeError('Progress percent must be between 0 and 100');
+    }
+    const basisPoints = Math.round(percent * 100);
+    if (basisPoints / 100 !== percent) {
+      throw new RangeError('Progress percent supports at most two decimal places');
+    }
+    payload.percent_basis_points = basisPoints;
+  }
+  for (const [key, value] of [
+    ['session_id', run.sessionId], ['target_source_id', run.harnessId],
+    ['turn_id', run.turnId], ['worker_id', run.workerId],
+  ]) {
+    if (value !== null) payload[key] = value;
+  }
+  return payload;
 }
 
 function capturedAttributes(source, sessionId) {
@@ -313,7 +343,9 @@ export class Client {
         if (this.#otlpAuthorization && !headers.authorization) {
           headers.authorization = this.#otlpAuthorization;
         }
-        await postOtlpJson(this.#otlpEndpoint, headers, body, this.timeoutMs);
+        const endpoint = path === OTLP_PROGRESS_PATH
+          ? new URL(OTLP_PROGRESS_PATH, this.#otlpEndpoint) : this.#otlpEndpoint;
+        await postOtlpJson(endpoint, headers, body, this.timeoutMs);
       } else {
         const response = await fetch(`${this.endpoint}${path}`, {
           method: 'POST', redirect: 'error', headers, body,
@@ -490,10 +522,15 @@ class Run {
   async progress(stage, message = '', percent) {
     if (this._closed) throw new Error('run is already closed');
     if (this.client.transport === 'otlp') {
-      const error = new Error('OTLP transport does not export progress messages');
-      this.client.lastError = error;
-      if (this.client.strict) throw error;
-      return false;
+      let payload;
+      try {
+        payload = progressPayload(this, stage, percent);
+      } catch (error) {
+        this.client.lastError = error;
+        if (this.client.strict) throw error;
+        return false;
+      }
+      return this.client._post(OTLP_PROGRESS_PATH, payload);
     }
     const payload = { trace_id: this.trace_id, stage: String(stage), message: String(message), service: this.client.service };
     if (percent !== undefined && percent !== null) payload.percent = percent;

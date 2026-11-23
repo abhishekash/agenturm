@@ -122,6 +122,7 @@ pub enum ObservationKind {
         result: String,
     },
     TraceSpan(agenturm_kernel::TraceSpan),
+    TraceProgress(agenturm_kernel::TraceProgress),
     HostSample(agenturm_kernel::HostSample),
     Lifecycle {
         state: String,
@@ -297,6 +298,9 @@ impl ObservationBatch {
                     },
                     KernelObservationKind::TraceSpan(span) => {
                         ObservationKind::TraceSpan(span.clone())
+                    }
+                    KernelObservationKind::TraceProgress(progress) => {
+                        ObservationKind::TraceProgress(progress.clone())
                     }
                     KernelObservationKind::HostSample(sample) => {
                         ObservationKind::HostSample(sample.clone())
@@ -1809,7 +1813,7 @@ impl Store {
                AND ((?12 = 0 AND (?2 IS NULL OR observation.source_id=?2))
                     OR (?12 = 1
                         AND substr(observation.source_id,1,5)='otlp.'
-                        AND json_extract(observation.kind_json,'$.kind')='trace_span'
+                        AND json_extract(observation.kind_json,'$.kind') IN ('trace_span','trace_progress')
                         AND json_extract(observation.kind_json,'$.target_source_id')=?2))
                AND (?3 IS NULL OR observation.session_id=?3)
                AND (?12 = 0 OR EXISTS (
@@ -1953,6 +1957,9 @@ impl Store {
                         result,
                     },
                     ObservationKind::TraceSpan(span) => KernelObservationKind::TraceSpan(span),
+                    ObservationKind::TraceProgress(progress) => {
+                        KernelObservationKind::TraceProgress(progress)
+                    }
                     ObservationKind::HostSample(sample) => {
                         KernelObservationKind::HostSample(sample)
                     }
@@ -2235,6 +2242,22 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
         {
             return Err(StoreError::Invalid(
                 "trace identity, timing, or source link is invalid",
+            ));
+        }
+        if let ObservationKind::TraceProgress(progress) = &observation.kind
+            && (observation.identity.scope != StoredScope::Session
+                || observation.revision != 0
+                || !batch.source_id.starts_with("otlp.")
+                || !progress.is_valid(&observation.event_id, observation.observed_at_unix_ns)
+                || !agenturm_kernel::is_trace_progress_scope_valid(
+                    progress,
+                    observation.identity.turn_id.as_deref(),
+                    observation.identity.worker_id.as_deref(),
+                    observation.identity.operation_id.as_deref(),
+                ))
+        {
+            return Err(StoreError::Invalid(
+                "trace progress metadata or event identity is invalid",
             ));
         }
         if let ObservationKind::Lifecycle { state, reason_code } = &observation.kind

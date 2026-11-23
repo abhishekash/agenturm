@@ -76,6 +76,23 @@ try {
   await send({ endpoint: authority(alternate), strict: true });
   assert.equal(last().port, alternate.address().port);
   assert.equal(last().headers.authorization, undefined);
+  for (const endpoint of [source, authority(alternate)]) {
+    const client = new Client({ endpoint, transport: 'otlp', strict: true });
+    await client.trace({ sessionId: 'native-session' }, async run => {
+      assert.equal(await run.progress('planning', 'synthetic private progress', 0), true);
+      assert.equal(last().path, '/native/v1/progress');
+      assert.equal(last().headers.authorization, endpoint === source ? 'Bearer ' + token : undefined);
+      const body = JSON.parse(last().body);
+      assert.equal(body.percent_basis_points, 0);
+      assert.equal(body.trace_id, run.trace_id);
+      assert.equal(body.message, undefined);
+      assert.ok(!last().body.includes('synthetic private progress'));
+      const count = requests.length;
+      await assert.rejects(run.progress('step-ghp_fixture'), /safe identifier/);
+      await assert.rejects(run.progress('planning', '', 0.001), /two decimal places/);
+      assert.equal(requests.length, count);
+    });
+  }
   await send({ token: 'explicit-option', strict: true });
   assert.equal(last().headers.authorization, 'Bearer explicit-option');
 
@@ -364,8 +381,8 @@ console.log(JSON.stringify(traces));
 const client = new Client({ transport: 'otlp' });
 await client.trace(async run => {
   if (await run.progress('ignored')) throw new Error('progress unexpectedly exported');
-  if (!client.lastError?.message.includes('does not export progress')) {
-    throw new Error('progress was not refused by the client');
+  if (!client.lastError?.message.includes('HTTP 400')) {
+    throw new Error('unscoped progress was not rejected by the receiver');
   }
 });
 if (!client.lastError?.message.includes('rejected one or more spans')) {
@@ -409,6 +426,50 @@ if (client.lastError) throw client.lastError;
         self.assertEqual(
             {span.get("parent_span_id") for span in spans}, {None, root["span_id"]}
         )
+
+    def test_progress_can_be_read_before_node_flushes_its_root_span(self):
+        self.write_producer("""
+const client = new Client({ transport: 'otlp', strict: true });
+await client.trace({
+  sessionId: 'progress-session', harnessId: 'harness.node',
+  turnId: 'progress-turn', workerId: 'worker/one',
+}, async run => {
+  if (!await run.progress('working', 'synthetic private progress', 12.34)) {
+    throw new Error('progress was not acknowledged');
+  }
+  console.log(run.trace_id);
+  await new Promise(resolve => process.stdin.once('data', resolve));
+  process.stdin.pause();
+});
+""")
+        child = subprocess.Popen(
+            [RUST_APP, "run", "--db", self.database, "--source-id", "otlp.node-progress",
+             "--", NODE, self.producer],
+            stdin=subprocess.PIPE, stdout=subprocess.PIPE, stderr=subprocess.PIPE, text=True,
+        )
+        try:
+            self.assertTrue(select.select([child.stdout], [], [], 10)[0])
+            trace_id = child.stdout.readline().strip()
+            self.assertRegex(trace_id, "^[a-f0-9]{32}$")
+            progress, = self.observations("otlp.node-progress")
+            self.assertEqual(progress["observation"], {
+                "kind": "trace_progress", "trace_id": trace_id, "target_source_id": "harness.node",
+                "stage": "working", "percent_basis_points": 1234,
+            })
+            self.assertEqual(progress["identity"]["session_id"], "progress-session")
+            self.assertEqual(progress["identity"]["turn_id"], "progress-turn")
+            self.assertEqual(progress["identity"]["worker_id"], "worker/one")
+            self.assertNotIn("synthetic private", json.dumps(progress))
+            _, errors = child.communicate("\n", timeout=15)
+            self.assertEqual(child.returncode, 0, errors)
+        finally:
+            if child.poll() is None:
+                child.kill()
+                child.communicate()
+        reopened = self.observations("otlp.node-progress")
+        self.assertIn(progress, reopened)
+        self.assertEqual(len(reopened), 2)
+        self.assertEqual({row["observation"]["trace_id"] for row in reopened}, {trace_id})
 
 
 if __name__ == "__main__":

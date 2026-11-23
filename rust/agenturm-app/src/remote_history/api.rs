@@ -249,6 +249,7 @@ impl Request {
                     (ObservationKind::TraceSpan(span), View::Traces) => {
                         trace_id.as_ref().is_none_or(|id| id == &span.trace_id)
                     }
+                    (ObservationKind::TraceProgress(_), View::Traces) => trace_id.is_none(),
                     (ObservationKind::McpCall { .. }, View::Mcp) => true,
                     (
                         ObservationKind::Usage { .. }

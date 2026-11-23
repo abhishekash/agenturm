@@ -18,6 +18,13 @@ MAX_EXPORT_BYTES = 4 * 1024 * 1024
 MAX_REPLY_BYTES = 4096
 MAX_PAYLOAD_TEXT_BYTES = 2048
 MAX_PAYLOAD_BATCH_BYTES = 64 * 1024
+_PROGRESS_PATH = "/native/v1/progress"
+_PROGRESS_STAGE = re.compile(r"[A-Za-z][A-Za-z0-9._-]{0,63}")
+_PROGRESS_CREDENTIAL = re.compile(
+    r"(?:^|[._-])(?:sk-|[sr]k_(?:live|test)_|gh[pousr]_|github_pat_|akia|aiza"
+    r"|xox[baprs]-|(?:bearer|authorization|password|api_key|secret)[_-])",
+    re.IGNORECASE,
+)
 PAYLOAD_KEYS = ("agenturm.payload.input", "agenturm.payload.output")
 _CREDENTIAL_MARKERS = re.compile(
     r"private key|sk-|[sr]k_(?:live|test)_|gh[pousr]_|github_pat_|akia|aiza|xox[baprs]-|\bbearer\b",
@@ -435,13 +442,42 @@ class OtlpTransport:
 
     def _send(self, batch):
         body = _PREFIX + b",".join(batch) + _SUFFIX
+        self._send_body("/v1/traces", body)
+
+    def progress(self, trace_id, event_id, scope, stage, percent):
+        if (
+            type(stage) is not str or not _PROGRESS_STAGE.fullmatch(stage)
+            or _PROGRESS_CREDENTIAL.search(stage)
+            or re.fullmatch(r"[0-9a-fA-F]{32,64}", stage)
+        ):
+            raise ValueError("Progress stage must be a safe identifier")
+        body = {
+            "trace_id": trace_id, "event_id": event_id,
+            "observed_at_unix_ns": str(time.time_ns()), "stage": stage,
+        }
+        if percent is not None:
+            if type(percent) not in (int, float) or not 0 <= percent <= 100:
+                raise ValueError("Progress percent must be between 0 and 100")
+            basis_points = round(percent * 100)
+            if basis_points / 100 != percent:
+                raise ValueError("Progress percent supports at most two decimal places")
+            body["percent_basis_points"] = basis_points
+        for key, value in (
+            ("session_id", scope.session_id), ("target_source_id", scope.harness_id),
+            ("turn_id", scope.turn_id), ("worker_id", scope.worker_id),
+        ):
+            if value is not None:
+                body[key] = value
+        self._send_body(_PROGRESS_PATH, json.dumps(body, separators=(",", ":")).encode("ascii"))
+
+    def _send_body(self, path, body):
         target = (self.host, self.port)
         headers = {"Content-Type": "application/json", "Connection": "close"}
         if self._authorization is not None and target == self._authorization_target:
             headers["Authorization"] = self._authorization
         connection = _DeadlineConnection(*target, self.timeout)
         try:
-            connection.request("POST", "/v1/traces", body=body, headers=headers)
+            connection.request("POST", path, body=body, headers=headers)
             with connection.getresponse() as response:
                 _check_reply(response)
         except http.client.HTTPException:

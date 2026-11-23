@@ -606,6 +606,89 @@ impl TraceSpan {
     }
 }
 
+/// Progress reported by a producer independently of the trace's span exports.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct TraceProgress {
+    pub trace_id: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_source_id: Option<String>,
+    pub stage: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub percent_basis_points: Option<u16>,
+}
+
+impl TraceProgress {
+    pub const EVENT_PREFIX: &str = "otlp-progress:";
+
+    pub fn is_valid(&self, event_id: &str, observed_at_unix_ns: u64) -> bool {
+        event_id
+            .strip_prefix(Self::EVENT_PREFIX)
+            .is_some_and(|id| valid_otlp_id(id, 16))
+            && valid_otlp_id(&self.trace_id, 16)
+            && (1..=i64::MAX as u64).contains(&observed_at_unix_ns)
+            && self
+                .percent_basis_points
+                .is_none_or(|percent| percent <= 10_000)
+            && valid_progress_stage(&self.stage)
+    }
+}
+
+fn valid_progress_stage(stage: &str) -> bool {
+    const CREDENTIAL_PREFIXES: &[&str] = &[
+        "sk-",
+        "sk_live_",
+        "sk_test_",
+        "rk_live_",
+        "rk_test_",
+        "ghp_",
+        "gho_",
+        "ghu_",
+        "ghs_",
+        "ghr_",
+        "github_pat_",
+        "akia",
+        "aiza",
+        "xoxb-",
+        "xoxa-",
+        "xoxp-",
+        "xoxr-",
+        "xoxs-",
+        "bearer-",
+        "bearer_",
+        "authorization-",
+        "authorization_",
+        "password-",
+        "password_",
+        "api_key-",
+        "api_key_",
+        "secret-",
+        "secret_",
+    ];
+    if stage.is_empty()
+        || stage.len() > 64
+        || !stage.as_bytes()[0].is_ascii_alphabetic()
+        || !stage
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._-".contains(&byte))
+        || (stage.len() >= 32 && stage.bytes().all(|byte| byte.is_ascii_hexdigit()))
+    {
+        return false;
+    }
+    let lower = stage.to_ascii_lowercase();
+    std::iter::once(lower.as_str())
+        .chain(
+            lower
+                .match_indices(['.', '_', '-'])
+                .map(|(index, _)| &lower[index + 1..]),
+        )
+        .all(|segment| {
+            !CREDENTIAL_PREFIXES
+                .iter()
+                .any(|prefix| segment.starts_with(prefix))
+        })
+}
+
 fn valid_otlp_id(value: &str, bytes: usize) -> bool {
     value.len() == bytes * 2
         && value

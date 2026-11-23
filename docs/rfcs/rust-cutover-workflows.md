@@ -94,6 +94,33 @@ A span needs an exact session ID from its `attributes` or the explicit `--sessio
 
 Imports retain trace structure, timing, status, exact scope, and explicitly reported cost and token usage. Import discards span names, payloads, events, links, and eval results. Those legacy fields and workflows have separate cutover coverage. Exact structural replays deduplicate across JSONL and OTLP JSON under the same source ID. Conflicting retained identities reject the entire import.
 
+### Publish live progress
+
+The Python and Node manual SDKs publish `Run.progress` immediately to the
+Rust trace receiver. The progress route uses the same loopback authority
+and producer bearer as spans. The direct JSON route is
+`POST /native/v1/progress` with one event per request and a 4 KiB limit.
+
+Each event carries a nonzero 32-digit hexadecimal `event_id` and `trace_id`,
+a decimal-string `observed_at_unix_ns`, and a public `stage` of 1 to 64 ASCII
+letters, digits, periods, underscores, or hyphens beginning with a letter.
+Send optional integer `percent_basis_points` from 0 to 10000. Each basis
+point is 0.01 percent. Zero is an explicit value and omission means unknown.
+The SDK sends no progress message or arbitrary attributes.
+
+The receiver selects the storage source. A standalone receiver requires
+`session_id`. The launcher may supply its existing local run identity
+when the event targets no native harness. Native linkage uses an explicit
+`session_id` and `target_source_id`, plus `turn_id` and `worker_id` when
+applicable. Linked reads require a retained native anchor. The event ID is
+immutable within its storage source, including after retention expires
+the event.
+
+Activity shows the retained events. Traces shows the latest report per
+exact scope on the loaded page, even while the parent span is still open.
+Progress records express reported stages and percentages. Span completion
+and native lifecycle state have their own evidence.
+
 ### Reported token usage
 
 OTLP JSON, OTLP protobuf and native JSONL retain explicit input, output, total,

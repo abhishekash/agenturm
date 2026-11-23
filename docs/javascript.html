@@ -39,10 +39,13 @@ await telemetry.trace(
     sessionId: 'thread-42', harnessId: 'harness.codex',
     turnId: 'turn-7', workerId: 'worker-1',
   },
-  async run =&gt; run.span('work', async span =&gt; {
-    await doWork();
-    span.setStatus('OK');
-  }),
+  async run =&gt; {
+    await run.progress('planning', '', 0);
+    await run.span('work', async span =&gt; {
+      await doWork();
+      span.setStatus('OK');
+    });
+  },
 );
 </code></pre>
 <p>Launch the producer with the installed Rust app to configure its loopback
@@ -68,10 +71,15 @@ authorized producer. Use <code>authorization=Bearer%20&lt;token&gt;</code> with 
 receiver&#x27;s 64-digit lowercase hexadecimal token.</p>
 <p>OTLP/HTTP JSON exports trace IDs, parent relationships, timestamps, status
 and optional session, harness, turn, and worker identity. Payloads use fixed span names
-and omit custom attributes, events and task text. The <code>agenturm</code> transport
-remains the default and supports progress messages. The OTLP receiver can
+and omit custom attributes, events and task text. The OTLP receiver can
 group unscoped traces under an <code>agenturm run</code> invocation. Supply a
 <code>sessionId</code> to export from a standalone receiver.</p>
+<p><code>run.progress(stage, message, percent)</code> publishes the stage before the
+trace's spans are flushed. For the Rust receiver, supply a public stage
+identifier and omit <code>message</code> or pass an empty string to reach the
+optional <code>percent</code> argument. Percent uses 0 to 100 and up to two decimal
+places. An omitted percent stays unknown. The default <code>agenturm</code> transport
+continues to send the legacy message to the Python receiver.</p>
 <p>Node.js 22.23.4 and the published Rust 0.3.2 Linux x86-64 bundle verified
 the launcher, durable parent and source/session identity, nonzero producer
 exit status, and standalone partial rejection and 1,025-span export across
