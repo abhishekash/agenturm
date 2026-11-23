@@ -105,6 +105,22 @@ fn project_record(record: ObservationRecord, source_id: &str) -> Result<Option<R
                 total_tokens: counters.total_tokens,
             }
         }
+        ObservationFact::SpanTokenUsage(usage) => {
+            if !source_id.starts_with("otlp.")
+                || !agenturm_kernel::is_span_usage_anchor_valid(
+                    &usage,
+                    &record.event_id,
+                    identity.turn_id.as_deref(),
+                    identity.worker_id.as_deref(),
+                    identity.operation_id.as_deref(),
+                )
+            {
+                return Err(RuntimeError::new(
+                    "source span usage metadata or event identity is invalid",
+                ));
+            }
+            ObservationKind::SpanTokenUsage(usage)
+        }
         ObservationFact::CreditUsage(usage) => {
             if usage.nanocredits > i64::MAX as u64 {
                 return Err(RuntimeError::new(

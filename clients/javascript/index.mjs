@@ -23,6 +23,44 @@ const COST_FIELDS = [
 ];
 const USD_COST = 'llm.cost_usd';
 const NANOUNITS = 1_000_000_000n;
+const TOKEN_FIELDS = [
+  ['gen_ai.usage.input_tokens', 'llm.usage.input_tokens', 'llm.token_count.prompt'],
+  ['gen_ai.usage.output_tokens', 'llm.usage.output_tokens', 'llm.token_count.completion'],
+  ['gen_ai.usage.cache_read.input_tokens', 'gen_ai.usage.cache_read_input_tokens',
+    'gen_ai.usage.cached_input_tokens', 'llm.usage.cache_read_input_tokens',
+    'llm.token_count.prompt_details.cache_read', 'cache_read_input_tokens', 'cached_input_tokens'],
+  ['gen_ai.usage.cache_write.input_tokens', 'gen_ai.usage.cache_write_input_tokens',
+    'gen_ai.usage.cache_creation.input_tokens', 'gen_ai.usage.cache_creation_input_tokens',
+    'llm.usage.cache_creation_input_tokens', 'llm.token_count.prompt_details.cache_write',
+    'cache_creation_input_tokens'],
+  ['gen_ai.usage.reasoning.output_tokens', 'gen_ai.usage.reasoning_tokens',
+    'llm.usage.reasoning_tokens', 'llm.token_count.completion_details.reasoning', 'reasoning_tokens'],
+  ['gen_ai.usage.total_tokens', 'llm.usage.total_tokens', 'llm.token_count.total'],
+];
+
+function tokenInteger(value) {
+  if (typeof value === 'number') {
+    if (!Number.isSafeInteger(value) || Object.is(value, -0)) return undefined;
+    value = BigInt(value);
+  } else if (typeof value === 'string') {
+    if (value.length < 1 || value.length > 19 || /[^0-9]/.test(value)) return undefined;
+    value = BigInt(value);
+  }
+  return typeof value === 'bigint' && value >= 0n && value <= 9_223_372_036_854_775_807n
+    ? value : undefined;
+}
+
+function reportedTokenAttributes(attributes) {
+  const reported = [];
+  for (const aliases of TOKEN_FIELDS) {
+    const values = new Set(aliases.filter(key => Object.hasOwn(attributes, key))
+      .map(key => tokenInteger(attributes[key])));
+    if (values.size === 1 && !values.has(undefined)) {
+      reported.push({ key: aliases[0], value: { intValue: String(values.values().next().value) } });
+    }
+  }
+  return reported;
+}
 
 function costNanounits(value) {
   if ((typeof value !== 'string' && typeof value !== 'number') || Object.is(value, -0)) return undefined;
@@ -556,7 +594,9 @@ class Span {
       startTimeUnixNano: this.start_unix_nano,
       endTimeUnixNano: this.end_unix_nano,
       status: { code: OTLP_STATUS[this.status] },
-      attributes: [...attributes, ...reportedCostAttributes(this.attributes)],
+      attributes: [
+        ...attributes, ...reportedCostAttributes(this.attributes), ...reportedTokenAttributes(this.attributes),
+      ],
     };
   }
 }

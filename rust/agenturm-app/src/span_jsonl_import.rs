@@ -6,6 +6,7 @@ use crate::trace_import::{
 #[cfg(target_os = "linux")]
 use agenturm_kernel::ObservationStore;
 use agenturm_kernel::{ExtensionId, Observation, ObservationKind};
+use serde::de::{Error, IgnoredAny, MapAccess, Visitor};
 use serde::{Deserialize, Deserializer};
 use serde_json::value::RawValue;
 use std::collections::{BTreeMap, BTreeSet};
@@ -77,14 +78,11 @@ pub(super) fn execute_with_store(
 }
 
 fn report(inserted: usize, observations: &[Observation]) -> String {
-    let costs = trace_import::cost_count(observations);
-    let projected = observations.len() - costs;
-    if costs == 0 {
-        format!("Imported {inserted} spans. Projected {projected} structural spans.\n")
+    if let Some(evidence) = trace_import::metadata_evidence_summary(observations) {
+        format!("Imported {inserted} observations from {evidence}.\n")
     } else {
-        format!(
-            "Imported {inserted} observations from {projected} spans and {costs} reported cost records.\n"
-        )
+        let projected = observations.len();
+        format!("Imported {inserted} spans. Projected {projected} structural spans.\n")
     }
 }
 
@@ -182,41 +180,10 @@ struct JsonlSpan {
 
 impl JsonlSpan {
     fn into_otlp(self, session: Option<&str>) -> OtlpSpan {
-        use trace_import::cost::*;
-
-        let scope = self.attributes.unwrap_or_default();
-        let mut attributes: Vec<_> = [
-            ("session.id", scope.session_id),
-            ("session.id", scope.conversation_id),
-            ("session.id", scope.agent_session_id),
-            ("session.id", scope.legacy_session_id),
-            ("session.id", scope.legacy_conversation_id),
-            ("session.id", scope.thread_id),
-            ("session.id", scope.langgraph_thread_id),
-            ("session.id", scope.langchain_session_id),
-            ("session.id", scope.cursor_conversation_id),
-            ("agenturm.source.id", scope.source_id),
-            ("agenturm.turn.id", scope.turn_id),
-            ("agenturm.worker.id", scope.worker_id),
-            ("session.id", session.map(str::to_owned)),
-        ]
-        .into_iter()
-        .filter_map(|(key, value)| Some(Attribute::text(key, value?)))
-        .collect();
-        attributes.extend(
-            [
-                (AMOUNT, scope.amount),
-                (CURRENCY, scope.currency),
-                (GEN_AI_AMOUNT, scope.gen_ai_amount),
-                (GEN_AI_CURRENCY, scope.gen_ai_currency),
-                (LLM_AMOUNT, scope.llm_amount),
-                (LLM_CURRENCY, scope.llm_currency),
-                (USD_AMOUNT, scope.usd_amount),
-                (KNOWN, scope.known),
-            ]
-            .into_iter()
-            .filter_map(|(key, value)| value.map(|value| Attribute::raw_literal(key, value))),
-        );
+        let mut attributes = self.attributes.unwrap_or_default().0;
+        if let Some(session) = session {
+            attributes.push(Attribute::text("session.id", session.to_owned()));
+        }
         OtlpSpan {
             trace_id: self.trace_id,
             span_id: self.span_id,
@@ -240,128 +207,61 @@ enum JsonlStatus {
     Error = 2,
 }
 
-#[derive(Default, Deserialize)]
-struct JsonlAttributes {
-    #[serde(rename = "session.id", default, deserialize_with = "string_identity")]
-    session_id: Option<String>,
-    #[serde(
-        rename = "gen_ai.conversation.id",
-        default,
-        deserialize_with = "string_identity"
-    )]
-    conversation_id: Option<String>,
-    #[serde(
-        rename = "agent.session_id",
-        default,
-        deserialize_with = "string_identity"
-    )]
-    agent_session_id: Option<String>,
-    #[serde(rename = "session_id", default, deserialize_with = "string_identity")]
-    legacy_session_id: Option<String>,
-    #[serde(
-        rename = "conversation_id",
-        default,
-        deserialize_with = "string_identity"
-    )]
-    legacy_conversation_id: Option<String>,
-    #[serde(rename = "thread_id", default, deserialize_with = "string_identity")]
-    thread_id: Option<String>,
-    #[serde(
-        rename = "langgraph.thread_id",
-        default,
-        deserialize_with = "string_identity"
-    )]
-    langgraph_thread_id: Option<String>,
-    #[serde(
-        rename = "langchain.session_id",
-        default,
-        deserialize_with = "string_identity"
-    )]
-    langchain_session_id: Option<String>,
-    #[serde(
-        rename = "cursor.conversation.id",
-        default,
-        deserialize_with = "string_identity"
-    )]
-    cursor_conversation_id: Option<String>,
-    #[serde(
-        rename = "agenturm.source.id",
-        default,
-        deserialize_with = "string_identity"
-    )]
-    source_id: Option<String>,
-    #[serde(
-        rename = "agenturm.turn.id",
-        default,
-        deserialize_with = "string_identity"
-    )]
-    turn_id: Option<String>,
-    #[serde(
-        rename = "agenturm.worker.id",
-        default,
-        deserialize_with = "string_identity"
-    )]
-    worker_id: Option<String>,
-    #[serde(
-        rename = "agenturm.reported_cost.amount",
-        default,
-        deserialize_with = "present_cost_attribute"
-    )]
-    amount: Option<Box<RawValue>>,
-    #[serde(
-        rename = "agenturm.reported_cost.currency",
-        default,
-        deserialize_with = "present_cost_attribute"
-    )]
-    currency: Option<Box<RawValue>>,
-    #[serde(
-        rename = "gen_ai.usage.cost",
-        default,
-        deserialize_with = "present_cost_attribute"
-    )]
-    gen_ai_amount: Option<Box<RawValue>>,
-    #[serde(
-        rename = "gen_ai.usage.cost.currency",
-        default,
-        deserialize_with = "present_cost_attribute"
-    )]
-    gen_ai_currency: Option<Box<RawValue>>,
-    #[serde(
-        rename = "llm.cost.total",
-        default,
-        deserialize_with = "present_cost_attribute"
-    )]
-    llm_amount: Option<Box<RawValue>>,
-    #[serde(
-        rename = "llm.cost.currency",
-        default,
-        deserialize_with = "present_cost_attribute"
-    )]
-    llm_currency: Option<Box<RawValue>>,
-    #[serde(
-        rename = "llm.cost_usd",
-        default,
-        deserialize_with = "present_cost_attribute"
-    )]
-    usd_amount: Option<Box<RawValue>>,
-    #[serde(
-        rename = "llm.cost_known",
-        default,
-        deserialize_with = "present_cost_attribute"
-    )]
-    known: Option<Box<RawValue>>,
+#[derive(Default)]
+struct JsonlAttributes(Vec<Attribute>);
+
+impl<'de> Deserialize<'de> for JsonlAttributes {
+    fn deserialize<D: Deserializer<'de>>(deserializer: D) -> Result<Self, D::Error> {
+        struct KnownAttributes;
+
+        impl<'de> Visitor<'de> for KnownAttributes {
+            type Value = JsonlAttributes;
+
+            fn expecting(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+                formatter.write_str("a span attribute object")
+            }
+
+            fn visit_map<A: MapAccess<'de>>(self, mut map: A) -> Result<Self::Value, A::Error> {
+                let mut attributes = Vec::new();
+                let mut known = BTreeSet::new();
+                while let Some(key) = map.next_key::<String>()? {
+                    let scope_key = jsonl_identity_key(&key);
+                    let metadata = trace_import::cost::is_cost_key(&key)
+                        || trace_import::token_usage::is_token_key(&key);
+                    if scope_key.is_none() && !metadata {
+                        map.next_value::<IgnoredAny>()?;
+                        continue;
+                    }
+                    let attribute = if let Some(target) = scope_key {
+                        Attribute::text(target, map.next_value::<String>()?)
+                    } else {
+                        Attribute::raw_literal(&key, map.next_value::<Box<RawValue>>()?)
+                    };
+                    if !known.insert(key) {
+                        return Err(A::Error::custom("duplicate recognized span attribute"));
+                    }
+                    attributes.push(attribute);
+                }
+                Ok(JsonlAttributes(attributes))
+            }
+        }
+
+        deserializer.deserialize_map(KnownAttributes)
+    }
 }
 
-fn present_cost_attribute<'de, D>(value: D) -> Result<Option<Box<RawValue>>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    Box::<RawValue>::deserialize(value).map(Some)
-}
-
-fn string_identity<'de, D>(value: D) -> Result<Option<String>, D::Error>
-where
-    D: Deserializer<'de>,
-{
-    String::deserialize(value).map(Some)
+fn jsonl_identity_key(key: &str) -> Option<&str> {
+    match key {
+        "session.id"
+        | "gen_ai.conversation.id"
+        | "agent.session_id"
+        | "session_id"
+        | "conversation_id"
+        | "thread_id"
+        | "langgraph.thread_id"
+        | "langchain.session_id"
+        | "cursor.conversation.id" => Some("session.id"),
+        "agenturm.source.id" | "agenturm.turn.id" | "agenturm.worker.id" => Some(key),
+        _ => None,
+    }
 }

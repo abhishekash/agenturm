@@ -2,10 +2,11 @@
 
 pub(super) mod cost;
 mod proto;
+pub(super) mod token_usage;
 
 use agenturm_kernel::{
-    CostSpan, ExtensionId, Observation, ObservationIdentity, ObservationKind, ObservationStore,
-    ReportedCost, TraceSpan, TraceStatus,
+    ExtensionId, Observation, ObservationIdentity, ObservationKind, ObservationStore, ReportedCost,
+    TraceSpan, TraceSpanIdentity, TraceStatus,
 };
 use agenturm_store::{
     CommitOutcome, ObservationBatch, Store, TelemetryBinding, TelemetryPayload,
@@ -20,7 +21,7 @@ use std::io::{self, Read};
 use std::path::{Path, PathBuf};
 
 pub(super) const MAX_EXPORT_BYTES: u64 = 4 * 1024 * 1024;
-pub(super) const MAX_EXPORT_SPANS: usize = 1_024;
+pub(super) const MAX_EXPORT_SPANS: usize = agenturm_store::MAX_OTLP_BATCH_SPANS;
 const CURSOR_PREFIX: &str = "otlp-json/1:";
 const TURN_KEY: &str = "agenturm.turn.id";
 const WORKER_KEY: &str = "agenturm.worker.id";
@@ -89,22 +90,37 @@ pub(super) fn execute_with_store(
 }
 
 fn report(inserted: usize, unscoped: usize, observations: &[Observation]) -> String {
-    let reported = cost_count(observations);
-    if reported == 0 {
-        format!("Imported {inserted} spans. Skipped {unscoped} without session identity.\n")
-    } else {
-        let spans = observations.len() - reported;
+    if let Some(evidence) = metadata_evidence_summary(observations) {
         format!(
-            "Imported {inserted} observations from {spans} spans and {reported} reported cost records. Skipped {unscoped} without session identity.\n"
+            "Imported {inserted} observations from {evidence}. Skipped {unscoped} without session identity.\n"
         )
+    } else {
+        format!("Imported {inserted} spans. Skipped {unscoped} without session identity.\n")
     }
 }
 
-pub(super) fn cost_count(observations: &[Observation]) -> usize {
-    observations
-        .iter()
-        .filter(|row| matches!(row.kind, ObservationKind::ReportedCost(_)))
-        .count()
+pub(super) fn metadata_evidence_summary(observations: &[Observation]) -> Option<String> {
+    let mut cost = 0;
+    let mut usage = 0;
+    for row in observations {
+        match row.kind {
+            ObservationKind::ReportedCost(_) => cost += 1,
+            ObservationKind::SpanTokenUsage(_) => usage += 1,
+            _ => {}
+        }
+    }
+    if cost == 0 && usage == 0 {
+        return None;
+    }
+    let mut labels = vec![format!("{} spans", observations.len() - cost - usage)];
+    if cost > 0 {
+        labels.push(format!("{cost} reported cost records"));
+    }
+    if usage > 0 {
+        labels.push(format!("{usage} token usage records"));
+    }
+    let last = labels.pop().expect("a metadata label exists");
+    Some(format!("{} and {last}", labels.join(", ")))
 }
 
 fn prepare_export(options: &TraceImportOptions) -> Result<(Vec<Observation>, usize), String> {
@@ -241,6 +257,12 @@ fn import_cursor(observations: &[Observation]) -> Result<String, String> {
                 row.observed_at_unix_ns,
                 cost,
             )),
+            ObservationKind::SpanTokenUsage(usage) => serde_json::to_vec(&(
+                "span_token_usage",
+                &row.identity,
+                row.observed_at_unix_ns,
+                usage,
+            )),
             _ => return Err("invalid trace import observation".into()),
         }
         .map_err(|_| "cannot encode trace import metadata".to_owned())?;
@@ -338,7 +360,7 @@ fn project_payloads(
             return Err("OTLP export exceeds 1024 spans".into());
         }
         let reported = cost::reported_amount(&span.attributes);
-        let scope = trace_scope(span.attributes)?;
+        let scope = trace_scope(&span.attributes)?;
         let payload = match (scope.input, scope.output) {
             (None, None) => None,
             (input, output) => {
@@ -416,11 +438,25 @@ fn project_payloads(
                     kind: ObservationKind::ReportedCost(ReportedCost {
                         currency,
                         nanounits,
-                        span: Some(CostSpan {
+                        span: Some(TraceSpanIdentity {
                             trace_id: native.trace_id.clone(),
                             span_id: native.span_id.clone(),
                         }),
                     }),
+                },
+                None,
+            )?;
+        }
+        if let Some(usage) = token_usage::reported(&span.attributes, &native) {
+            insert_projected(
+                &mut observations,
+                Observation {
+                    harness_id: source_id.clone(),
+                    event_id: format!("otlp-usage:{}:{}", native.trace_id, native.span_id),
+                    revision: 0,
+                    identity: identity.clone(),
+                    observed_at_unix_ns: ended_at,
+                    kind: ObservationKind::SpanTokenUsage(usage),
                 },
                 None,
             )?;
@@ -466,7 +502,7 @@ fn insert_projected(
         }
         std::collections::btree_map::Entry::Occupied(entry) => {
             if entry.get() != &(observation, payload) {
-                return Err("OTLP export contains conflicting span or cost evidence".into());
+                return Err("OTLP export contains conflicting span metadata evidence".into());
             }
         }
     }
@@ -483,7 +519,7 @@ struct TraceScope {
     output: Option<String>,
 }
 
-fn trace_scope(attributes: Vec<Attribute>) -> Result<TraceScope, String> {
+fn trace_scope(attributes: &[Attribute]) -> Result<TraceScope, String> {
     let mut scope = TraceScope::default();
     for attribute in attributes {
         let (slot, valid, error): (_, fn(&str) -> bool, _) = match attribute.key.as_str() {
@@ -521,6 +557,7 @@ fn trace_scope(attributes: Vec<Attribute>) -> Result<TraceScope, String> {
         };
         let value = attribute
             .value
+            .as_ref()
             .and_then(|value| value.string_value.as_str().map(str::to_owned))
             .filter(|value| valid(value))
             .ok_or(error)?;
@@ -632,6 +669,9 @@ impl Attribute {
         match value.get().as_bytes()[0] {
             b'"' => scalar.string_value = serde_json::from_str(value.get()).unwrap_or_default(),
             b't' | b'f' => scalar.bool_value = (value.get() == "true").into(),
+            b'0'..=b'9' if value.get().bytes().all(|byte| byte.is_ascii_digit()) => {
+                scalar.int_value = Some(value);
+            }
             b'-' | b'0'..=b'9' => scalar.double_value = Some(value),
             _ => {}
         }

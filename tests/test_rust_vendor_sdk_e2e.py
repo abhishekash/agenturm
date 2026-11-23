@@ -83,21 +83,28 @@ class RustVendorSdkTests(unittest.TestCase):
                 self.assertNotIn(private, result.stdout)
                 self.assertNotIn(private.encode(), persisted)
             rows = json.loads(result.stdout)["observations"]
-            self.assertEqual(len(rows), len(expected))
+            token_rows = {}
             observed = {}
             for row in rows:
                 span = row["observation"]
-                self.assertEqual(span["kind"], "trace_span")
                 self.assertEqual(span["target_source_id"], "harness.codex")
                 self.assertEqual(row["identity"]["session_id"], f"session.{vendor}")
                 self.assertEqual(row["identity"]["turn_id"], "turn.fixture")
                 self.assertEqual(row["identity"]["worker_id"], "worker/fixture")
+                if span["kind"] == "span_token_usage":
+                    key = span["span"]["span_id"]
+                    self.assertNotIn(key, token_rows)
+                    token_rows[key] = span
+                    continue
+                self.assertEqual(span["kind"], "trace_span")
                 observed[span["span_id"]] = {
                     "trace": span["trace_id"], "span": span["span_id"],
                     "parent": span["parent_span_id"], "start": int(span["started_at_unix_ns"]),
                     "end": int(row["observed_at_unix_ns"]), "status": span["status"],
                 }
             self.assertEqual(len(observed), len(expected))
+            for key, usage in token_rows.items():
+                self.assertEqual(usage["span"]["trace_id"], observed[key]["trace"])
             for span in expected:
                 saved = observed[span["span"]]
                 self.assertEqual(saved, {key: span[key] for key in saved})
@@ -105,6 +112,10 @@ class RustVendorSdkTests(unittest.TestCase):
                 self.assertGreaterEqual(saved["end"], saved["start"])
                 if saved["parent"] is not None:
                     self.assertEqual(observed[saved["parent"]]["trace"], saved["trace"])
+                reported = span.get("reported_tokens", {})
+                if reported:
+                    actual = token_rows[span["span"]]
+                    self.assertEqual({key: actual[key] for key in reported}, reported)
             return expected
 
     @requires_sdk(OPENAI_AUTO, "install cached OpenAI and its OpenInference instrumentation")
@@ -116,6 +127,9 @@ class RustVendorSdkTests(unittest.TestCase):
         self.assertEqual(len(captured), 3)
         self.assertEqual({span["parent"] for span in captured}, {fixture["span"]})
         self.assertEqual(sorted(span["status"] for span in captured), ["error", "ok", "ok"])
+        self.assertTrue(any(span["reported_tokens"] == {
+            "input_tokens": 11, "output_tokens": 7, "total_tokens": 18,
+        } for span in captured))
 
     @requires_sdk(LANGCHAIN_AUTO, "install cached LangChain OpenAI and instrumentation")
     def test_langchain_automatic_instrumentation_preserves_its_callback_hierarchy(self):
@@ -145,6 +159,8 @@ class RustVendorSdkTests(unittest.TestCase):
                   if span["instrumentor"] == "openinference.instrumentation.anthropic"]
         self.assertEqual(model["parent"], parent["span"])
         self.assertEqual(model["status"], "ok")
+        self.assertEqual(model["reported_tokens"]["input_tokens"], 9)
+        self.assertEqual(model["reported_tokens"]["output_tokens"], 5)
 
     @requires_sdk(installed("openai-agents"), "install OpenAI Agents SDK")
     def test_openai_agents_real_tool_workflow_preserves_normalized_sdk_identity(self):

@@ -46,6 +46,40 @@ _USD_COST = "llm.cost_usd"
 _COST_DECIMAL = re.compile(r"([0-9]+)(?:\.([0-9]*))?(?:[eE]([+-]?[0-9]+))?")
 _CURRENCY = re.compile(r"[A-Z]{3}")
 _NANOUNITS = 10**9
+_TOKEN_FIELDS = (
+    ("gen_ai.usage.input_tokens", "llm.usage.input_tokens", "llm.token_count.prompt"),
+    ("gen_ai.usage.output_tokens", "llm.usage.output_tokens", "llm.token_count.completion"),
+    ("gen_ai.usage.cache_read.input_tokens", "gen_ai.usage.cache_read_input_tokens",
+     "gen_ai.usage.cached_input_tokens", "llm.usage.cache_read_input_tokens",
+     "llm.token_count.prompt_details.cache_read", "cache_read_input_tokens", "cached_input_tokens"),
+    ("gen_ai.usage.cache_write.input_tokens", "gen_ai.usage.cache_write_input_tokens",
+     "gen_ai.usage.cache_creation.input_tokens", "gen_ai.usage.cache_creation_input_tokens",
+     "llm.usage.cache_creation_input_tokens", "llm.token_count.prompt_details.cache_write",
+     "cache_creation_input_tokens"),
+    ("gen_ai.usage.reasoning.output_tokens", "gen_ai.usage.reasoning_tokens",
+     "llm.usage.reasoning_tokens", "llm.token_count.completion_details.reasoning", "reasoning_tokens"),
+    ("gen_ai.usage.total_tokens", "llm.usage.total_tokens", "llm.token_count.total"),
+)
+_TOKEN_DECIMAL = re.compile(r"[0-9]{1,19}")
+
+
+def _token_integer(value):
+    if type(value) is str:
+        if len(value) > 19 or not _TOKEN_DECIMAL.fullmatch(value):
+            return None
+        value = int(value)
+    return value if type(value) is int and 0 <= value < 1 << 63 else None
+
+
+def _reported_token_values(attributes):
+    if not isinstance(attributes, Mapping):
+        return {}
+    reported = {}
+    for aliases in _TOKEN_FIELDS:
+        values = {_token_integer(attributes[key]) for key in aliases if key in attributes}
+        if len(values) == 1 and None not in values:
+            reported[aliases[0]] = str(values.pop())
+    return reported
 
 
 def _cost_nanounits(value):
@@ -242,6 +276,7 @@ def _project(span, scope, attributes, capture_content):
     if status is None:
         raise ValueError("Invalid OTLP span status")
     payload, payload_bytes = _payload_attributes(span, scope) if capture_content else ([], 0)
+    native_attributes = span.get("attributes")
     result = {
         "traceId": _span_id(span["trace_id"], 32),
         "spanId": _span_id(span["span_id"], 16),
@@ -249,7 +284,12 @@ def _project(span, scope, attributes, capture_content):
         "startTimeUnixNano": str(start),
         "endTimeUnixNano": str(end),
         "status": {"code": status},
-        "attributes": [*attributes, *_reported_cost_attributes(span.get("attributes")), *payload],
+        "attributes": [
+            *attributes, *_reported_cost_attributes(native_attributes),
+            *({"key": key, "value": {"intValue": value}}
+              for key, value in _reported_token_values(native_attributes).items()),
+            *payload,
+        ],
     }
     if span.get("parent_span_id") is not None:
         parent = _span_id(span["parent_span_id"], 16)

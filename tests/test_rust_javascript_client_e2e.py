@@ -159,12 +159,16 @@ await client.trace({
     identities.parent = parent.span_id;
     parent.setAttribute('gen_ai.usage.cost', 'synthetic private invalid amount');
     parent.setAttribute('gen_ai.usage.cost.currency', 'EUR');
+    parent.setAttribute('gen_ai.usage.input_tokens', false);
     await run.span('child', child => {
       identities.child = child.span_id;
       child.setAttribute('agenturm.source.id', 'harness.unverified');
       child.setAttribute('agenturm.turn.id', 'unverified-turn');
       child.setAttribute('agenturm.worker.id', 'unverified-worker');
       child.setAttribute('llm.cost_usd', '0.000000001');
+      child.setAttribute('llm.token_count.prompt', 0);
+      child.setAttribute('llm.token_count.completion', 7);
+      child.setAttribute('gen_ai.usage.cache_read.input_tokens', '9223372036854775807');
       child.setStatus('OK');
     });
   });
@@ -185,6 +189,12 @@ process.exitCode = 23;
         identities = json.loads(result.stdout)
         rows = self.observations("otlp.node")
         costs = [row["observation"] for row in rows if row["observation"]["kind"] == "reported_cost"]
+        usage, = [row["observation"] for row in rows if row["observation"]["kind"] == "span_token_usage"]
+        self.assertEqual(usage, {
+            "kind": "span_token_usage", "target_source_id": "harness.node",
+            "span": {"trace_id": identities["trace"], "span_id": identities["child"]},
+            "input_tokens": 0, "output_tokens": 7, "cache_read_input_tokens": (1 << 63) - 1,
+        })
         self.assertEqual(costs, [{
             "kind": "reported_cost", "currency": "USD", "nanounits": "1",
             "span": {"trace_id": identities["trace"], "span_id": identities["child"]},

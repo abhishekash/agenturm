@@ -101,6 +101,24 @@ def scoped_client(vendor):
                   harness_id="harness.codex", turn_id="turn.fixture", worker_id="worker/fixture",
                   capture_content=CAPTURE_TEXT)
 
+def witnessed_tokens(attributes):
+    result = {}
+    for field, aliases in (
+        ("input_tokens", ("gen_ai.usage.input_tokens", "llm.token_count.prompt")),
+        ("output_tokens", ("gen_ai.usage.output_tokens", "llm.token_count.completion")),
+        ("total_tokens", ("gen_ai.usage.total_tokens", "llm.token_count.total")),
+    ):
+        values = [attributes[key] for key in aliases if key in attributes]
+        if values and all(
+            (type(value) is int and value >= 0) or
+            (type(value) is str and value.isascii() and value.isdecimal())
+            for value in values
+        ):
+            integers = {int(value) for value in values}
+            if len(integers) == 1:
+                result[field] = integers.pop()
+    return result
+
 
 def observed_sdk_spans():
     from opentelemetry import trace
@@ -121,6 +139,7 @@ def observed_sdk_spans():
                 "start": span.start_time, "end": span.end_time,
                 "status": span.status.status_code.name.lower(),
                 "instrumentor": span.instrumentation_scope.name, "operation": operation,
+                "reported_tokens": witnessed_tokens(span.attributes),
             })
 
     trace.get_tracer_provider().add_span_processor(Witness())
@@ -227,7 +246,7 @@ def run_langgraph(endpoint):
     return [
         {"trace": run.trace_id, "span": span.span_id, "parent": span.parent_span_id,
          "start": span.start_ns, "end": span.end_ns, "status": span.status.lower(),
-         "instrumentor": "langgraph.callbacks"}
+         "instrumentor": "langgraph.callbacks", "reported_tokens": witnessed_tokens(span.attributes)}
         for span in run.spans
     ]
 

@@ -25,6 +25,14 @@ _TOKEN_KEYS = {"input_tokens", "output_tokens", "prompt_tokens", "completion_tok
                "total_tokens", "cached_input_tokens", "cache_read_input_tokens",
                "cache_creation_input_tokens", "cache_write_input_tokens",
                "reasoning_tokens", "reasoning_output_tokens"}
+_TOKEN_NAMES = {
+    "prompt_tokens": "input_tokens", "completion_tokens": "output_tokens",
+    "cached_input_tokens": "cache_read.input_tokens",
+    "cache_read_input_tokens": "cache_read.input_tokens",
+    "cache_creation_input_tokens": "cache_write.input_tokens",
+    "cache_write_input_tokens": "cache_write.input_tokens",
+    "reasoning_output_tokens": "reasoning_tokens",
+}
 
 
 def _stable_id(value: Any, length: int) -> str:
@@ -41,7 +49,7 @@ def _timestamp_ns(value: str | None) -> int:
         return 0
 
 
-def _safe_attributes(data: Any, span_kind: str, exported=None) -> dict[str, Any]:
+def _safe_attributes(data: Any, span_kind: str, exported=None, *, exact_usage=False) -> dict[str, Any]:
     """Pick identifying fields and token counts; omit inputs, outputs, and prompts."""
     if exported is None:
         exported = data.export() if callable(getattr(data, "export", None)) else {}
@@ -70,19 +78,24 @@ def _safe_attributes(data: Any, span_kind: str, exported=None) -> dict[str, Any]
                     result["tool.name"] = item
                 else:
                     result[f"openai_agents.{prefix}{key}"] = item
-            elif (span_kind == "generation" and normalized in _TOKEN_KEYS and
+            elif (not exact_usage and span_kind == "generation" and normalized in _TOKEN_KEYS and
                   isinstance(item, (int, float)) and not isinstance(item, bool) and item >= 0):
-                token_name = {
-                    "prompt_tokens": "input_tokens", "completion_tokens": "output_tokens",
-                    "cached_input_tokens": "cache_read.input_tokens",
-                    "cache_read_input_tokens": "cache_read.input_tokens",
-                    "cache_creation_input_tokens": "cache_write.input_tokens",
-                    "cache_write_input_tokens": "cache_write.input_tokens",
-                    "reasoning_output_tokens": "reasoning_tokens",
-                }.get(normalized, normalized)
+                token_name = _TOKEN_NAMES.get(normalized, normalized)
                 result[f"gen_ai.usage.{token_name}"] = int(item)
 
     visit(exported)
+    if exact_usage and span_kind == "generation" and isinstance(exported.get("usage"), Mapping):
+        from observatory.otlp_transport import _token_integer
+
+        reported = {}
+        for key, item in exported["usage"].items():
+            if key not in _TOKEN_KEYS:
+                continue
+            canonical = _TOKEN_NAMES.get(key, key)
+            reported.setdefault(canonical, set()).add(_token_integer(item))
+        for key, values in reported.items():
+            if len(values) == 1 and None not in values:
+                result[f"gen_ai.usage.{key}"] = values.pop()
     return result
 
 
@@ -137,7 +150,10 @@ class OpenAIAgentsExporter(TracingExporter):
         data = span.span_data
         kind = getattr(data, "type", None) or type(data).__name__.removesuffix("SpanData").lower()
         exported = data.export() if callable(getattr(data, "export", None)) else {}
-        attrs = _safe_attributes(data, str(kind), exported)
+        attrs = _safe_attributes(
+            data, str(kind), exported,
+            exact_usage=getattr(self.client, "transport", None) == "otlp",
+        )
         if self.capture_content and isinstance(exported, Mapping):
             if getattr(self.client, "transport", None) == "otlp":
                 if self.client.capture_content:

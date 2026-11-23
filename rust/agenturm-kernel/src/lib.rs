@@ -277,6 +277,7 @@ pub enum ObservationKind {
         nanocredits: u64,
     },
     ReportedCost(ReportedCost),
+    SpanTokenUsage(SpanTokenUsage),
 }
 
 /// Returns whether a source lifecycle state can be admitted and stored.
@@ -305,9 +306,9 @@ pub use agenturm_protocol::host::{
     is_host_source,
 };
 pub use agenturm_protocol::observation::{
-    CostSpan, FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, NANOUNITS_PER_CURRENCY_UNIT,
-    RelationshipKind, ReportedCost, TraceSpan, TraceStatus, is_github_pull_request,
-    is_valid_mcp_metadata,
+    FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, NANOUNITS_PER_CURRENCY_UNIT, RelationshipKind,
+    ReportedCost, SpanTokenUsage, TraceSpan, TraceSpanIdentity, TraceStatus,
+    is_github_pull_request, is_valid_mcp_metadata,
 };
 
 pub fn is_mcp_operation(identity: &ObservationIdentity) -> bool {
@@ -327,10 +328,30 @@ pub fn is_file_edit_operation(identity: &ObservationIdentity) -> bool {
 /// is an independent, exact harness identifier rather than source ownership.
 pub fn is_trace_source_link_valid(import_source_id: &str, span: &TraceSpan) -> bool {
     span.target_source_id.as_deref().is_none_or(|target| {
-        import_source_id.starts_with("otlp.")
-            && !target.starts_with("otlp.")
-            && ExtensionId::parse(target).is_ok()
+        import_source_id.starts_with("otlp.") && is_native_trace_target(target)
     })
+}
+
+fn is_native_trace_target(target: &str) -> bool {
+    !target.starts_with("otlp.") && ExtensionId::parse(target).is_ok()
+}
+
+pub fn is_span_usage_anchor_valid(
+    usage: &SpanTokenUsage,
+    event_id: &str,
+    turn_id: Option<&str>,
+    worker_id: Option<&str>,
+    operation_id: Option<&str>,
+) -> bool {
+    usage.is_valid()
+        && usage.matches_event(event_id)
+        && usage
+            .target_source_id
+            .as_deref()
+            .is_none_or(is_native_trace_target)
+        && operation_id.is_none()
+        && (turn_id.is_some() || worker_id.is_none())
+        && (turn_id.is_none() || usage.target_source_id.is_some())
 }
 
 /// A turn-scoped trace must explicitly identify the native harness. A worker
@@ -1522,6 +1543,18 @@ fn validate_raw_observation_slice(
                 || !cost.matches_event(&row.event_id))
         {
             return Err("reported cost metadata or event identity is invalid".into());
+        }
+        if let ObservationKind::SpanTokenUsage(usage) = &row.kind
+            && (row.identity.scope != ObservationScope::Session
+                || !is_span_usage_anchor_valid(
+                    usage,
+                    &row.event_id,
+                    row.identity.turn_id.as_deref(),
+                    row.identity.worker_id.as_deref(),
+                    row.identity.operation_id.as_deref(),
+                ))
+        {
+            return Err("span token usage or event identity is invalid".into());
         }
         if let ObservationKind::Diagnostic { code, severity } = &row.kind
             && (!is_safe_diagnostic_code(code)

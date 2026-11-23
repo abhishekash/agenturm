@@ -64,7 +64,7 @@ use agenturm_kernel::{
 use rusqlite::{Connection, OpenFlags, OptionalExtension, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
-use std::collections::BTreeSet;
+use std::collections::{BTreeMap, BTreeSet};
 use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
@@ -72,6 +72,7 @@ use std::path::Path;
 const SCHEMA_VERSION: i64 = 16;
 pub const MAX_HOST_HISTORY_PAGE: usize = 64;
 const MAX_BATCH_EVENTS: usize = 2_048;
+pub const MAX_OTLP_BATCH_SPANS: usize = 1_024;
 const MAX_SOURCE_ID_BYTES: usize = 96;
 const MAX_REQUEST_ID_BYTES: usize = 128;
 const MAX_EVENT_ID_BYTES: usize = 256;
@@ -150,6 +151,7 @@ pub enum ObservationKind {
         nanocredits: u64,
     },
     ReportedCost(agenturm_kernel::ReportedCost),
+    SpanTokenUsage(agenturm_kernel::SpanTokenUsage),
 }
 
 #[derive(Clone, Debug, Eq, PartialEq, Serialize, Deserialize)]
@@ -326,6 +328,9 @@ impl ObservationBatch {
                     }
                     KernelObservationKind::ReportedCost(cost) => {
                         ObservationKind::ReportedCost(cost.clone())
+                    }
+                    KernelObservationKind::SpanTokenUsage(usage) => {
+                        ObservationKind::SpanTokenUsage(usage.clone())
                     }
                     KernelObservationKind::Diagnostic { code, severity } => {
                         ObservationKind::Diagnostic {
@@ -1945,6 +1950,9 @@ impl Store {
                     ObservationKind::ReportedCost(cost) => {
                         KernelObservationKind::ReportedCost(cost)
                     }
+                    ObservationKind::SpanTokenUsage(usage) => {
+                        KernelObservationKind::SpanTokenUsage(usage)
+                    }
                     ObservationKind::Diagnostic { code, severity } => {
                         KernelObservationKind::Diagnostic { code, severity }
                     }
@@ -2075,8 +2083,13 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
     if let Some(cursor) = &batch.expected_cursor {
         validate_cursor(cursor)?;
     }
-    if batch.observations.len() > MAX_BATCH_EVENTS {
-        return Err(StoreError::Invalid("batch exceeds event count limit"));
+    if batch.observations.len() > MAX_BATCH_EVENTS
+        || batch
+            .observations
+            .iter()
+            .any(|row| matches!(row.kind, ObservationKind::SpanTokenUsage(_)))
+    {
+        validate_otlp_metadata_batch(batch)?;
     }
     let mut event_ids = std::collections::BTreeSet::new();
     for observation in &batch.observations {
@@ -2272,6 +2285,91 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
     Ok(())
 }
 
+fn validate_otlp_metadata_batch(batch: &ObservationBatch) -> Result<()> {
+    let rows = &batch.observations;
+    if rows.len() > MAX_OTLP_BATCH_SPANS * 3 {
+        return Err(StoreError::Invalid("batch exceeds event count limit"));
+    }
+    if !batch.source_id.starts_with("otlp.") || ExtensionId::parse(&batch.source_id).is_err() {
+        return Err(StoreError::Invalid(if rows.len() > MAX_BATCH_EVENTS {
+            "batch exceeds event count limit"
+        } else {
+            "span token usage requires an OTLP source"
+        }));
+    }
+    let mut spans = BTreeMap::new();
+    for row in rows {
+        if let ObservationKind::TraceSpan(span) = &row.kind {
+            let span_key = (span.trace_id.as_str(), span.span_id.as_str());
+            if row.revision != 0
+                || row.identity.operation_id.is_some()
+                || row
+                    .event_id
+                    .strip_prefix("otlp:")
+                    .and_then(|id| id.split_once(':'))
+                    != Some(span_key)
+                || spans.insert(span_key, (row, span)).is_some()
+                || spans.len() > MAX_OTLP_BATCH_SPANS
+            {
+                return Err(StoreError::Invalid(
+                    "OTLP structural spans exceed limits or have invalid identities",
+                ));
+            }
+        }
+    }
+    let matching_span = |row: &StoredObservation, span: &agenturm_kernel::TraceSpanIdentity| {
+        let key = (span.trace_id.as_str(), span.span_id.as_str());
+        spans.get(&key).is_some_and(|(anchor, structural)| {
+            row.revision == anchor.revision
+                && row.identity == anchor.identity
+                && row.observed_at_unix_ns == anchor.observed_at_unix_ns
+                && match &row.kind {
+                    ObservationKind::SpanTokenUsage(usage) => {
+                        usage.target_source_id == structural.target_source_id
+                    }
+                    _ => true,
+                }
+        })
+    };
+    for row in rows {
+        match &row.kind {
+            ObservationKind::TraceSpan(_) => {}
+            ObservationKind::ReportedCost(cost) => {
+                if !cost.matches_event(&row.event_id)
+                    || !cost
+                        .span
+                        .as_ref()
+                        .is_some_and(|span| matching_span(row, span))
+                {
+                    return Err(StoreError::Invalid(
+                        "OTLP reported cost has no exact structural span",
+                    ));
+                }
+            }
+            ObservationKind::SpanTokenUsage(usage) => {
+                let valid = agenturm_kernel::is_span_usage_anchor_valid(
+                    usage,
+                    &row.event_id,
+                    row.identity.turn_id.as_deref(),
+                    row.identity.worker_id.as_deref(),
+                    row.identity.operation_id.as_deref(),
+                );
+                if !valid || !matching_span(row, &usage.span) {
+                    return Err(StoreError::Invalid(
+                        "OTLP span token usage has no exact structural span",
+                    ));
+                }
+            }
+            _ => {
+                return Err(StoreError::Invalid(
+                    "OTLP metadata batch contains an unrelated observation",
+                ));
+            }
+        }
+    }
+    Ok(())
+}
+
 fn validate_cursor(cursor: &str) -> Result<()> {
     if cursor.len() > MAX_CURSOR_BYTES || cursor.chars().any(char::is_control) {
         return Err(StoreError::Invalid("cursor is invalid or too long"));
@@ -2381,6 +2479,76 @@ mod tests {
              UPDATE agenturm_store_meta SET value='agenturm.observation-store.v14' WHERE key='format';
              PRAGMA user_version=14;"
         ).unwrap();
+    }
+
+    #[test]
+    fn mismatched_span_usage_scope_rejects_the_entire_batch() {
+        use agenturm_kernel::{
+            ObservationIdentity, ReportedCost, SpanTokenUsage, TraceSpan, TraceSpanIdentity,
+            TraceStatus,
+        };
+
+        let db = TempDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        let source = ExtensionId::parse("otlp.usage").unwrap();
+        let trace = TraceSpanIdentity {
+            trace_id: "11".repeat(16),
+            span_id: "22".repeat(8),
+        };
+        let mut identity = ObservationIdentity::session("session");
+        identity.turn_id = Some("turn".into());
+        identity.worker_id = Some("worker".into());
+        let row = |prefix: &str, kind| Observation {
+            harness_id: source.clone(),
+            event_id: format!("{prefix}:{}:{}", trace.trace_id, trace.span_id),
+            revision: 0,
+            identity: identity.clone(),
+            observed_at_unix_ns: 2,
+            kind,
+        };
+        let structural = row(
+            "otlp",
+            KernelObservationKind::TraceSpan(TraceSpan {
+                trace_id: trace.trace_id.clone(),
+                span_id: trace.span_id.clone(),
+                parent_span_id: None,
+                target_source_id: Some("harness.pi".into()),
+                started_at_unix_ns: 1,
+                status: TraceStatus::Ok,
+            }),
+        );
+        let cost = row(
+            "otlp-cost",
+            KernelObservationKind::ReportedCost(ReportedCost {
+                currency: "USD".into(),
+                nanounits: 0,
+                span: Some(trace.clone()),
+            }),
+        );
+        let mut usage = row(
+            "otlp-usage",
+            KernelObservationKind::SpanTokenUsage(SpanTokenUsage {
+                span: trace.clone(),
+                target_source_id: Some("harness.pi".into()),
+                input_tokens: Some(0),
+                output_tokens: None,
+                cache_read_input_tokens: None,
+                cache_write_input_tokens: None,
+                reasoning_output_tokens: None,
+                total_tokens: None,
+            }),
+        );
+        usage.identity.worker_id = Some("sibling".into());
+        let result = ObservationStore::commit(
+            &mut store,
+            source.as_str(),
+            None,
+            "next",
+            &[structural, cost, usage],
+        );
+        assert!(result.unwrap_err().contains("has no exact structural span"));
+        assert!(store.source_cursor(source.as_str()).unwrap().is_none());
+        assert!(store.observation_page(10).unwrap().observations.is_empty());
     }
 
     fn downgrade_fixture_to_v9(connection: &Connection) {

@@ -366,6 +366,7 @@ fn usage_rows(evidence: &[&Observation], scope: ViewScope) -> Vec<MetricRow> {
                     ObservationKind::Usage { .. }
                         | ObservationKind::CreditUsage { .. }
                         | ObservationKind::ReportedCost(_)
+                        | ObservationKind::SpanTokenUsage(_)
                 )
             })
             .map(|row| activity_row(row, scope))
@@ -620,6 +621,22 @@ pub(super) fn describe_observation(kind: &ObservationKind) -> (&'static str, Str
                 value.push_str(&format!(" · span {}", span.span_id));
             }
             ("Reported cost", value)
+        }
+        ObservationKind::SpanTokenUsage(usage) => {
+            let counters = [
+                ("input", usage.input_tokens),
+                ("output", usage.output_tokens),
+                ("cache read input", usage.cache_read_input_tokens),
+                ("cache write input", usage.cache_write_input_tokens),
+                ("reasoning output", usage.reasoning_output_tokens),
+                ("total", usage.total_tokens),
+            ];
+            let mut fields: Vec<_> = counters
+                .into_iter()
+                .filter_map(|(label, value)| value.map(|value| format!("{label} {value}")))
+                .collect();
+            fields.push(format!("span {}", usage.span.span_id));
+            ("Span token usage", fields.join(" · "))
         }
         ObservationKind::Tool { category, result } => ("Tool", format!("{category} · {result}")),
         ObservationKind::FileEdit(edit) => {

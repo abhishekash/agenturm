@@ -414,6 +414,51 @@ class PythonOtlpClientTests(unittest.TestCase):
         self.assertEqual(lc_child["parentSpanId"], lc_parent["spanId"])
         self.assertNotIn(MARKER.encode(), self.requests[0][4])
 
+    def test_usage_whitelist_and_sdk_callback_preserve_missing_fields(self):
+        client = Client(ENDPOINT, transport="otlp", session_id="native-session", strict=True)
+        with client.trace(attributes={
+            "gen_ai.usage.input_tokens": 0,
+            "llm.token_count.prompt": "0",
+            "gen_ai.usage.output_tokens": 5,
+            "llm.token_count.completion": 6,
+            "gen_ai.usage.cached_input_tokens": "9223372036854775807",
+            "gen_ai.usage.reasoning_tokens": True,
+            "gen_ai.input.messages": MARKER,
+        }):
+            pass
+        attributes = {field["key"]: field["value"] for field in self.sent_spans()[0]["attributes"]}
+        self.assertEqual(attributes, {
+            "session.id": {"stringValue": "native-session"},
+            "gen_ai.usage.input_tokens": {"intValue": "0"},
+            "gen_ai.usage.cache_read.input_tokens": {"intValue": "9223372036854775807"},
+        })
+
+        langchain = integration("langchain.py", {
+            "langchain_core.callbacks": {"BaseCallbackHandler": type("BaseCallbackHandler", (), {})}
+        })
+        result = SimpleNamespace(generations=[[SimpleNamespace(message=SimpleNamespace(
+            usage_metadata={
+                "output_tokens": 0, "input_token_details": {"cache_read": 4},
+                "output_token_details": {"reasoning": 1.5},
+            },
+        ))]])
+        self.assertEqual(langchain.LangChainCallbackHandler._reported_token_attributes(result), {
+            "gen_ai.usage.output_tokens": "0", "gen_ai.usage.cache_read.input_tokens": "4",
+        })
+
+        agents = integration("openai_agents.py", {
+            "agents.tracing.processor_interface": {"TracingExporter": type("TracingExporter", (), {})}
+        })
+        reported = agents._safe_attributes(
+            None, "generation", {
+                "usage": {"input_tokens": 1.5, "output_tokens": 0, "cached_input_tokens": 9},
+                "input": {"input_tokens": 99, "reasoning_tokens": 100},
+            }, exact_usage=True,
+        )
+        self.assertEqual(reported, {
+            "gen_ai.usage.output_tokens": 0, "gen_ai.usage.cache_read.input_tokens": 9,
+        })
+
     def test_legacy_transport_preserves_span_and_progress_payloads(self):
         with patch("observatory.receiver_state.endpoint_token", return_value="legacy-token"), patch(
             "observatory.client.receiver_urlopen",

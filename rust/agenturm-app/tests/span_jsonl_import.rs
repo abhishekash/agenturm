@@ -358,6 +358,135 @@ fn reported_cost_admits_explicit_zero_and_currency_without_changing_span_replay(
     assert_eq!(backup_page["observations"], page["observations"]);
 }
 
+#[test]
+fn span_token_usage_keeps_reported_units_and_stable_structural_replay() {
+    let scratch = Scratch::new();
+    let db = scratch.0.join("history.sqlite");
+    let file = scratch.0.join("usage.jsonl");
+    let mut root = span(ROOT, None, "OK");
+    let mut child = span(CHILD, Some(ROOT), "ERROR");
+    write_jsonl(&file, &[root.clone(), child.clone()]);
+    assert!(check(import_file(&db, &file, &[])).contains("Imported 2 spans"));
+
+    root["attributes"]["gen_ai.usage.input_tokens"] = json!(0);
+    root["attributes"]["llm.token_count.prompt"] = json!("0");
+    root["attributes"]["llm.token_count.completion"] = json!(9);
+    root["attributes"]["gen_ai.usage.cached_input_tokens"] = json!(12);
+    child["attributes"]["llm.usage.input_tokens"] = json!(11);
+    child["attributes"]["llm.token_count.prompt"] = json!(17);
+    child["attributes"]["gen_ai.usage.output_tokens"] = json!(false);
+    child["attributes"]["gen_ai.usage.cache_creation.input_tokens"] = json!("9223372036854775807");
+    child["attributes"]["gen_ai.usage.reasoning_tokens"] = json!(1);
+    child["attributes"]["gen_ai.usage.total_tokens"] = json!(25);
+    write_jsonl(&file, &[root.clone(), child]);
+    assert!(
+        check(import_file(&db, &file, &[]))
+            .contains("Imported 2 observations from 2 spans and 2 token usage records")
+    );
+    assert!(check(import_file(&db, &file, &[])).contains("Imported 0 observations"));
+    let raw = check(run(&db, &["query", "--harness-id", SOURCE]));
+    assert!(!raw.contains(PRIVATE));
+    let page: Value = serde_json::from_str(&raw).unwrap();
+    let rows = page["observations"].as_array().unwrap();
+    assert_eq!(rows.len(), 4);
+    let usage: Vec<_> = rows
+        .iter()
+        .filter(|row| row["observation"]["kind"] == "span_token_usage")
+        .collect();
+    assert_eq!(usage.len(), 2);
+    for row in &usage {
+        assert_eq!(row["identity"]["session_id"], SESSION);
+        assert_eq!(row["identity"]["worker_id"], WORKER);
+        assert_eq!(row["identity"]["turn_id"], TURN);
+        assert_eq!(row["observation"]["target_source_id"], HARNESS);
+        assert_eq!(row["observation"]["span"]["trace_id"], TRACE);
+    }
+    assert_eq!(
+        usage[0]["observation"],
+        json!({
+            "kind":"span_token_usage", "target_source_id":HARNESS,
+            "span":{"trace_id":TRACE,"span_id":ROOT},
+            "input_tokens":0, "output_tokens":9, "cache_read_input_tokens":12,
+        })
+    );
+    assert_eq!(
+        usage[1]["observation"],
+        json!({
+            "kind":"span_token_usage", "target_source_id":HARNESS,
+            "span":{"trace_id":TRACE,"span_id":CHILD},
+            "cache_write_input_tokens":i64::MAX, "reasoning_output_tokens":1, "total_tokens":25,
+        })
+    );
+    let json_file = scratch.0.join("usage.json");
+    let mut otlp = otlp_span(ROOT, None, 1);
+    otlp["attributes"].as_array_mut().unwrap().extend([
+        json!({"key":"llm.usage.input_tokens","value":{"intValue":"0"}}),
+        json!({"key":"gen_ai.usage.output_tokens","value":{"intValue":"9"}}),
+        json!({"key":"gen_ai.usage.cache_read.input_tokens","value":{"intValue":12}}),
+    ]);
+    std::fs::write(
+        &json_file,
+        json!({"resourceSpans":[{"scopeSpans":[{"spans":[otlp]}]}]}).to_string(),
+    )
+    .unwrap();
+    assert!(
+        check(run(
+            &db,
+            &[
+                "import-traces",
+                "--file",
+                json_file.to_str().unwrap(),
+                "--source-id",
+                SOURCE
+            ]
+        ))
+        .contains("Imported 0 observations")
+    );
+}
+
+#[test]
+fn maximum_export_commits_span_cost_and_usage_atomically() {
+    let scratch = Scratch::new();
+    let file = scratch.0.join("maximum.jsonl");
+    let db = scratch.0.join("history.sqlite");
+    let mut rows: Vec<_> = (1..=1_024)
+        .map(|i| {
+            let mut row = span(&format!("{i:016x}"), None, "OK");
+            row["attributes"]["llm.cost_usd"] = json!(0);
+            row["attributes"]["gen_ai.usage.input_tokens"] = json!(i);
+            row
+        })
+        .collect();
+    rows.last_mut().unwrap()["span_id"] = json!("malformed");
+    write_jsonl(&file, &rows);
+    failure(import_file(&db, &file, &[]));
+    assert!(!db.exists());
+
+    rows.last_mut().unwrap()["span_id"] = json!(format!("{:016x}", 1_024));
+    write_jsonl(&file, &rows);
+    let receipt = check(import_file(&db, &file, &[]));
+    assert!(
+        receipt.contains("Imported 3072 observations from 1024 spans"),
+        "{receipt}"
+    );
+    assert!(check(import_file(&db, &file, &[])).contains("Imported 0 observations"));
+    let raw = check(run(
+        &db,
+        &["query", "--harness-id", SOURCE, "--limit", "4096"],
+    ));
+    let page: Value = serde_json::from_str(&raw).unwrap();
+    let observations = page["observations"].as_array().unwrap();
+    for kind in ["trace_span", "reported_cost", "span_token_usage"] {
+        assert_eq!(
+            observations
+                .iter()
+                .filter(|row| row["observation"]["kind"] == kind)
+                .count(),
+            1_024
+        );
+    }
+}
+
 fn span(id: &str, parent: Option<&str>, status: &str) -> Value {
     json!({
         "trace_id": TRACE, "span_id": id, "parent_span_id": parent,
@@ -366,7 +495,7 @@ fn span(id: &str, parent: Option<&str>, status: &str) -> Value {
         "attributes": {
             "session.id": SESSION, "agenturm.source.id": HARNESS,
             "agenturm.turn.id": TURN, "agenturm.worker.id": WORKER,
-            "gen_ai.input.messages": PRIVATE, "gen_ai.usage.input_tokens": 345,
+            "gen_ai.input.messages": PRIVATE,
         },
         "events": [{"name": PRIVATE}], "links": [{"attributes": {"private": PRIVATE}}],
         "resource_attributes": {"secret": PRIVATE},

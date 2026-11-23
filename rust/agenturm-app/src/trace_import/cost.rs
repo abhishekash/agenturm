@@ -12,7 +12,7 @@ pub(crate) const LLM_CURRENCY: &str = "llm.cost.currency";
 pub(crate) const USD_AMOUNT: &str = "llm.cost_usd";
 pub(crate) const KNOWN: &str = "llm.cost_known";
 
-pub(super) fn is_cost_key(key: &str) -> bool {
+pub(crate) fn is_cost_key(key: &str) -> bool {
     matches!(
         key,
         AMOUNT

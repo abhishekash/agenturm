@@ -61,7 +61,27 @@ Rows carry `trace_id`, `span_id`, optional `parent_span_id`, `start_unix_nano` a
 
 A span needs an exact session ID from its `attributes` or the explicit `--session-id` argument. Span-level session aliases must agree, including `session.id`, `gen_ai.conversation.id`, and the legacy session, conversation and thread aliases. The argument fills missing session IDs and must match any IDs carried by the file. A native turn link requires `agenturm.source.id` and `agenturm.turn.id`. A worker link adds `agenturm.worker.id`.
 
-Imports retain trace structure, timing, status, exact scope and explicitly reported cost. Import discards span names, payloads, events, links, token usage and eval results. Those legacy fields and workflows have separate cutover coverage. Exact structural replays deduplicate across JSONL and OTLP JSON under the same source ID. Conflicting retained identities reject the entire import.
+Imports retain trace structure, timing, status, exact scope, and explicitly reported cost and token usage. Import discards span names, payloads, events, links, and eval results. Those legacy fields and workflows have separate cutover coverage. Exact structural replays deduplicate across JSONL and OTLP JSON under the same source ID. Conflicting retained identities reject the entire import.
+
+### Reported token usage
+
+OTLP JSON, OTLP protobuf and native JSONL retain explicit input, output, total,
+cache-read input, cache-write input, and reasoning-output token counts. The
+projector accepts supported `gen_ai.usage.*`, `llm.usage.*` and OpenInference
+`llm.token_count.*` fields, including the legacy explicit cache and reasoning
+aliases. The Python and Node producers forward the supported scalar counters.
+
+Each counter accepts a nonnegative integer through the signed 64-bit limit.
+Zero is a reported value. Missing or invalid values and conflicting aliases
+leave that counter absent. Each breakdown keeps its originally reported units.
+The projector preserves the producer's input and output counts and records total
+only when supplied. A batch can contain up to 1,024 spans with cost and token
+usage evidence recorded beside each span in the same commit.
+
+Workspace Usage and the originating OTLP session's Usage show the individual
+reports. `query` includes the source, exact session, trace and span, and
+any reported turn, worker and target harness. Aggregate usage views remain
+open for traces where multiple instrumentation layers report the same usage.
 
 ### Reported cost
 

@@ -115,7 +115,7 @@ fn decode_span(input: &[u8]) -> Result<OtlpSpan, &'static str> {
             (8, Field::Fixed64(time)) => span.end_time_unix_nano = Timestamp::Number(time),
             (9, Field::Bytes(value)) => {
                 if let Some(attribute) = decode_attribute(value)? {
-                    if span.attributes.len() == 16 {
+                    if span.attributes.len() == 64 {
                         return Err(MALFORMED);
                     }
                     span.attributes.push(attribute);
@@ -150,7 +150,8 @@ fn decode_attribute(input: &[u8]) -> Result<Option<Attribute>, &'static str> {
         return Ok(None);
     };
     let cost_key = super::cost::is_cost_key(key);
-    if !cost_key
+    let numeric_key = cost_key || super::token_usage::is_token_key(key);
+    if !numeric_key
         && !matches!(
             key,
             "session.id"
@@ -179,14 +180,14 @@ fn decode_attribute(input: &[u8]) -> Result<Option<Attribute>, &'static str> {
                     (1, Field::Bytes(data)) if data.len() <= max_len => {
                         if let Ok(text) = std::str::from_utf8(data) {
                             scalar.string_value = text.into();
-                        } else if !cost_key {
+                        } else if !numeric_key {
                             return Err(MALFORMED);
                         }
                     }
                     (2, Field::Varint(value @ 0..=1)) if cost_key => {
                         scalar.bool_value = (value != 0).into()
                     }
-                    (3, Field::Varint(value)) if cost_key => {
+                    (3, Field::Varint(value)) if numeric_key => {
                         scalar.int_value = serde_json::value::to_raw_value(&(value as i64)).ok();
                     }
                     (4, Field::Fixed64(value)) if cost_key => {
@@ -248,6 +249,51 @@ mod tests {
         encode_varint(&mut result, fields.len());
         result.extend_from_slice(fields);
         result
+    }
+
+    #[test]
+    fn token_usage_projects_exact_protobuf_integer_fields() {
+        let attribute = |key: &str, scalar: &[u8]| {
+            let mut value = message(1, key.as_bytes());
+            value.extend(message(2, scalar));
+            message(9, &value)
+        };
+        let mut span = message(1, &[1; 16]);
+        span.extend(message(2, &[2; 8]));
+        span.push(7 << 3 | 1);
+        span.extend(10_u64.to_le_bytes());
+        span.push(8 << 3 | 1);
+        span.extend(20_u64.to_le_bytes());
+        span.extend(attribute("session.id", &message(1, b"usage-session")));
+        span.extend(attribute("llm.token_count.prompt", &[3 << 3, 0]));
+        span.extend(attribute(
+            "gen_ai.usage.cache_read.input_tokens",
+            &[3 << 3, 4],
+        ));
+        span.extend(attribute("gen_ai.usage.output_tokens", &[2 << 3, 1]));
+        span.extend(attribute(
+            "gen_ai.usage.total_tokens",
+            &message(1, b"9223372036854775807"),
+        ));
+        let source = agenturm_kernel::ExtensionId::parse("otlp.fixture").unwrap();
+        let export = message(1, &message(2, &message(2, &span)));
+        let (rows, unscoped, payloads) =
+            super::super::decode_protobuf(&export, &source, None, None).unwrap();
+        assert_eq!(rows.len(), 2);
+        assert_eq!(unscoped, 0);
+        assert!(payloads.is_empty());
+        let usage = rows
+            .iter()
+            .find_map(|row| match &row.kind {
+                agenturm_kernel::ObservationKind::SpanTokenUsage(usage) => Some(usage),
+                _ => None,
+            })
+            .unwrap();
+        assert_eq!(usage.input_tokens, Some(0));
+        assert_eq!(usage.output_tokens, None);
+        assert_eq!(usage.cache_read_input_tokens, Some(4));
+        assert_eq!(usage.total_tokens, Some(i64::MAX as u64));
+        assert_eq!(usage.span.span_id, "02".repeat(8));
     }
 
     #[test]

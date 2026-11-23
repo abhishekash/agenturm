@@ -127,6 +127,7 @@ impl<'de> Deserialize<'de> for ObservationRecord {
         #[serde(rename_all = "snake_case")]
         enum FactKind {
             Usage,
+            SpanTokenUsage,
             CreditUsage,
             ReportedCost,
             Tool,
@@ -145,6 +146,9 @@ impl<'de> Deserialize<'de> for ObservationRecord {
         let payload = record.payload.get();
         let fact = match record.kind {
             FactKind::Usage => serde_json::from_str(payload).map(ObservationFact::Usage),
+            FactKind::SpanTokenUsage => {
+                serde_json::from_str(payload).map(ObservationFact::SpanTokenUsage)
+            }
             FactKind::CreditUsage => {
                 serde_json::from_str(payload).map(ObservationFact::CreditUsage)
             }
@@ -206,6 +210,7 @@ impl SessionIdentity {
 #[serde(tag = "kind", content = "payload", rename_all = "snake_case")]
 pub enum ObservationFact {
     Usage(Usage),
+    SpanTokenUsage(SpanTokenUsage),
     CreditUsage(CreditUsage),
     ReportedCost(ReportedCost),
     Tool(Tool),
@@ -258,6 +263,51 @@ pub struct Usage {
     pub total_tokens: Option<u64>,
 }
 
+/// Counters reported on an exact producer span. Breakdown fields are
+/// recorded independently of the producer's input and output totals.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct SpanTokenUsage {
+    pub span: TraceSpanIdentity,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub target_source_id: Option<String>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_read_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub cache_write_input_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub reasoning_output_tokens: Option<u64>,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub total_tokens: Option<u64>,
+}
+
+impl SpanTokenUsage {
+    pub fn is_valid(&self) -> bool {
+        let counters = [
+            self.input_tokens,
+            self.output_tokens,
+            self.cache_read_input_tokens,
+            self.cache_write_input_tokens,
+            self.reasoning_output_tokens,
+            self.total_tokens,
+        ];
+        self.span.is_valid()
+            && counters.iter().any(Option::is_some)
+            && counters
+                .into_iter()
+                .flatten()
+                .all(|count| count <= i64::MAX as u64)
+    }
+
+    pub fn matches_event(&self, event_id: &str) -> bool {
+        self.span.matches_event("otlp-usage:", event_id)
+    }
+}
+
 /// Native provider credit usage at a fixed precision of nine decimal places.
 #[derive(Debug, Deserialize, Serialize)]
 #[serde(deny_unknown_fields)]
@@ -275,15 +325,28 @@ pub struct ReportedCost {
     pub currency: String,
     pub nanounits: u64,
     #[serde(skip_serializing_if = "Option::is_none")]
-    pub span: Option<CostSpan>,
+    pub span: Option<TraceSpanIdentity>,
 }
 
-/// The producer's immutable OTLP span identity for a reported amount.
+/// The producer's immutable OTLP trace and span IDs.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-pub struct CostSpan {
+pub struct TraceSpanIdentity {
     pub trace_id: String,
     pub span_id: String,
+}
+
+impl TraceSpanIdentity {
+    pub fn is_valid(&self) -> bool {
+        valid_otlp_id(&self.trace_id, 16) && valid_otlp_id(&self.span_id, 8)
+    }
+
+    pub fn matches_event(&self, prefix: &str, event_id: &str) -> bool {
+        event_id
+            .strip_prefix(prefix)
+            .and_then(|ids| ids.split_once(':'))
+            == Some((self.trace_id.as_str(), self.span_id.as_str()))
+    }
 }
 
 impl ReportedCost {
@@ -291,18 +354,13 @@ impl ReportedCost {
         self.currency.len() == 3
             && self.currency.bytes().all(|byte| byte.is_ascii_uppercase())
             && self.nanounits <= i64::MAX as u64
-            && self.span.as_ref().is_none_or(|span| {
-                valid_otlp_id(&span.trace_id, 16) && valid_otlp_id(&span.span_id, 8)
-            })
+            && self.span.as_ref().is_none_or(TraceSpanIdentity::is_valid)
     }
 
     pub fn matches_event(&self, event_id: &str) -> bool {
-        self.span.as_ref().is_none_or(|span| {
-            event_id
-                .strip_prefix("otlp-cost:")
-                .and_then(|ids| ids.split_once(':'))
-                == Some((span.trace_id.as_str(), span.span_id.as_str()))
-        })
+        self.span
+            .as_ref()
+            .is_none_or(|span| span.matches_event("otlp-cost:", event_id))
     }
 }
 

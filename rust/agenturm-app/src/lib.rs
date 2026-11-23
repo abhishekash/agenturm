@@ -2376,6 +2376,11 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                     "nanounits":cost.nanounits.to_string(), "span":cost.span,
                 }),
                 ObservationKind::HostSample(sample) => serde_json::json!({"kind":"host_sample", "sample":sample}),
+                ObservationKind::SpanTokenUsage(usage) => {
+                    let mut evidence = serde_json::json!(usage);
+                    evidence["kind"] = serde_json::json!("span_token_usage");
+                    evidence
+                }
                 ObservationKind::Diagnostic { code, severity } => {
                     serde_json::json!({"kind":"diagnostic", "code":code, "severity":severity})
                 }
