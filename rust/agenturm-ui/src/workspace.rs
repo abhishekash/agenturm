@@ -3059,4 +3059,38 @@ mod tests {
             assert!(text.contains("Receiver disconnected"));
         }
     }
+    #[test]
+    fn command_center_help_exposes_all_controls_at_compact_sizes() {
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let mut agents = AgentList {
+                help: true,
+                ..AgentList::default()
+            };
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| draw_agents(frame, &mut agents, false, None))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            for key in [
+                "Ctrl+F",
+                "X Mark",
+                "G Group",
+                "R Refresh",
+                "b Tasks",
+                "w Workflow",
+                "c Copy",
+                "x Export",
+                "q Quit",
+                "Capture availability",
+            ] {
+                assert!(text.contains(key), "missing {key} at {width}: {text}");
+            }
+        }
+    }
 }
