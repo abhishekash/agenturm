@@ -164,9 +164,11 @@ and 32 MiB per roster read. A verified first-line workspace can survive that
 limit with a partial-title notice; a two-record snapshot prelude requires a
 fully verified committed prefix before its workspace is shown.
 
-Press `F2` or `Ctrl+P` to preview Observation, Current, Bright, Dark and Solarized.
-Enter saves the selected theme; Escape restores the previous one. The shared
-palette applies to the command center, evidence tables, inspectors and dialogs.
+Press `F2` to preview Observation, Current, Bright, Dark and Solarized, or
+choose Themes from the palette. Enter saves the selected theme; Escape restores
+the previous one. `Ctrl+P` opens the searchable cockpit command palette. The
+shared palette applies to the command center, evidence tables, inspectors and
+dialogs.
 
 A newly created default cockpit history uses a 14-day age policy. Existing
 histories retain their current policy; an explicitly selected database can
@@ -230,7 +232,9 @@ From Agents, `g` opens the cross-source Overview. Use `2` for Activity,
 `3` for MCP, `4` for Traces, `5` for recorded Host, `6` for Metrics,
 `7` for Findings, `9` for Operations, and `U` for workspace Usage. `H` opens
 live Host; `8` remains a trace alias. Press `T` in a history view to select a
-recorded turn, `F1` for keyboard help, and `q` to quit. The available
+recorded turn, `F1` or `?` for scrollable contextual help, `Ctrl+P` for the
+command palette, and `q` to quit. Clipped numbered destinations stay available
+in both help and the palette. The available
 evidence varies by source. For Codex MCP calls the view includes the server,
 tool, method, duration and outcome when recorded.
 

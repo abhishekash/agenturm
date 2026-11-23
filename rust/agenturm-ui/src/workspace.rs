@@ -153,6 +153,56 @@ pub enum WorkspaceView {
     Traces,
 }
 
+/// Roster time scope. `All` is the approved landing behavior; `Today` is the
+/// discoverable narrowed scope and `History` keeps the complete retained page.
+/// UI-03 owns the final Today boundary; this shell preserves the scope across
+/// refresh, resize and session changes.
+#[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
+pub(super) enum TimeScope {
+    Today,
+    #[default]
+    All,
+}
+
+impl TimeScope {
+    fn label(self) -> &'static str {
+        match self {
+            Self::Today => "Today",
+            Self::All => "History",
+        }
+    }
+
+    /// Scope `Today` includes active work and pending input from earlier, plus
+    /// outcomes recorded since the UTC day began. The final tagged boundary is
+    /// UI-03's; this keeps the shell behavior deterministic and disclosed.
+    fn accepts(self, row: &RecordedSession) -> bool {
+        match self {
+            Self::All => true,
+            Self::Today => {
+                let now = SystemTime::now()
+                    .duration_since(UNIX_EPOCH)
+                    .unwrap_or_default()
+                    .as_secs();
+                let start = now.saturating_sub(now % 86_400);
+                row.pending_requests.iter().any(|request| !request.seen)
+                    || matches!(
+                        row.state.as_deref(),
+                        Some(
+                            "running"
+                                | "started"
+                                | "restored"
+                                | "waiting"
+                                | "blocked"
+                                | "failed"
+                                | "interrupted"
+                        )
+                    )
+                    || row.updated_at_unix_ns / 1_000_000_000 >= start
+            }
+        }
+    }
+}
+
 pub enum WorkspaceRequest {
     Sessions(Option<SessionCursor>),
     MarkReviewed(RecordedSession),
@@ -277,6 +327,9 @@ struct AgentList {
     display_offset: usize,
     paused: bool,
     collapsed: BTreeSet<(String, String)>,
+    time_scope: TimeScope,
+    session_scope: Option<(String, String)>,
+    lost_selection: bool,
 }
 
 impl AgentList {
@@ -288,15 +341,25 @@ impl AgentList {
         self.catalog.as_ref()?.sessions.get(position)
     }
 
-    fn update(&mut self, catalog: SessionCatalog) {
+    /// Returns true when a prior identity disappeared from the new page.
+    fn update(&mut self, catalog: SessionCatalog) -> bool {
         let identity = self
             .current()
             .map(|row| (row.harness_id.clone(), row.session_id.clone()));
         self.catalog = Some(catalog);
         self.apply_filters(identity.as_ref());
+        self.lost_selection
+    }
+
+    fn accepts_scope(&self, session: &RecordedSession) -> bool {
+        self.session_scope
+            .as_ref()
+            .is_none_or(|(source, id)| session.harness_id == *source && session.session_id == *id)
+            && self.time_scope.accepts(session)
     }
 
     fn apply_filters(&mut self, identity: Option<&(String, String)>) {
+        let previous = self.selection.selected().unwrap_or_default();
         let query = self.search.to_ascii_lowercase();
         self.visible = self.catalog.as_ref().map_or_else(Vec::new, |catalog| {
             let matching = catalog
@@ -304,7 +367,8 @@ impl AgentList {
                 .iter()
                 .enumerate()
                 .filter_map(|(index, session)| {
-                    let matches = self.filter.accepts(session)
+                    let matches = self.accepts_scope(session)
+                        && self.filter.accepts(session)
                         && (query.is_empty()
                             || session.session_id.to_ascii_lowercase().contains(&query)
                             || session.harness_id.to_ascii_lowercase().contains(&query)
@@ -319,6 +383,7 @@ impl AgentList {
                                 [
                                     context.agent_name.as_deref(),
                                     context.agent_role.as_deref(),
+                                    context.agent_path.as_deref(),
                                     context.model_provider.as_deref(),
                                 ]
                                 .iter()
@@ -372,8 +437,11 @@ impl AgentList {
                 row.harness_id == identity.0 && row.session_id == identity.1
             })
         });
+        self.lost_selection = identity.is_some() && selected.is_none();
+        let selected =
+            selected.unwrap_or_else(|| previous.min(self.visible.len().saturating_sub(1)));
         self.selection
-            .select((!self.visible.is_empty()).then_some(selected.unwrap_or(0)));
+            .select((!self.visible.is_empty()).then_some(selected));
     }
 
     fn toggle_tree(&mut self) {
@@ -588,6 +656,14 @@ pub(super) fn move_selection(selection: &mut ListState, count: usize, down: bool
     }
 }
 
+fn plain_key(ch: char) -> event::KeyEvent {
+    event::KeyEvent::new(KeyCode::Char(ch), KeyModifiers::NONE)
+}
+
+fn plain_code(code: KeyCode) -> event::KeyEvent {
+    event::KeyEvent::new(code, KeyModifiers::NONE)
+}
+
 const CACHE_LIMIT: usize = 4;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 
@@ -693,6 +769,11 @@ struct Workspace {
     deferred_request: Option<(WorkspaceRequest, Change)>,
     message: Option<String>,
     refresh_after: Instant,
+    palette: palette::Palette,
+    help: help::Help,
+    theme_request: bool,
+    generation: u64,
+    pending_generation: Option<u64>,
 }
 
 impl Workspace {
@@ -715,6 +796,11 @@ impl Workspace {
             deferred_request: None,
             message: None,
             refresh_after: Instant::now(),
+            palette: palette::Palette::default(),
+            help: help::Help::default(),
+            theme_request: false,
+            generation: 0,
+            pending_generation: None,
         }
     }
 
@@ -734,6 +820,7 @@ impl Workspace {
         }
         if sender.send(request).is_ok() {
             self.pending = Some(change);
+            self.pending_generation = Some(self.generation);
             self.message = None;
         } else {
             self.message = Some("History reader stopped".into());
@@ -744,7 +831,13 @@ impl Workspace {
         let Some(change) = self.pending.take() else {
             return;
         };
+        let generation = self.pending_generation.take();
         self.refresh_after = Instant::now() + REFRESH_INTERVAL;
+        if generation.is_some_and(|generation| generation != self.generation) {
+            self.discard_work_result = false;
+            self.message = Some("Discarded a late response for a closed or superseded view".into());
+            return;
+        }
         if change.is_work() && std::mem::take(&mut self.discard_work_result) {
             return;
         }
@@ -784,7 +877,12 @@ impl Workspace {
                 });
             }
             (Change::RefreshSessions, Ok(WorkspaceResponse::Sessions(catalog))) => {
-                self.agents.update(catalog);
+                if self.agents.update(catalog) {
+                    self.message = Some(
+                        "The selected session left this page · kept the nearest recorded row"
+                            .into(),
+                    );
+                }
                 self.browsing_older = false;
                 self.newer_sessions.clear();
             }
@@ -822,24 +920,36 @@ impl Workspace {
                 change @ (Change::OlderHistory | Change::LatestHistory),
                 Ok(WorkspaceResponse::History(mut page)),
             ) => {
+                let mut missing_pane = None;
                 if let Some(view) = self.history.last_mut() {
                     if matches!(change, Change::LatestHistory) {
                         view.analytics =
                             analytics::HistoryAnalytics::take(&view.selection, &mut page);
                         view.show_evidence &= view.analytics.is_some();
                     }
+                    let previous_title = view.page.ui.selected_title().map(str::to_owned);
+                    let previous_scroll = view.page.ui.scroll;
+                    let previous_index = view.page.ui.selected;
                     let mut next = HistoryView::make_page(&view.selection, page);
-                    if let Some(title) = view.page.ui.selected_title() {
-                        if title == "Metrics"
-                            && matches!(
-                                view.selection,
-                                HistorySelection::All(WorkspaceView::Metrics)
-                            )
-                        {
-                            next.ui.select_metrics();
-                        } else {
-                            next.ui.select_title(title);
-                        }
+                    let metrics = previous_title.as_deref() == Some("Metrics")
+                        && matches!(
+                            view.selection,
+                            HistorySelection::All(WorkspaceView::Metrics)
+                        );
+                    let restored = if metrics {
+                        next.ui.select_metrics();
+                        true
+                    } else {
+                        next.ui
+                            .restore_view(previous_title.as_deref(), previous_scroll)
+                    };
+                    if !restored && previous_title.is_some() {
+                        // Deterministic nearby selection: keep the prior row
+                        // position when the exact pane identity disappeared.
+                        next.ui.selected =
+                            previous_index.min(next.ui.panes.len().saturating_sub(1));
+                        next.ui.restore_view(None, 0);
+                        missing_pane = previous_title;
                     }
                     next.inherit_filters(&view.page);
                     if matches!(change, Change::OlderHistory) {
@@ -848,6 +958,11 @@ impl Workspace {
                         view.newer.clear();
                         view.page = next;
                     }
+                }
+                if let Some(title) = missing_pane {
+                    self.message = Some(format!(
+                        "{title} is no longer in this page · kept the nearest view"
+                    ));
                 }
             }
             (Change::MarkReviewed(session), Ok(WorkspaceResponse::ReviewSaved)) => {
@@ -1011,6 +1126,7 @@ impl Workspace {
             Destination::Agents => {
                 if self.pending.is_none() {
                     self.history.clear();
+                    self.generation = self.generation.wrapping_add(1);
                     self.message = None;
                 }
                 return;
@@ -1029,6 +1145,7 @@ impl Workspace {
             Destination::Metrics => WorkspaceView::Metrics,
             Destination::Findings => WorkspaceView::Findings,
             Destination::Operations => WorkspaceView::Operations,
+            Destination::Usage => WorkspaceView::Usage,
         };
         let selection = HistorySelection::All(view);
         self.request(
@@ -1154,6 +1271,7 @@ impl Workspace {
                     if query.is_empty() {
                         if matches!(view.selection, HistorySelection::McpSearch { .. }) {
                             self.history.pop();
+                            self.generation = self.generation.wrapping_add(1);
                             self.message = None;
                         }
                     } else {
@@ -1175,7 +1293,50 @@ impl Workspace {
 
     fn key(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, key: event::KeyEvent) -> bool {
         if keymap::interrupt(key) {
+            if self.prompt.is_some() || self.help.is_open() || self.palette.is_open() {
+                return true;
+            }
+            // Public evidence focus copies; editors and private content keep
+            // the terminal interrupt meaning. Help documents this split.
+            if self.focus().copyable()
+                && self
+                    .view_io_key(sender, plain_key('c'))
+                    .is_some_and(|quit| !quit)
+            {
+                return false;
+            }
             return true;
+        }
+        if self.help.is_open() {
+            if keymap::plain(key) == Some(KeyCode::Char('q')) && self.prompt.is_none() {
+                return true;
+            }
+            self.help.key(key);
+            return false;
+        }
+        if self.palette.is_open() {
+            return match self.palette.key(key) {
+                palette::Outcome::Open => false,
+                palette::Outcome::Help => {
+                    self.open_help();
+                    false
+                }
+                palette::Outcome::Cancel => {
+                    self.message = None;
+                    false
+                }
+                palette::Outcome::Run(id) => self.run_action(sender, &id),
+            };
+        }
+        if keymap::palette(key) {
+            if self.prompt.is_none() {
+                self.open_palette();
+            }
+            return false;
+        }
+        if keymap::is_help(key.code) && self.help_available(key) {
+            self.open_help();
+            return false;
         }
         let code = keymap::plain(key).unwrap_or(KeyCode::Null);
         if self.prompt.is_none()
@@ -1268,6 +1429,7 @@ impl Workspace {
                     .cloned()
                 {
                     self.work = None;
+                    self.generation = self.generation.wrapping_add(1);
                     self.select_session_mode(sender, session, SessionView::Activity);
                 }
                 return false;
@@ -1320,6 +1482,7 @@ impl Workspace {
                     self.prompt_receiver = None;
                     self.queued_prompt = None;
                     self.work = None;
+                    self.generation = self.generation.wrapping_add(1);
                     self.message = None;
                 }
                 WorkInput::Command(WorkCommand::WorkflowResume(item)) => {
@@ -1423,6 +1586,7 @@ impl Workspace {
                 KeyCode::Esc if review.is_some() => {
                     if self.pending.is_none() {
                         self.history.pop();
+                        self.generation = self.generation.wrapping_add(1);
                     } else if self.pending.as_ref().is_some_and(Change::is_work) {
                         self.discard_work_result = true;
                         self.prompt_receiver = None;
@@ -1551,6 +1715,7 @@ impl Workspace {
         if keymap::back(key) {
             if self.pending.is_none() {
                 self.history.pop();
+                self.generation = self.generation.wrapping_add(1);
                 self.message = None;
             }
             return false;
@@ -1763,6 +1928,7 @@ impl Workspace {
         match code {
             KeyCode::Esc if self.pending.is_none() => {
                 self.history.pop();
+                self.generation = self.generation.wrapping_add(1);
                 self.message = None;
             }
             KeyCode::Esc => {}
@@ -1908,21 +2074,626 @@ impl Workspace {
         self.message = None;
     }
 
+    /// Opens the investigation overlay on a specific retained query kind. The
+    /// kind order belongs to UI-04; the shell only selects the documented row.
+    fn open_investigation_kind(&mut self, tabs: usize) {
+        self.open_investigation();
+        if let Some(investigation) = &mut self.investigation {
+            for _ in 0..tabs {
+                let _ = investigation.key(
+                    event::KeyEvent::new(KeyCode::Tab, KeyModifiers::NONE),
+                    false,
+                );
+            }
+        }
+    }
+
+    fn context(&self) -> keymap::Context {
+        if self.work.is_some() {
+            keymap::Context::Workbench
+        } else if self.investigation.is_some() {
+            keymap::Context::Investigation
+        } else if self.view_io.form.is_some() {
+            keymap::Context::Form
+        } else if !self.history.is_empty() {
+            keymap::Context::History
+        } else {
+            keymap::Context::CommandCenter
+        }
+    }
+
+    fn focus(&mut self) -> keymap::Focus {
+        if self.help.is_open() {
+            return keymap::Focus::Help;
+        }
+        if self.palette.is_open() {
+            return if self.palette.kind() == Some(palette::Kind::Sessions) {
+                keymap::Focus::SessionChooser
+            } else {
+                keymap::Focus::Palette
+            };
+        }
+        if self.prompt.is_some() {
+            return keymap::Focus::PrivatePrompt;
+        }
+        if self.view_io.form.is_some() {
+            return keymap::Focus::ExportForm;
+        }
+        if let Some(work) = &self.work {
+            return if work.editing() {
+                keymap::Focus::WorkbenchEditor
+            } else {
+                keymap::Focus::Workbench
+            };
+        }
+        if self.investigation.is_some() {
+            return keymap::Focus::Investigation;
+        }
+        if self.agents.editing {
+            return keymap::Focus::AgentSearch;
+        }
+        if let Some(view) = self.history.last_mut() {
+            if view.page.ui.help {
+                return keymap::Focus::Help;
+            }
+            if view.page.turn_picker.is_some()
+                || view.page.operation_picker.is_some()
+                || view.page.evaluation_picker.is_some()
+            {
+                return keymap::Focus::HistoryChooser;
+            }
+            if view.page.ui.evidence_inspection.is_some() {
+                return keymap::Focus::EvidenceInspection;
+            }
+            if view
+                .page
+                .operation_table
+                .active(&view.page.ui)
+                .is_some_and(|table| table.editing_filter())
+                || view
+                    .page
+                    .active_findings()
+                    .is_some_and(|browser| browser.editing_filter())
+                || matches!(
+                    view.active_analytics_mut(),
+                    Some(analytics::HistoryAnalytics::Metrics(browser)) if browser.editing_filter()
+                )
+            {
+                return keymap::Focus::HistorySearch;
+            }
+            return keymap::Focus::HistoryTable;
+        }
+        keymap::Focus::CommandCenter
+    }
+
+    fn selected_session(&self) -> Option<&RecordedSession> {
+        match self.history.last().map(|view| &view.selection) {
+            Some(HistorySelection::Session(row, _)) => Some(row),
+            Some(HistorySelection::ReviewEdits(row)) => Some(row.as_ref()),
+            Some(_) => None,
+            None => self.agents.current(),
+        }
+    }
+
+    fn current_anchor(&self) -> Option<WorkAnchor> {
+        match self.history.last().map(|view| &view.selection) {
+            Some(HistorySelection::Session(row, _)) => Some(WorkAnchor::from(row)),
+            Some(HistorySelection::Turn(row)) => Some(WorkAnchor {
+                source: row.harness_id.clone(),
+                session: row.session_id.clone(),
+                worker: row.worker_id.clone(),
+                turn: Some(row.turn_id.clone()),
+            }),
+            Some(HistorySelection::McpSearch { scope, .. }) => scope.anchor(),
+            Some(
+                HistorySelection::All(_)
+                | HistorySelection::McpTraces { .. }
+                | HistorySelection::ReviewEdits(_),
+            ) => None,
+            None => self.agents.current().map(WorkAnchor::from),
+        }
+    }
+
+    fn help_available(&mut self, key: event::KeyEvent) -> bool {
+        if self.prompt.is_some() {
+            return false;
+        }
+        if key.code == KeyCode::F(1) {
+            return true;
+        }
+        if key.code == KeyCode::Char('?') {
+            let focus = self.focus();
+            return !focus.text_entry() && !focus.chooser();
+        }
+        false
+    }
+
+    fn open_help(&mut self) {
+        let context = self.context();
+        let title = if self.palette.is_open() {
+            match self.palette.kind() {
+                Some(palette::Kind::Sessions) => "Choose agent session",
+                _ => "Command palette",
+            }
+        } else {
+            match context {
+                keymap::Context::CommandCenter => "Command center",
+                keymap::Context::History => "Session history and inspector",
+                keymap::Context::Workbench => "Workbench",
+                keymap::Context::Investigation => "Retained history investigation",
+                keymap::Context::Form => "Export form",
+            }
+        };
+        let mut sections = keymap::help_sections(context);
+        let mut current = Vec::new();
+        if let Some(help) = self
+            .history
+            .last()
+            .and_then(|view| view.active_analytics())
+            .map(|analytics| analytics.help())
+        {
+            current.extend(help.lines().map(str::to_owned));
+        }
+        if let Some(view) = self.history.last() {
+            if let HistorySelection::Session(session, mode) = &view.selection {
+                current.push(format!(
+                    "Session {} / {} · {:?}",
+                    visible_text(&session.harness_id),
+                    visible_text(&session.session_id),
+                    mode
+                ));
+            }
+            if view.page.ui.in_turn {
+                current.push("Recorded turn scope · Esc returns to the containing page".into());
+            }
+            if view.page.ui.turn_available {
+                current.push("T selects one recorded turn from this page".into());
+            }
+            if view.page.reviewing() {
+                current.push("Review view: y acknowledge · n decisions · e edits".into());
+            }
+            if telemetry_details(view) {
+                current.push("d opens the retained captured text where authorized".into());
+            }
+            if evaluation_details(view) {
+                current.push("E opens trace evaluations for the loaded traces".into());
+            }
+            if view
+                .page
+                .operation_details
+                .iter()
+                .any(|entry| entry.kind == OperationDetailKind::Mcp)
+            {
+                current.push("M opens retained MCP payloads for this page".into());
+            }
+        }
+        if self.work.is_some() {
+            current.push(
+                "Workflow and saved-task editors keep unsaved drafts while help is open".into(),
+            );
+        }
+        let priority = match context {
+            keymap::Context::CommandCenter => Some("SESSION"),
+            keymap::Context::History => Some("REVIEW AND PROMPTS"),
+            keymap::Context::Workbench => Some("WORKFLOW AND SAVED WORK"),
+            keymap::Context::Investigation => Some("SEARCH"),
+            keymap::Context::Form => Some("SYSTEM"),
+        };
+        if let Some(priority) = priority
+            && let Some(position) = sections.iter().position(|(group, _)| *group == priority)
+        {
+            let first = sections.remove(position);
+            sections.insert(0, first);
+        }
+        if !current.is_empty() {
+            // The current workflow appears first, mirroring the reference.
+            sections.insert(0, ("THIS VIEW", current));
+        }
+        self.help.open(title, sections);
+    }
+
+    fn action_unavailable(&mut self, id: &str) -> Option<&'static str> {
+        let catalog_ready = self
+            .agents
+            .catalog
+            .as_ref()
+            .is_some_and(|catalog| !catalog.sessions.is_empty());
+        let session = self.selected_session().is_some();
+        let anchor = self.current_anchor().is_some();
+        let history = !self.history.is_empty();
+        let loaded = self.loaded_view().is_some();
+        let refreshing = self.pending.is_none();
+        match id {
+            keymap::id::SESSION_CHOOSER | keymap::id::SCOPE_TODAY | keymap::id::SCOPE_HISTORY => {
+                (!catalog_ready).then_some("No session page is loaded")
+            }
+            keymap::id::SCOPE_SELECTED => (!anchor).then_some("Select an exact session or turn"),
+            keymap::id::SCOPE_ALL => (!history).then_some("Open a retained evidence view first"),
+            keymap::id::LIVE_REFRESH | keymap::id::RETRY_CONNECTION => {
+                (!refreshing).then_some("Wait for the current read to finish")
+            }
+            keymap::id::HISTORY_COMMANDS
+            | keymap::id::HISTORY_INSTRUCTIONS
+            | keymap::id::HISTORY_FAILED_COMMAND => {
+                (!anchor).then_some("Private phrase search needs a selected session or turn")
+            }
+            keymap::id::REVIEW
+            | keymap::id::PROMPTS
+            | keymap::id::REVIEW_NOTES
+            | keymap::id::MARK_REVIEWED => (!session).then_some("Select an exact session first"),
+            keymap::id::TRACES => (!session
+                && !matches!(
+                    self.history.last().map(|view| &view.selection),
+                    Some(HistorySelection::Turn(_) | HistorySelection::McpTraces { .. })
+                ))
+            .then_some("Select a session or recorded turn first"),
+            keymap::id::TURN => (!history
+                || !self
+                    .history
+                    .last()
+                    .is_some_and(|view| view.page.ui.turn_available))
+            .then_some("This page has no selectable recorded turn"),
+            keymap::id::MCP_PAYLOAD => (!history
+                || !self.history.last().is_some_and(|view| {
+                    view.page
+                        .operation_details
+                        .iter()
+                        .any(|entry| entry.kind == OperationDetailKind::Mcp)
+                }))
+            .then_some("No retained MCP payload on this page"),
+            keymap::id::FILE_EDITS => (!history
+                || !self.history.last().is_some_and(|view| {
+                    view.page
+                        .operation_details
+                        .iter()
+                        .any(|entry| entry.kind == OperationDetailKind::Edit)
+                }))
+            .then_some("No retained file edit in this context"),
+            keymap::id::OLDER_PAGE => {
+                let more = self
+                    .history
+                    .last()
+                    .is_some_and(|view| view.page.ui.older_cursor().is_some())
+                    || self
+                        .agents
+                        .catalog
+                        .as_ref()
+                        .is_some_and(|catalog| catalog.older.is_some());
+                (!more).then_some("No older retained page")
+            }
+            keymap::id::NEWER_PAGE => {
+                let more = self
+                    .history
+                    .last()
+                    .is_some_and(|view| !view.newer.is_empty())
+                    || !self.newer_sessions.is_empty();
+                (!more).then_some("No newer loaded page")
+            }
+            keymap::id::LATEST_PAGE => (!history && self.agents.catalog.as_ref().is_none())
+                .then_some("No loaded page to refresh"),
+            keymap::id::COPY | keymap::id::EXPORT => {
+                (!loaded).then_some("No loaded metadata view in this focus")
+            }
+            keymap::id::ATTENTION => (!catalog_ready).then_some("No session page is loaded"),
+            keymap::id::MARK_SEEN => {
+                let pending = self
+                    .agents
+                    .current()
+                    .is_some_and(|row| row.pending_requests.iter().any(|request| !request.seen));
+                (!pending).then_some("No current pending request for the selected session")
+            }
+            keymap::id::REVIEW_FILTER
+            | keymap::id::GROUP
+            | keymap::id::TREE
+            | keymap::id::RESET
+            | keymap::id::HOST_NOW => (!catalog_ready).then_some("No session page is loaded"),
+            keymap::id::OVERVIEW | keymap::id::SESSION_ACTIVITY | keymap::id::SESSION_USAGE => {
+                (!session).then_some("Select an exact session first")
+            }
+            keymap::id::INSPECTOR_MODE => (!matches!(
+                self.history.last().map(|view| &view.selection),
+                Some(HistorySelection::Session(_, _))
+            ))
+            .then_some("Open a session inspector first"),
+            keymap::id::SEARCH => {
+                let focus = self.focus();
+                (focus.text_entry() || focus.chooser())
+                    .then_some("A text or chooser control owns this key")
+            }
+            keymap::id::INSPECT => {
+                (!history && !self.agents.show_more_selected && self.agents.current().is_none())
+                    .then_some("No selection to inspect")
+            }
+            keymap::id::BACK => (!history && self.work.is_none() && self.investigation.is_none())
+                .then_some("Already at the cockpit root"),
+            _ => None,
+        }
+    }
+
+    fn palette_entries(&mut self) -> Vec<palette::Entry> {
+        let context = self.context();
+        keymap::actions(context)
+            .filter(|action| {
+                action.id != keymap::id::PALETTE && !keymap::PALETTE_EXCLUDED.contains(&action.id)
+            })
+            .map(|action| {
+                let unavailable = self.action_unavailable(action.id);
+                let label = if action.id == keymap::id::LIVE_PAUSE && self.agents.paused {
+                    "Resume live updates"
+                } else {
+                    action.label
+                };
+                match unavailable {
+                    Some(reason) => {
+                        palette::Entry::unavailable(action.id, label, reason, action.group.label())
+                    }
+                    None => palette::Entry::command(
+                        action.id,
+                        label,
+                        action.detail,
+                        action.group.label(),
+                    ),
+                }
+            })
+            .collect()
+    }
+
+    fn open_palette(&mut self) {
+        let entries = self.palette_entries();
+        self.palette.open_commands(entries);
+        self.message = None;
+    }
+
+    fn open_session_chooser(&mut self) {
+        let Some(catalog) = self.agents.catalog.as_ref() else {
+            self.message = Some("No session page is loaded".into());
+            return;
+        };
+        let mut entries = vec![palette::Entry::command(
+            "session|all",
+            "All sessions",
+            "Clear only the session filter",
+            "SESSIONS",
+        )];
+        entries.extend(catalog.sessions.iter().map(|row| {
+            let project = command_center::project(row);
+            let native = row
+                .native_context
+                .as_deref()
+                .map_or_else(String::new, |context| {
+                    [
+                        context.agent_name.as_deref(),
+                        context.agent_role.as_deref(),
+                        context.agent_path.as_deref(),
+                    ]
+                    .into_iter()
+                    .flatten()
+                    .filter(|value| !value.trim().is_empty())
+                    .map(visible_text)
+                    .collect::<Vec<_>>()
+                    .join(" · ")
+                });
+            let mut detail = format!(
+                "{} · {}",
+                command_center::provider(row),
+                visible_text(project)
+            );
+            if !native.is_empty() {
+                detail.push_str(" · ");
+                detail.push_str(&native);
+            }
+            detail.push_str(&format!(
+                " · {} · {}",
+                visible_text(&row.harness_id),
+                visible_text(&row.session_id)
+            ));
+            palette::Entry::command(
+                format!("session|{}|{}", row.harness_id, row.session_id),
+                command_center::name(row).to_string(),
+                detail,
+                "SESSIONS",
+            )
+        }));
+        self.palette.open_sessions(entries);
+        if let Some((source, id)) = &self.agents.session_scope {
+            self.palette.select_key(&format!("session|{source}|{id}"));
+        }
+        self.message = None;
+    }
+
+    fn choose_session(&mut self, choice: &str) {
+        if choice == "session|all" {
+            self.agents.session_scope = None;
+            let identity = self.agents.current().map(session_key);
+            self.agents.apply_filters(identity.as_ref());
+            self.message = Some("Session scope cleared".into());
+            return;
+        }
+        let mut parts = choice.splitn(3, '|');
+        let (Some("session"), Some(source), Some(id)) = (parts.next(), parts.next(), parts.next())
+        else {
+            self.message = Some("That session choice is not valid".into());
+            return;
+        };
+        let identity = (source.to_owned(), id.to_owned());
+        let exists = self.agents.catalog.as_ref().is_some_and(|catalog| {
+            catalog
+                .sessions
+                .iter()
+                .any(|row| session_key(row) == identity)
+        });
+        if !exists {
+            self.message =
+                Some("That session is no longer available. Choose another session.".into());
+            return;
+        }
+        self.agents.session_scope = Some(identity.clone());
+        self.agents.apply_filters(Some(&identity));
+        if self.agents.visible.is_empty() {
+            self.message = Some(
+                "The chosen session is hidden by the active Today/status filters · choose All sessions"
+                    .into(),
+            );
+        } else if self.agents.lost_selection {
+            self.message =
+                Some("The chosen session left the current page · kept the nearest row".into());
+        } else {
+            self.message = Some(format!(
+                "Session scope · {}",
+                self.agents
+                    .current()
+                    .map(|row| visible_text(&command_center::name(row)))
+                    .unwrap_or_else(|| "selected session".into())
+            ));
+        }
+    }
+
+    fn set_time_scope(&mut self, scope: TimeScope) {
+        let identity = self.agents.current().map(session_key);
+        self.agents.time_scope = scope;
+        self.agents.apply_filters(identity.as_ref());
+        self.message = Some(format!(
+            "Time scope: {} · {} session{}",
+            scope.label(),
+            self.agents.visible.len(),
+            if self.agents.visible.len() == 1 {
+                ""
+            } else {
+                "s"
+            }
+        ));
+    }
+
+    fn refresh_current(&mut self, sender: &mpsc::Sender<WorkspaceRequest>) {
+        if self.work.is_some() {
+            let _ = self.key(
+                sender,
+                event::KeyEvent::new(KeyCode::Char('R'), KeyModifiers::NONE),
+            );
+        } else if !self.history.is_empty() {
+            let selection = self
+                .history
+                .last()
+                .expect("history exists")
+                .selection
+                .clone();
+            self.request(
+                sender,
+                self.history_request(selection, None),
+                Change::LatestHistory,
+            );
+        } else {
+            self.request(
+                sender,
+                WorkspaceRequest::Sessions(None),
+                Change::RefreshSessions,
+            );
+        }
+    }
+
+    fn run_action(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, id: &str) -> bool {
+        self.palette.close();
+        if let Some(choice) = id.strip_prefix("session|") {
+            self.choose_session(&format!("session|{choice}"));
+            return false;
+        }
+        match id {
+            keymap::id::PALETTE => self.open_palette(),
+            keymap::id::THEMES => self.theme_request = true,
+            keymap::id::HELP => self.open_help(),
+            keymap::id::GO_AGENTS => self.navigate(sender, Destination::Agents),
+            keymap::id::GO_ACTIVITY => self.navigate(sender, Destination::Activity),
+            keymap::id::GO_MCP => self.navigate(sender, Destination::Mcp),
+            keymap::id::GO_TRACES => self.navigate(sender, Destination::Traces),
+            keymap::id::GO_HOST => self.navigate(sender, Destination::Host),
+            keymap::id::GO_METRICS => self.navigate(sender, Destination::Metrics),
+            keymap::id::GO_FINDINGS => self.navigate(sender, Destination::Findings),
+            keymap::id::GO_OPERATIONS => self.navigate(sender, Destination::Operations),
+            keymap::id::GO_USAGE => self.navigate(sender, Destination::Usage),
+            keymap::id::SESSION_CHOOSER => self.open_session_chooser(),
+            keymap::id::SCOPE_TODAY => self.set_time_scope(TimeScope::Today),
+            keymap::id::SCOPE_HISTORY => self.set_time_scope(TimeScope::All),
+            keymap::id::SCOPE_SELECTED => {
+                let turn = self.history.last().and_then(|view| match &view.selection {
+                    HistorySelection::Turn(turn) => Some(turn.clone()),
+                    _ => None,
+                });
+                if let Some(turn) = turn {
+                    let selection = HistorySelection::Turn(turn);
+                    self.open(sender, selection);
+                } else if let Some(session) = self.selected_session().cloned() {
+                    self.select_session_mode(sender, session, SessionView::Activity);
+                } else {
+                    self.navigate(sender, Destination::Activity);
+                }
+            }
+            keymap::id::SCOPE_ALL => self.navigate(sender, Destination::Activity),
+            keymap::id::LIVE_PAUSE => self.toggle_pause(),
+            keymap::id::LIVE_REFRESH | keymap::id::RETRY_CONNECTION => self.refresh_current(sender),
+            keymap::id::DIAGNOSTICS => self.navigate(sender, Destination::Findings),
+            keymap::id::HISTORY_FAILURES => self.open_investigation_kind(0),
+            keymap::id::HISTORY_INSTRUCTIONS => self.open_investigation_kind(1),
+            keymap::id::HISTORY_PATHS => self.open_investigation_kind(2),
+            keymap::id::HISTORY_COMMANDS => self.open_investigation_kind(3),
+            keymap::id::HISTORY_FAILED_COMMAND => self.open_investigation_kind(4),
+            keymap::id::REVIEW => {
+                return self.send_key(
+                    sender,
+                    event::KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
+                );
+            }
+            keymap::id::PROMPTS => return self.send_key(sender, plain_key('P')),
+            keymap::id::TRACES => return self.send_key(sender, plain_key('t')),
+            keymap::id::TURN => return self.send_key(sender, plain_key('T')),
+            keymap::id::MCP_PAYLOAD => return self.send_key(sender, plain_key('M')),
+            keymap::id::FILE_EDITS => return self.send_key(sender, plain_key('e')),
+            keymap::id::REVIEW_NOTES => return self.send_key(sender, plain_key('n')),
+            keymap::id::MARK_REVIEWED => return self.send_key(sender, plain_key('y')),
+            keymap::id::OLDER_PAGE => return self.send_key(sender, plain_code(keymap::OLDER)),
+            keymap::id::NEWER_PAGE => return self.send_key(sender, plain_code(keymap::NEWER)),
+            keymap::id::LATEST_PAGE => return self.send_key(sender, plain_code(keymap::LATEST)),
+            keymap::id::COPY => return self.send_key(sender, plain_key('c')),
+            keymap::id::EXPORT => return self.send_key(sender, plain_key('x')),
+            keymap::id::INTERNAL_REVIEWS => return self.send_key(sender, plain_key('v')),
+            keymap::id::WORKFLOW => return self.send_key(sender, plain_key('w')),
+            keymap::id::TASKS => return self.send_key(sender, plain_key('b')),
+            keymap::id::ATTENTION => {
+                self.navigate(sender, Destination::Agents);
+                return self.send_key(sender, plain_key('!'));
+            }
+            keymap::id::MARK_SEEN => return self.send_key(sender, plain_key('X')),
+            keymap::id::REVIEW_FILTER => return self.send_key(sender, plain_key('Y')),
+            keymap::id::GROUP => return self.send_key(sender, plain_key('G')),
+            keymap::id::TREE => return self.send_key(sender, plain_key('f')),
+            keymap::id::RESET => return self.send_key(sender, plain_key('a')),
+            keymap::id::OVERVIEW => return self.send_key(sender, plain_key('g')),
+            keymap::id::SESSION_ACTIVITY => {
+                if let Some(session) = self.selected_session().cloned() {
+                    self.select_session_mode(sender, session, SessionView::Activity);
+                }
+            }
+            keymap::id::SESSION_USAGE => return self.send_key(sender, plain_key('u')),
+            keymap::id::HOST_NOW => return self.send_key(sender, plain_key('H')),
+            keymap::id::INSPECTOR_MODE => return self.send_key(sender, plain_key('m')),
+            keymap::id::SEARCH => return self.send_key(sender, plain_key('/')),
+            keymap::id::INSPECT => return self.send_key(sender, plain_code(KeyCode::Enter)),
+            keymap::id::BACK => return self.send_key(sender, plain_code(KeyCode::Esc)),
+            keymap::id::QUIT => return true,
+            _ => {}
+        }
+        false
+    }
+
+    fn send_key(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, key: event::KeyEvent) -> bool {
+        self.key(sender, key)
+    }
+
     fn agent_key(
         &mut self,
         sender: &mpsc::Sender<WorkspaceRequest>,
         event: event::KeyEvent,
     ) -> bool {
         let key = keymap::plain(event).unwrap_or(KeyCode::Null);
-        if key == KeyCode::F(1)
-            || (self.agents.help && matches!(key, KeyCode::Char('?') | KeyCode::Esc))
-        {
-            self.agents.help = !self.agents.help;
-            return false;
-        }
-        if self.agents.help {
-            return key == KeyCode::Char('q') && !self.agents.editing;
-        }
         if self.agents.editing {
             let identity = self.agents.current().map(session_key);
             match key {
@@ -1962,7 +2733,6 @@ impl Workspace {
             KeyCode::Char('/') => self.agents.editing = true,
             KeyCode::Char('f' | 'h') => self.agents.toggle_tree(),
             KeyCode::Char('d' | 'D') => self.navigate(sender, Destination::Findings),
-            KeyCode::Char('?') => self.agents.help = true,
             KeyCode::Char('G') => {
                 let identity = self.agents.current().map(session_key);
                 self.agents.grouping = self.agents.grouping.next();
@@ -2260,7 +3030,11 @@ pub fn run_workspace_with_stop(
                                 dirty = true;
                                 continue;
                             }
-                            if workspace.key(&request, key) {
+                            let quit = workspace.key(&request, key);
+                            if std::mem::take(&mut workspace.theme_request) {
+                                appearance.open();
+                            }
+                            if quit {
                                 stop.store(true, Ordering::Release);
                                 // Keep the proof fence until a flushed non-private
                                 // frame replaces the modal, including q and Ctrl-C.
@@ -2422,6 +3196,15 @@ fn draw_review_edits(frame: &mut Frame, view: ReviewEditView<'_>, selection: &mu
 }
 
 fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
+    draw_workspace_base(frame, workspace);
+    if workspace.help.is_open() {
+        workspace.help.draw(frame);
+    } else if workspace.palette.is_open() {
+        workspace.palette.draw(frame);
+    }
+}
+
+fn draw_workspace_base(frame: &mut Frame, workspace: &mut Workspace) {
     frame.render_widget(
         Block::default().style(surface(theme::palette().canvas)),
         frame.area(),
@@ -2548,59 +3331,6 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
             frame.render_widget(Paragraph::new(visible_text(footer)), foot);
             return;
         }
-        if view.page.ui.help && area.width >= MIN_WIDTH && area.height >= MIN_HEIGHT {
-            if let Some(analytics) = view.active_analytics() {
-                frame.render_widget(
-                    Paragraph::new(analytics.help())
-                        .wrap(Wrap { trim: false })
-                        .block(panel(HELP_CLOSE_HINT)),
-                    area,
-                );
-                return;
-            }
-            let primary = keymap::navigation_hints(&keymap::NAVIGATION[..5]);
-            let secondary = keymap::navigation_hints(&keymap::NAVIGATION[5..]);
-            let mut help = format!(
-                "{primary}\n{secondary} · d Recorded diagnostics\n←/→ or Ctrl+←/→ Pane · ↑/↓ Scroll\n[ Newer · ] Older · l Latest · R Refresh · p Pause\nCtrl+F Investigate · v Internal reviews · Esc Back · q Quit"
-            );
-            if matches!(view.selection, HistorySelection::Session(_, _)) {
-                help.push_str("\nCtrl+R Review · t Traces · m Inspector mode · P Prompts");
-            }
-            if view.page.ui.turn_available {
-                help.push_str("\nT Select a recorded turn · F2 Themes");
-            }
-            let has_kind = |kind| {
-                view.page
-                    .operation_details
-                    .iter()
-                    .any(|entry| entry.kind == kind)
-            };
-            if has_kind(OperationDetailKind::Mcp) {
-                help.push_str("\nM MCP payloads · m on MCP");
-            }
-            if view.page.reviewing() {
-                help.push_str("\ne Session file edits · y Mark reviewed · n Review notes");
-            }
-            if telemetry_details(view) || evaluation_details(view) {
-                help.push('\n');
-                if telemetry_details(view) {
-                    help.push_str("d Captured text");
-                }
-                if telemetry_details(view) && evaluation_details(view) {
-                    help.push_str(" · ");
-                }
-                if evaluation_details(view) {
-                    help.push_str("E Evaluations");
-                }
-            }
-            frame.render_widget(
-                Paragraph::new(help)
-                    .wrap(Wrap { trim: false })
-                    .block(panel(HELP_CLOSE_HINT)),
-                area,
-            );
-            return;
-        }
         if area.width >= MIN_WIDTH
             && area.height >= MIN_HEIGHT
             && view.page.turn_picker.is_none()
@@ -2682,47 +3412,63 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
                     .iter()
                     .any(|entry| entry.kind == kind)
             };
-            let status = if view.page.ui.help {
-                HELP_CLOSE_HINT
-            } else if let Some(error) = workspace.message.as_deref() {
-                error
+            let back_pages = keymap::hint(&[
+                keymap::id::BACK,
+                keymap::id::NEWER_PAGE,
+                keymap::id::OLDER_PAGE,
+            ]);
+            let status = if let Some(error) = workspace.message.as_deref() {
+                error.to_owned()
             } else if workspace.pending.is_some() {
-                "Loading history…"
+                "Loading history…".to_owned()
             } else if draw_findings {
-                "Esc back · [ ] history pages"
+                back_pages.clone()
             } else if view.page.ui.evidence_inspection.is_some() {
-                ""
+                "↑↓ scroll · PgUp/PgDn page · Esc back".to_owned()
             } else if evaluation_details(view) && telemetry_details(view) {
-                "E evaluations · d captured text · Esc back · [ ] pages"
-            } else if evaluation_details(view) {
-                "E evaluations · Esc back · [ ] pages"
-            } else if telemetry_details(view) {
-                "d captured text · Esc back · [ ] pages"
+                format!(
+                    "{} · {} · {back_pages}",
+                    keymap::hint(&[keymap::id::FILE_EDITS]),
+                    keymap::hint(&[keymap::id::SEARCH])
+                )
+            } else if evaluation_details(view) || telemetry_details(view) {
+                format!("{} · {back_pages}", keymap::hint(&[keymap::id::FILE_EDITS]))
             } else if let HistorySelection::Session(session, _) = &view.selection
                 && view.page.reviewing()
             {
                 if session.reviewed {
-                    "Reviewed · e edits · n decisions · t traces · Esc back"
+                    keymap::hint(&[
+                        keymap::id::FILE_EDITS,
+                        keymap::id::REVIEW_NOTES,
+                        keymap::id::TRACES,
+                        keymap::id::BACK,
+                    ])
                 } else {
-                    "y review · e edits · n decisions · t traces · Esc back"
+                    keymap::hint(&[
+                        keymap::id::MARK_REVIEWED,
+                        keymap::id::FILE_EDITS,
+                        keymap::id::REVIEW_NOTES,
+                        keymap::id::TRACES,
+                        keymap::id::BACK,
+                    ])
                 }
-            } else if view.page.ui.in_turn && has_details(OperationDetailKind::Edit) {
+            } else if has_details(OperationDetailKind::Edit) {
                 if has_details(OperationDetailKind::Mcp) {
-                    "e edits · M MCP payloads · Esc back · [ ] pages"
+                    format!(
+                        "{} · {} · {back_pages}",
+                        keymap::hint(&[keymap::id::FILE_EDITS]),
+                        keymap::hint(&[keymap::id::MCP_PAYLOAD])
+                    )
                 } else {
-                    "e edits · Esc back · [ ] history pages"
+                    format!("{} · {back_pages}", keymap::hint(&[keymap::id::FILE_EDITS]))
                 }
-            } else if has_details(OperationDetailKind::Mcp)
-                && matches!(view.selection, HistorySelection::Session(_, kind) if !matches!(kind, SessionView::Traces))
-            {
-                "M payloads · t traces · Esc back · [ ] pages"
             } else if has_details(OperationDetailKind::Mcp) {
-                "M MCP payloads · Esc back · [ ] history pages"
-            } else if matches!(view.selection, HistorySelection::Session(_, kind) if !matches!(kind, SessionView::Traces))
-            {
-                "t session traces · Esc back · [ ] history pages"
+                format!(
+                    "{} · {back_pages}",
+                    keymap::hint(&[keymap::id::MCP_PAYLOAD])
+                )
             } else {
-                "Esc back · [ ] history pages"
+                back_pages
             };
             let footer = Rect::new(0, area.height.saturating_sub(1), area.width, 1);
             let status =
@@ -2730,7 +3476,7 @@ fn draw_workspace(frame: &mut Frame, workspace: &mut Workspace) {
                 {
                     format!("B chart / series · {status}")
                 } else {
-                    visible_text(status)
+                    visible_text(&status)
                 };
             frame.render_widget(Paragraph::new(status), footer);
         }
@@ -4960,6 +5706,512 @@ mod tests {
             ] {
                 assert!(text.contains(key), "missing {key} at {width}: {text}");
             }
+        }
+    }
+
+    fn ctrl(code: KeyCode) -> event::KeyEvent {
+        event::KeyEvent::new(code, KeyModifiers::CONTROL)
+    }
+
+    #[test]
+    fn ctrl_p_opens_the_searchable_palette_and_themes_stay_on_f2() {
+        let mut workspace = Workspace::new();
+        workspace.agents.update(catalog(vec![session(
+            "harness.codex",
+            "one",
+            "running",
+            None,
+        )]));
+        let (sender, requests) = mpsc::channel();
+        assert!(!workspace.key(&sender, ctrl(KeyCode::Char('p'))));
+        assert!(workspace.palette.is_open());
+        assert_eq!(workspace.palette.kind(), Some(palette::Kind::Commands));
+        assert!(
+            workspace
+                .palette
+                .entries()
+                .iter()
+                .any(|entry| entry.key == keymap::id::THEMES)
+        );
+        assert!(
+            workspace
+                .palette
+                .entries()
+                .iter()
+                .any(|entry| entry.key == keymap::id::SESSION_CHOOSER)
+        );
+        // Literal query characters stay in the search field.
+        for ch in "them".chars() {
+            assert!(!workspace.key(&sender, plain_key(ch)));
+        }
+        assert_eq!(workspace.palette.query(), "them");
+        assert!(!workspace.key(
+            &sender,
+            event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE)
+        ));
+        assert!(workspace.theme_request);
+        assert!(!workspace.palette.is_open());
+        assert!(requests.try_recv().is_err(), "palette navigation is local");
+        // The old Ctrl+P appearance binding is gone; F2 still owns themes.
+        assert!(!workspace.key(&sender, ctrl(KeyCode::Char('p'))));
+        assert!(workspace.palette.is_open());
+        assert!(!workspace.key(&sender, plain_code(KeyCode::Esc)));
+        assert!(!workspace.palette.is_open());
+    }
+
+    #[test]
+    fn session_chooser_keeps_exact_identity_and_owns_escape() {
+        let mut workspace = Workspace::new();
+        let first = session("harness.codex", "first", "running", None);
+        let mut second = session("harness.pi", "second", "completed", None);
+        second.task_title = Some("Second review".into());
+        workspace
+            .agents
+            .update(catalog(vec![first.clone(), second.clone()]));
+        let (sender, requests) = mpsc::channel();
+        let opened = workspace.run_action(&sender, keymap::id::SESSION_CHOOSER);
+        assert!(!opened);
+        assert_eq!(workspace.palette.kind(), Some(palette::Kind::Sessions));
+        // F1 opens help over the chooser and returns to the frozen choices.
+        assert!(!workspace.key(&sender, plain_code(KeyCode::F(1))));
+        assert!(workspace.help.is_open());
+        assert!(workspace.palette.is_open());
+        assert!(!workspace.key(&sender, plain_code(KeyCode::Esc)));
+        assert!(!workspace.help.is_open());
+        assert!(workspace.palette.is_open());
+        // Escape belongs to the chooser before the monitor or an enclosing form.
+        assert!(!workspace.key(&sender, plain_code(KeyCode::Esc)));
+        assert!(!workspace.palette.is_open());
+        assert!(workspace.agents.session_scope.is_none());
+        assert!(requests.try_recv().is_err());
+
+        workspace.run_action(&sender, keymap::id::SESSION_CHOOSER);
+        for ch in "pi".chars() {
+            workspace.key(&sender, plain_key(ch));
+        }
+        workspace.key(
+            &sender,
+            event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        assert_eq!(
+            workspace.agents.session_scope,
+            Some(("harness.pi".into(), "second".into()))
+        );
+        assert_eq!(workspace.agents.visible.len(), 1);
+        assert_eq!(workspace.agents.current(), Some(&second));
+
+        workspace.key(&sender, ctrl(KeyCode::Char('p')));
+        workspace.run_action(&sender, keymap::id::SESSION_CHOOSER);
+        workspace.palette.select_key("session|all");
+        workspace.key(
+            &sender,
+            event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        assert!(workspace.agents.session_scope.is_none());
+        assert_eq!(workspace.agents.visible.len(), 2);
+    }
+
+    #[test]
+    fn help_preserves_text_drafts_scroll_and_returns_to_the_same_control() {
+        let mut workspace = Workspace::new();
+        workspace.agents.update(catalog(vec![
+            session("harness.codex", "first", "running", None),
+            session("harness.codex", "selected", "completed", None),
+        ]));
+        let (sender, _requests) = mpsc::channel();
+        assert!(!workspace.key(&sender, plain_key('/')));
+        for ch in "a?[4".chars() {
+            assert!(!workspace.key(&sender, plain_key(ch)));
+        }
+        assert_eq!(workspace.agents.search, "a?[4");
+        let selected = workspace.agents.current().cloned();
+        assert!(!workspace.key(&sender, plain_code(KeyCode::F(1))));
+        assert!(workspace.help.is_open());
+        assert_eq!(workspace.help.title(), "Command center");
+        assert!(
+            workspace
+                .help
+                .lines()
+                .iter()
+                .any(|line| line.text.contains("Operations (Rust)"))
+        );
+        assert!(!workspace.key(&sender, plain_code(KeyCode::Down)));
+        assert!(workspace.help.scroll() <= 1);
+        assert!(!workspace.key(&sender, plain_code(KeyCode::Esc)));
+        assert!(!workspace.help.is_open());
+        assert!(workspace.agents.editing, "help returns to the text control");
+        assert_eq!(workspace.agents.search, "a?[4");
+        assert_eq!(workspace.agents.current().cloned(), selected);
+        // Literal question marks never open help while editing.
+        assert!(!workspace.key(&sender, plain_key('?')));
+        assert!(!workspace.help.is_open());
+        assert_eq!(workspace.agents.search, "a?[4?");
+        assert!(!workspace.key(&sender, plain_code(KeyCode::Esc)));
+        // Outside text entry, `?` is the help shortcut.
+        assert!(!workspace.key(&sender, plain_key('?')));
+        assert!(workspace.help.is_open());
+        assert!(!workspace.key(&sender, plain_key('?')));
+        assert!(!workspace.help.is_open());
+    }
+
+    #[test]
+    fn palette_marks_current_view_actions_unavailable_without_a_selection() {
+        let mut workspace = Workspace::new();
+        let (sender, _requests) = mpsc::channel();
+        workspace.open_palette();
+        let review = workspace
+            .palette
+            .entries()
+            .iter()
+            .find(|entry| entry.key == keymap::id::REVIEW)
+            .expect("review action is always listed");
+        assert!(!review.enabled);
+        assert!(review.detail.contains("Select an exact session"));
+        assert!(
+            workspace
+                .palette
+                .entries()
+                .iter()
+                .any(|entry| entry.key == keymap::id::GO_OPERATIONS && entry.enabled)
+        );
+        assert!(
+            workspace
+                .palette
+                .entries()
+                .iter()
+                .any(|entry| entry.key == keymap::id::GO_USAGE && entry.enabled)
+        );
+        workspace.palette.close();
+
+        let selected = session("harness.codex", "selected", "completed", None);
+        workspace.agents.update(catalog(vec![selected.clone()]));
+        workspace.history.push(HistoryView::new(
+            HistorySelection::Session(selected, SessionView::Overview),
+            empty_history_page(),
+        ));
+        workspace.open_palette();
+        let review = workspace
+            .palette
+            .entries()
+            .iter()
+            .find(|entry| entry.key == keymap::id::REVIEW)
+            .expect("review action is always listed");
+        assert!(review.enabled);
+        assert!(!workspace.key(&sender, plain_code(KeyCode::Esc)));
+    }
+
+    #[test]
+    fn refreshing_a_pane_keeps_its_scroll_and_reports_a_missing_identity() {
+        let (sender, requests) = mpsc::channel();
+        let mut workspace = Workspace::new();
+        let page = |titles: &[&str]| {
+            let mut page = empty_history_page();
+            for title in titles {
+                page.snapshot.panes.insert(
+                    agenturm_kernel::ExtensionId::parse(title.to_ascii_lowercase()).unwrap(),
+                    agenturm_kernel::PaneModel {
+                        title: (*title).into(),
+                        rows: (0..40)
+                            .map(|index| MetricRow {
+                                label: format!("Row {index}"),
+                                value: index.to_string(),
+                            })
+                            .collect(),
+                    },
+                );
+            }
+            page
+        };
+        workspace.history.push(HistoryView::new(
+            HistorySelection::All(WorkspaceView::Activity),
+            page(&["Alpha", "Beta"]),
+        ));
+        workspace.history[0].page.ui.set_viewport(60, 18);
+        workspace.history[0].page.ui.restore_view(Some("Beta"), 4);
+        assert_eq!(workspace.history[0].page.ui.scroll, 4);
+        assert!(!workspace.key(&sender, plain_key('R')));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::History { .. })
+        ));
+        workspace.finish(Ok(WorkspaceResponse::History(page(&["Alpha", "Beta"]))));
+        assert_eq!(workspace.history[0].page.ui.selected_title(), Some("Beta"));
+        assert_eq!(workspace.history[0].page.ui.scroll, 4);
+
+        workspace.key(&sender, plain_key('R'));
+        let _ = requests.try_recv();
+        workspace.finish(Ok(WorkspaceResponse::History(page(&["Alpha", "Gamma"]))));
+        assert_eq!(workspace.history[0].page.ui.selected_title(), Some("Gamma"));
+        assert!(
+            workspace
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("Beta is no longer"))
+        );
+    }
+
+    #[test]
+    fn late_responses_for_a_closed_context_are_discarded() {
+        let (sender, requests) = mpsc::channel();
+        let mut workspace = Workspace::new();
+        workspace.history.push(HistoryView::new(
+            HistorySelection::All(WorkspaceView::Activity),
+            empty_history_page(),
+        ));
+        workspace.key(&sender, plain_key('R'));
+        let _ = requests.try_recv();
+        assert!(workspace.pending.is_some());
+        // Simulate the reader returning after the lane closed the view.
+        workspace.generation = workspace.generation.wrapping_add(1);
+        let mut next = empty_history_page();
+        next.snapshot.panes.insert(
+            agenturm_kernel::ExtensionId::parse("late").unwrap(),
+            agenturm_kernel::PaneModel {
+                title: "Late".into(),
+                rows: Vec::new(),
+            },
+        );
+        workspace.finish(Ok(WorkspaceResponse::History(next)));
+        assert!(workspace.pending.is_none());
+        assert!(
+            workspace
+                .message
+                .as_deref()
+                .is_some_and(|message| message.contains("Discarded a late response"))
+        );
+        assert_eq!(
+            workspace.history[0].page.ui.selected_title(),
+            None,
+            "a superseded page must not replace the current view"
+        );
+    }
+
+    #[test]
+    fn ctrl_c_copies_public_evidence_but_keeps_interrupt_in_text_entry() {
+        let mut workspace = Workspace::new();
+        let mut page = empty_history_page();
+        page.snapshot.panes.insert(
+            agenturm_kernel::ExtensionId::parse("activity").unwrap(),
+            agenturm_kernel::PaneModel {
+                title: "Activity".into(),
+                rows: vec![MetricRow {
+                    label: "Event".into(),
+                    value: "recorded".into(),
+                }],
+            },
+        );
+        workspace.history.push(HistoryView::new(
+            HistorySelection::All(WorkspaceView::Activity),
+            page,
+        ));
+        let (sender, _requests) = mpsc::channel();
+        assert!(!workspace.key(&sender, ctrl(KeyCode::Char('c'))));
+        assert!(
+            workspace.view_io.clipboard.is_some(),
+            "public evidence focus copies"
+        );
+        let _ = workspace.view_io.clipboard.take();
+
+        workspace.history.clear();
+        workspace.agents.update(catalog(vec![session(
+            "harness.codex",
+            "selected",
+            "running",
+            None,
+        )]));
+        workspace.key(&sender, plain_key('/'));
+        assert!(workspace.key(&sender, ctrl(KeyCode::Char('c'))));
+    }
+
+    #[test]
+    fn today_and_session_scope_survive_refresh_without_moving_identity() {
+        let mut workspace = Workspace::new();
+        let active = session("harness.codex", "active", "running", None);
+        let old = session("harness.pi", "old", "completed", None);
+        workspace
+            .agents
+            .update(catalog(vec![old.clone(), active.clone()]));
+        let (sender, _requests) = mpsc::channel();
+        workspace.run_action(&sender, keymap::id::SCOPE_TODAY);
+        assert_eq!(workspace.agents.time_scope, TimeScope::Today);
+        assert_eq!(workspace.agents.visible.len(), 1);
+        assert_eq!(workspace.agents.current(), Some(&active));
+        workspace.run_action(
+            &sender,
+            &format!("session|{}|{}", active.harness_id, active.session_id),
+        );
+        assert_eq!(workspace.agents.session_scope, Some(session_key(&active)));
+        workspace.agents.update(catalog(vec![active.clone(), old]));
+        assert_eq!(workspace.agents.time_scope, TimeScope::Today);
+        assert_eq!(workspace.agents.session_scope, Some(session_key(&active)));
+        assert_eq!(workspace.agents.current(), Some(&active));
+        workspace.run_action(&sender, keymap::id::SCOPE_HISTORY);
+        assert_eq!(workspace.agents.time_scope, TimeScope::All);
+        assert_eq!(
+            workspace.agents.visible.len(),
+            1,
+            "History does not clear the independent session scope"
+        );
+        workspace.run_action(&sender, "session|all");
+        assert_eq!(workspace.agents.visible.len(), 2);
+    }
+
+    #[test]
+    fn help_from_a_compact_chooser_and_export_form_returns_with_state_intact() {
+        let mut workspace = Workspace::new();
+        let session = session("harness.codex", "selected", "completed", None);
+        let turn = RecordedTurn {
+            harness_id: session.harness_id.clone(),
+            session_id: session.session_id.clone(),
+            turn_id: "turn-a".into(),
+            worker_id: None,
+            snapshot_id: 9.into(),
+            lifecycle: None,
+        };
+        let mut page = empty_history_page();
+        page.snapshot.history_snapshot_id = turn.snapshot_id;
+        page.turns = vec![turn];
+        page.snapshot.panes.insert(
+            agenturm_kernel::ExtensionId::parse("activity").unwrap(),
+            agenturm_kernel::PaneModel {
+                title: "Activity".into(),
+                rows: vec![MetricRow {
+                    label: "Event".into(),
+                    value: "recorded".into(),
+                }],
+            },
+        );
+        workspace.history.push(HistoryView::new(
+            HistorySelection::Session(session, SessionView::Overview),
+            page,
+        ));
+        let (sender, _requests) = mpsc::channel();
+        assert!(!workspace.key(&sender, plain_key('T')));
+        assert!(workspace.history[0].page.turn_picker.is_some());
+        assert!(!workspace.key(&sender, plain_code(KeyCode::F(1))));
+        assert!(workspace.help.is_open());
+        assert!(!workspace.key(&sender, plain_code(KeyCode::Esc)));
+        assert!(!workspace.help.is_open());
+        assert!(
+            workspace.history[0].page.turn_picker.is_some(),
+            "help returns to the compact chooser"
+        );
+        assert!(!workspace.key(&sender, plain_code(KeyCode::Esc)));
+        assert!(workspace.history[0].page.turn_picker.is_none());
+
+        // Export form drafts also survive help.
+        assert!(!workspace.key(&sender, plain_key('x')));
+        assert!(workspace.view_io.form.is_some());
+        for ch in ['a', '?', '[', '4'] {
+            assert!(!workspace.key(&sender, plain_key(ch)));
+        }
+        assert!(workspace.view_io.form.is_some());
+        assert!(!workspace.key(&sender, plain_code(KeyCode::F(1))));
+        assert!(workspace.help.is_open());
+        assert!(!workspace.key(&sender, plain_code(KeyCode::Esc)));
+        assert!(!workspace.help.is_open());
+        assert!(
+            workspace.view_io.form.is_some(),
+            "help returns to the export form with its draft"
+        );
+        assert!(!workspace.key(&sender, plain_code(KeyCode::Esc)));
+        assert!(workspace.view_io.form.is_none());
+    }
+
+    #[test]
+    fn palette_runs_a_clipped_destination_and_reports_it_in_help() {
+        let mut workspace = Workspace::new();
+        workspace.agents.update(catalog(vec![session(
+            "harness.codex",
+            "selected",
+            "completed",
+            None,
+        )]));
+        let (sender, requests) = mpsc::channel();
+        assert!(!workspace.key(&sender, ctrl(KeyCode::Char('p'))));
+        for ch in "operations".chars() {
+            workspace.key(&sender, plain_key(ch));
+        }
+        workspace.key(
+            &sender,
+            event::KeyEvent::new(KeyCode::Enter, KeyModifiers::NONE),
+        );
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::History {
+                selection: HistorySelection::All(WorkspaceView::Operations),
+                before: None,
+                ..
+            })
+        ));
+        workspace.pending = None;
+        workspace.history.clear();
+        workspace.open_help();
+        let rendered: Vec<_> = workspace
+            .help
+            .lines()
+            .iter()
+            .map(|line| line.text.as_str())
+            .collect();
+        for expected in [
+            "1",
+            "Agents",
+            "7",
+            "Findings",
+            "9",
+            "Operations (Rust)",
+            "U",
+            "Usage (Rust)",
+            "Ctrl+P",
+            "F2",
+        ] {
+            assert!(
+                rendered.iter().any(|line| line.contains(expected)),
+                "help is missing {expected}: {rendered:?}"
+            );
+        }
+    }
+
+    #[test]
+    fn palette_help_and_theme_overlays_stay_usable_at_the_floor() {
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let mut workspace = Workspace::new();
+            workspace.agents.update(catalog(vec![session(
+                "harness.codex",
+                "selected",
+                "running",
+                None,
+            )]));
+            workspace.open_palette();
+            workspace.open_help();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| draw_workspace(frame, &mut workspace))
+                .unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(text.contains("Help · Command palette"), "{width}: {text}");
+            assert!(text.contains("F1 or ? close help"), "{width}: {text}");
+
+            workspace.help.close();
+            workspace.open_palette();
+            terminal
+                .draw(|frame| draw_workspace(frame, &mut workspace))
+                .unwrap();
+            let text: String = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect();
+            assert!(text.contains("Command palette"), "{width}: {text}");
+            assert!(text.contains("Esc cancel"), "{width}: {text}");
         }
     }
 }

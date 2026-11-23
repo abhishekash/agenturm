@@ -171,9 +171,11 @@ partial coverage. Claude mutable-name scans are bounded to 16 MiB per transcript
 and 32 MiB per roster read. A verified first-line workspace can survive that
 limit with a partial-title notice; a two-record snapshot prelude requires a
 fully verified committed prefix before its workspace is shown.</p>
-<p>Press <code>F2</code> or <code>Ctrl+P</code> to preview Observation, Current, Bright, Dark and Solarized.
-Enter saves the selected theme; Escape restores the previous one. The shared
-palette applies to the command center, evidence tables, inspectors and dialogs.</p>
+<p>Press <code>F2</code> to preview Observation, Current, Bright, Dark and Solarized, or
+choose Themes from the palette. Enter saves the selected theme; Escape restores
+the previous one. <code>Ctrl+P</code> opens the searchable cockpit command palette.
+The shared palette applies to the command center, evidence tables, inspectors
+and dialogs.</p>
 <p>A newly created default cockpit history uses a 14-day age policy. Existing
 histories retain their current policy; an explicitly selected database can
 receive a policy through the commands below. Active writers check the policy
@@ -222,7 +224,9 @@ report with <code>--endpoint</code> and <code>--token-file</code> in place of <c
 <code>3</code> for MCP, <code>4</code> for Traces, <code>5</code> for recorded Host, <code>6</code> for Metrics,
 <code>7</code> for Findings, <code>9</code> for Operations, and <code>U</code> for workspace Usage. <code>H</code> opens
 live Host; <code>8</code> remains a trace alias. Press <code>T</code> in a history view to select a
-recorded turn, <code>F1</code> for keyboard help, and <code>q</code> to quit. The available
+recorded turn, <code>F1</code> or <code>?</code> for scrollable contextual help, <code>Ctrl+P</code> for the
+command palette, and <code>q</code> to quit. Clipped numbered destinations stay available
+in both help and the palette. The available
 evidence varies by source. For Codex MCP calls the view includes the server,
 tool, method, duration and outcome when recorded.</p>
 <p>Press <code>m</code> in the MCP pane to choose an exact recorded Codex call. Enter
