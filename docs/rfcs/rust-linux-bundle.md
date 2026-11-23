@@ -152,7 +152,7 @@ their committed receipts. OpenCode SQLite prompts with an admission digest
 can reopen after later sweeps or unrelated committed writes. The original
 row identity, turn, timestamp and bytes must still verify in the native
 database. Legacy rows without a digest require the exact committed sweep.
-New prompt references carry a history snapshot. Reopen the prompt list after
+New prompt references carry a logical history ID and snapshot. Reopen the prompt list after
 restore or snapshot expiry to make a fresh selection.
 The default cockpit uses its collector's writer lease for reveal. Establish
 or revoke grants from the CLI while the history writer is available.

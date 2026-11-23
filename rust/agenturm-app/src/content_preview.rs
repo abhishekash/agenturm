@@ -22,6 +22,7 @@ pub struct PromptReference {
     pub turn_id: String,
     pub observed_at_unix_ns: u64,
     pub snapshot_id: Option<ReadSnapshot>,
+    pub history_identity: Option<String>,
 }
 
 #[derive(Clone, Debug, Eq, PartialEq)]
@@ -191,6 +192,7 @@ pub(super) struct PromptSelection<'a> {
     pub event_id: &'a str,
     pub revision: u32,
     pub snapshot_id: Option<ReadSnapshot>,
+    pub history_identity: Option<&'a str>,
 }
 
 #[cfg(target_os = "linux")]
@@ -219,6 +221,7 @@ pub(super) fn with_verified_prompt<T>(
             event_id: selection.event_id,
             revision: selection.revision,
             snapshot_id: selection.snapshot_id,
+            history_identity: selection.history_identity,
         },
         consume,
     )
@@ -250,6 +253,7 @@ pub(super) fn reveal_user_prompt(
                 event_id: selection.event_id,
                 revision: selection.revision,
                 snapshot_id: selection.snapshot_id,
+                history_identity: selection.history_identity,
             },
             output,
         )

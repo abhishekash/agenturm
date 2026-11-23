@@ -16,11 +16,12 @@ use agenturm_kernel::{
 use agenturm_kernel::{ReadIncarnation, ReadSnapshot};
 use agenturm_storage_service_contract::{ContractError, ServerPolicy, native};
 use agenturm_store::{
-    AutomaticRetentionPolicy, AutomaticRetentionStatus, EvalImportReport, EvalOutcome, EvalPage,
-    EvalQuery, ObservationBatch, ResolvedTraceReview, RetainedEvalOutcome, RetentionOutcome,
-    SelectedEvalPage, SelectedEvalQuery, SessionPage, SessionQuery, Store, TelemetryBinding,
-    TelemetryPayload, TelemetryPayloadRecord, TelemetryPayloadSelection, TraceReviewQuery,
-    WorkspaceAnchor, WorkspaceHistory,
+    AutomaticRetentionPolicy, AutomaticRetentionStatus, EvalDetailRecord, EvalDetailSelection,
+    EvalImportReport, EvalOutcome, EvalPage, EvalQuery, EvalResultDetail, ObservationBatch,
+    ResolvedTraceReview, RetainedEvalOutcome, RetentionOutcome, SelectedEvalPage,
+    SelectedEvalQuery, SessionPage, SessionQuery, Store, TelemetryBinding, TelemetryPayload,
+    TelemetryPayloadRecord, TelemetryPayloadSelection, TraceReviewQuery, WorkspaceAnchor,
+    WorkspaceHistory,
 };
 use serde::{Deserialize, Serialize, de::DeserializeOwned};
 use std::collections::BTreeSet;
@@ -72,6 +73,17 @@ pub(crate) enum NativeOperation {
     ImportEvalOutcomes {
         source_id: ExtensionId,
         outcomes: Vec<EvalOutcome>,
+    },
+    ImportPrivateEvalOutcomes {
+        source_id: ExtensionId,
+        #[serde(deserialize_with = "agenturm_store::deserialize_eval_batch")]
+        outcomes: Vec<EvalOutcome>,
+        #[serde(deserialize_with = "agenturm_store::deserialize_eval_batch")]
+        details: Vec<EvalDetailRecord>,
+    },
+    RevealEvalDetail {
+        history_identity: String,
+        selection: EvalDetailSelection,
     },
     EvalPage {
         source_id: ExtensionId,
@@ -199,6 +211,7 @@ impl NativeOperation {
                 | Self::VerifyPrivatePrompt { .. }
                 | Self::VerifyPrivateOperation { .. }
                 | Self::RevealTelemetry { .. }
+                | Self::RevealEvalDetail { .. }
         )
     }
 
@@ -212,6 +225,19 @@ impl NativeOperation {
         output: &mut Disclosure<'_>,
     ) -> Result<(), PrivateEvidenceFailure> {
         match self {
+            Self::RevealEvalDetail {
+                history_identity,
+                selection,
+            } => {
+                authorize_private(
+                    store,
+                    allowed,
+                    role,
+                    &history_identity,
+                    &selection.trace_source_id,
+                )?;
+                native_content::disclose_eval_detail(store, &selection, output)
+            }
             Self::RevealTelemetry {
                 history_identity,
                 selection,
@@ -401,6 +427,21 @@ pub(crate) fn dispatch(
                 },
             );
         }
+        NativeOperation::ImportPrivateEvalOutcomes {
+            source_id,
+            outcomes,
+            details,
+        } => {
+            return NativeReply::EvalImported(
+                if role == Role::Collector && allowed.contains(&source_id) {
+                    store
+                        .import_eval_outcomes_with_details(&source_id, &outcomes, &details)
+                        .map_err(native_read::failure)
+                } else {
+                    Err(ReadFailure::Unauthorized)
+                },
+            );
+        }
         NativeOperation::EvalPage {
             source_id,
             query,
@@ -513,7 +554,8 @@ pub(crate) fn dispatch(
         NativeOperation::RevealPrivate { .. }
         | NativeOperation::VerifyPrivatePrompt { .. }
         | NativeOperation::VerifyPrivateOperation { .. }
-        | NativeOperation::RevealTelemetry { .. } => {
+        | NativeOperation::RevealTelemetry { .. }
+        | NativeOperation::RevealEvalDetail { .. } => {
             return NativeReply::PrivatePrompts(Err(PrivateEvidenceFailure::Unauthorized));
         }
         NativeOperation::Admin { request } => {
@@ -746,6 +788,22 @@ impl NativeStore {
             NativeOperation::ImportEvalOutcomes {
                 source_id: source_id.clone(),
                 outcomes: outcomes.to_vec(),
+            },
+        )?
+        .map_err(NativeClientError::Read)
+    }
+
+    pub fn import_eval_outcomes_with_details(
+        &self,
+        source_id: &ExtensionId,
+        outcomes: &[EvalOutcome],
+        details: &[EvalDetailRecord],
+    ) -> Result<EvalImportReport, NativeClientError> {
+        self.exchange::<Result<EvalImportReport, ReadFailure>>(
+            NativeOperation::ImportPrivateEvalOutcomes {
+                source_id: source_id.clone(),
+                outcomes: outcomes.to_vec(),
+                details: details.to_vec(),
             },
         )?
         .map_err(NativeClientError::Read)
@@ -1060,6 +1118,25 @@ impl NativeStore {
                     .validate()
                     .map_err(|_| NativeClientError::InvalidReply)?;
                 consume(payload).map_err(|_| NativeClientError::PrivateConsumer)
+            },
+        )
+    }
+
+    pub fn with_eval_result_detail<T>(
+        &self,
+        selection: &EvalDetailSelection,
+        consume: impl FnOnce(&EvalResultDetail) -> Result<T, String>,
+    ) -> Result<T, NativeClientError> {
+        self.consume_private(
+            NativeOperation::RevealEvalDetail {
+                history_identity: self.private_history_identity()?,
+                selection: selection.clone(),
+            },
+            |detail: &EvalResultDetail| {
+                detail
+                    .validate()
+                    .map_err(|_| NativeClientError::InvalidReply)?;
+                consume(detail).map_err(|_| NativeClientError::PrivateConsumer)
             },
         )
     }

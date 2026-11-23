@@ -238,14 +238,19 @@ pub(super) fn purge_before(connection: &Connection, cutoff: i64) -> Result<()> {
 
 impl Store {
     pub(super) fn verify_telemetry_storage(&self) -> Result<()> {
+        self.verify_private_text_storage("telemetry text requires a private leased history")
+    }
+
+    pub(super) fn verify_private_text_storage(&self, required: &'static str) -> Result<()> {
         self.verify_write_admission()?;
         #[cfg(target_os = "linux")]
         {
             use std::os::unix::fs::MetadataExt;
 
-            let lease = self.writer_lease.as_ref().ok_or(StoreError::Invalid(
-                "telemetry text requires a private leased history",
-            ))?;
+            let lease = self
+                .writer_lease
+                .as_ref()
+                .ok_or(StoreError::Invalid(required))?;
             let database = std::fs::symlink_metadata(lease.database_path())
                 .map_err(StoreError::WriterLease)?;
             let lock =
@@ -258,9 +263,7 @@ impl Store {
                 return Ok(());
             }
         }
-        Err(StoreError::Invalid(
-            "telemetry text requires a private leased history",
-        ))
+        Err(StoreError::Invalid(required))
     }
 
     /// Consumes captured text inside the writer fence. No payload-bearing item

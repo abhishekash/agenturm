@@ -4,7 +4,9 @@ use agenturm_content::{OperationDetailKind, PromptReference, ResolvedSource};
 use agenturm_kernel::ExtensionId;
 use agenturm_kernel::ReadSnapshot;
 use agenturm_storage_service_contract::native;
-use agenturm_store::{CodexOperationSelection, Store, StoreError, TelemetryPayloadSelection};
+use agenturm_store::{
+    CodexOperationSelection, EvalDetailSelection, Store, StoreError, TelemetryPayloadSelection,
+};
 use serde::{Deserialize, Serialize};
 use std::cell::RefCell;
 use std::collections::BTreeSet;
@@ -45,6 +47,8 @@ pub enum PrivateEvidenceKind {
     UserText {
         #[serde(default, skip_serializing_if = "Option::is_none")]
         snapshot_id: Option<ReadSnapshot>,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        history_identity: Option<String>,
     },
     CodexMcpPayload {
         turn_id: String,
@@ -324,7 +328,11 @@ pub(crate) fn disclose(
     }
     let config = config.ok_or(PrivateEvidenceFailure::Unavailable)?;
     let resolve = config.resolver(allowed);
-    if let PrivateEvidenceKind::UserText { snapshot_id } = selection.kind {
+    if let PrivateEvidenceKind::UserText {
+        snapshot_id,
+        history_identity,
+    } = &selection.kind
+    {
         return agenturm_content::reveal_selected_prompt(
             store,
             &resolve,
@@ -333,7 +341,8 @@ pub(crate) fn disclose(
                 session_id: Some(&selection.session_id),
                 event_id: &selection.event_id,
                 revision: selection.revision,
-                snapshot_id,
+                snapshot_id: *snapshot_id,
+                history_identity: history_identity.as_deref(),
             },
             output,
         )
@@ -440,8 +449,21 @@ pub(crate) fn disclose_telemetry(
     selected: &TelemetryPayloadSelection,
     output: &mut Disclosure<'_>,
 ) -> Result<(), PrivateEvidenceFailure> {
-    store
-        .with_telemetry_payload(selected, |payload| output.publish(payload))
+    finish_capture(store.with_telemetry_payload(selected, |payload| output.publish(payload)))
+}
+
+pub(crate) fn disclose_eval_detail(
+    store: &Store,
+    selected: &EvalDetailSelection,
+    output: &mut Disclosure<'_>,
+) -> Result<(), PrivateEvidenceFailure> {
+    finish_capture(store.with_eval_result_detail(selected, |detail| output.publish(detail)))
+}
+
+fn finish_capture(
+    result: Result<Option<io::Result<()>>, StoreError>,
+) -> Result<(), PrivateEvidenceFailure> {
+    result
         .map_err(|error| match error {
             StoreError::SnapshotReplaced => PrivateEvidenceFailure::HistoryReplaced,
             StoreError::ExpiredHistorySnapshot { .. } => PrivateEvidenceFailure::SnapshotExpired,
@@ -633,7 +655,10 @@ mod tests {
                 session_id: "proof-session".into(),
                 event_id,
                 revision: 0,
-                kind: PrivateEvidenceKind::UserText { snapshot_id: None },
+                kind: PrivateEvidenceKind::UserText {
+                    snapshot_id: None,
+                    history_identity: None,
+                },
             };
             let fixture = Self {
                 root,
@@ -725,7 +750,7 @@ mod tests {
     }
 
     #[test]
-    fn issued_prompt_reference_rejects_same_metadata_on_restored_branch() {
+    fn issued_prompt_reference_rejects_same_metadata_on_other_history_and_restored_branch() {
         let mut fixture = Fixture::with_seed_backup(Some("restored.sqlite"));
         let list = |fixture: &Fixture, store: &Store| {
             let mut rows = super::list(
@@ -744,7 +769,9 @@ mod tests {
         let prior_snapshot = original_reference.snapshot_id.unwrap();
         fixture.selection.kind = PrivateEvidenceKind::UserText {
             snapshot_id: Some(prior_snapshot),
+            history_identity: original_reference.history_identity.clone(),
         };
+        let prior_selection = fixture.selection.clone();
         let mut output = Vec::new();
         fixture.disclose(&original, &mut output).unwrap();
         assert_eq!(output, b"\"review note fixture\"\n");
@@ -779,8 +806,34 @@ mod tests {
         assert!(output.is_empty());
         fixture.selection.kind = PrivateEvidenceKind::UserText {
             snapshot_id: Some(new_snapshot),
+            history_identity: Some(restored.history_identity().unwrap()),
         };
         fixture.disclose(&restored, &mut output).unwrap();
+        assert_eq!(output, b"\"alternate prompt\"\n");
+
+        let mut other = Store::open_collector(fixture.root.join("other.sqlite")).unwrap();
+        fixture.admit_prompt(&mut other, &alternate_bytes);
+        other.grant_content(&fixture.scope).unwrap();
+        let other_reference = list(&fixture, &other);
+        assert_eq!(other_reference.event_id, prior_selection.event_id);
+        assert_eq!(other_reference.revision, prior_selection.revision);
+        assert_eq!(other_reference.snapshot_id, Some(prior_snapshot));
+        assert_ne!(
+            other.history_identity().unwrap(),
+            original.history_identity().unwrap()
+        );
+        fixture.selection = prior_selection;
+        output.clear();
+        assert_eq!(
+            fixture.disclose(&other, &mut output),
+            Err(PrivateEvidenceFailure::Unavailable)
+        );
+        assert!(output.is_empty());
+        fixture.selection.kind = PrivateEvidenceKind::UserText {
+            snapshot_id: other_reference.snapshot_id,
+            history_identity: other_reference.history_identity,
+        };
+        fixture.disclose(&other, &mut output).unwrap();
         assert_eq!(output, b"\"alternate prompt\"\n");
     }
 

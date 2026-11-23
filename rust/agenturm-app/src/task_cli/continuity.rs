@@ -428,6 +428,7 @@ fn with_source<T>(
                 event_id: &source.event_id,
                 revision: source.revision,
                 snapshot_id: None,
+                history_identity: None,
             },
             consume,
         )?

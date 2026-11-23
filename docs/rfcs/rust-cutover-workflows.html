@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 0.3.6</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">Markdown source ↗</a></nav><h1>Rust cutover workflow inventory</h1>
+</style></head><body><main><nav><strong>Agenturm / Rust 0.3.6 candidate</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">Markdown source ↗</a></nav><h1>Rust cutover workflow inventory</h1>
 <p>Baseline is the Python <code>v0.2.8</code> tag and the published Rust 0.3.1 Linux bundle. The default switch requires the keyboard journeys and retained commands below to pass on the installed candidate. The Python comparison uses disposable 0.2.8 state. The Rust candidate uses a fresh Rust history directory and equivalent source fixtures.</p>
 <p>The current implementation scope retains the remaining workflows. Remote
 receiver access, remaining eval views, automatic retention, recorded cost and
@@ -38,7 +38,7 @@ migration of Python-era databases remains outside the Rust-only product scope.</
 </tr>
 <tr>
 <td><code>import-evals</code></td>
-<td>Import bounded <code>agent-evals</code> result metadata into an exact retained OTLP trace source. Use <code>evals</code> to read the current outcome in text or JSON. <code>evals --history</code> pages retained revisions and <code>evals --summary</code> reports current source outcomes with page counts. In the cockpit, <code>E</code> opens evaluations from Traces. Private result detail and richer aggregation remain open.</td>
+<td>Import bounded <code>agent-evals</code> result metadata into an exact retained OTLP trace source. Use <code>evals</code> to read the current outcome in text or JSON. <code>evals --history</code> pages retained revisions and <code>evals --summary</code> reports current source outcomes with page counts. In the cockpit, <code>E</code> opens evaluations and <code>d</code> opens approved private result text. Cross-source aggregation remains open.</td>
 </tr>
 <tr>
 <td><code>migrate-db</code></td>
@@ -185,8 +185,8 @@ Each outcome requires a 32-character hexadecimal <code>trace_id</code> and a boo
 scores. Each score supplies a <code>scorer</code> plus a boolean <code>passed</code>, a numeric
 <code>score</code>, or both. Metadata labels allow up to 128 ASCII characters. They
 start with a letter or digit and can also contain <code>._:/@+-</code>. The importer
-rejects recognized credential prefixes and discards producer errors, score
-detail text, inputs, outputs, and other result fields.</p>
+rejects recognized credential prefixes in metadata labels. Metadata is the
+default import. Optional private capture is described below.</p>
 <p>Every result must match a retained trace under the selected source ID.
 Duplicate trace IDs within a batch or a missing match reject the whole batch.
 Evaluation pass/fail is independent of the execution status of the spans.
@@ -206,7 +206,32 @@ fields. These views read current state on each invocation; concurrent changes
 can change a later page. Counts describe the displayed page, not a whole-history
 total. Pruned bodies stay absent from both views even if a trace ID reappears.
 The same options work through the broker and keep its source allowlist.
-Private result detail and cross-source/provider/scorer aggregation remain open.</p>
+Cross-source, provider and scorer aggregation remain open.</p>
+<h3>Private evaluation text</h3>
+<p>Use <code>--include-detail</code> to capture the <code>error</code> string on a result and the
+<code>detail</code> string on each score. The capture records the original score position.
+The allowed fields accept up to 2 KiB each, 4 KiB per result and 64 KiB per
+import. Scalar text is the supported format. A credential-like or unsafe
+string rejects the batch before any result or detail commits.</p>
+<pre><code class="language-sh">agenturm import-evals --include-detail --file results.json --db history.sqlite --source-id otlp.exported
+agenturm eval-detail grant --db history.sqlite --source-id otlp.exported
+agenturm eval-detail preview --db history.sqlite --selection selection.json
+agenturm eval-detail revoke --db history.sqlite --source-id otlp.exported
+</code></pre>
+<p>Copy the <code>detail_selection</code> object from <code>evals --json</code> for the exact revision
+into <code>selection.json</code>. It contains the source, trace, revision, receipt ID
+and snapshot. The receipt is issued with the new result revision and preserves
+the original capture across retries. Reusing the same metadata with supplied
+details requires the exact original capture. Capturing detail for an existing
+metadata-only result requires a distinct corrected metadata revision. Replay
+preserves the current version and leaves expired text unavailable.</p>
+<p>Disclosure requires an <code>eval.result_detail</code> approval for the exact OTLP
+source. The viewer verifies the capture receipt and its supporting retained
+trace occurrence at the supplied snapshot. Pruning that supporting occurrence
+removes the text and preserves the outcome's revision and detail digest.
+Restored backups require fresh approval and a fresh snapshot. Metadata views
+only return result metadata and the selection reference. See
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-broker-commands.md#private-evaluation-text">broker evaluation detail commands</a>.</p>
 <p>In the cockpit, press <code>E</code> from global or session Traces to choose a trace on
 the loaded page. The picker preserves its selection by exact OTLP source and
 trace ID, including when two sources report the same trace ID. Enter opens
@@ -221,6 +246,10 @@ evaluation request reads current retained metadata from that history and
 fails when the selected snapshot has expired or the receiver has restored a
 different branch. This metadata view also works through the broker and the
 authenticated HTTP reader for allowed OTLP sources.</p>
+<p>In the local or broker cockpit, select a revision marked <code>d private</code> to open
+its imported evaluation text. Escape clears the private view and returns to
+the same selection. The private view uses the current approval and expires
+after 25 seconds.</p>
 <h3>Task Git patches</h3>
 <p>Save a patch from the Linux checkout attached to a task. The optional revision
 checks which version of the task receives the capture. The command reports

@@ -383,6 +383,10 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
         "selected occurrence",
     );
     let references = checked(list("pi-fixture"));
+    let identity = agenturm_store::Store::open_read_only(&database)
+        .unwrap()
+        .history_identity()
+        .unwrap();
     assert_eq!(
         serde_json::from_str::<Value>(&references).unwrap(),
         json!([
@@ -392,6 +396,7 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
                 "turn_id": "turn-1",
                 "observed_at_unix_ns": 1795176000000000000u64,
                 "snapshot_id": snapshot,
+                "history_identity": identity,
             },
             {
                 "event_id": event("turn-safe"),
@@ -399,6 +404,7 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
                 "turn_id": "turn-safe",
                 "observed_at_unix_ns": 1795176001500000000u64,
                 "snapshot_id": snapshot,
+                "history_identity": identity,
             },
         ])
     );

@@ -52,6 +52,8 @@ pub struct PromptReference {
     pub observed_at_unix_ns: u64,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     pub snapshot_id: Option<ReadSnapshot>,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub history_identity: Option<String>,
 }
 
 pub struct PromptSelection<'a> {
@@ -59,6 +61,7 @@ pub struct PromptSelection<'a> {
     pub event_id: &'a str,
     pub revision: u32,
     pub snapshot_id: Option<ReadSnapshot>,
+    pub history_identity: Option<&'a str>,
 }
 
 #[derive(Serialize, Deserialize)]
@@ -222,6 +225,9 @@ pub fn list(
                 return Ok(Vec::new());
             };
             let texts = source.prove(&evidence, false)?;
+            let identity = store
+                .history_identity()
+                .map_err(|error| error.to_string())?;
 
             let mut references = Vec::new();
             for (event_id, evidence) in &evidence {
@@ -237,6 +243,7 @@ pub fn list(
                         turn_id: evidence.turn_id.clone(),
                         observed_at_unix_ns: evidence.observed_at_unix_ns,
                         snapshot_id: Some(evidence.snapshot_id),
+                        history_identity: Some(identity.clone()),
                     });
                 }
             }
@@ -268,6 +275,7 @@ pub fn reveal_fenced(
             event_id,
             revision,
             snapshot_id: None,
+            history_identity: None,
         },
         output,
     )
@@ -310,6 +318,7 @@ pub fn with_verified_prompt<T>(
             event_id,
             revision,
             snapshot_id: None,
+            history_identity: None,
         },
         consume,
     )
@@ -505,6 +514,7 @@ fn verified_prompt(
         event_id,
         revision,
         snapshot_id,
+        history_identity,
     } = selection;
     if event_id.is_empty() || event_id.len() > 256 {
         return Err("invalid prompt preview event ID".into());
@@ -517,12 +527,24 @@ fn verified_prompt(
         .current_content_grant(&source.scope)
         .map_err(|error| error.to_string())?
         .ok_or_else(|| missing_approval(source.harness))?;
-    if let Some(snapshot_id) = snapshot_id
-        && !store
-            .contains_observation_at_snapshot(source_id, event_id, revision, snapshot_id)
-            .map_err(|error| error.to_string())?
-    {
-        return Err(NO_EVIDENCE.into());
+    match (snapshot_id, history_identity) {
+        (None, None) => {}
+        (Some(snapshot), Some(identity)) => {
+            if store
+                .history_identity()
+                .map_err(|error| error.to_string())?
+                != identity
+            {
+                return Err("The prompt reference belongs to different history".into());
+            }
+            if !store
+                .contains_observation_at_snapshot(source_id, event_id, revision, snapshot)
+                .map_err(|error| error.to_string())?
+            {
+                return Err(NO_EVIDENCE.into());
+            }
+        }
+        _ => return Err("The selected prompt reference is incomplete".into()),
     }
     let evidence = store
         .current_user_text_evidence(&source.scope, &grant, event_id, revision)

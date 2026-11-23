@@ -228,6 +228,218 @@ fn malformed_evaluations_report_safe_errors_before_opening_history() {
     assert!(!db.exists());
 }
 
+#[test]
+fn evaluation_detail_is_atomic_exact_and_fenced_by_both_receipts() {
+    use agenturm_kernel::ObservationQuery;
+    use agenturm_store::Store;
+
+    let scratch = Scratch::new();
+    let db = scratch.0.join("private.sqlite");
+    let backup = scratch.0.join("backup.sqlite");
+    let trace_file = scratch.0.join("traces.json");
+    let results = scratch.0.join("results.json");
+    let selection = scratch.0.join("selection.json");
+    let trace = |spans| {
+        std::fs::write(
+            &trace_file,
+            json!({"resourceSpans":[{"scopeSpans":[{"spans":spans}]}]}).to_string(),
+        )
+        .unwrap();
+        checked(run(
+            &db,
+            &[
+                "import-traces",
+                "--source-id",
+                PRIMARY,
+                "--file",
+                path(&trace_file),
+            ],
+        ));
+    };
+    let import_at = |history, rows, detail| {
+        std::fs::write(&results, json!({"results":rows}).to_string()).unwrap();
+        let mut args = vec![
+            "import-evals",
+            "--source-id",
+            PRIMARY,
+            "--file",
+            path(&results),
+        ];
+        if detail {
+            args.push("--include-detail");
+        }
+        run(history, &args)
+    };
+    let import = |rows, detail| import_at(&db, rows, detail);
+    let metadata = |history| {
+        let raw = checked(run(
+            history,
+            &[
+                "evals",
+                "--source-id",
+                PRIMARY,
+                "--trace-id",
+                TRACE,
+                "--json",
+            ],
+        ));
+        assert!(!raw.contains("bounded scorer explanation"));
+        assert!(!raw.contains("bounded evaluator error"));
+        assert!(!raw.contains("untyped provider body"));
+        serde_json::from_str::<Value>(&raw).unwrap()
+    };
+    let snapshot = |history| {
+        Store::open_read_only(history)
+            .unwrap()
+            .query_observations(&ObservationQuery::latest(2))
+            .unwrap()
+            .snapshot_id
+    };
+    let cursor = || {
+        Store::open_read_only(&db)
+            .unwrap()
+            .source_cursor(PRIMARY)
+            .unwrap()
+    };
+    let approve = |history| {
+        checked(run(
+            history,
+            &["eval-detail", "grant", "--source-id", PRIMARY],
+        ))
+    };
+    let preview = |history, value: &Value| {
+        std::fs::write(&selection, value.to_string()).unwrap();
+        run(
+            history,
+            &["eval-detail", "preview", "--selection", path(&selection)],
+        )
+    };
+    let outcome = json!({"trace_id": TRACE, "passed":false,
+        "error":"bounded evaluator error", "details":{"raw":"untyped provider body"},
+        "scores":[{"scorer":"first", "passed":false, "detail":{"json":"untyped provider body"}},
+                  {"scorer":"second", "score":0.4, "detail":"bounded scorer explanation"}]});
+    let mut unsafe_outcome =
+        json!({"trace_id": SIBLING_ONLY, "passed":false, "error":"api_key=fixture-secret-marker"});
+    trace(vec![
+        span(TRACE, "1111111111111111", 300),
+        span(SIBLING_ONLY, "2222222222222222", 400),
+    ]);
+    let before = snapshot(&db);
+    let before_cursor = cursor();
+    let rejected = failed(import(vec![outcome.clone(), unsafe_outcome.clone()], true));
+    assert!(rejected.contains("text was withheld") && !rejected.contains("fixture-secret-marker"));
+    assert!(metadata(&db).is_null());
+    assert_eq!(snapshot(&db), before);
+    unsafe_outcome["error"] = json!("x".repeat(2049));
+    assert!(
+        failed(import(vec![outcome.clone(), unsafe_outcome], true)).contains("text was withheld")
+    );
+    assert!(metadata(&db).is_null());
+
+    assert!(checked(import(vec![outcome.clone()], false)).contains("Imported 1"));
+    assert_eq!(snapshot(&db), before);
+    assert!(metadata(&db).get("detail_selection").is_none());
+    assert!(
+        failed(import(vec![outcome.clone()], true)).contains("differs from its original import")
+    );
+    assert!(metadata(&db).get("detail_selection").is_none());
+
+    let mut correction = outcome.clone();
+    correction["passed"] = json!(true);
+    assert!(checked(import(vec![correction.clone()], true)).contains("Corrected 1"));
+    let admitted = snapshot(&db);
+    assert_eq!(admitted.watermark(), before.watermark() + 1);
+    assert_eq!(cursor(), before_cursor);
+    let meta = metadata(&db);
+    assert_eq!(meta["revision"], 2);
+    assert_eq!(meta["detail_selection"]["snapshot_id"], json!(admitted));
+    let captured = &meta["detail_selection"];
+    checked(run(
+        &db,
+        &[
+            "trace-payload",
+            "grant",
+            "--source-id",
+            PRIMARY,
+            "--payload-scope",
+            "standalone",
+        ],
+    ));
+    assert!(failed(preview(&db, captured)).contains("grant"));
+    approve(&db);
+    let expected = json!({"provenance":"imported evaluation text","detail":{
+        "error":"bounded evaluator error", "scores":[{"score_index":1,"detail":"bounded scorer explanation"}]}});
+    assert_eq!(
+        serde_json::from_str::<Value>(&checked(preview(&db, captured))).unwrap(),
+        expected
+    );
+    let mut old = captured.clone();
+    old["snapshot_id"] = json!(before);
+    assert!(failed(preview(&db, &old)).contains("unavailable"));
+    old = captured.clone();
+    old["revision"] = json!(1);
+    assert!(failed(preview(&db, &old)).contains("unavailable"));
+    checked(run(&db, &["eval-detail", "grant", "--source-id", SIBLING]));
+    old = captured.clone();
+    old["trace_source_id"] = json!(SIBLING);
+    assert!(failed(preview(&db, &old)).contains("unavailable"));
+
+    assert!(checked(import(vec![correction.clone()], true)).contains("Replayed 1"));
+    assert!(checked(import(vec![correction.clone()], false)).contains("Replayed 1"));
+    let mut conflict = correction.clone();
+    conflict["error"] = json!("different bounded text");
+    assert!(failed(import(vec![conflict], true)).contains("differs from its original import"));
+    assert_eq!(snapshot(&db), admitted);
+    checked(run(&db, &["backup", "--output", path(&backup)]));
+    assert!(failed(preview(&backup, captured)).contains("grant"));
+    approve(&backup);
+    assert!(failed(preview(&backup, captured)).contains("restored or replaced"));
+    let fresh = metadata(&backup)["detail_selection"].clone();
+    assert_eq!(
+        serde_json::from_str::<Value>(&checked(preview(&backup, &fresh))).unwrap(),
+        expected
+    );
+
+    let other = scratch.0.join("other.sqlite");
+    checked(run(
+        &other,
+        &[
+            "import-traces",
+            "--source-id",
+            PRIMARY,
+            "--file",
+            path(&trace_file),
+        ],
+    ));
+    checked(import_at(&other, vec![outcome], false));
+    let mut alternate = correction.clone();
+    alternate["error"] = json!("alternate evaluator text");
+    checked(import_at(&other, vec![alternate], true));
+    approve(&other);
+    let other_selection = metadata(&other)["detail_selection"].clone();
+    assert_eq!(other_selection["snapshot_id"], captured["snapshot_id"]);
+    assert_eq!(other_selection["revision"], captured["revision"]);
+    assert_ne!(other_selection["receipt_id"], captured["receipt_id"]);
+    assert!(failed(preview(&other, captured)).contains("unavailable"));
+    assert!(checked(preview(&other, &other_selection)).contains("alternate evaluator text"));
+
+    checked(run(&db, &["eval-detail", "revoke", "--source-id", PRIMARY]));
+    assert!(failed(preview(&db, captured)).contains("grant"));
+    approve(&db);
+    trace(vec![span(TRACE, "1111111111111112", 900)]);
+    let next = snapshot(&db);
+    assert_eq!(next.watermark(), admitted.watermark() + 1);
+    checked(run(&db, &["prune", "--before-unix-ns", "500"]));
+    let pruned = snapshot(&db);
+    assert_eq!(pruned.watermark(), next.watermark() + 1);
+    assert!(failed(preview(&db, captured)).contains("expired"));
+    assert_eq!(metadata(&db)["revision"], 2);
+    assert!(metadata(&db).get("detail_selection").is_none());
+    assert!(checked(import(vec![correction], true)).contains("Replayed 1"));
+    assert_eq!(snapshot(&db), pruned);
+    assert!(metadata(&db).get("detail_selection").is_none());
+}
+
 fn span(trace: &str, span: &str, end: u64) -> Value {
     json!({
         "traceId":trace, "spanId":span, "name":"fixture",

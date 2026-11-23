@@ -1,10 +1,11 @@
 //! Structural evaluation results bound to exact retained trace identities.
 
 use super::*;
+use serde::de::{IgnoredAny, SeqAccess, Visitor};
 use serde_json::Number;
 
 pub const MAX_EVAL_OUTCOMES: usize = 1_024;
-const MAX_EVAL_SCORES: usize = 32;
+pub(super) const MAX_EVAL_SCORES: usize = 32;
 const MAX_METADATA_LABEL_BYTES: usize = 128;
 
 const TRACE_LOOKUP_INDEX: &str = "CREATE INDEX agenturm_observations_by_trace
@@ -26,7 +27,58 @@ pub struct EvalOutcome {
     pub passed: bool,
     pub task_id: Option<String>,
     pub provider_model: Option<String>,
+    #[serde(deserialize_with = "deserialize_eval_scores")]
     pub scores: Vec<EvalScore>,
+}
+
+/// Bounds allocation when decoding a batch through the native broker wire.
+pub fn deserialize_eval_batch<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<T>, D::Error> {
+    deserialize_capped::<D, T, MAX_EVAL_OUTCOMES>(deserializer)
+}
+
+pub(super) fn deserialize_eval_scores<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>>(
+    deserializer: D,
+) -> std::result::Result<Vec<T>, D::Error> {
+    deserialize_capped::<D, T, MAX_EVAL_SCORES>(deserializer)
+}
+
+fn deserialize_capped<'de, D: serde::Deserializer<'de>, T: Deserialize<'de>, const LIMIT: usize>(
+    deserializer: D,
+) -> std::result::Result<Vec<T>, D::Error> {
+    struct Capped<T, const LIMIT: usize>(std::marker::PhantomData<T>);
+
+    impl<'de, T: Deserialize<'de>, const LIMIT: usize> Visitor<'de> for Capped<T, LIMIT> {
+        type Value = Vec<T>;
+
+        fn expecting(&self, formatter: &mut Formatter<'_>) -> fmt::Result {
+            write!(
+                formatter,
+                "an evaluation array with at most {LIMIT} entries"
+            )
+        }
+
+        fn visit_seq<A: SeqAccess<'de>>(
+            self,
+            mut sequence: A,
+        ) -> std::result::Result<Vec<T>, A::Error> {
+            let mut values =
+                Vec::with_capacity(sequence.size_hint().unwrap_or_default().min(LIMIT));
+            while values.len() < LIMIT {
+                let Some(value) = sequence.next_element()? else {
+                    return Ok(values);
+                };
+                values.push(value);
+            }
+            if sequence.next_element::<IgnoredAny>()?.is_some() {
+                return Err(serde::de::Error::invalid_length(LIMIT + 1, &self));
+            }
+            Ok(values)
+        }
+    }
+
+    deserializer.deserialize_seq(Capped::<T, LIMIT>(std::marker::PhantomData))
 }
 
 #[derive(Clone, Copy, Debug, Default, Deserialize, Eq, PartialEq, Serialize)]
@@ -43,6 +95,8 @@ pub struct RetainedEvalOutcome {
     pub trace_source_id: ExtensionId,
     pub revision: u64,
     pub outcome: EvalOutcome,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub detail_selection: Option<EvalDetailSelection>,
 }
 
 /// Bounded current-state metadata browsing. Each call reads one SQLite snapshot.
@@ -115,6 +169,15 @@ impl Store {
         source: &ExtensionId,
         outcomes: &[EvalOutcome],
     ) -> Result<EvalImportReport> {
+        self.import_eval_outcomes_with_details(source, outcomes, &[])
+    }
+
+    pub fn import_eval_outcomes_with_details(
+        &mut self,
+        source: &ExtensionId,
+        outcomes: &[EvalOutcome],
+        details: &[EvalDetailRecord],
+    ) -> Result<EvalImportReport> {
         if !source.as_str().starts_with("otlp.") || outcomes.len() > MAX_EVAL_OUTCOMES {
             return Err(StoreError::Invalid(
                 "evaluation import requires a bounded batch and an OTLP source",
@@ -130,25 +193,45 @@ impl Store {
             }
         }
         self.verify_write_admission()?;
+        let details = if details.is_empty() {
+            BTreeMap::new()
+        } else {
+            self.require_eval_detail_storage()?;
+            eval_detail::encode_batch(outcomes, details)?
+        };
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
         let mut report = EvalImportReport::default();
+        let mut admission = None;
         for outcome in outcomes {
-            if !retained_trace(&transaction, source, &outcome.trace_id)? {
-                return Err(StoreError::EvalTraceNotRetained);
-            }
+            let detail = details.get(outcome.trace_id.as_str());
+            let support = if detail.is_some() {
+                Some(eval_detail::trace_support(
+                    &transaction,
+                    source,
+                    &outcome.trace_id,
+                )?)
+            } else {
+                if !retained_trace(&transaction, source, &outcome.trace_id)? {
+                    return Err(StoreError::EvalTraceNotRetained);
+                }
+                None
+            };
             let content = serde_json::to_string(outcome)?;
             let digest: [u8; 32] = Sha256::digest(content.as_bytes()).into();
-            let (prior, replay): (Option<i64>, bool) = transaction.query_row(
+            let (prior, replay): (Option<i64>, Option<i64>) = transaction.query_row(
                 "SELECT (SELECT max(revision) FROM agenturm_eval_outcomes
                            WHERE trace_source_id=?1 AND trace_id=?2),
-                        EXISTS(SELECT 1 FROM agenturm_eval_outcomes
+                        (SELECT revision FROM agenturm_eval_outcomes
                            WHERE trace_source_id=?1 AND trace_id=?2 AND outcome_digest=?3)",
                 params![source.as_str(), outcome.trace_id, digest],
                 |row| Ok((row.get(0)?, row.get(1)?)),
             )?;
-            if replay {
+            if let Some(revision) = replay {
+                if let Some(detail) = detail {
+                    detail.verify_replay(&transaction, source, &outcome.trace_id, revision)?;
+                }
                 report.replayed += 1;
                 continue;
             }
@@ -162,6 +245,24 @@ impl Store {
                  VALUES (?1,?2,?3,?4,?5)",
                 params![source.as_str(), outcome.trace_id, revision, digest, content],
             )?;
+            if let (Some(detail), Some(support)) = (detail, support) {
+                let sequence = match admission {
+                    Some(sequence) => sequence,
+                    None => {
+                        let sequence = eval_detail::admit_marker(&transaction, source, &details)?;
+                        admission = Some(sequence);
+                        sequence
+                    }
+                };
+                detail.insert(
+                    &transaction,
+                    source,
+                    &outcome.trace_id,
+                    revision,
+                    sequence,
+                    support,
+                )?;
+            }
             if prior.is_some() {
                 report.corrected += 1;
             } else {
@@ -210,8 +311,9 @@ impl Store {
         if schema < 15 {
             return Ok(page);
         }
-        let mut statement = connection.prepare(
-            "SELECT e.trace_id,e.revision,e.outcome_json FROM agenturm_eval_outcomes e
+        let (detail_flag, snapshot) = detail_metadata(connection, schema)?;
+        let mut statement = connection.prepare(&format!(
+            "SELECT e.trace_id,e.revision,e.outcome_json,{detail_flag} FROM agenturm_eval_outcomes e
                  WHERE e.trace_source_id=?1 AND e.outcome_json IS NOT NULL
                    AND (?2 IS NULL OR e.trace_id=?2)
                    AND (?3 IS NULL OR e.revision<?3)
@@ -224,7 +326,7 @@ impl Store {
                         AND json_extract(o.kind_json,'$.kind')='trace_span'
                         AND json_extract(o.kind_json,'$.trace_id')=e.trace_id)
                  ORDER BY e.trace_id ASC,e.revision DESC LIMIT ?5",
-        )?;
+        ))?;
         let rows = statement.query_map(
             params![source.as_str(), trace, before, after, limit + 1],
             |row| {
@@ -232,11 +334,12 @@ impl Store {
                     row.get::<_, String>(0)?,
                     row.get::<_, u64>(1)?,
                     row.get::<_, String>(2)?,
+                    row.get::<_, Option<String>>(3)?,
                 ))
             },
         )?;
         for row in rows {
-            let (trace_id, revision, content) = row?;
+            let (trace_id, revision, content, receipt_id) = row?;
             if page.outcomes.len() == limit {
                 if let Some(last) = page.outcomes.last() {
                     if trace.is_some() {
@@ -258,6 +361,9 @@ impl Store {
             page.outcomes.push(RetainedEvalOutcome {
                 trace_source_id: source.clone(),
                 revision,
+                detail_selection: detail_selection(
+                    snapshot, receipt_id, source, &trace_id, revision,
+                ),
                 outcome,
             });
         }
@@ -323,16 +429,19 @@ impl Store {
         if schema < 15 || !retained_trace(&transaction, source, trace_id)? {
             return Ok(None);
         }
-        let row: Option<(u64, Option<String>)> = transaction
+        let (detail_flag, snapshot) = detail_metadata(&transaction, schema)?;
+        let row: Option<(u64, Option<String>, Option<String>)> = transaction
             .query_row(
-                "SELECT revision,outcome_json FROM agenturm_eval_outcomes
-                 WHERE trace_source_id=?1 AND trace_id=?2
-                 ORDER BY revision DESC LIMIT 1",
+                &format!(
+                    "SELECT e.revision,e.outcome_json,{detail_flag} FROM agenturm_eval_outcomes e
+                 WHERE e.trace_source_id=?1 AND e.trace_id=?2
+                 ORDER BY e.revision DESC LIMIT 1"
+                ),
                 params![source.as_str(), trace_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
             )
             .optional()?;
-        let Some((revision, Some(content))) = row else {
+        let Some((revision, Some(content), receipt_id)) = row else {
             return Ok(None);
         };
         let outcome: EvalOutcome = serde_json::from_str(&content)
@@ -346,12 +455,47 @@ impl Store {
         Ok(Some(RetainedEvalOutcome {
             trace_source_id: source.clone(),
             revision,
+            detail_selection: detail_selection(snapshot, receipt_id, source, trace_id, revision),
             outcome,
         }))
     }
 }
 
-fn valid_trace_id(value: &str) -> bool {
+fn detail_metadata(
+    connection: &Connection,
+    version: i64,
+) -> Result<(&'static str, Option<ReadSnapshot>)> {
+    if version < 17 {
+        return Ok(("NULL", None));
+    }
+    let (snapshot, _) = retention::resolve_read_snapshot(connection, None)?;
+    Ok((
+        "(SELECT admission.receipt_id FROM agenturm_eval_details d
+            JOIN agenturm_eval_detail_admissions AS admission
+                ON admission.sequence=d.admitted_sequence AND admission.trace_source_id=d.trace_source_id
+            WHERE d.trace_source_id=e.trace_source_id AND d.trace_id=e.trace_id
+              AND d.revision=e.revision AND d.detail_json IS NOT NULL)",
+        Some(snapshot),
+    ))
+}
+
+fn detail_selection(
+    snapshot: Option<ReadSnapshot>,
+    receipt_id: Option<String>,
+    source: &ExtensionId,
+    trace: &str,
+    revision: u64,
+) -> Option<EvalDetailSelection> {
+    Some(EvalDetailSelection {
+        trace_source_id: source.clone(),
+        trace_id: trace.into(),
+        revision,
+        receipt_id: receipt_id?,
+        snapshot_id: snapshot?,
+    })
+}
+
+pub(super) fn valid_trace_id(value: &str) -> bool {
     value.len() == 32
         && value
             .bytes()

@@ -60,6 +60,7 @@ pub struct PromptEntry {
     pub revision: u32,
     pub timestamp: u64,
     pub snapshot_id: Option<ReadSnapshot>,
+    pub history_identity: Option<String>,
 }
 
 #[derive(Clone, Debug)]
@@ -213,9 +214,10 @@ pub enum WorkCommand {
     Seen(RequestEntry),
     Locate(RequestEntry),
     Prompts(WorkAnchor),
-    RevealPrompt(PromptEntry, PromptDelivery),
+    RevealPrompt(Box<PromptEntry>, PromptDelivery),
     RevealOperation(OperationDetailEntry, PromptDelivery),
     RevealTelemetry(Box<TelemetrySpanEntry>, PromptDelivery),
+    RevealEvalDetail(Box<evaluation::EvaluationDetailEntry>, PromptDelivery),
 }
 
 pub struct ReviewNoteEntry {
@@ -290,6 +292,7 @@ enum Draft {
 pub(super) enum WorkInput {
     Reveal(PromptEntry),
     RevealTelemetry(TelemetrySpanEntry),
+    RevealEvaluation(evaluation::EvaluationDetailEntry),
     None,
     Back,
     Close,
@@ -476,7 +479,7 @@ impl Workbench {
 
     fn action(&mut self, key: KeyCode, selected: usize) -> WorkInput {
         match (&self.data, key) {
-            (WorkResult::Evaluations(page), key) => return page.action(key),
+            (WorkResult::Evaluations(page), key) => return page.action(key, selected),
             (WorkResult::ReviewNotes { session, .. }, KeyCode::Char('e')) => {
                 self.draft = Some(Draft::ReviewNote {
                     session: session.clone(),
@@ -836,7 +839,7 @@ impl Workbench {
         let (title, keys, options, details, empty) = match &self.data {
             WorkResult::Evaluations(page) => (
                 page.title(),
-                page.keys(),
+                page.keys(selected),
                 page.row_labels(),
                 page.details(selected),
                 page.empty(),

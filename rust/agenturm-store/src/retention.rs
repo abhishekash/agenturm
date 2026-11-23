@@ -64,13 +64,27 @@ pub(super) fn read_state(connection: &Connection) -> Result<RetentionState> {
 }
 
 pub(super) fn receipt_head(connection: &Connection) -> Result<i64> {
+    let version: i64 = connection.pragma_query_value(None, "user_version", |row| row.get(0))?;
+    let sql = if version >= 17 {
+        "SELECT max(
+            COALESCE((SELECT MAX(sequence) FROM agenturm_history_batches), 0),
+            COALESCE((SELECT MAX(sequence) FROM agenturm_eval_detail_admissions), 0)
+        )"
+    } else {
+        "SELECT COALESCE(MAX(sequence), 0) FROM agenturm_history_batches"
+    };
     connection
-        .query_row(
-            "SELECT COALESCE(MAX(sequence), 0) FROM agenturm_history_batches",
-            [],
-            |row| row.get(0),
-        )
+        .query_row(sql, [], |row| row.get(0))
         .map_err(Into::into)
+}
+
+/// Allocates a watermark for either domain while holding the history writer transaction.
+pub(super) fn next_receipt_sequence(connection: &Connection) -> Result<i64> {
+    let next = receipt_head(connection)?
+        .checked_add(1)
+        .ok_or(StoreError::Invalid("history snapshot ID is exhausted"))?;
+    snapshot_id(next, read_state(connection)?.snapshot_offset)?;
+    Ok(next)
 }
 
 pub(super) fn snapshot_id(receipt_sequence: i64, offset: i64) -> Result<i64> {
@@ -220,6 +234,7 @@ pub(super) fn prune_in(
     )?;
     if removed_observations > 0 {
         crate::eval_outcome::purge_unretained(transaction)?;
+        crate::eval_detail::purge_unretained(transaction)?;
         transaction.execute(
             "DELETE FROM agenturm_content_cursor_proofs AS proof
              WHERE proof.request_id NOT IN (

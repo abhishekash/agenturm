@@ -602,6 +602,8 @@ mod tests {
                 "DROP TABLE agenturm_content_grants;
                  DROP TABLE agenturm_content_cursor_proofs;
                  DROP INDEX agenturm_observations_by_trace;
+                 DROP TABLE agenturm_eval_details;
+                 DROP TABLE agenturm_eval_detail_admissions;
                  DROP TABLE agenturm_eval_outcomes;
                  DROP TABLE agenturm_telemetry_payloads;",
             )

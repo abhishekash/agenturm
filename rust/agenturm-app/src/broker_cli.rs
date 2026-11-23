@@ -14,11 +14,12 @@ const USAGE: &str = concat!(
     "       agenturm broker import-jsonl --broker-config <json> --file <span-jsonl-path|-> --source-id otlp.<id> [--session-id <id>]\n",
     "       agenturm broker serve-traces --broker-config <json> --listen <loopback-IP:port> --source-id otlp.<id> --token-file <path>\n",
     "       agenturm broker run --broker-config <json> --source-id otlp.<id> -- <program> [args...]\n",
-    "       agenturm broker import-evals --broker-config <json> --file <results.json|-> --source-id otlp.<id>\n",
+    "       agenturm broker import-evals --broker-config <json> --file <results.json|-> --source-id otlp.<id> [--include-detail]\n",
     "       agenturm broker evals --broker-config <json> --source-id otlp.<id> --trace-id <id> [--json]\n",
     "       agenturm broker serve-history --broker-config <json> --listen <loopback-IP:port> --token-file <path> [--include-host]\n",
     "       agenturm broker host <record|history> --broker-config <json> [options]\n",
     "       agenturm broker trace-payload <snapshot|preview> --broker-config <json> [options]\n",
+    "       agenturm broker eval-detail preview --broker-config <json> --selection <json-file>\n",
     "       agenturm broker grant <check|approve|revoke> --broker-config <json> --binding <json>\n",
     "       agenturm broker content list --broker-config <json> --source-id <id> --session-id <id>\n",
     "       agenturm broker content preview --broker-config <json> --selection <json>\n",
@@ -78,6 +79,7 @@ enum BrokerCommand {
     ServeTraces(trace_receiver::BrokerTraceReceiverOptions),
     ServeHistory(remote_history::ReadServerOptions),
     TracePayload(telemetry_payload_cli::PayloadRead),
+    EvalDetail(PathBuf),
     Run(trace_run::TraceInvocation),
     Investigation(Box<InvestigationOptions>),
     Retention(RetentionOptions),
@@ -169,6 +171,12 @@ pub(super) fn parse_os(args: &[OsString]) -> Result<BrokerOptions, String> {
             command: BrokerCommand::TracePayload(telemetry_payload_cli::parse_broker(
                 &command[1..],
             )?),
+        });
+    }
+    if command.first().is_some_and(|verb| verb == "eval-detail") {
+        return Ok(BrokerOptions {
+            config,
+            command: BrokerCommand::EvalDetail(eval_detail_cli::parse_broker(&command[1..])?),
         });
     }
     if command.first().is_some_and(|verb| verb == "serve-history") {
@@ -442,6 +450,10 @@ pub fn execute(options: &BrokerOptions) -> Result<ExitCode, BrokerExecutionError
         BrokerCommand::Application(command) => command.as_ref(),
         BrokerCommand::TracePayload(options) => {
             telemetry_payload_cli::execute_broker(options, store)?;
+            return Ok(ExitCode::SUCCESS);
+        }
+        BrokerCommand::EvalDetail(path) => {
+            eval_detail_cli::execute_broker(path, store)?;
             return Ok(ExitCode::SUCCESS);
         }
         BrokerCommand::ServeHistory(options) => {
@@ -740,6 +752,7 @@ fn execute_private_cockpit(
                             revision: prompt.revision,
                             timestamp: prompt.observed_at_unix_ns,
                             snapshot_id: prompt.snapshot_id,
+                            history_identity: prompt.history_identity,
                         }
                     })
                     .collect(),
@@ -754,6 +767,7 @@ fn execute_private_cockpit(
                 revision: prompt.revision,
                 kind: PrivateEvidenceKind::UserText {
                     snapshot_id: prompt.snapshot_id,
+                    history_identity: prompt.history_identity,
                 },
             };
             store
@@ -768,6 +782,15 @@ fn execute_private_cockpit(
             store
                 .with_telemetry_payload(&selection, |payload| {
                     telemetry_payload_cli::deliver_modal(payload, &mut output)
+                })
+                .map_err(|error| error.to_string())?;
+            Ok(WorkResult::Status(String::new()))
+        }
+        WorkCommand::RevealEvalDetail(detail, mut output) => {
+            let selection = eval_detail_cli::modal_selection(*detail);
+            store
+                .with_eval_result_detail(&selection, |body| {
+                    eval_detail_cli::deliver_modal(body, &mut output)
                 })
                 .map_err(|error| error.to_string())?;
             Ok(WorkResult::Status(String::new()))

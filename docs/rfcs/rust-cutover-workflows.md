@@ -18,7 +18,7 @@ migration of Python-era databases remains outside the Rust-only product scope.
 | `serve` | Keep local OTLP collection and source watch through `serve-traces`, `discover --follow` and `collect --watch` or the Linux user service. `broker serve-history` serves the native broker's retained metadata on loopback through a dedicated reader. The Python `/api/*` wire surface, direct remote TLS and arbitrary legacy JSONL tail remain open. |
 | `run` | Keep command launch, exit status, local trace delivery and exact source/session linkage. Rust `run` configures OTLP for an instrumented producer. Python-specific script and module injection requires a product decision. |
 | `import-jsonl` | Use `import-jsonl` for supported native span exports and `import-traces` for OTLP JSON. Both retain structural trace metadata with exact session scope. Legacy payload and cost import parity remains open. |
-| `import-evals` | Import bounded `agent-evals` result metadata into an exact retained OTLP trace source. Use `evals` to read the current outcome in text or JSON. `evals --history` pages retained revisions and `evals --summary` reports current source outcomes with page counts. In the cockpit, `E` opens evaluations from Traces. Private result detail and richer aggregation remain open. |
+| `import-evals` | Import bounded `agent-evals` result metadata into an exact retained OTLP trace source. Use `evals` to read the current outcome in text or JSON. `evals --history` pages retained revisions and `evals --summary` reports current source outcomes with page counts. In the cockpit, `E` opens evaluations and `d` opens approved private result text. Cross-source aggregation remains open. |
 | `migrate-db` | Retired by the Rust-only product decision. Rust `backup` and `restore` operate on Rust-owned state. |
 | `prune` | Keep explicit age-based retention. Rust `prune --before-unix-ns` and persisted `retention set\|disable\|run\|status` are available. New default cockpit histories use 14 days; existing histories retain their policy. Collector, cockpit, local receiver and broker writer ticks apply it, while receipts and checkpoints survive cleanup. Broker policy changes require maintenance authority. |
 | `attention status`, `attention watch` | Rust reads local history or an attached Rust receiver and keeps seen state in the user's workspace. Remote watch emits a snapshot and changes from retained native lifecycle evidence. Python receiver observation and cross-host terminal routing remain open. |
@@ -172,8 +172,8 @@ Each outcome requires a 32-character hexadecimal `trace_id` and a boolean
 scores. Each score supplies a `scorer` plus a boolean `passed`, a numeric
 `score`, or both. Metadata labels allow up to 128 ASCII characters. They
 start with a letter or digit and can also contain `._:/@+-`. The importer
-rejects recognized credential prefixes and discards producer errors, score
-detail text, inputs, outputs, and other result fields.
+rejects recognized credential prefixes in metadata labels. Metadata is the
+default import. Optional private capture is described below.
 
 Every result must match a retained trace under the selected source ID.
 Duplicate trace IDs within a batch or a missing match reject the whole batch.
@@ -194,7 +194,38 @@ fields. These views read current state on each invocation; concurrent changes
 can change a later page. Counts describe the displayed page, not a whole-history
 total. Pruned bodies stay absent from both views even if a trace ID reappears.
 The same options work through the broker and keep its source allowlist.
-Private result detail and cross-source/provider/scorer aggregation remain open.
+Cross-source, provider and scorer aggregation remain open.
+
+### Private evaluation text
+
+Use `--include-detail` to capture the `error` string on a result and the
+`detail` string on each score. The capture records the original score position.
+The allowed fields accept up to 2 KiB each, 4 KiB per result and 64 KiB per
+import. Scalar text is the supported format. A credential-like or unsafe
+string rejects the batch before any result or detail commits.
+
+```sh
+agenturm import-evals --include-detail --file results.json --db history.sqlite --source-id otlp.exported
+agenturm eval-detail grant --db history.sqlite --source-id otlp.exported
+agenturm eval-detail preview --db history.sqlite --selection selection.json
+agenturm eval-detail revoke --db history.sqlite --source-id otlp.exported
+```
+
+Copy the `detail_selection` object from `evals --json` for the exact revision
+into `selection.json`. It contains the source, trace, revision, receipt ID
+and snapshot. The receipt is issued with the new result revision and preserves
+the original capture across retries. Reusing the same metadata with supplied
+details requires the exact original capture. Capturing detail for an existing
+metadata-only result requires a distinct corrected metadata revision. Replay
+preserves the current version and leaves expired text unavailable.
+
+Disclosure requires an `eval.result_detail` approval for the exact OTLP
+source. The viewer verifies the capture receipt and its supporting retained
+trace occurrence at the supplied snapshot. Pruning that supporting occurrence
+removes the text and preserves the outcome's revision and detail digest.
+Restored backups require fresh approval and a fresh snapshot. Metadata views
+only return result metadata and the selection reference. See
+[broker evaluation detail commands](rust-broker-commands.md#private-evaluation-text).
 
 In the cockpit, press `E` from global or session Traces to choose a trace on
 the loaded page. The picker preserves its selection by exact OTLP source and
@@ -211,6 +242,11 @@ evaluation request reads current retained metadata from that history and
 fails when the selected snapshot has expired or the receiver has restored a
 different branch. This metadata view also works through the broker and the
 authenticated HTTP reader for allowed OTLP sources.
+
+In the local or broker cockpit, select a revision marked `d private` to open
+its imported evaluation text. Escape clears the private view and returns to
+the same selection. The private view uses the current approval and expires
+after 25 seconds.
 
 ### Task Git patches
 

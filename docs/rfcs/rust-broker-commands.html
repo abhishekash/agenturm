@@ -306,16 +306,20 @@ agenturm broker content preview --broker-config reader.json --selection selectio
 agenturm broker cockpit --broker-config reader.json
 </code></pre>
 <p>A user-text selection identifies the exact retained occurrence. Copy the
-list entry's <code>snapshot_id</code> into the nested kind to keep the same history
-branch and receipt watermark. After restore or snapshot expiry, obtain a
-fresh selection. Legacy selections that omit the field select an occurrence
-from current history.</p>
+list entry's <code>history_identity</code> and <code>snapshot_id</code> into the nested kind to
+keep the same history, branch and receipt watermark. After restore or snapshot
+expiry, obtain a fresh selection. Legacy selections that omit both fields
+select an occurrence from current history.</p>
 <pre><code class="language-json">{
   &quot;source_id&quot;: &quot;harness.pi&quot;,
   &quot;session_id&quot;: &quot;session-1&quot;,
   &quot;event_id&quot;: &quot;exact-event-id-from-the-prompt-list&quot;,
   &quot;revision&quot;: 1,
-  &quot;kind&quot;: { &quot;kind&quot;: &quot;user_text&quot;, &quot;snapshot_id&quot;: &quot;r1:0123456789abcdef0123456789abcdef:17&quot; }
+  &quot;kind&quot;: {
+    &quot;kind&quot;: &quot;user_text&quot;,
+    &quot;history_identity&quot;: &quot;abcdef0123456789abcdef0123456789&quot;,
+    &quot;snapshot_id&quot;: &quot;r1:0123456789abcdef0123456789abcdef:17&quot;
+  }
 }
 </code></pre>
 <p>An OpenCode SQLite prompt with a retained admission digest can reopen after
@@ -333,6 +337,28 @@ acknowledgement to one bounded delivery; missing or incorrect
 acknowledgements fail within the display deadline. Every private operation
 pins the broker history identity, preventing stale selections from silently
 crossing a replaced database. Ordinary queries retain metadata only.</p>
+<h2>Private evaluation text</h2>
+<p>An authorized collector can opt in to the string-valued result <code>error</code> and
+score <code>detail</code> fields for an allowlisted OTLP source. Each private capture is
+admitted atomically with its exact outcome revision. The broker stores this
+text in its owned history database. Evaluation queries and the authenticated
+HTTP reader return structural metadata and a body-free detail selection.</p>
+<pre><code class="language-sh">agenturm broker import-evals --broker-config collector.json --source-id otlp.exported \
+  --file results.json --include-detail
+agenturm eval-detail binding --source-id otlp.exported &gt; eval-binding.json
+agenturm broker grant approve --broker-config grant-admin.json --binding eval-binding.json
+agenturm broker evals --broker-config reader.json --source-id otlp.exported \
+  --trace-id 11111111111111111111111111111111 --json
+agenturm broker eval-detail preview --broker-config reader.json --selection selection.json
+agenturm broker grant revoke --broker-config grant-admin.json --binding eval-binding.json
+</code></pre>
+<p>Copy the revision's <code>detail_selection</code> object into <code>selection.json</code>. The
+separate reader delivers text under its current <code>eval.result_detail</code> approval.
+The final sink acknowledges delivery after flushing, or after the cockpit
+clears its private frame. The client deadline is 25 seconds. The broker waits
+up to 32 seconds for acknowledgement while the approval and retention fence
+is held. Restoring a backup requires fresh approval and selection.
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md#private-evaluation-text">Evaluation import and replay behavior</a></p>
 <h2>Investigate retained source evidence</h2>
 <pre><code class="language-sh">agenturm broker investigate failures --broker-config reader.json --kind tool
 agenturm broker investigate instruction 'keep the public API' \

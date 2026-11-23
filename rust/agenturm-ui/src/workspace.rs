@@ -580,7 +580,7 @@ impl Workspace {
         let (delivery, receiver) = prompt_channel();
         self.request(
             sender,
-            WorkspaceRequest::Work(WorkCommand::RevealPrompt(entry, delivery)),
+            WorkspaceRequest::Work(WorkCommand::RevealPrompt(Box::new(entry), delivery)),
             Change::Work(None),
         );
         self.prompt_receiver = Some(receiver);
@@ -634,6 +634,20 @@ impl Workspace {
                     self.prompt_receiver = Some(receiver);
                 }
                 WorkInput::RevealTelemetry(_) => {}
+                WorkInput::RevealEvaluation(detail) if self.pending.is_none() => {
+                    let (delivery, mut receiver) = prompt_channel();
+                    receiver.title = "Imported evaluation text";
+                    self.request(
+                        sender,
+                        WorkspaceRequest::Work(WorkCommand::RevealEvalDetail(
+                            Box::new(detail),
+                            delivery,
+                        )),
+                        Change::Work(None),
+                    );
+                    self.prompt_receiver = Some(receiver);
+                }
+                WorkInput::RevealEvaluation(_) => {}
                 WorkInput::None => {}
                 WorkInput::Back => {
                     self.discard_work_result = matches!(self.pending, Some(Change::Work(_)));

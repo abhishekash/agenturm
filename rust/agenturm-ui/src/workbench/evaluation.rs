@@ -76,6 +76,16 @@ pub struct EvaluationRow {
     pub revision: u64,
     pub passed: bool,
     pub details: Vec<String>,
+    pub private_detail: Option<EvaluationDetailEntry>,
+}
+
+#[derive(Clone, Debug)]
+pub struct EvaluationDetailEntry {
+    pub source: ExtensionId,
+    pub trace_id: String,
+    pub revision: u64,
+    pub receipt_id: String,
+    pub snapshot_id: ReadSnapshot,
 }
 
 #[derive(Debug)]
@@ -91,7 +101,15 @@ impl EvaluationPage {
         matches!(self.request.view, EvaluationView::SourceSummary { .. })
     }
 
-    pub(super) fn action(&self, key: KeyCode) -> WorkInput {
+    pub(super) fn action(&self, key: KeyCode, selected: usize) -> WorkInput {
+        if key == KeyCode::Char('d')
+            && let Some(detail) = self
+                .rows
+                .get(selected)
+                .and_then(|row| row.private_detail.as_ref())
+        {
+            return WorkInput::RevealEvaluation(detail.clone());
+        }
         let view = match key {
             KeyCode::Char('s') if !self.summary() => EvaluationView::SourceSummary { after: None },
             KeyCode::Char('r') if self.summary() => EvaluationView::SourceSummary { after: None },
@@ -116,7 +134,19 @@ impl EvaluationPage {
         }
     }
 
-    pub(super) fn keys(&self) -> &'static str {
+    pub(super) fn keys(&self, selected: usize) -> &'static str {
+        if self
+            .rows
+            .get(selected)
+            .is_some_and(|row| row.private_detail.is_some())
+        {
+            return match (self.summary(), self.continuation.is_some()) {
+                (true, true) => "d private · ] more · Esc revisions",
+                (true, false) => "d private · r refresh · Esc revisions",
+                (false, true) => "d private · s source · ] more · Esc back",
+                (false, false) => "d private · s source · r refresh · Esc back",
+            };
+        }
         match (self.summary(), self.continuation.is_some()) {
             (true, true) => "] more · PgUp/PgDn detail · Esc revisions",
             (true, false) => "r refresh · PgUp/PgDn detail · Esc revisions",
@@ -182,5 +212,67 @@ impl EvaluationPage {
             }
             _ => "No further retained outcomes on this page.",
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    #[test]
+    fn private_detail_action_uses_the_selected_revision_receipt() {
+        let trace = TraceEvaluationEntry {
+            source_id: ExtensionId::parse("otlp.fixture").unwrap(),
+            trace_id: "11".repeat(16),
+            snapshot_id: 3.into(),
+            observed_ok: 1,
+            observed_error: 0,
+            observed_unset: 0,
+        };
+        let detail = EvaluationDetailEntry {
+            source: trace.source_id.clone(),
+            trace_id: trace.trace_id.clone(),
+            revision: 1,
+            receipt_id: "ab".repeat(16),
+            snapshot_id: 4.into(),
+        };
+        let page = EvaluationPage {
+            request: EvaluationRead {
+                trace,
+                view: EvaluationView::Revisions { before: None },
+            },
+            current_revision: Some(2),
+            rows: vec![
+                EvaluationRow {
+                    trace_id: detail.trace_id.clone(),
+                    revision: 2,
+                    passed: true,
+                    details: vec![],
+                    private_detail: None,
+                },
+                EvaluationRow {
+                    trace_id: detail.trace_id.clone(),
+                    revision: 1,
+                    passed: false,
+                    details: vec![],
+                    private_detail: Some(detail.clone()),
+                },
+            ],
+            continuation: None,
+        };
+        assert!(!page.keys(0).contains("d private"));
+        assert!(matches!(
+            page.action(KeyCode::Char('d'), 0),
+            WorkInput::None
+        ));
+        assert!(page.keys(1).starts_with("d private"));
+        let WorkInput::RevealEvaluation(selected) = page.action(KeyCode::Char('d'), 1) else {
+            panic!("the selected revision did not request private detail");
+        };
+        assert_eq!(selected.source, detail.source);
+        assert_eq!(selected.trace_id, detail.trace_id);
+        assert_eq!(selected.revision, detail.revision);
+        assert_eq!(selected.receipt_id, detail.receipt_id);
+        assert_eq!(selected.snapshot_id, detail.snapshot_id);
     }
 }

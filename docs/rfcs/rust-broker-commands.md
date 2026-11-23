@@ -387,10 +387,10 @@ agenturm broker cockpit --broker-config reader.json
 ```
 
 A user-text selection identifies the exact retained occurrence. Copy the
-list entry's `snapshot_id` into the nested kind to keep the same history
-branch and receipt watermark. After restore or snapshot expiry, obtain a
-fresh selection. Legacy selections that omit the field select an occurrence
-from current history.
+list entry's `history_identity` and `snapshot_id` into the nested kind to
+keep the same history, branch and receipt watermark. After restore or snapshot
+expiry, obtain a fresh selection. Legacy selections that omit both fields
+select an occurrence from current history.
 
 ```json
 {
@@ -398,7 +398,11 @@ from current history.
   "session_id": "session-1",
   "event_id": "exact-event-id-from-the-prompt-list",
   "revision": 1,
-  "kind": { "kind": "user_text", "snapshot_id": "r1:0123456789abcdef0123456789abcdef:17" }
+  "kind": {
+    "kind": "user_text",
+    "history_identity": "abcdef0123456789abcdef0123456789",
+    "snapshot_id": "r1:0123456789abcdef0123456789abcdef:17"
+  }
 }
 ```
 
@@ -419,6 +423,33 @@ acknowledgement to one bounded delivery; missing or incorrect
 acknowledgements fail within the display deadline. Every private operation
 pins the broker history identity, preventing stale selections from silently
 crossing a replaced database. Ordinary queries retain metadata only.
+
+## Private evaluation text
+
+An authorized collector can opt in to the string-valued result `error` and
+score `detail` fields for an allowlisted OTLP source. Each private capture is
+admitted atomically with its exact outcome revision. The broker stores this
+text in its owned history database. Evaluation queries and the authenticated
+HTTP reader return structural metadata and a body-free detail selection.
+
+```sh
+agenturm broker import-evals --broker-config collector.json --source-id otlp.exported \
+  --file results.json --include-detail
+agenturm eval-detail binding --source-id otlp.exported > eval-binding.json
+agenturm broker grant approve --broker-config grant-admin.json --binding eval-binding.json
+agenturm broker evals --broker-config reader.json --source-id otlp.exported \
+  --trace-id 11111111111111111111111111111111 --json
+agenturm broker eval-detail preview --broker-config reader.json --selection selection.json
+agenturm broker grant revoke --broker-config grant-admin.json --binding eval-binding.json
+```
+
+Copy the revision's `detail_selection` object into `selection.json`. The
+separate reader delivers text under its current `eval.result_detail` approval.
+The final sink acknowledges delivery after flushing, or after the cockpit
+clears its private frame. The client deadline is 25 seconds. The broker waits
+up to 32 seconds for acknowledgement while the approval and retention fence
+is held. Restoring a backup requires fresh approval and selection.
+[Evaluation import and replay behavior](rust-cutover-workflows.md#private-evaluation-text)
 
 ## Investigate retained source evidence
 

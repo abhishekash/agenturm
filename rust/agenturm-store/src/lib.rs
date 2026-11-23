@@ -14,6 +14,7 @@
 mod automatic_retention;
 mod backup;
 mod content_grant;
+mod eval_detail;
 mod eval_outcome;
 mod linked_trace;
 mod private_text;
@@ -32,9 +33,13 @@ pub use content_grant::{
     CodexOperationEvidence, CodexOperationSelection, ContentGrant, ContentGrantScope, ContentKind,
     UserTextEvidence,
 };
+pub use eval_detail::{
+    EvalDetailRecord, EvalDetailSelection, EvalResultDetail, EvalScoreDetail,
+    eval_detail_grant_scope,
+};
 pub use eval_outcome::{
     EvalImportReport, EvalOutcome, EvalPage, EvalQuery, EvalScore, MAX_EVAL_OUTCOMES,
-    RetainedEvalOutcome, SelectedEvalPage, SelectedEvalQuery,
+    RetainedEvalOutcome, SelectedEvalPage, SelectedEvalQuery, deserialize_eval_batch,
 };
 pub use linked_trace::{ResolvedTraceReview, ResolvedTraceTurn, TraceReviewQuery, TraceTurnQuery};
 pub use private_text::bounded_text_preview;
@@ -69,7 +74,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 16;
+const SCHEMA_VERSION: i64 = 17;
 pub const MAX_HOST_HISTORY_PAGE: usize = 64;
 const MAX_BATCH_EVENTS: usize = 2_048;
 pub const MAX_OTLP_BATCH_SPANS: usize = 1_024;
@@ -85,7 +90,8 @@ const STORE_MARKER_V12: &str = "agenturm.observation-store.v12";
 const STORE_MARKER_V13: &str = "agenturm.observation-store.v13";
 const STORE_MARKER_V14: &str = "agenturm.observation-store.v14";
 const STORE_MARKER_V15: &str = "agenturm.observation-store.v15";
-const STORE_MARKER: &str = "agenturm.observation-store.v16";
+const STORE_MARKER_V16: &str = "agenturm.observation-store.v16";
+const STORE_MARKER: &str = "agenturm.observation-store.v17";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -512,6 +518,11 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
     if version >= 16 {
         expected.push(("table".to_owned(), "agenturm_telemetry_payloads".to_owned()));
     }
+    if version >= 17 {
+        expected.push(("table".into(), "agenturm_eval_detail_admissions".into()));
+        expected.push(("table".into(), "agenturm_eval_details".into()));
+        eval_detail::validate_schema(connection)?;
+    }
     expected.sort();
     if objects != expected {
         return Err(StoreError::UnrecognizedDatabase);
@@ -538,7 +549,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         13 => STORE_MARKER_V13,
         14 => STORE_MARKER_V14,
         15 => STORE_MARKER_V15,
-        16 => STORE_MARKER,
+        16 => STORE_MARKER_V16,
+        17 => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -895,12 +907,7 @@ impl Store {
         let transaction = self
             .connection
             .transaction_with_behavior(TransactionBehavior::Immediate)?;
-        transaction.execute(
-            "INSERT INTO agenturm_store_meta(key, value)
-             VALUES ('history_identity', lower(hex(randomblob(16))))
-             ON CONFLICT(key) DO NOTHING",
-            [],
-        )?;
+        initialize_history_identity(&transaction)?;
         let identity = read_history_identity(&transaction)?;
         transaction.commit()?;
         Ok(identity)
@@ -917,7 +924,7 @@ impl Store {
         retention::read_incarnation(&self.connection)
     }
 
-    /// Opens a v8 through v16 store through a read-only connection. This path
+    /// Opens a supported Rust store through a read-only connection. This path
     /// never initializes, migrates, changes journal mode, or creates a DB.
     pub fn open_read_only(path: impl AsRef<Path>) -> Result<Self> {
         let connection = Connection::open_with_flags(path, OpenFlags::SQLITE_OPEN_READ_ONLY)?;
@@ -1020,6 +1027,8 @@ impl Store {
             retention::create_schema(&transaction)?;
             eval_outcome::create_schema(&transaction)?;
             telemetry_payload::create_schema(&transaction)?;
+            eval_detail::create_schema(&transaction)?;
+            initialize_history_identity(&transaction)?;
             transaction.commit()?;
         } else if schema_version == 2 {
             validate_marked_shape(&connection, 2)?;
@@ -1269,11 +1278,25 @@ impl Store {
             transaction.commit()?;
             validate_marked_shape(&connection, 15)?;
         }
+        if (2..16).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            content_grant::migrate_grant_schema(&transaction, 16)?;
+            telemetry_payload::create_schema(&transaction)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V16],
+            )?;
+            transaction.pragma_update(None, "user_version", 16)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 16)?;
+        }
         if (2..SCHEMA_VERSION).contains(&schema_version) {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             content_grant::migrate_grant_schema(&transaction, SCHEMA_VERSION)?;
-            telemetry_payload::create_schema(&transaction)?;
+            eval_detail::create_schema(&transaction)?;
+            initialize_history_identity(&transaction)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],
@@ -1485,8 +1508,11 @@ impl Store {
             )?;
         }
         transaction.execute(
-            "INSERT INTO agenturm_history_batches(request_id) VALUES (?1)",
-            [&batch.request_id],
+            "INSERT INTO agenturm_history_batches(sequence, request_id) VALUES (?1, ?2)",
+            params![
+                retention::next_receipt_sequence(&transaction)?,
+                batch.request_id
+            ],
         )?;
         transaction.execute(
             "INSERT INTO agenturm_source_state (source_id, cursor) VALUES (?1, ?2)
@@ -1993,6 +2019,16 @@ impl Store {
             .optional()
             .map_err(StoreError::from)
     }
+}
+
+fn initialize_history_identity(connection: &Connection) -> Result<()> {
+    connection.execute(
+        "INSERT INTO agenturm_store_meta(key,value)
+         VALUES ('history_identity', lower(hex(randomblob(16))))
+         ON CONFLICT(key) DO NOTHING",
+        [],
+    )?;
+    Ok(())
 }
 
 fn read_history_identity(connection: &Connection) -> Result<String> {
@@ -2514,7 +2550,9 @@ mod tests {
 
     fn downgrade_fixture_to_v14(connection: &Connection) {
         connection.execute_batch(
-            "DROP INDEX agenturm_observations_by_trace;
+            "DROP TABLE agenturm_eval_details;
+             DROP TABLE agenturm_eval_detail_admissions;
+             DROP INDEX agenturm_observations_by_trace;
              DROP TABLE agenturm_eval_outcomes;
              DROP TABLE agenturm_telemetry_payloads;
              UPDATE agenturm_store_meta SET value='agenturm.observation-store.v14' WHERE key='format';
@@ -2573,6 +2611,99 @@ mod tests {
             store.commit_batch(&committed).unwrap(),
             CommitOutcome::Replay
         );
+    }
+
+    #[test]
+    fn v16_read_only_preserves_cursor_and_existing_grant_through_v17_upgrade() {
+        let db = TempDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        let scope = TelemetryBinding {
+            source_id: ExtensionId::parse("otlp.fixture").unwrap(),
+            native_source_id: None,
+        }
+        .grant_scope()
+        .unwrap();
+        let grant = store.grant_content(&scope).unwrap();
+        store
+            .commit_batch(&batch("original", vec![event("original", "session", 10)]))
+            .unwrap();
+        let identity = store.history_identity().unwrap();
+        let query = ObservationQuery::latest(1);
+        let snapshot = store.query_observations(&query).unwrap().snapshot_id;
+        let tx = store.connection.transaction().unwrap();
+        tx.execute_batch(
+            "DROP TABLE agenturm_eval_details; DROP TABLE agenturm_eval_detail_admissions;",
+        )
+        .unwrap();
+        content_grant::migrate_grant_schema(&tx, 16).unwrap();
+        tx.execute(
+            "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+            [STORE_MARKER_V16],
+        )
+        .unwrap();
+        tx.pragma_update(None, "user_version", 16).unwrap();
+        tx.commit().unwrap();
+        drop(store);
+
+        let reader = Store::open_read_only(&db.0).unwrap();
+        reader.verify_content_grant(&scope, &grant).unwrap();
+        assert_eq!(
+            reader.query_observations(&query).unwrap().snapshot_id,
+            snapshot
+        );
+        assert_eq!(
+            reader
+                .connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            16
+        );
+        drop(reader);
+        let upgraded = Store::open(&db.0).unwrap();
+        upgraded.verify_content_grant(&scope, &grant).unwrap();
+        assert_eq!(upgraded.history_identity().unwrap(), identity);
+        assert_eq!(
+            upgraded.query_observations(&query).unwrap().snapshot_id,
+            snapshot
+        );
+        assert_eq!(
+            upgraded
+                .connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            SCHEMA_VERSION
+        );
+        eval_detail::validate_schema(&upgraded.connection).unwrap();
+    }
+
+    #[test]
+    fn watermark_allocation_rejects_an_overflowing_retention_offset_atomically() {
+        let db = TempDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        store
+            .connection
+            .execute(
+                "UPDATE agenturm_retention_state SET snapshot_offset=?1, minimum_snapshot_id=?1",
+                [i64::MAX],
+            )
+            .unwrap();
+        let prior = store
+            .query_observations(&ObservationQuery::latest(1))
+            .unwrap();
+        assert_eq!(prior.snapshot_id.watermark(), i64::MAX as u64);
+        assert!(matches!(
+            store.commit_batch(&batch("overflow", vec![event("overflow", "session", 10)])),
+            Err(StoreError::Invalid("history snapshot ID is exhausted"))
+        ));
+        assert_eq!(
+            store
+                .query_observations(&ObservationQuery::latest(1))
+                .unwrap()
+                .snapshot_id,
+            prior.snapshot_id
+        );
+        assert!(store.observations().unwrap().is_empty());
+        assert!(store.source_cursor("harness.codex").unwrap().is_none());
     }
 
     #[test]

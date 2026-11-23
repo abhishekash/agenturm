@@ -10,7 +10,8 @@ mod workbench;
 mod workspace;
 
 pub use workbench::evaluation::{
-    EvaluationPage, EvaluationRead, EvaluationRow, EvaluationView, TraceEvaluationEntry,
+    EvaluationDetailEntry, EvaluationPage, EvaluationRead, EvaluationRow, EvaluationView,
+    TraceEvaluationEntry,
 };
 
 pub use workbench::{

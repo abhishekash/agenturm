@@ -14,6 +14,7 @@ mod cockpit_startup;
 mod cockpit_workflows;
 mod content_preview;
 mod discovery;
+mod eval_detail_cli;
 mod eval_import;
 mod handoff_export;
 mod host_cli;
@@ -46,6 +47,7 @@ pub use adapter_install::execute as execute_adapter_install;
 pub use attention::{AttentionOptions, execute_attention};
 pub use content_preview::{ContentOptions, execute_content, execute_content_stdout};
 pub use discovery::{discover, execute_discover};
+pub use eval_detail_cli::{EvalDetailOptions, execute_eval_detail_stdout};
 pub use eval_import::{EvalOptions, execute_evals};
 pub use host_cli::{HostOptions, execute as execute_host};
 pub use investigate_cli::{InvestigationOptions, execute_investigation};
@@ -253,6 +255,7 @@ pub enum Command {
     },
     Content(ContentOptions),
     TracePayload(PayloadCommand),
+    EvalDetail(EvalDetailOptions),
     Retention(RetentionOptions),
     Summary(SummaryOptions),
     Ingest(IngestOptions),
@@ -908,6 +911,7 @@ pub fn parse_command(args: &[String]) -> Result<Command, String> {
         Some("import-jsonl") => span_jsonl_import::parse(&args[1..]).map(Command::ImportJsonl),
         Some("import-evals") => eval_import::parse(&args[1..], true).map(Command::Evals),
         Some("evals") => eval_import::parse(&args[1..], false).map(Command::Evals),
+        Some("eval-detail") => eval_detail_cli::parse(&args[1..]).map(Command::EvalDetail),
         Some("ingest-codex-usage") => {
             parse_ingest_options(&args[1..], Some(CODEX_PLUGIN_ID)).map(Command::Ingest)
         }
@@ -1877,7 +1881,7 @@ fn workspace_response(
         }
         WorkspaceRequest::History { selection, before } => {
             let mut page = load_workspace_history(app, store, selection, before)?;
-            page.private_telemetry = store.allows_private_telemetry();
+            page.private_telemetry = store.allows_private_capture();
             Ok(WorkspaceResponse::History(page))
         }
     }
@@ -1961,7 +1965,7 @@ trait HistoryReader: ObservationStore {
         source: &ExtensionId,
         query: &agenturm_store::SelectedEvalQuery,
     ) -> Result<Option<agenturm_store::SelectedEvalPage>, String>;
-    fn allows_private_telemetry(&self) -> bool {
+    fn allows_private_capture(&self) -> bool {
         cfg!(target_os = "linux")
     }
 
@@ -3513,9 +3517,10 @@ pub fn render(command: Command) -> String {
             "       agenturm serve-traces --listen <loopback-IP:port> --db <path> --source-id otlp.<id> [--payload-scope <standalone|harness-id> --token-file <path>]\n",
             "       agenturm run --db <path> [--source-id otlp.<id>] [--payload-scope <standalone|harness-id>] -- <program> [args...]\n",
             "       agenturm trace-payload <binding|grant|revoke|snapshot|preview> [options]\n",
+            "       agenturm eval-detail <binding|grant|revoke|preview> [options]\n",
             "       agenturm import-traces --file <otlp-json-path|-> --db <path> --source-id otlp.<id>\n",
             "       agenturm import-jsonl --file <span-jsonl-path|-> --db <path> --source-id otlp.<id> [--session-id <id>]\n",
-            "       agenturm import-evals --file <results.json|-> --db <path> --source-id otlp.<id>\n",
+            "       agenturm import-evals --file <results.json|-> --db <path> --source-id otlp.<id> [--include-detail]\n",
             "       agenturm evals --db <path> --source-id otlp.<id> [--trace-id <id> [--history [--before-revision <n>]] | --summary [--after-trace-id <id>]] [--limit <1..256>] [--json]\n",
             "       agenturm attention status --db <path>\n",
             "       agenturm attention watch --db <path> [--once | --max-polls <1..10000>] [--interval-ms <100..60000>]\n",
@@ -3559,6 +3564,7 @@ pub fn render(command: Command) -> String {
         | Command::Summary(_)
         | Command::Host(_)
         | Command::Content(_)
+        | Command::EvalDetail(_)
         | Command::TracePayload(_) => String::new(),
         Command::Discover { .. } | Command::Cockpit { .. } => String::new(),
         #[cfg(target_os = "linux")]

@@ -287,7 +287,7 @@ impl HistoryReader for RemoteStore {
             _ => Err("History receiver sent an unexpected evaluation page".into()),
         }
     }
-    fn allows_private_telemetry(&self) -> bool {
+    fn allows_private_capture(&self) -> bool {
         false
     }
 
