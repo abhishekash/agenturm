@@ -52,9 +52,8 @@ def integration(file_name, stubs):
             parent = ".".join(names[:end])
             modules.setdefault(parent, ModuleType(parent))
     path = Path(__file__).resolve().parents[1] / "observatory/integrations" / file_name
-    spec = importlib.util.spec_from_file_location(f"isolated_{path.stem}", path)
+    spec = importlib.util.spec_from_file_location(f"observatory.integrations._isolated_{path.stem}", path)
     module = importlib.util.module_from_spec(spec)
-    module.__package__ = "observatory.integrations"
     with patch.dict("sys.modules", modules):
         spec.loader.exec_module(module)
     return module

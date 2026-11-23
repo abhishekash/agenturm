@@ -86,7 +86,10 @@ class RustTelemetryPayloadTests(unittest.TestCase):
         result = self.invoke("query", "--db", self.db, "--harness-id", SOURCE)
         for body in (INPUT, OUTPUT, UNRELATED, "private-vendor-fixture"):
             self.assertNotIn(body, result.stdout)
-        return json.loads(result.stdout)["observations"]
+        return [
+            row for row in json.loads(result.stdout)["observations"]
+            if row["observation"]["kind"] == "trace_span"
+        ]
 
     def test_standalone_payload_uses_exact_grant_and_snapshot(self):
         producer = f'''
