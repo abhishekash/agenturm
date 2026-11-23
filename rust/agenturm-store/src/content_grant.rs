@@ -25,6 +25,8 @@ pub enum ContentKind {
     CodexMcpPayload,
     #[serde(rename = "codex.edit_detail")]
     CodexEditDetail,
+    #[serde(rename = "claude.edit_detail")]
+    ClaudeEditDetail,
     #[serde(rename = "codex.command_detail")]
     CodexCommandDetail,
     #[serde(rename = "telemetry.span_payload")]
@@ -45,6 +47,7 @@ impl ContentKind {
             Self::OpenCodeUserText => "opencode.user_text",
             Self::CodexMcpPayload => "codex.mcp_payload",
             Self::CodexEditDetail => "codex.edit_detail",
+            Self::ClaudeEditDetail => "claude.edit_detail",
             Self::CodexCommandDetail => "codex.command_detail",
             Self::TelemetrySpanPayload => "telemetry.span_payload",
             Self::EvalResultDetail => "eval.result_detail",
@@ -173,8 +176,11 @@ pub(super) fn create_schema(connection: &Connection, version: i64) -> Result<()>
         17..=19 => {
             "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail')"
         }
-        20..=SCHEMA_VERSION => {
+        20..=22 => {
             "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')"
+        }
+        23..=SCHEMA_VERSION => {
+            "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'claude.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')"
         }
         _ => return Err(StoreError::UnsupportedSchema(version)),
     };
@@ -469,6 +475,7 @@ impl Store {
         let observation_kind = match scope.kind {
             ContentKind::CodexMcpPayload => "mcp_call",
             ContentKind::CodexEditDetail if selection.turn_id.is_some() => "file_edit",
+            ContentKind::ClaudeEditDetail if selection.turn_id.is_some() => "file_edit",
             ContentKind::CodexCommandDetail if selection.turn_id.is_some() => "tool",
             _ => return Err(StoreError::StaleContentGrant),
         };
@@ -545,6 +552,7 @@ impl Store {
             scope.kind,
             ContentKind::CodexMcpPayload
                 | ContentKind::CodexEditDetail
+                | ContentKind::ClaudeEditDetail
                 | ContentKind::CodexCommandDetail
                 | ContentKind::TelemetrySpanPayload
                 | ContentKind::EvalResultDetail

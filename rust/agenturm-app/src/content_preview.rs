@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "Usage: agenturm content binding --config <path> --source-id <id> [--kind codex.mcp_payload|codex.edit_detail|codex.command_detail]\n       agenturm content grant --db <path> --config <path> --source-id <id> [--kind codex.mcp_payload|codex.edit_detail|codex.command_detail]\n       agenturm content revoke --db <path> --source-id <id> [--kind codex.mcp_payload|codex.edit_detail|codex.command_detail]\n       agenturm content list --db <path> --config <path> --source-id <id> --session-id <id>\n       agenturm content preview --db <path> --config <path> --source-id <id> [--session-id <id>] --event-id <id> --revision <revision>\n       agenturm content preview --kind codex.mcp_payload --db <path> --config <path> --source-id <id> --session-id <id> --operation-id <id> --event-id <id> --revision <revision>\n       agenturm content preview --kind codex.edit_detail|codex.command_detail --db <path> --config <path> --source-id <id> --session-id <id> --turn-id <id> --operation-id <id> --event-id <id> --revision <revision>";
+const USAGE: &str = "Usage: agenturm content binding --config <path> --source-id <id> [--kind codex.mcp_payload|codex.edit_detail|claude.edit_detail|codex.command_detail]\n       agenturm content grant --db <path> --config <path> --source-id <id> [--kind codex.mcp_payload|codex.edit_detail|claude.edit_detail|codex.command_detail]\n       agenturm content revoke --db <path> --source-id <id> [--kind codex.mcp_payload|codex.edit_detail|claude.edit_detail|codex.command_detail]\n       agenturm content list --db <path> --config <path> --source-id <id> --session-id <id>\n       agenturm content preview --db <path> --config <path> --source-id <id> [--session-id <id>] --event-id <id> --revision <revision>\n       agenturm content preview --kind codex.mcp_payload --db <path> --config <path> --source-id <id> --session-id <id> --operation-id <id> --event-id <id> --revision <revision>\n       agenturm content preview --kind codex.edit_detail|claude.edit_detail|codex.command_detail --db <path> --config <path> --source-id <id> --session-id <id> --turn-id <id> --operation-id <id> --event-id <id> --revision <revision>";
 
 /// Proof-eligible metadata for a single retained user prompt. The selection
 /// grants no authority and is checked anew before any text is delivered.
@@ -36,6 +36,7 @@ pub struct ContentOptions {
 enum ContentOperationKind {
     Mcp,
     Edit,
+    ClaudeEdit,
     Command,
 }
 
@@ -101,6 +102,7 @@ pub(crate) fn parse(args: &[String]) -> Result<ContentOptions, String> {
         None => None,
         Some("codex.mcp_payload") => Some(ContentOperationKind::Mcp),
         Some("codex.edit_detail") => Some(ContentOperationKind::Edit),
+        Some("claude.edit_detail") => Some(ContentOperationKind::ClaudeEdit),
         Some("codex.command_detail") => Some(ContentOperationKind::Command),
         _ => return Err(USAGE.into()),
     };
@@ -403,6 +405,7 @@ mod linux {
                     &options.source_id,
                     kind.map(content_kind),
                 )?;
+                verify_kind_harness(kind.as_ref(), &source)?;
                 let binding = agenturm_storage_service::GrantBinding::from(source.scope());
                 let mut bytes = serde_json::to_vec(&binding).map_err(|error| error.to_string())?;
                 bytes.push(b'\n');
@@ -415,6 +418,7 @@ mod linux {
                     &options.source_id,
                     kind.map(content_kind),
                 )?;
+                verify_kind_harness(kind.as_ref(), &source)?;
                 store
                     .grant_content(source.scope())
                     .map_err(|error| error.to_string())?;
@@ -433,6 +437,7 @@ mod linux {
                 let grant = match kind {
                     ContentOperationKind::Mcp => ContentKind::CodexMcpPayload,
                     ContentOperationKind::Edit => ContentKind::CodexEditDetail,
+                    ContentOperationKind::ClaudeEdit => ContentKind::ClaudeEditDetail,
                     ContentOperationKind::Command => ContentKind::CodexCommandDetail,
                 };
                 store
@@ -441,7 +446,8 @@ mod linux {
                 write_output(
                     output,
                     format!(
-                        "Codex {} preview approval is revoked.\n",
+                        "{} {} preview approval is revoked.\n",
+                        revoke_label(*kind),
                         operation_description(*kind)
                     )
                     .as_bytes(),
@@ -518,16 +524,54 @@ mod linux {
     fn content_kind(kind: ContentOperationKind) -> agenturm_content::OperationDetailKind {
         match kind {
             ContentOperationKind::Mcp => agenturm_content::OperationDetailKind::Mcp,
-            ContentOperationKind::Edit => agenturm_content::OperationDetailKind::Edit,
+            // The edit detail kind is shared across harnesses: the pinned
+            // source's plugin decides which provider contract applies.
+            ContentOperationKind::Edit | ContentOperationKind::ClaudeEdit => {
+                agenturm_content::OperationDetailKind::Edit
+            }
             ContentOperationKind::Command => agenturm_content::OperationDetailKind::Command,
         }
+    }
+
+    /// The named CLI kind must resolve to the same durable grant kind the
+    /// pinned harness actually defines, so one provider's flag can never
+    /// silently approve another provider's private detail.
+    fn verify_kind_harness(
+        kind: Option<&ContentOperationKind>,
+        source: &agenturm_content::BoundSource,
+    ) -> Result<(), String> {
+        let Some(kind) = kind else {
+            return Ok(());
+        };
+        let expected = match kind {
+            ContentOperationKind::Mcp => ContentKind::CodexMcpPayload,
+            ContentOperationKind::Edit => ContentKind::CodexEditDetail,
+            ContentOperationKind::ClaudeEdit => ContentKind::ClaudeEditDetail,
+            ContentOperationKind::Command => ContentKind::CodexCommandDetail,
+        };
+        if source.scope().kind() != expected {
+            return Err(format!(
+                "{} preview requires its matching pinned harness source",
+                operation_description(*kind)
+            ));
+        }
+        Ok(())
     }
 
     fn operation_description(kind: ContentOperationKind) -> &'static str {
         match kind {
             ContentOperationKind::Mcp => "MCP payload",
-            ContentOperationKind::Edit => "file edit",
+            ContentOperationKind::Edit | ContentOperationKind::ClaudeEdit => "file edit",
             ContentOperationKind::Command => "command invocation",
+        }
+    }
+
+    fn revoke_label(kind: ContentOperationKind) -> &'static str {
+        match kind {
+            ContentOperationKind::Mcp
+            | ContentOperationKind::Edit
+            | ContentOperationKind::Command => "Codex",
+            ContentOperationKind::ClaudeEdit => "Claude Code",
         }
     }
     pub(super) fn resolver(

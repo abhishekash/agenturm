@@ -102,7 +102,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 22;
+const SCHEMA_VERSION: i64 = 23;
 pub const MAX_HOST_HISTORY_PAGE: usize = 64;
 const MAX_BATCH_EVENTS: usize = 2_048;
 pub const MAX_OTLP_BATCH_SPANS: usize = 1_024;
@@ -124,7 +124,8 @@ const STORE_MARKER_V18: &str = "agenturm.observation-store.v18";
 const STORE_MARKER_V19: &str = "agenturm.observation-store.v19";
 const STORE_MARKER_V20: &str = "agenturm.observation-store.v20";
 const STORE_MARKER_V21: &str = "agenturm.observation-store.v21";
-const STORE_MARKER: &str = "agenturm.observation-store.v22";
+const STORE_MARKER_V22: &str = "agenturm.observation-store.v22";
+const STORE_MARKER: &str = "agenturm.observation-store.v23";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -665,7 +666,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         19 => STORE_MARKER_V19,
         20 => STORE_MARKER_V20,
         21 => STORE_MARKER_V21,
-        22 => STORE_MARKER,
+        22 => STORE_MARKER_V22,
+        23..=SCHEMA_VERSION => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -1485,11 +1487,23 @@ impl Store {
             )?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V22],
+            )?;
+            transaction.pragma_update(None, "user_version", 22)?;
+            validate_marked_shape(&transaction, 22)?;
+            transaction.commit()?;
+        }
+        if (2..23).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            content_grant::migrate_grant_schema(&transaction, 23)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],
             )?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
-            validate_marked_shape(&transaction, SCHEMA_VERSION)?;
             transaction.commit()?;
+            validate_marked_shape(&connection, SCHEMA_VERSION)?;
         }
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "FULL")?;
@@ -3015,6 +3029,61 @@ mod tests {
         assert_eq!(
             upgraded.commit_batch(&batch).unwrap(),
             CommitOutcome::Replay
+        );
+    }
+
+    #[test]
+    fn claude_edit_grants_upgrade_from_v22_and_keep_prior_approvals() {
+        let db = TempDb::new();
+        let codex = ContentGrantScope::new(
+            ExtensionId::parse("harness.codex").unwrap(),
+            ContentKind::CodexEditDetail,
+            [1; 32],
+        );
+        let claude = ContentGrantScope::new(
+            ExtensionId::parse("harness.claude").unwrap(),
+            ContentKind::ClaudeEditDetail,
+            [2; 32],
+        );
+        let mut store = Store::open(&db.0).unwrap();
+        let grant = store.grant_content(&codex).unwrap();
+        // Rebuild the exact v22 grant table so a pre-upgrade database again
+        // rejects claude.edit_detail under its narrower CHECK rule.
+        store
+            .connection
+            .execute_batch(
+                "ALTER TABLE agenturm_content_grants RENAME TO agenturm_prior_content_grants;
+                 CREATE TABLE agenturm_content_grants (
+                    source_id TEXT NOT NULL,
+                    kind TEXT NOT NULL CHECK (kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')),
+                    source_fingerprint BLOB NOT NULL CHECK (length(source_fingerprint) = 32),
+                    epoch INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch > 0),
+                    nonce BLOB NOT NULL CHECK (length(nonce) = 16),
+                    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+                    PRIMARY KEY (source_id, kind)
+                 );
+                 INSERT INTO agenturm_content_grants
+                    SELECT * FROM agenturm_prior_content_grants;
+                 DROP TABLE agenturm_prior_content_grants;
+                 UPDATE agenturm_store_meta SET value='agenturm.observation-store.v22' WHERE key='format';
+                 PRAGMA user_version=22;",
+            )
+            .unwrap();
+        assert!(store.grant_content(&claude).is_err());
+        drop(store);
+
+        let mut upgraded = Store::open(&db.0).unwrap();
+        validate_marked_shape(&upgraded.connection, SCHEMA_VERSION).unwrap();
+        upgraded.verify_content_grant(&codex, &grant).unwrap();
+        let renewed = upgraded.grant_content(&claude).unwrap();
+        upgraded.verify_content_grant(&claude, &renewed).unwrap();
+        assert_eq!(
+            upgraded
+                .current_content_grant(&codex)
+                .unwrap()
+                .unwrap()
+                .epoch(),
+            grant.epoch()
         );
     }
 
