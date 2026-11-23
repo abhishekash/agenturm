@@ -262,7 +262,7 @@ pub(super) fn cockpit(options: &RemoteHistoryOptions) -> Result<(), String> {
     let options = options.clone();
     let mut receiver = None;
     let mut attention = AttentionState::default();
-    agenturm_ui::run_live_receiver_with_review(move |request| {
+    agenturm_ui::run_live_receiver_with_evidence(move |request| {
         let receiver = match &receiver {
             Some(receiver) => receiver,
             None => receiver.insert(LegacyReceiver::connect(&options)?),
@@ -272,6 +272,17 @@ pub(super) fn cockpit(options: &RemoteHistoryOptions) -> Result<(), String> {
                 .report(SESSION_PAGE, &mut attention)
                 .map(Report::into_live_page)
                 .map(agenturm_ui::LiveResponse::Page),
+            agenturm_ui::LiveRequest::Findings { before } => {
+                super::legacy_findings::page(receiver, before.as_deref())
+                    .map(agenturm_ui::LiveResponse::Findings)
+            }
+            agenturm_ui::LiveRequest::FindingSource {
+                target,
+                mut delivery,
+            } => {
+                super::legacy_findings::source(receiver, &target, &mut delivery)?;
+                Ok(agenturm_ui::LiveResponse::ReviewClosed)
+            }
             agenturm_ui::LiveRequest::Review {
                 selection,
                 delivery,

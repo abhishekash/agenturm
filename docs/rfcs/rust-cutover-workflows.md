@@ -97,8 +97,10 @@ agenturm attention watch --once --endpoint http://127.0.0.1:14318 \
   --token-file receiver.token --receiver-protocol python-v0.2.8
 ```
 
-The attached cockpit shows bounded live Agents, Activity, Traces and Pending
-pages. Enter on a session scopes the loaded evidence to the exact recorded
+The attached cockpit shows bounded live Agents, Activity, Traces, Pending and
+Findings pages. Press `7` for Findings, Enter to inspect a selected ID and `s`
+for the exact supported source under current receiver/capture authority. Escape
+redacts and returns to the same finding. [Tagged Findings qualification](../validation/rust-python-findings.md). Enter on a session scopes the loaded evidence to the exact recorded
 service, session and actor where supplied. Escape restores the roster selection.
 The one-shot JSON response uses `agenturm-python-receiver-live/1` and labels
 readiness and partial coverage. Reads check the receiver header and any body

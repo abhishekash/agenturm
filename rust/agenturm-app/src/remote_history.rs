@@ -4,6 +4,7 @@ mod api;
 mod client;
 pub(crate) mod http;
 pub(crate) mod legacy;
+pub(crate) mod legacy_findings;
 pub(crate) mod legacy_investigation;
 pub(crate) mod legacy_review;
 

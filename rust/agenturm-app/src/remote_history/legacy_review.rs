@@ -212,6 +212,29 @@ impl LocalPolicy {
         Ok(policy)
     }
 
+    pub(super) fn for_finding(
+        &self,
+        service: &str,
+        agent: Option<&str>,
+        session: Option<&str>,
+    ) -> Result<Option<CapturePolicy>, String> {
+        let scope = Scope {
+            receiver: String::new(),
+            producer: service.into(),
+            agent_id: agent.unwrap_or_default().into(),
+            session_id: session.unwrap_or_default().into(),
+            run_id: String::new(),
+            run_start_ns: None,
+            run_end_ns: None,
+            kind: "finding",
+            endpoint_fallback: false,
+            turn_id: String::new(),
+            turn_steps: BTreeSet::new(),
+        };
+        let policy = self.for_scope(&scope)?;
+        Ok((!policy.denied).then_some(policy))
+    }
+
     pub(super) fn investigation_ready(&self) -> bool {
         self.capture_content != Some(false)
             && self

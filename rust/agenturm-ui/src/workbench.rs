@@ -181,6 +181,7 @@ pub(super) enum PromptKind {
     Evaluation,
     Investigation,
     LegacyReview,
+    LegacyFinding,
 }
 
 impl PromptKind {
@@ -194,6 +195,7 @@ impl PromptKind {
             Self::Evaluation => "Imported evaluation text",
             Self::Investigation => "Verified source evidence",
             Self::LegacyReview => "Python receiver · verified Review",
+            Self::LegacyFinding => "Python receiver · verified finding source",
         }
     }
 }

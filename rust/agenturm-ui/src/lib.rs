@@ -25,8 +25,10 @@ pub use findings::{
 pub use operation_table::{ConfiguredMcpServer, McpInventory, OperationRow, OperationTables};
 
 pub use live_receiver::{
-    LiveOwner, LivePage, LiveRequest, LiveResponse, LiveReviewMode, LiveReviewSelection,
-    LiveReviewTarget, LiveRow, run_live_receiver, run_live_receiver_with_review,
+    LiveFindingKind, LiveFindingMember, LiveFindingMemberKind, LiveFindingPage, LiveFindingRow,
+    LiveFindingSeverity, LiveFindingTarget, LiveOwner, LivePage, LiveRequest, LiveResponse,
+    LiveReviewMode, LiveReviewSelection, LiveReviewTarget, LiveRow, run_live_receiver,
+    run_live_receiver_with_evidence, run_live_receiver_with_review,
 };
 pub use loaded_view::LoadedView;
 

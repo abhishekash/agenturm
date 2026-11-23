@@ -93,7 +93,37 @@ def main():
                 receipt = read(result)
                 python = oracle(True)
                 assert receipt["scope"] == python["scope"]
-                assert receipt["window"]["count"] == python["window"]["count"]
+                activity_page = fixture.store.activity_page(
+                    limit=200, service=owner["producer"], agent_id=owner["agent_id"],
+                    session_id=owner["session_id"], turn_id=turn["turn_id"], review=True,
+                )
+                assert activity_page["next_cursor"] is None
+                captured = activity_page["activity"]
+                step_ids = set(turn["step_trace_ids"])
+                members = [event for event in captured if event.get("trace_id") in step_ids]
+                nonmembers = [event for event in captured if event.get("trace_id") not in step_ids]
+                assert len(members) == 4
+                assert len(nonmembers) == 2
+                assert all(
+                    event["source"] == "log" and event["domain"] == "message"
+                    and event["action"] == "user" and event["result"] == "observed"
+                    and event.get("trace_id") is None and event.get("span_id") is None
+                    for event in nonmembers
+                )
+                stamps = [event["time_unix_nano"] for event in members]
+                window = receipt["window"]
+                assert (window["count"], window["earliest_ns"], window["latest_ns"]) == (
+                    len(members), min(stamps), max(stamps),
+                )
+                assert python["window"]["count"] == len(captured)
+                assert python["window"]["earliest_ns"] < window["earliest_ns"]
+                assert window["coverage"] == "loaded captured interval"
+                assert not window["reasons"]
+                assert python["window"]["coverage"] == "partial"
+                assert any("Live metadata" in reason for reason in python["window"]["reasons"])
+                assert receipt["request"]["source"]["time_unix_nano"] == max(
+                    event["time_unix_nano"] for event in nonmembers
+                )
                 assert receipt["request"] == python["request"]
                 assert receipt["agent_update"] == python["agent_update"]
                 assert receipt["usage"]["values"]["input_tokens"] == python["usage"]["values"]["input_tokens"] == 17
