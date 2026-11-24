@@ -142,6 +142,7 @@ impl<'de> Deserialize<'de> for ObservationRecord {
             PullRequestRaised,
             Relationship,
             WorkerSpawn,
+            WorkerLaunch,
             Message,
             Diagnostic,
         }
@@ -190,6 +191,12 @@ impl<'de> Deserialize<'de> for ObservationRecord {
                     return Err(serde::de::Error::custom("invalid worker spawn payload"));
                 }
                 serde_json::from_str(payload).map(ObservationFact::WorkerSpawn)
+            }
+            FactKind::WorkerLaunch => {
+                if !payload.trim_start().starts_with('{') {
+                    return Err(serde::de::Error::custom("invalid worker launch payload"));
+                }
+                serde_json::from_str(payload).map(ObservationFact::WorkerLaunch)
             }
             FactKind::Message => serde_json::from_str(payload).map(ObservationFact::Message),
             FactKind::Diagnostic => serde_json::from_str(payload).map(ObservationFact::Diagnostic),
@@ -249,6 +256,7 @@ pub enum ObservationFact {
     PullRequestRaised(PullRequestRaised),
     Relationship(Relationship),
     WorkerSpawn(WorkerSpawn),
+    WorkerLaunch(WorkerLaunch),
     Message(Message),
     Diagnostic(Diagnostic),
 }
@@ -267,15 +275,34 @@ pub struct WorkerSpawn {
 
 impl WorkerSpawn {
     pub fn is_valid_for(&self, parent_worker_id: Option<&str>) -> bool {
-        let id = self.child_worker_id.as_bytes();
-        !id.is_empty()
-            && id.len() <= 200
-            && id[0].is_ascii_alphanumeric()
-            && id
-                .iter()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(byte))
-            && parent_worker_id != Some(self.child_worker_id.as_str())
+        is_valid_child_worker_id(&self.child_worker_id, parent_worker_id)
     }
+}
+
+/// Explicit evidence of a child worker asynchronously launched within the
+/// parent session. A launch claims only the child identity and the launched
+/// state; it never claims a resolution.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerLaunch {
+    pub child_worker_id: String,
+}
+
+impl WorkerLaunch {
+    pub fn is_valid_for(&self, parent_worker_id: Option<&str>) -> bool {
+        is_valid_child_worker_id(&self.child_worker_id, parent_worker_id)
+    }
+}
+
+fn is_valid_child_worker_id(child_worker_id: &str, parent_worker_id: Option<&str>) -> bool {
+    let id = child_worker_id.as_bytes();
+    !id.is_empty()
+        && id.len() <= 200
+        && id[0].is_ascii_alphanumeric()
+        && id
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(byte))
+        && parent_worker_id != Some(child_worker_id)
 }
 
 /// Counts from one explicitly successful file edit. Native paths and diffs
@@ -298,6 +325,52 @@ impl FileEdit {
             + self.deleted as usize
             + self.moved as usize;
         (1..=Self::MAX_CHANGES).contains(&total)
+    }
+}
+
+/// Derives the edit-count summary for one recognized Claude Code file-edit
+/// tool_use block. Adapters emit the resulting `file_edit` fact, and private
+/// detail reveal re-recognizes the exact same shape before any disclosure.
+/// The input carries file paths and content, which stay in the source
+/// transcript: only the counts below ever leave an adapter.
+///
+/// Recognized tools (case-insensitive) and their deterministic derivations:
+/// - `Write` counts one added file. The native input carries only `file_path`
+///   and `content` with no overwrite evidence, so an update can never be
+///   distinguished from a creation and `added` is the honest mapping.
+/// - `Edit` counts one updated file.
+/// - `MultiEdit` counts one update per edit in its `edits` array; an empty
+///   array or one larger than `FileEdit::MAX_CHANGES` is not summarized.
+///
+/// A missing, non-object, or file-less input is malformed and yields `None`.
+pub fn claude_file_edit_summary(name: &str, input: Option<&serde_json::Value>) -> Option<FileEdit> {
+    let fields = input?.as_object()?;
+    if !fields
+        .get("file_path")
+        .is_some_and(|path| path.as_str().is_some_and(|path| !path.is_empty()))
+    {
+        return None;
+    }
+    match name.to_ascii_lowercase().as_str() {
+        "write" => Some(FileEdit {
+            added: 1,
+            ..FileEdit::default()
+        }),
+        "edit" => Some(FileEdit {
+            updated: 1,
+            ..FileEdit::default()
+        }),
+        "multiedit" => {
+            let edits = fields.get("edits")?.as_array()?;
+            if !(1..=FileEdit::MAX_CHANGES).contains(&edits.len()) {
+                return None;
+            }
+            Some(FileEdit {
+                updated: u16::try_from(edits.len()).ok()?,
+                ..FileEdit::default()
+            })
+        }
+        _ => None,
     }
 }
 

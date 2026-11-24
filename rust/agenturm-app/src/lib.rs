@@ -3181,6 +3181,9 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                 ObservationKind::WorkerSpawn(spawn) => {
                     serde_json::json!({"kind":"worker_spawn", "child_worker_id":spawn.child_worker_id})
                 }
+                ObservationKind::WorkerLaunch(launch) => {
+                    serde_json::json!({"kind":"worker_launch", "child_worker_id":launch.child_worker_id})
+                }
                 ObservationKind::Message { role } => {
                     serde_json::json!({"kind":"message", "role":role})
                 }
@@ -4441,6 +4444,38 @@ pub fn render(command: Command) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_page_renders_worker_launch_without_resolution_wording() {
+        let row = Observation {
+            harness_id: ExtensionId::parse("harness.claude").unwrap(),
+            event_id: "launch".into(),
+            revision: 0,
+            identity: agenturm_kernel::ObservationIdentity {
+                scope: agenturm_kernel::ObservationScope::Session,
+                session_id: Some("session-1".into()),
+                worker_id: Some("parent".into()),
+                turn_id: Some("turn-1".into()),
+                operation_id: Some("operation-1".into()),
+            },
+            observed_at_unix_ns: 1,
+            kind: ObservationKind::WorkerLaunch(agenturm_kernel::WorkerLaunch {
+                child_worker_id: "child".into(),
+            }),
+        };
+        let page = agenturm_kernel::ObservationPage {
+            observations: vec![row],
+            has_more: false,
+            snapshot_id: agenturm_kernel::ReadSnapshot::new(0, None),
+        };
+        let data = history_page_data(page);
+        let observation = &data["observations"][0]["observation"];
+        assert_eq!(
+            observation,
+            &serde_json::json!({"kind":"worker_launch", "child_worker_id":"child"})
+        );
+        assert!(!observation.to_string().contains("completed"));
+    }
 
     #[test]
     fn overview_preserves_recorded_lifecycle_turns_and_reasons() {

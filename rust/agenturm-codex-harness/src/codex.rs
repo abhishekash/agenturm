@@ -254,7 +254,10 @@ fn tool_category(name: &str) -> &'static str {
         "mcp"
     } else if matches!(
         lower.as_str(),
-        "exec_command" | "shell_command" | "bash" | "sh" | "terminal" | "functions.exec"
+        // `exec` is the current Codex custom_tool_call name for command
+        // execution in actual rollouts; it must stay shell-categorized or
+        // command-detail reveals reject it.
+        "exec" | "exec_command" | "shell_command" | "bash" | "sh" | "terminal" | "functions.exec"
     ) {
         "shell"
     } else if matches!(
@@ -1022,6 +1025,19 @@ mod tests {
 
     fn translate(payload: Value, context: &Context) -> (Vec<Value>, Context) {
         translate_line(&row("event_msg", payload), context, "generation", 10).unwrap()
+    }
+
+    #[test]
+    fn current_native_exec_tool_calls_stay_shell_categorized() {
+        // Actual 2026-11 rollouts record command execution as custom_tool_call
+        // rows with tool name `exec`; command-detail reveals require the
+        // shell category.
+        for name in ["exec", "EXEC", "exec_command", "functions.exec"] {
+            assert_eq!(tool_category(name), "shell", "{name} must be shell");
+        }
+        assert_eq!(tool_category("executioner"), "other");
+        assert_eq!(tool_category("read_file"), "file");
+        assert_eq!(tool_category("mcp__x"), "mcp");
     }
 
     #[test]

@@ -268,6 +268,7 @@ pub enum ObservationKind {
         parent_session_id: String,
     },
     WorkerSpawn(WorkerSpawn),
+    WorkerLaunch(WorkerLaunch),
     Message {
         role: String,
     },
@@ -319,8 +320,8 @@ pub use agenturm_protocol::metric::{MetricDescriptor, MetricPoint, is_metric_sou
 pub use agenturm_protocol::observation::{
     FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, NANOUNITS_PER_CURRENCY_UNIT, NativeCostBasis,
     RelationshipKind, ReportedCost, SpanTokenUsage, TraceProgress, TraceSpan, TraceSpanIdentity,
-    TraceStatus, WorkerSpawn, is_github_pull_request, is_valid_mcp_metadata,
-    parse_currency_nanounits,
+    TraceStatus, WorkerLaunch, WorkerSpawn, claude_file_edit_summary, is_github_pull_request,
+    is_valid_mcp_metadata, parse_currency_nanounits,
 };
 
 pub fn is_mcp_operation(identity: &ObservationIdentity) -> bool {
@@ -338,11 +339,21 @@ pub fn is_file_edit_operation(identity: &ObservationIdentity) -> bool {
 
 /// A worker spawn is anchored to the exact parent session, turn and operation.
 pub fn is_anchored_worker_spawn(spawn: &WorkerSpawn, identity: &ObservationIdentity) -> bool {
+    is_anchored_worker_fact(spawn.is_valid_for(identity.worker_id.as_deref()), identity)
+}
+
+/// A worker launch is anchored to the exact parent session, turn and operation
+/// and claims no resolution.
+pub fn is_anchored_worker_launch(launch: &WorkerLaunch, identity: &ObservationIdentity) -> bool {
+    is_anchored_worker_fact(launch.is_valid_for(identity.worker_id.as_deref()), identity)
+}
+
+fn is_anchored_worker_fact(valid_child: bool, identity: &ObservationIdentity) -> bool {
     identity.scope == ObservationScope::Session
         && identity.session_id.is_some()
         && identity.turn_id.is_some()
         && identity.operation_id.is_some()
-        && spawn.is_valid_for(identity.worker_id.as_deref())
+        && valid_child
 }
 
 /// Bound trace metadata is attributed to its OTLP source. The optional target
@@ -1653,6 +1664,11 @@ fn validate_raw_observation_slice(
             && !is_anchored_worker_spawn(spawn, &row.identity)
         {
             return Err("worker spawn ID or parent operation identity is invalid".into());
+        }
+        if let ObservationKind::WorkerLaunch(launch) = &row.kind
+            && !is_anchored_worker_launch(launch, &row.identity)
+        {
+            return Err("worker launch ID or parent operation identity is invalid".into());
         }
         if let ObservationKind::Message { role } = &row.kind
             && !matches!(role.as_str(), "user" | "assistant")

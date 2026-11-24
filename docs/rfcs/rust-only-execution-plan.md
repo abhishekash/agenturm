@@ -31,8 +31,8 @@ audit and test qualification are separate work categories.
 
 | ID | Priority / owner | Feature still to implement | Dependency and completion condition |
 | --- | --- | --- | --- |
-| FD1 | Core / harness adapters | Remaining attributable native evidence: Pi same-session worker relationships, Claude asynchronous workers, and additional supported check/turn shapes. | Obtain positive native records for each shape, then add exact typed attribution through admission/reopen and the evidence UI. Missing exit codes or parent evidence stay unknown; fixtures or output prose cannot invent facts. Completed Claude worker spawning and neutral presence are not reopened. |
-| FD2 | Core / private evidence and UI | Provider-specific private edit and MCP detail beyond the implemented Codex routes. | Define each provider's exact retained/source proof and separate content approval. Implement scoped selection/reveal/revocation and clear unavailable cases. Existing whole-session Codex Review edits, MCP preview and linked-trace paths remain implemented. |
+| FD1 | Core / harness adapters | Remaining attributable native evidence: Pi same-session worker relationships, Claude asynchronous workers, and additional supported check/turn shapes. | [Evidence scan completed 23 November](../validation/rust-fd1-native-evidence.md): Pi worker relationships have **no positive witness** on any local record — an explicit evidence gate, not fixture work. Claude async launches have a **positive, exactly-structured witness** (declaration → structured `async_launched` result with child `agentId`, sidechain transcript and `meta.json` linkage): **launch-only typed attribution is implemented** — a `worker_launch { child_worker_id }` fact correlates the Agent declaration to the structured `async_launched` result through the same declaration tracking, first-consumer-wins and ownership fences, with **no completion claim** and the checkpoint wire format unchanged; the single observed peer-handback resolution stays a recorded shape until more witnesses exist. Codex `exec`/JavaScript-wrapped compound checks and the collab-layer `function_call` family are recorded for the check-coverage inventory; current native `exec` tool calls are now shell-categorized (the store's command-detail filter requires it), while recognizing checks inside the JavaScript wrapper itself remains open. Missing exit codes or parent evidence stay unknown; fixtures or output prose cannot invent facts. Completed Claude worker spawning and neutral presence are not reopened. |
+| FD2 | Core / private evidence and UI | Provider-specific private edit and MCP detail beyond the implemented Codex routes. | **Claude edit-detail slice implemented:** the operation-detail contract is harness-generic — a shared protocol recognition contract (`claude_file_edit_summary`) used by both the adapter fact and the reveal re-recognition so the two cannot drift, a per-harness fingerprint domain (`agenturm.claude-edit-detail/1`), store grants at schema 23 with a verified v22 upgrade path, a source-side reveal located by committed byte offset within the admitted proof range with credential screening, char-boundary truncation and explicit truncation flags, cross-kind grant denial (`claude.edit_detail` cannot authorize a Codex source or vice versa), and `content --kind claude.edit_detail`. Write reports added, Edit updated, MultiEdit a bounded edit count; malformed inputs withhold the summary without failing the line; the Claude row carries no native turn identity, so turn linkage is proven store-side and never re-derived. Existing whole-session Codex Review edits, MCP preview and linked-trace paths remain implemented and unchanged. Remaining: Pi/OpenCode/Kiro edit detail and MCP payload detail beyond Codex; installed/paired acceptance delegated as CF8 in the [core feature test plan](../validation/rust-core-feature-test-plan.md). |
 | FD3 | Core / usage and cost | Combined usage/cost totals that safely handle overlapping producer reports. | **Combined slice implemented:** per-day combined totals exclude reports whose overlap is established through exact `(target source, session)` identity, count the exclusions, and sum only nonduplicated native reports plus the per-trace-deduplicated trace cohort and disjoint log-only cohort; currencies stay distinct, and native assistant cost records that forks can duplicate stay outside combined totals. Unattributed telemetry carries no identity link and contributes; that boundary is disclosed rather than inferred away. Older attached-receiver pages without the combined block stay readable. Remaining: cross-layer overlap without identity links cannot be detected and is never summed speculatively; installed, paired-state and broad qualification are delegated as CF6 in the [core feature test plan](../validation/rust-core-feature-test-plan.md). Existing seven-day and per-currency views remain implemented. |
 | FD4 | Core / remote workflow | Cross-host terminal routing to the exact recorded remote owner/session. | **Routing slice implemented:** an attached cockpit accepts an explicit operator-authored `--route-file` (one command word per line, for example `ssh` and `user@receiver-host`); `l` verifies the exact current request, runs fixed read-only tmux and `/proc` probes through the route, resolves the unique remote pane whose process ancestry carries the exact recorded resume command, re-verifies the pane's process, and presents the attach command for the operator. Routing never selects a remote pane, answers, or approves; worker requests, unsupported providers, missing configuration, ambiguous or stale targets and unreachable routes fail closed. The route must transport arguments the way `ssh` does; the legacy Python receiver protocol rejects a route file. Focused validation passed: eight routing tests including a fake-route end-to-end resolution, ambiguity and stale-pane rejection, an attach-option parse test, workspace strict Clippy and fmt. Remaining: per-host route persistence beyond attach-time configuration, transports that do not join arguments the way `ssh` does, an independent security/transport review, and installed/paired acceptance are delegated as CF7 in the [core feature test plan](../validation/rust-core-feature-test-plan.md). Existing local routing/resume and native/attached receiver reads are not missing features. |
 
@@ -54,18 +54,23 @@ Linux release scope without an explicit product decision.
 
 ### AP1 — SDK/CLI parity audit, not a blanket missing-feature list
 
-Reconcile every retained Python 0.2.8 CLI/keyboard journey and selected SDK
-integration with its actual Rust code path. Cover OpenAI, Anthropic,
-LangChain/LangGraph, Google ADK and Pydantic AI as applicable to the retained
-inventory. Record each row as **implemented**, **test-only acceptance pending**,
-**confirmed missing feature**, **native evidence unavailable**, or **scope
-decision needed**. Include the owner, source anchor and acceptance journey.
+**Audit completed 23 November 2026** — see
+[the AP1 parity audit](rust-cli-parity-audit.md). Every retained Python 0.2.8
+CLI entry point, cockpit keyboard journey and selected SDK integration now
+has a recorded disposition with source anchors: the parity table classifies
+each surface, the six previously unrecorded items have explicit dispositions,
+and all five selected SDK families have real CI jobs exercising a Rust path
+(current-head results remain Q7's to record).
 
-Only confirmed missing behavior becomes a new FD development task. Passing
-selected SDK jobs on an older source is not complete instrumentation coverage;
-unexecuted tests are not evidence that implementation is absent. Complete this
-audit before claiming feature development or default cutover complete. No
-workflow is retired by this documentation update.
+The audit's confirmed-missing inventory (Ctrl+P action palette, saved-task
+Brief/Decisions cockpit editors, Ctrl+R concurrent-edit reload, Workflow `h`
+history toggle, `task create --snapshot`, `task draft --workspace` and handoff
+receiver revalidation, remote receiver deployment) gates the B1/D3
+cutover-scope decision — it does not create development tasks by itself.
+Only that decision, or an explicit retirement, schedules them. No workflow is
+retired by the audit. Focused spot-verification confirmed the audit's key
+anchors (theme-only Ctrl+P, no `--snapshot` on `task create`, Draft editor
+surface, attention-native verbs).
 
 ### Implemented code and qualification ownership
 

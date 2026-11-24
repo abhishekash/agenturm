@@ -173,13 +173,13 @@ audit and test qualification are separate work categories.</p>
 <td>FD1</td>
 <td>Core / harness adapters</td>
 <td>Remaining attributable native evidence: Pi same-session worker relationships, Claude asynchronous workers, and additional supported check/turn shapes.</td>
-<td>Obtain positive native records for each shape, then add exact typed attribution through admission/reopen and the evidence UI. Missing exit codes or parent evidence stay unknown; fixtures or output prose cannot invent facts. Completed Claude worker spawning and neutral presence are not reopened.</td>
+<td><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-fd1-native-evidence.md">Evidence scan completed 23 November</a>: Pi worker relationships have <strong>no positive witness</strong> on any local record — an explicit evidence gate, not fixture work. Claude async launches have a <strong>positive, exactly-structured witness</strong> (declaration → structured <code>async_launched</code> result with child <code>agentId</code>, sidechain transcript and <code>meta.json</code> linkage): <strong>launch-only typed attribution is implemented</strong> — a <code>worker_launch { child_worker_id }</code> fact correlates the Agent declaration to the structured <code>async_launched</code> result through the same declaration tracking, first-consumer-wins and ownership fences, with <strong>no completion claim</strong> and the checkpoint wire format unchanged; the single observed peer-handback resolution stays a recorded shape until more witnesses exist. Codex <code>exec</code>/JavaScript-wrapped compound checks and the collab-layer <code>function_call</code> family are recorded for the check-coverage inventory; current native <code>exec</code> tool calls are now shell-categorized (the store's command-detail filter requires it), while recognizing checks inside the JavaScript wrapper itself remains open. Missing exit codes or parent evidence stay unknown; fixtures or output prose cannot invent facts. Completed Claude worker spawning and neutral presence are not reopened.</td>
 </tr>
 <tr>
 <td>FD2</td>
 <td>Core / private evidence and UI</td>
 <td>Provider-specific private edit and MCP detail beyond the implemented Codex routes.</td>
-<td>Define each provider's exact retained/source proof and separate content approval. Implement scoped selection/reveal/revocation and clear unavailable cases. Existing whole-session Codex Review edits, MCP preview and linked-trace paths remain implemented.</td>
+<td><strong>Claude edit-detail slice implemented:</strong> the operation-detail contract is harness-generic — a shared protocol recognition contract (<code>claude_file_edit_summary</code>) used by both the adapter fact and the reveal re-recognition so the two cannot drift, a per-harness fingerprint domain (<code>agenturm.claude-edit-detail/1</code>), store grants at schema 23 with a verified v22 upgrade path, a source-side reveal located by committed byte offset within the admitted proof range with credential screening, char-boundary truncation and explicit truncation flags, cross-kind grant denial (<code>claude.edit_detail</code> cannot authorize a Codex source or vice versa), and <code>content --kind claude.edit_detail</code>. Write reports added, Edit updated, MultiEdit a bounded edit count; malformed inputs withhold the summary without failing the line; the Claude row carries no native turn identity, so turn linkage is proven store-side and never re-derived. Existing whole-session Codex Review edits, MCP preview and linked-trace paths remain implemented and unchanged. Remaining: Pi/OpenCode/Kiro edit detail and MCP payload detail beyond Codex; installed/paired acceptance delegated as CF8 in the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md">core feature test plan</a>.</td>
 </tr>
 <tr>
 <td>FD3</td>
@@ -233,17 +233,22 @@ that the producer records the desired fact.</p>
 because a Linux build ships, and do not silently retire them or expand the
 Linux release scope without an explicit product decision.</p>
 <h3>AP1 — SDK/CLI parity audit, not a blanket missing-feature list</h3>
-<p>Reconcile every retained Python 0.2.8 CLI/keyboard journey and selected SDK
-integration with its actual Rust code path. Cover OpenAI, Anthropic,
-LangChain/LangGraph, Google ADK and Pydantic AI as applicable to the retained
-inventory. Record each row as <strong>implemented</strong>, <strong>test-only acceptance pending</strong>,
-<strong>confirmed missing feature</strong>, <strong>native evidence unavailable</strong>, or <strong>scope
-decision needed</strong>. Include the owner, source anchor and acceptance journey.</p>
-<p>Only confirmed missing behavior becomes a new FD development task. Passing
-selected SDK jobs on an older source is not complete instrumentation coverage;
-unexecuted tests are not evidence that implementation is absent. Complete this
-audit before claiming feature development or default cutover complete. No
-workflow is retired by this documentation update.</p>
+<p><strong>Audit completed 23 November 2026</strong> — see
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cli-parity-audit.md">the AP1 parity audit</a>. Every retained Python 0.2.8
+CLI entry point, cockpit keyboard journey and selected SDK integration now
+has a recorded disposition with source anchors: the parity table classifies
+each surface, the six previously unrecorded items have explicit dispositions,
+and all five selected SDK families have real CI jobs exercising a Rust path
+(current-head results remain Q7's to record).</p>
+<p>The audit's confirmed-missing inventory (Ctrl+P action palette, saved-task
+Brief/Decisions cockpit editors, Ctrl+R concurrent-edit reload, Workflow <code>h</code>
+history toggle, <code>task create --snapshot</code>, <code>task draft --workspace</code> and handoff
+receiver revalidation, remote receiver deployment) gates the B1/D3
+cutover-scope decision — it does not create development tasks by itself.
+Only that decision, or an explicit retirement, schedules them. No workflow is
+retired by the audit. Focused spot-verification confirmed the audit's key
+anchors (theme-only Ctrl+P, no <code>--snapshot</code> on <code>task create</code>, Draft editor
+surface, attention-native verbs).</p>
 <h3>Implemented code and qualification ownership</h3>
 <p>CF1 neutral Claude/Pi presence and admission-age retention, CF2 whole-session
 Review edits, CF3 adapter lifecycle, CF4 log failure investigation and CF5 exact
@@ -301,11 +306,15 @@ Workflow settings/retry/resume, retention, imports, tasks and scoped private
 Review. Do not reopen these as entirely absent features.</p>
 <p>Keep the following unresolved coverage explicit:</p>
 <ol>
-<li>Remaining provider/shape edit evidence beyond Codex. Whole-session paged
-Codex Review edit browsing is implemented in CF2. The exact Codex <code>e</code>
-Review/edit preview already supports paths, bounded diffs or contents under
-<code>codex.edit_detail</code>, with version-linked decision notes. Preserve those
-implemented guarantees while completing unsupported source/shape cases.</li>
+<li>Remaining provider/shape edit evidence beyond Codex and Claude. Claude
+private edit detail is implemented with a harness-generic operation
+contract and its own fingerprint domain; whole-session paged Codex Review
+edit browsing is implemented in CF2. The exact Codex <code>e</code> Review/edit
+preview already supports paths, bounded diffs or contents under
+<code>codex.edit_detail</code>, with version-linked decision notes. Pi, OpenCode and
+Kiro edit evidence and beyond-Codex MCP payload detail remain open.
+Preserve those implemented guarantees while completing unsupported
+source/shape cases.</li>
 <li>Source-specific MCP payload detail beyond the implemented current-grant,
 exact Codex MCP preview and linked-trace paths,
 including exact operation association, missing data and revoked access.</li>

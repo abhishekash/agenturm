@@ -1366,6 +1366,10 @@ pub(super) fn describe_observation(kind: &ObservationKind) -> (&'static str, Str
             "Worker declared",
             format!("Child worker {}", spawn.child_worker_id),
         ),
+        ObservationKind::WorkerLaunch(launch) => (
+            "Worker launched",
+            format!("Child worker {}", launch.child_worker_id),
+        ),
         ObservationKind::Message { role } => ("Message role", role.clone()),
         ObservationKind::Diagnostic { code, severity } => {
             ("Diagnostic", format!("{code} · {severity}"))
