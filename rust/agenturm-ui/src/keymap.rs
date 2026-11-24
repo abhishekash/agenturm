@@ -99,9 +99,41 @@ pub(crate) mod id {
     pub(crate) const MARK_REVIEWED: &str = "view.mark-reviewed";
     pub(crate) const COPY: &str = "view.copy";
     pub(crate) const EXPORT: &str = "view.export";
+    pub(crate) const REVIEW_REFRESH: &str = "review.refresh";
+    pub(crate) const REVIEW_CONTROLS: &str = "review.controls";
+    pub(crate) const REVIEW_SAVE_TASK: &str = "review.save-task";
+    pub(crate) const REVIEW_EXCERPT: &str = "review.excerpt";
+    pub(crate) const REVIEW_DRAFT: &str = "review.draft";
+    pub(crate) const REVIEW_GIT: &str = "review.git";
+    pub(crate) const REVIEW_MAP: &str = "review.map";
     pub(crate) const INTERNAL_REVIEWS: &str = "view.internal-reviews";
     pub(crate) const WORKFLOW: &str = "view.workflow";
+    pub(crate) const WORKFLOW_INCIDENTS: &str = "workflow.incidents";
+    pub(crate) const WORKFLOW_SEEN: &str = "workflow.seen";
+    pub(crate) const WORKFLOW_LOCATE: &str = "workflow.locate";
+    pub(crate) const WORKFLOW_RESUME: &str = "workflow.resume";
+    pub(crate) const WORKFLOW_RETRY: &str = "workflow.retry";
+    pub(crate) const WORKFLOW_SETTINGS: &str = "workflow.settings";
     pub(crate) const TASKS: &str = "view.tasks";
+    pub(crate) const TASK_SEARCH: &str = "task.search";
+    pub(crate) const TASK_BRIEF: &str = "task.brief";
+    pub(crate) const TASK_DECISIONS: &str = "task.decisions";
+    pub(crate) const TASK_DECISION_ADD: &str = "task.decision-add";
+    pub(crate) const TASK_DECISION_SUPERSEDE: &str = "task.decision-supersede";
+    pub(crate) const HANDOFF_PREVIEW: &str = "handoff.preview";
+    pub(crate) const HANDOFF_COPY: &str = "handoff.copy";
+    pub(crate) const EVIDENCE_FILTER: &str = "evidence.filter";
+    pub(crate) const EVIDENCE_HOME_END: &str = "evidence.home-end";
+    pub(crate) const EVIDENCE_PAGE: &str = "evidence.page";
+    pub(crate) const PROMPT_READ: &str = "prompt.read";
+    pub(crate) const PROMPT_OLDER: &str = "prompt.older";
+    pub(crate) const PROMPT_NEWER: &str = "prompt.newer";
+    pub(crate) const PROMPT_LATEST: &str = "prompt.latest";
+    pub(crate) const PROMPT_PRESENTATION: &str = "prompt.presentation";
+    pub(crate) const PROMPT_BACK: &str = "prompt.back";
+    pub(crate) const PROMPT_MAIN_SESSION: &str = "prompt.main-session";
+    pub(crate) const PROMPT_EARLIER_PAGE: &str = "prompt.earlier-page";
+    pub(crate) const PROMPT_RETRY: &str = "prompt.retry";
     pub(crate) const ATTENTION: &str = "session.attention";
     pub(crate) const MARK_SEEN: &str = "session.mark-seen";
     pub(crate) const REVIEW_FILTER: &str = "session.review-filter";
@@ -445,6 +477,30 @@ pub(crate) const ACTIONS: &[Action] = &[
         &[Context::CommandCenter, Context::History, Context::Workbench],
     ),
     action(
+        id::EVIDENCE_FILTER,
+        "/ filter · Esc clear",
+        "Evidence page filter",
+        "Apply every query word to the selected evidence table; the committed filter follows older and newer pages",
+        Group::Search,
+        &[Context::History],
+    ),
+    action(
+        id::EVIDENCE_HOME_END,
+        "Home / End",
+        "Evidence first or last",
+        "Select the first or last catalog series, point or visible evidence row",
+        Group::Page,
+        &[Context::History],
+    ),
+    action(
+        id::EVIDENCE_PAGE,
+        "PgUp / PgDn",
+        "Evidence page or detail scroll",
+        "Scroll the selected detail by one page, or step the retained investigation page stack",
+        Group::Page,
+        &[Context::History, Context::Investigation],
+    ),
+    action(
         id::REVIEW,
         "Ctrl+R / V",
         "Review recorded work",
@@ -459,6 +515,78 @@ pub(crate) const ACTIONS: &[Action] = &[
         "Read recorded requests for the selected session",
         Group::Review,
         &[Context::CommandCenter, Context::History],
+    ),
+    action(
+        id::PROMPT_READ,
+        "Enter / →",
+        "Read selected request",
+        "Read the selected request under the current grant; the navigator keeps its scope",
+        Group::Review,
+        &[Context::History],
+    ),
+    action(
+        id::PROMPT_OLDER,
+        "[",
+        "Earlier loaded request",
+        "Select the previous loaded request without scrolling the captured body",
+        Group::Review,
+        &[Context::History],
+    ),
+    action(
+        id::PROMPT_NEWER,
+        "]",
+        "Newer loaded request",
+        "Select the next loaded request without scrolling the captured body",
+        Group::Review,
+        &[Context::History],
+    ),
+    action(
+        id::PROMPT_LATEST,
+        "l",
+        "Latest loaded request",
+        "Select the newest loaded request in the exact source/session/worker scope",
+        Group::Review,
+        &[Context::History],
+    ),
+    action(
+        id::PROMPT_PRESENTATION,
+        "z",
+        "Readable or original",
+        "Toggle the stored presentation for the selected request; unnormalized captures show the readable form unavailable",
+        Group::Review,
+        &[Context::History],
+    ),
+    action(
+        id::PROMPT_BACK,
+        "Esc / ←",
+        "Prompt back one layer",
+        "Chooser then reader then Prompts section then the roster",
+        Group::Review,
+        &[Context::History],
+    ),
+    action(
+        id::PROMPT_MAIN_SESSION,
+        "m",
+        "Main session prompts",
+        "Open the verified main session only when the worker anchor proves it belongs to this session",
+        Group::Review,
+        &[Context::History],
+    ),
+    action(
+        id::PROMPT_EARLIER_PAGE,
+        "Tab to Earlier prompts, Enter",
+        "Load earlier prompts",
+        "Load the next retained page; the adapter cap is disclosed and never presented as a complete transcript",
+        Group::Review,
+        &[Context::History],
+    ),
+    action(
+        id::PROMPT_RETRY,
+        "R",
+        "Retry prompt history",
+        "Re-issue the current prompt page at the same exact scope and snapshot",
+        Group::Review,
+        &[Context::History],
     ),
     action(
         id::TRACES,
@@ -536,17 +664,73 @@ pub(crate) const ACTIONS: &[Action] = &[
         id::COPY,
         "c / Ctrl+C",
         "Copy selected view",
-        "Copy the loaded metadata view; Ctrl+C uses the same copy when focus permits",
+        "Copy the selected evidence row, loaded view or frozen review receipt; Ctrl+C uses the same public copy when focus permits",
         Group::Evidence,
-        &[Context::CommandCenter, Context::History, Context::Workbench],
+        &[Context::CommandCenter, Context::History],
     ),
     action(
         id::EXPORT,
         "x",
         "Export selected view",
-        "Prepare a metadata-only export of the loaded view",
+        "Prepare a metadata-only export of the selected row, loaded view or frozen review receipt",
         Group::Evidence,
-        &[Context::CommandCenter, Context::History, Context::Workbench],
+        &[Context::CommandCenter, Context::History],
+    ),
+    action(
+        id::REVIEW_REFRESH,
+        "R",
+        "Re-read this review",
+        "Re-read the same exact scope and pinned snapshot; late responses for a closed review are discarded",
+        Group::Review,
+        &[Context::History],
+    ),
+    action(
+        id::REVIEW_CONTROLS,
+        "Tab / Shift+Tab",
+        "Review controls",
+        "Move through Earlier, Refresh, Copy, Export, Save task, Excerpt, Draft and Back; Enter or Space activates",
+        Group::Review,
+        &[Context::History],
+    ),
+    action(
+        id::REVIEW_SAVE_TASK,
+        "s",
+        "Save review as task",
+        "Create a bounded task linked to this exact evidence version and open its editor",
+        Group::Review,
+        &[Context::History],
+    ),
+    action(
+        id::REVIEW_EXCERPT,
+        "o",
+        "Review excerpts",
+        "Choose one recorded check, edit or error excerpt for a task draft",
+        Group::Review,
+        &[Context::History],
+    ),
+    action(
+        id::REVIEW_DRAFT,
+        "d",
+        "Draft task from review",
+        "Open a linked task draft without saving the receipt text",
+        Group::Review,
+        &[Context::History],
+    ),
+    action(
+        id::REVIEW_GIT,
+        "g",
+        "Review Git capture",
+        "Capture a verified workspace snapshot for this review when a workspace binding is available",
+        Group::Review,
+        &[Context::History],
+    ),
+    action(
+        id::REVIEW_MAP,
+        "m",
+        "Map review workspace",
+        "Bind one verified checkout to this review before capturing Git",
+        Group::Review,
+        &[Context::History],
     ),
     action(
         id::INTERNAL_REVIEWS,
@@ -571,6 +755,110 @@ pub(crate) const ACTIONS: &[Action] = &[
         "Open, continue or prepare a saved task handoff",
         Group::Workflow,
         &[Context::CommandCenter, Context::History],
+    ),
+    action(
+        id::WORKFLOW_INCIDENTS,
+        "Tab",
+        "Workflow incidents",
+        "Open the exact delivery-incident inventory without changing the request selection",
+        Group::Workflow,
+        &[Context::CommandCenter, Context::Workbench],
+    ),
+    action(
+        id::WORKFLOW_SEEN,
+        "r / s",
+        "Mark request seen",
+        "Acknowledge only this exact pending request; the recorded approval state is unchanged",
+        Group::Workflow,
+        &[Context::Workbench],
+    ),
+    action(
+        id::WORKFLOW_LOCATE,
+        "l",
+        "Locate request",
+        "Show the verified local or configured cross-host attach route, or the exact refusal",
+        Group::Workflow,
+        &[Context::Workbench],
+    ),
+    action(
+        id::WORKFLOW_RESUME,
+        "c",
+        "Copy resume command",
+        "Copy the verified native resume command preview; never execute it",
+        Group::Workflow,
+        &[Context::Workbench],
+    ),
+    action(
+        id::WORKFLOW_RETRY,
+        "T",
+        "Retry delivery",
+        "Retry only the exact failed or unavailable delivery attempt and authority",
+        Group::Workflow,
+        &[Context::Workbench],
+    ),
+    action(
+        id::WORKFLOW_SETTINGS,
+        "S",
+        "Workflow settings",
+        "Edit desktop alerts, thresholds and snooze; a dirty draft arms a discard confirmation",
+        Group::Workflow,
+        &[Context::Workbench],
+    ),
+    action(
+        id::TASK_SEARCH,
+        "/",
+        "Search saved tasks",
+        "Search the loaded task page by title, note, workspace or exact linked run; page-local only",
+        Group::Search,
+        &[Context::CommandCenter, Context::Workbench],
+    ),
+    action(
+        id::TASK_BRIEF,
+        "p",
+        "Task brief",
+        "Edit the structured task brief fields with the expected revision",
+        Group::Workflow,
+        &[Context::Workbench],
+    ),
+    action(
+        id::TASK_DECISIONS,
+        "v",
+        "Task decisions",
+        "Choose a decision version or add the next accepted/rejected decision with the expected revision",
+        Group::Workflow,
+        &[Context::Workbench],
+    ),
+    action(
+        id::TASK_DECISION_ADD,
+        "n",
+        "Add decision",
+        "Add a decision version to the selected saved task",
+        Group::Workflow,
+        &[Context::Workbench],
+    ),
+    action(
+        id::TASK_DECISION_SUPERSEDE,
+        "s",
+        "Supersede decision",
+        "Supersede one current decision in this task while preserving prior versions",
+        Group::Workflow,
+        &[Context::Workbench],
+    ),
+    action(
+        id::HANDOFF_PREVIEW,
+        "x",
+        "Preview handoff",
+        "Preview, copy or export one saved handoff; the panel stays open when the destination already exists",
+        Group::Workflow,
+        &[Context::Workbench],
+    ),
+    action(
+        id::HANDOFF_COPY,
+        "c",
+        "Copy handoff preview",
+        "Copy the rendered handoff preview without writing a file",
+        Group::Workflow,
+        &[Context::Workbench],
     ),
     action(
         id::ATTENTION,
@@ -824,6 +1112,9 @@ pub(crate) enum Focus {
     Investigation,
     ExportForm,
     PrivatePrompt,
+    PromptNavigator,
+    PromptChooser,
+    PromptReader,
     Palette,
     Help,
 }
@@ -846,7 +1137,7 @@ impl Focus {
     pub(crate) fn chooser(self) -> bool {
         matches!(
             self,
-            Self::SessionChooser | Self::HistoryChooser | Self::Palette
+            Self::SessionChooser | Self::HistoryChooser | Self::Palette | Self::PromptChooser
         )
     }
 
@@ -857,6 +1148,12 @@ impl Focus {
             self,
             Self::CommandCenter | Self::HistoryTable | Self::EvidenceInspection
         )
+    }
+
+    /// A prompt reader owns Escape and never yields a granted body to help or
+    /// global navigation. It has the same precedence as `PrivatePrompt`.
+    pub(crate) fn prompt_reader(self) -> bool {
+        matches!(self, Self::PromptReader | Self::PrivatePrompt)
     }
 }
 

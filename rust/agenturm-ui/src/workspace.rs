@@ -109,6 +109,8 @@ pub enum HistorySelection {
     Session(RecordedSession, SessionView),
     ReviewEdits(Box<RecordedSession>),
     Turn(RecordedTurn),
+    /// A Review route pinned to one exact recorded turn and worker.
+    TurnReview(Box<RecordedTurn>),
     McpSearch {
         scope: McpSearchScope,
         query: String,
@@ -798,6 +800,18 @@ fn plain_code(code: KeyCode) -> event::KeyEvent {
 const CACHE_LIMIT: usize = 4;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(3);
 
+/// Deterministic Review control order for Tab / Shift+Tab and Enter/Space.
+const REVIEW_CONTROLS: &[(&str, char)] = &[
+    ("Earlier", ']'),
+    ("Refresh", 'R'),
+    ("Copy", 'c'),
+    ("Export", 'x'),
+    ("Save task", 's'),
+    ("Excerpt", 'o'),
+    ("Draft", 'd'),
+    ("Back", '\u{0}'),
+];
+
 struct HistoryView {
     selection: HistorySelection,
     page: PageView,
@@ -895,6 +909,9 @@ struct Workspace {
     prompt_receiver: Option<PromptReceiver>,
     queued_prompt: Option<PromptEntry>,
     prompt: Option<PromptScreen>,
+    prompt_nav: Option<prompt::PromptNavigator>,
+    prompt_read_epoch: Option<u64>,
+    prompt_read_key: Option<(String, u32)>,
     redact_then_acknowledge: Option<mpsc::Sender<()>>,
     pending: Option<Change>,
     deferred_request: Option<(WorkspaceRequest, Change)>,
@@ -904,6 +921,7 @@ struct Workspace {
     help: help::Help,
     inspector: inspector::State,
     theme_request: bool,
+    pending_task_search: bool,
     generation: u64,
     pending_generation: Option<u64>,
 }
@@ -923,6 +941,9 @@ impl Workspace {
             prompt_receiver: None,
             queued_prompt: None,
             prompt: None,
+            prompt_nav: None,
+            prompt_read_epoch: None,
+            prompt_read_key: None,
             redact_then_acknowledge: None,
             pending: None,
             deferred_request: None,
@@ -932,6 +953,7 @@ impl Workspace {
             help: help::Help::default(),
             inspector: inspector::State::default(),
             theme_request: false,
+            pending_task_search: false,
             generation: 0,
             pending_generation: None,
         }
@@ -1215,11 +1237,54 @@ impl Workspace {
                         .into(),
                 );
             }
+            (
+                Change::Work(_),
+                Ok(WorkspaceResponse::Work(WorkResult::ReviewDocument { text, scope, .. })),
+            ) => {
+                if let Some(form) = self.view_io.review_form.take() {
+                    self.message = Some(format!(
+                        "Saved review.md, review.html and review.json to {} · {scope}",
+                        form.directory
+                    ));
+                } else {
+                    match crate::loaded_view::clipboard_request(&text) {
+                        Ok(request) => {
+                            self.view_io.clipboard = Some(request);
+                            self.message = Some(format!(
+                                "Review receipt copied · {scope} · terminal permission/support required"
+                            ));
+                        }
+                        Err(error) => self.message = Some(error),
+                    }
+                }
+            }
+            (
+                Change::Work(Some(anchor)),
+                Ok(WorkspaceResponse::Work(WorkResult::Prompts(entries))),
+            ) => {
+                let scope = prompt::PromptScope::session(&anchor, prompt::PromptCapture::Enabled);
+                let mut nav = prompt::PromptNavigator::new(scope);
+                let token = nav.begin_load();
+                let requests = entries
+                    .iter()
+                    .map(prompt::PromptRequest::from)
+                    .collect::<Vec<_>>();
+                nav.accept_page(token, requests, prompt::PromptPageMeta::default());
+                self.prompt_nav = Some(nav);
+                self.prompt_read_epoch = None;
+                self.work = None;
+                self.message = None;
+            }
             (Change::Work(target), Ok(WorkspaceResponse::Work(data))) => {
                 if let Some(work) = &mut self.work {
                     work.apply(data);
                 } else {
                     self.work = Some(Workbench::new(data, target));
+                }
+                if std::mem::take(&mut self.pending_task_search)
+                    && let Some(work) = &mut self.work
+                {
+                    work.start_task_search();
                 }
             }
             _ => self.message = Some("History reader returned an unexpected response".into()),
@@ -1247,6 +1312,11 @@ impl Workspace {
     }
 
     fn open(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, selection: HistorySelection) {
+        if self.prompt_nav.is_some() {
+            self.prompt_nav = None;
+            self.prompt_read_epoch = None;
+            self.prompt_read_key = None;
+        }
         if let HistorySelection::Session(_, view) = &selection
             && inspector::Tab::from_view(*view).is_some()
         {
@@ -1262,6 +1332,9 @@ impl Workspace {
     }
 
     fn navigate(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, destination: Destination) {
+        self.prompt_nav = None;
+        self.prompt_read_epoch = None;
+        self.prompt_read_key = None;
         let view = match destination {
             Destination::Agents => {
                 if self.pending.is_none() {
@@ -1498,6 +1571,109 @@ impl Workspace {
         self.prompt_receiver = Some(receiver);
     }
 
+    /// Routes one key to the integrated prompt navigator. Reads reuse the
+    /// existing grant-checked `RevealPrompt` path; the navigator only stores
+    /// identifiers and accepts a delivery for the exact selected request.
+    fn prompt_nav_key(
+        &mut self,
+        sender: &mpsc::Sender<WorkspaceRequest>,
+        key: event::KeyEvent,
+    ) -> bool {
+        let Some(nav) = &mut self.prompt_nav else {
+            return false;
+        };
+        let code = keymap::plain(key).unwrap_or(KeyCode::Null);
+        match nav.key(code) {
+            prompt::PromptInput::Ignored | prompt::PromptInput::Handled => true,
+            prompt::PromptInput::NoRequests => {
+                self.message = Some(nav.status_line());
+                true
+            }
+            prompt::PromptInput::ReaderClosed => {
+                self.prompt_read_epoch = None;
+                self.prompt_read_key = None;
+                self.prompt_receiver = None;
+                true
+            }
+            prompt::PromptInput::Back => {
+                self.prompt_nav = None;
+                self.prompt_read_epoch = None;
+                self.prompt_read_key = None;
+                self.prompt_receiver = None;
+                self.generation = self.generation.wrapping_add(1);
+                self.message = Some("Prompts section · Esc returns to the roster".into());
+                true
+            }
+            prompt::PromptInput::LoadEarlier => {
+                self.message =
+                    Some("Earlier prompts are page-local within the retained window".into());
+                true
+            }
+            prompt::PromptInput::Retry => {
+                let Some(nav) = &self.prompt_nav else {
+                    return true;
+                };
+                let scope = nav.scope();
+                let anchor = WorkAnchor {
+                    source: scope.source.clone(),
+                    session: scope.session.clone(),
+                    worker: scope.worker.clone(),
+                    turn: scope.turn.clone(),
+                };
+                self.prompt_nav = None;
+                self.request(
+                    sender,
+                    WorkspaceRequest::Work(WorkCommand::Prompts(anchor.clone())),
+                    Change::Work(Some(anchor)),
+                );
+                true
+            }
+            prompt::PromptInput::MainSession(anchor) => {
+                let exists = self.agents.catalog.as_ref().is_some_and(|catalog| {
+                    catalog.sessions.iter().any(|row| {
+                        row.harness_id == anchor.source && row.session_id == anchor.session
+                    })
+                });
+                if !exists {
+                    if let Some(nav) = &mut self.prompt_nav {
+                        nav.unavailable(
+                            "The verified main session is no longer in this roster page",
+                        );
+                    }
+                    return true;
+                }
+                self.prompt_nav = None;
+                self.request(
+                    sender,
+                    WorkspaceRequest::Work(WorkCommand::Prompts(anchor.clone())),
+                    Change::Work(Some(anchor)),
+                );
+                true
+            }
+            prompt::PromptInput::Read {
+                entry,
+                original,
+                epoch,
+            } => {
+                if self.pending.is_some() || self.prompt_receiver.is_some() {
+                    return true;
+                }
+                let key = (entry.event_id.clone(), entry.revision);
+                let (delivery, receiver) = prompt_channel(PromptKind::User);
+                self.request(
+                    sender,
+                    WorkspaceRequest::Work(WorkCommand::RevealPrompt(Box::new(entry), delivery)),
+                    Change::Work(None),
+                );
+                self.prompt_receiver = Some(receiver);
+                self.prompt_read_epoch = Some(epoch);
+                self.prompt_read_key = Some(key);
+                let _ = original;
+                true
+            }
+        }
+    }
+
     fn dismiss_prompt(&mut self) -> bool {
         let Some(mut prompt) = self.prompt.take() else {
             return false;
@@ -1511,6 +1687,12 @@ impl Workspace {
             .as_ref()
             .is_some_and(|prompt| prompt.expired(now))
             && self.dismiss_prompt()
+    }
+
+    fn expire_prompt_nav(&mut self, now: Instant) -> bool {
+        self.prompt_nav
+            .as_mut()
+            .is_some_and(|navigator| navigator.expire(now))
     }
 
     fn acknowledge_redaction(&mut self) {
@@ -1564,6 +1746,7 @@ impl Workspace {
                     Some(McpSearchScope::Session(Box::new(row.clone())))
                 }
                 HistorySelection::Turn(row) => Some(McpSearchScope::Turn(Box::new(row.clone()))),
+                HistorySelection::TurnReview(row) => Some(McpSearchScope::Turn(row.clone())),
                 HistorySelection::McpSearch { scope, .. } => Some(scope.clone()),
                 HistorySelection::McpTraces { .. } | HistorySelection::ReviewEdits(_) => None,
             };
@@ -1595,12 +1778,18 @@ impl Workspace {
                 }
             }
         }
+        if key == KeyCode::Char('/') || view.page.ui.evidence_filter_editing() {
+            return view.page.ui.evidence_filter_key(key);
+        }
         false
     }
 
     fn key(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, key: event::KeyEvent) -> bool {
         if keymap::interrupt(key) {
-            if self.prompt.is_some() || self.help.is_open() || self.palette.is_open() {
+            if self.focus().prompt_reader()
+                || self.help.is_open()
+                || self.palette.is_open()
+            {
                 return true;
             }
             // Public evidence focus copies; editors and private content keep
@@ -1658,6 +1847,9 @@ impl Workspace {
         }
         if self.metadata_filter_key(sender, code) {
             return false;
+        }
+        if let Some(quit) = self.review_io_key(sender, key) {
+            return quit;
         }
         if self.investigation.is_none()
             && let Some(quit) = self.view_io_key(sender, key)
@@ -1779,6 +1971,15 @@ impl Workspace {
                     self.prompt_receiver = Some(receiver);
                 }
                 WorkInput::RevealEvaluation(_) => {}
+                WorkInput::Copy(text) => match crate::loaded_view::clipboard_request(&text) {
+                    Ok(request) => {
+                        self.view_io.clipboard = Some(request);
+                        self.message = Some(
+                            "Clipboard request sent · terminal permission/support required".into(),
+                        );
+                    }
+                    Err(error) => self.message = Some(error),
+                },
                 WorkInput::None => {}
                 WorkInput::Back => {
                     self.discard_work_result = self.pending.as_ref().is_some_and(Change::is_work);
@@ -1826,6 +2027,10 @@ impl Workspace {
                     self.request(sender, WorkspaceRequest::Work(command), Change::Work(None))
                 }
             }
+            return false;
+        }
+        if self.prompt_nav.is_some() {
+            let _ = self.prompt_nav_key(sender, key);
             return false;
         }
         if key.code == KeyCode::Char('f') && key.modifiers == KeyModifiers::CONTROL {
@@ -2015,6 +2220,34 @@ impl Workspace {
             return false;
         }
 
+        if self.review_controls_focused() {
+            let focused = self
+                .history
+                .last()
+                .is_some_and(|view| view.page.review_control.is_some());
+            match code {
+                KeyCode::Tab => {
+                    self.move_review_control(true);
+                    return false;
+                }
+                KeyCode::BackTab => {
+                    self.move_review_control(false);
+                    return false;
+                }
+                KeyCode::Enter | KeyCode::Char(' ') if focused => {
+                    return self.activate_review_control(sender);
+                }
+                KeyCode::Esc if focused => {
+                    if let Some(view) = self.history.last_mut() {
+                        view.page.review_control = None;
+                    }
+                    self.message = Some("Review · Esc again returns one layer".into());
+                    return false;
+                }
+                _ => {}
+            }
+        }
+
         if self.inspector_key(sender, key) {
             return false;
         }
@@ -2032,9 +2265,17 @@ impl Workspace {
             return false;
         }
         if keymap::review(key) {
-            if let HistorySelection::Session(session, _) = &view.selection {
-                let selection = HistorySelection::Session(session.clone(), SessionView::Review);
-                self.open(sender, selection);
+            match &view.selection {
+                HistorySelection::Session(session, _) => {
+                    let selection =
+                        HistorySelection::Session(session.clone(), SessionView::Review);
+                    self.open(sender, selection);
+                }
+                HistorySelection::Turn(turn) => {
+                    let selection = HistorySelection::TurnReview(Box::new(turn.clone()));
+                    self.open(sender, selection);
+                }
+                _ => {}
             }
             return false;
         }
@@ -2124,7 +2365,9 @@ impl Workspace {
             return false;
         }
         if let Some(table) = view.page.operation_table.active(&view.page.ui) {
-            if code == KeyCode::Char('t') && table.is_mcp() {
+            if code == KeyCode::Char('t')
+                && table.selected_row().is_some_and(|row| row.mcp_event.is_some())
+            {
                 if self.pending.is_none() {
                     if let Some((source, event_id, revision)) =
                         table.selected_row().and_then(|row| row.mcp_event.as_ref())
@@ -2256,6 +2499,12 @@ impl Workspace {
                         worker: turn.worker_id.clone(),
                         turn: Some(turn.turn_id.clone()),
                     }),
+                    HistorySelection::TurnReview(turn) => Some(WorkAnchor {
+                        source: turn.harness_id.clone(),
+                        session: turn.session_id.clone(),
+                        worker: turn.worker_id.clone(),
+                        turn: Some(turn.turn_id.clone()),
+                    }),
                     HistorySelection::McpSearch { scope, .. } => scope.anchor(),
                     HistorySelection::All(_)
                     | HistorySelection::McpTraces { .. }
@@ -2365,6 +2614,12 @@ impl Workspace {
                         worker: row.worker_id.clone(),
                         turn: Some(row.turn_id.clone()),
                     }),
+                    HistorySelection::TurnReview(row) => Some(WorkAnchor {
+                        source: row.harness_id.clone(),
+                        session: row.session_id.clone(),
+                        worker: row.worker_id.clone(),
+                        turn: Some(row.turn_id.clone()),
+                    }),
                 };
                 (
                     owner,
@@ -2430,6 +2685,13 @@ impl Workspace {
         if self.prompt.is_some() {
             return keymap::Focus::PrivatePrompt;
         }
+        if let Some(nav) = &self.prompt_nav {
+            return match nav.focus() {
+                prompt::PromptFocus::Reader => keymap::Focus::PromptReader,
+                prompt::PromptFocus::Chooser => keymap::Focus::PromptChooser,
+                prompt::PromptFocus::Navigator => keymap::Focus::PromptNavigator,
+            };
+        }
         if self.view_io.form.is_some() {
             return keymap::Focus::ExportForm;
         }
@@ -2472,6 +2734,7 @@ impl Workspace {
                     view.active_analytics_mut(),
                     Some(analytics::HistoryAnalytics::Metrics(browser)) if browser.editing_filter()
                 )
+                || view.page.ui.evidence_filter_editing()
             {
                 return keymap::Focus::HistorySearch;
             }
@@ -2498,6 +2761,12 @@ impl Workspace {
                 worker: row.worker_id.clone(),
                 turn: Some(row.turn_id.clone()),
             }),
+            Some(HistorySelection::TurnReview(row)) => Some(WorkAnchor {
+                source: row.harness_id.clone(),
+                session: row.session_id.clone(),
+                worker: row.worker_id.clone(),
+                turn: Some(row.turn_id.clone()),
+            }),
             Some(HistorySelection::McpSearch { scope, .. }) => scope.anchor(),
             Some(
                 HistorySelection::All(_)
@@ -2508,8 +2777,81 @@ impl Workspace {
         }
     }
 
+    /// Exact Review scope for copy/export/save. The shell never builds a
+    /// provider identity; the anchor comes from the selected recorded row.
+    fn review_anchor(&self) -> Option<WorkAnchor> {
+        match self.history.last().map(|view| &view.selection) {
+            Some(HistorySelection::Session(row, SessionView::Review)) => {
+                Some(WorkAnchor::from(row))
+            }
+            Some(HistorySelection::TurnReview(turn)) => Some(WorkAnchor {
+                source: turn.harness_id.clone(),
+                session: turn.session_id.clone(),
+                worker: turn.worker_id.clone(),
+                turn: Some(turn.turn_id.clone()),
+            }),
+            _ => None,
+        }
+    }
+
+    fn review_controls_focused(&self) -> bool {
+        self.history
+            .last()
+            .is_some_and(|view| view.page.reviewing() || matches!(view.selection, HistorySelection::TurnReview(_)))
+    }
+
+    fn review_control_count(&self) -> usize {
+        REVIEW_CONTROLS.len()
+    }
+
+    fn move_review_control(&mut self, forward: bool) {
+        let count = self.review_control_count();
+        if count == 0 {
+            return;
+        }
+        let Some(view) = self.history.last_mut() else {
+            return;
+        };
+        let next = match view.page.review_control {
+            None if forward => 0,
+            None => count - 1,
+            Some(current) if forward => (current + 1).min(count - 1),
+            Some(current) => current.saturating_sub(1),
+        };
+        view.page.review_control = Some(next);
+        self.message = Some(format!(
+            "Review controls · {} · Enter or Space activates",
+            REVIEW_CONTROLS[next].0
+        ));
+    }
+
+    fn activate_review_control(&mut self, sender: &mpsc::Sender<WorkspaceRequest>) -> bool {
+        let Some(view) = self.history.last() else {
+            return false;
+        };
+        let Some(index) = view.page.review_control else {
+            return false;
+        };
+        let key = REVIEW_CONTROLS.get(index).map(|(_, key)| *key);
+        eprintln!("activate review control {index} key {key:?}");
+        self.history
+            .last_mut()
+            .expect("history exists")
+            .page
+            .review_control = None;
+        match key {
+            Some(']') => self.send_key(sender, plain_code(keymap::OLDER)),
+            Some('\u{0}') => self.send_key(sender, plain_code(KeyCode::Esc)),
+            Some(key) => self.send_key(sender, plain_key(key)),
+            None => false,
+        }
+    }
+
     fn help_available(&mut self, key: event::KeyEvent) -> bool {
         if self.prompt.is_some() {
+            return false;
+        }
+        if self.prompt_nav.is_some() && self.focus() == keymap::Focus::PromptReader {
             return false;
         }
         if key.code == KeyCode::F(1) {
@@ -2571,14 +2913,51 @@ impl Workspace {
                     );
                 }
             }
+            if let Some(nav) = &self.prompt_nav {
+                let scope = nav.scope();
+                current.push(format!(
+                    "Prompts · {} / {} · worker {} · turn {}",
+                    visible_text(&scope.source),
+                    visible_text(&scope.session),
+                    scope.worker.as_deref().unwrap_or("session scope"),
+                    scope.turn.as_deref().unwrap_or("all recorded turns"),
+                ));
+                current.push(format!("Prompt status · {}", nav.status_line()));
+                current.push(
+                    "Prompt Escape order: chooser → reader → Prompts section → roster".into(),
+                );
+            }
             if view.page.ui.in_turn {
                 current.push("Recorded turn scope · Esc returns to the containing page".into());
             }
             if view.page.ui.turn_available {
                 current.push("T selects one recorded turn from this page".into());
             }
-            if view.page.reviewing() {
-                current.push("Review view: y acknowledge · n decisions · e edits".into());
+            if view.page.reviewing() || matches!(view.selection, HistorySelection::TurnReview(_)) {
+                current.push(
+                    "Review actions: c copy receipt · x export · s save task · o excerpts · d draft · R re-read · Tab controls · y acknowledge · n decisions · e edits"
+                        .into(),
+                );
+                current.push(
+                    "Review Git capture and workspace mapping need a verified workspace binding; the shell refuses without one"
+                        .into(),
+                );
+                if view.page.ui.selected_title().is_some() {
+                    current.push(
+                        "Review escapes one layer: excerpt chooser → edit list → Review → inspector/roster"
+                            .into(),
+                    );
+                }
+            }
+            if view.page.ui.selected_evidence().is_some() {
+                current.push(
+                    "Evidence filter · / edits the page-local query · Enter applies · Esc clears; the committed filter follows older/newer pages"
+                        .into(),
+                );
+                current.push(
+                    "Evidence keys · Home/End select first/last · PgUp/PgDn scroll detail · Enter inspects · t follows a linked trace where the row carries one"
+                        .into(),
+                );
             }
             if telemetry_details(view) {
                 current.push("d opens the retained captured text where authorized".into());
@@ -2595,7 +2974,8 @@ impl Workspace {
                 current.push("M opens retained MCP payloads for this page".into());
             }
         }
-        if self.work.is_some() {
+        if let Some(work) = &self.work {
+            current.extend(work.context_help());
             current.push(
                 "Workflow and saved-task editors keep unsaved drafts while help is open".into(),
             );
@@ -2734,6 +3114,53 @@ impl Workspace {
                 Some(HistorySelection::Session(_, _))
             ))
             .then_some("Open a session inspector first"),
+            keymap::id::REVIEW_REFRESH
+            | keymap::id::REVIEW_CONTROLS
+            | keymap::id::REVIEW_SAVE_TASK
+            | keymap::id::REVIEW_EXCERPT
+            | keymap::id::REVIEW_DRAFT
+            | keymap::id::REVIEW_GIT
+            | keymap::id::REVIEW_MAP => (!self.review_controls_focused())
+                .then_some("Open a session or turn Review first"),
+            keymap::id::WORKFLOW_INCIDENTS => None,
+            keymap::id::WORKFLOW_SEEN
+            | keymap::id::WORKFLOW_LOCATE
+            | keymap::id::WORKFLOW_RESUME
+            | keymap::id::WORKFLOW_RETRY
+            | keymap::id::WORKFLOW_SETTINGS => (!self
+                .work
+                .as_ref()
+                .is_some_and(Workbench::workflow_visible))
+            .then_some("Open the Workflow inbox first"),
+            keymap::id::TASK_BRIEF
+            | keymap::id::TASK_DECISIONS
+            | keymap::id::TASK_DECISION_ADD
+            | keymap::id::TASK_DECISION_SUPERSEDE => (!self
+                .work
+                .as_ref()
+                .is_some_and(Workbench::tasks_visible))
+            .then_some("Open Saved tasks first"),
+            keymap::id::HANDOFF_PREVIEW | keymap::id::HANDOFF_COPY => (!self
+                .work
+                .as_ref()
+                .is_some_and(Workbench::handoffs_visible))
+            .then_some("Open Handoffs first"),
+            keymap::id::TASK_SEARCH => None,
+            keymap::id::PROMPT_READ
+            | keymap::id::PROMPT_OLDER
+            | keymap::id::PROMPT_NEWER
+            | keymap::id::PROMPT_LATEST
+            | keymap::id::PROMPT_PRESENTATION
+            | keymap::id::PROMPT_BACK
+            | keymap::id::PROMPT_MAIN_SESSION
+            | keymap::id::PROMPT_EARLIER_PAGE
+            | keymap::id::PROMPT_RETRY => (self.prompt_nav.is_none())
+                .then_some("Open the inspector Prompts section first"),
+            keymap::id::EVIDENCE_FILTER
+            | keymap::id::EVIDENCE_HOME_END
+            | keymap::id::EVIDENCE_PAGE => {
+                (!history).then_some("Open a retained evidence page first")
+            }
             keymap::id::SEARCH => {
                 let focus = self.focus();
                 (focus.text_entry() || focus.chooser())
@@ -3043,6 +3470,78 @@ impl Workspace {
                     event::KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL),
                 );
             }
+            keymap::id::REVIEW_REFRESH => return self.send_key(sender, plain_key('R')),
+            keymap::id::REVIEW_CONTROLS => {
+                if let Some(view) = self.history.last_mut()
+                    && (view.page.reviewing()
+                        || matches!(view.selection, HistorySelection::TurnReview(_)))
+                {
+                    view.page.review_control = Some(0);
+                    self.message = Some(format!(
+                        "Review controls · {} · Tab moves · Enter activates",
+                        REVIEW_CONTROLS[0].0
+                    ));
+                } else {
+                    self.message = Some("Open a Review to use its control order".into());
+                }
+            }
+            keymap::id::REVIEW_SAVE_TASK => return self.send_key(sender, plain_key('s')),
+            keymap::id::REVIEW_EXCERPT => return self.send_key(sender, plain_key('o')),
+            keymap::id::REVIEW_DRAFT => return self.send_key(sender, plain_key('d')),
+            keymap::id::REVIEW_GIT => return self.send_key(sender, plain_key('g')),
+            keymap::id::REVIEW_MAP => return self.send_key(sender, plain_key('m')),
+            keymap::id::WORKFLOW_INCIDENTS => {
+                if self.work.is_some() {
+                    return self.send_key(sender, plain_code(KeyCode::Tab));
+                }
+                self.request(
+                    sender,
+                    WorkspaceRequest::Work(WorkCommand::WorkflowAlerts),
+                    Change::Work(None),
+                );
+            }
+            keymap::id::WORKFLOW_SEEN => return self.send_key(sender, plain_key('r')),
+            keymap::id::WORKFLOW_LOCATE => return self.send_key(sender, plain_key('l')),
+            keymap::id::WORKFLOW_RESUME => return self.send_key(sender, plain_key('c')),
+            keymap::id::WORKFLOW_RETRY => return self.send_key(sender, plain_key('T')),
+            keymap::id::WORKFLOW_SETTINGS => return self.send_key(sender, plain_key('S')),
+            keymap::id::TASK_SEARCH => {
+                if self.work.is_some() {
+                    return self.send_key(sender, plain_key('/'));
+                }
+                self.pending_task_search = true;
+                self.request(
+                    sender,
+                    WorkspaceRequest::Work(WorkCommand::Tasks(None)),
+                    Change::Work(None),
+                );
+            }
+            keymap::id::TASK_BRIEF => return self.send_key(sender, plain_key('p')),
+            keymap::id::TASK_DECISIONS => return self.send_key(sender, plain_key('v')),
+            keymap::id::TASK_DECISION_ADD => return self.send_key(sender, plain_key('n')),
+            keymap::id::TASK_DECISION_SUPERSEDE => return self.send_key(sender, plain_key('s')),
+            keymap::id::HANDOFF_PREVIEW => return self.send_key(sender, plain_key('x')),
+            keymap::id::HANDOFF_COPY => return self.send_key(sender, plain_key('c')),
+            keymap::id::EVIDENCE_FILTER
+            | keymap::id::EVIDENCE_HOME_END
+            | keymap::id::EVIDENCE_PAGE => return self.send_key(sender, plain_key('/')),
+            keymap::id::PROMPT_READ => {
+                return self.send_key(sender, plain_code(KeyCode::Enter));
+            }
+            keymap::id::PROMPT_OLDER => {
+                return self.send_key(sender, plain_code(keymap::NEWER));
+            }
+            keymap::id::PROMPT_NEWER => {
+                return self.send_key(sender, plain_code(keymap::OLDER));
+            }
+            keymap::id::PROMPT_LATEST => return self.send_key(sender, plain_code(keymap::LATEST)),
+            keymap::id::PROMPT_PRESENTATION => return self.send_key(sender, plain_key('z')),
+            keymap::id::PROMPT_BACK => return self.send_key(sender, plain_code(KeyCode::Esc)),
+            keymap::id::PROMPT_MAIN_SESSION => return self.send_key(sender, plain_key('m')),
+            keymap::id::PROMPT_EARLIER_PAGE => {
+                return self.send_key(sender, plain_code(KeyCode::Tab));
+            }
+            keymap::id::PROMPT_RETRY => return self.send_key(sender, plain_key('R')),
             keymap::id::PROMPTS => return self.send_key(sender, plain_key('P')),
             keymap::id::TRACES => return self.send_key(sender, plain_key('t')),
             keymap::id::TURN => return self.send_key(sender, plain_key('T')),
@@ -3342,7 +3841,30 @@ pub fn run_workspace_with_stop(
                         .take()
                         .expect("prompt delivery arrived");
                     if let Ok(text) = serde_json::from_slice::<String>(&bytes) {
-                        workspace.prompt = Some(PromptScreen::new(text, receiver, Instant::now()));
+                        if let (Some(navigator), Some(epoch), Some(key)) = (
+                            &mut workspace.prompt_nav,
+                            workspace.prompt_read_epoch,
+                            workspace.prompt_read_key.clone(),
+                        ) {
+                            match navigator.accept_reader(
+                                epoch,
+                                key,
+                                text,
+                                receiver,
+                                Instant::now(),
+                            ) {
+                                prompt::PromptAccepted::Accepted => {}
+                                prompt::PromptAccepted::Late(_) => {
+                                    workspace.message =
+                                        Some("Discarded a late prompt delivery".into());
+                                }
+                            }
+                            workspace.prompt_read_epoch = None;
+                            workspace.prompt_read_key = None;
+                        } else {
+                            workspace.prompt =
+                                Some(PromptScreen::new(text, receiver, Instant::now()));
+                        }
                     } else {
                         workspace.message = Some("Invalid private content delivery".into());
                     }
@@ -3393,6 +3915,7 @@ pub fn run_workspace_with_stop(
                     dirty = true;
                 }
                 dirty |= workspace.expire_prompt(Instant::now());
+                dirty |= workspace.expire_prompt_nav(Instant::now());
                 if dirty {
                     let active = workspace
                         .prompt
@@ -3625,6 +4148,10 @@ fn draw_workspace_base(frame: &mut Frame, workspace: &mut Workspace) {
         prompt.draw(frame);
         return;
     }
+    if let Some(form) = &workspace.view_io.review_form {
+        view_io::draw_review_export(frame, form, workspace.message.as_deref());
+        return;
+    }
     if let Some(form) = &workspace.view_io.form {
         view_io::draw(frame, form, workspace.message.as_deref());
         return;
@@ -3758,6 +4285,22 @@ fn draw_workspace_base(frame: &mut Frame, workspace: &mut Workspace) {
         if area.width >= MIN_WIDTH
             && area.height >= MIN_HEIGHT
             && view.page.turn_picker.is_none()
+            && let Some(navigator) = &mut workspace.prompt_nav
+            && let HistorySelection::Session(session, _) = &view.selection
+        {
+            inspector::draw_prompts(
+                frame,
+                session,
+                workspace.inspector,
+                navigator,
+                workspace.pending.is_some(),
+                workspace.message.as_deref(),
+            );
+            return;
+        }
+        if area.width >= MIN_WIDTH
+            && area.height >= MIN_HEIGHT
+            && view.page.turn_picker.is_none()
             && let HistorySelection::Session(session, session_view) = &view.selection
             && inspector::Tab::from_view(*session_view).is_some()
         {
@@ -3868,6 +4411,13 @@ fn draw_workspace_base(frame: &mut Frame, workspace: &mut Workspace) {
             {
                 if session.reviewed {
                     keymap::hint(&[
+                        keymap::id::COPY,
+                        keymap::id::EXPORT,
+                        keymap::id::REVIEW_SAVE_TASK,
+                        keymap::id::REVIEW_EXCERPT,
+                        keymap::id::REVIEW_DRAFT,
+                        keymap::id::REVIEW_REFRESH,
+                        keymap::id::REVIEW_CONTROLS,
                         keymap::id::FILE_EDITS,
                         keymap::id::REVIEW_NOTES,
                         keymap::id::TRACES,
@@ -3875,6 +4425,13 @@ fn draw_workspace_base(frame: &mut Frame, workspace: &mut Workspace) {
                     ])
                 } else {
                     keymap::hint(&[
+                        keymap::id::COPY,
+                        keymap::id::EXPORT,
+                        keymap::id::REVIEW_SAVE_TASK,
+                        keymap::id::REVIEW_EXCERPT,
+                        keymap::id::REVIEW_DRAFT,
+                        keymap::id::REVIEW_REFRESH,
+                        keymap::id::REVIEW_CONTROLS,
                         keymap::id::MARK_REVIEWED,
                         keymap::id::FILE_EDITS,
                         keymap::id::REVIEW_NOTES,
@@ -3901,13 +4458,22 @@ fn draw_workspace_base(frame: &mut Frame, workspace: &mut Workspace) {
                 back_pages
             };
             let footer = Rect::new(0, area.height.saturating_sub(1), area.width, 1);
-            let status =
-                if view.show_evidence && workspace.message.is_none() && workspace.pending.is_none()
-                {
-                    format!("B chart / series · {status}")
-                } else {
-                    visible_text(&status)
-                };
+            let status = if let Some(index) = view.page.review_control {
+                format!(
+                    "Review controls › {} · Tab/Shift+Tab · Enter · {status}",
+                    REVIEW_CONTROLS
+                        .get(index)
+                        .map(|(label, _)| *label)
+                        .unwrap_or("Earlier")
+                )
+            } else if view.show_evidence
+                && workspace.message.is_none()
+                && workspace.pending.is_none()
+            {
+                format!("B chart / series · {status}")
+            } else {
+                visible_text(&status)
+            };
             frame.render_widget(Paragraph::new(status), footer);
         }
         return;
@@ -5375,11 +5941,12 @@ mod tests {
             matches!(requests.try_recv(), Ok(WorkspaceRequest::Work(WorkCommand::Prompts(owner))) if owner.source == "harness.pi" && owner.session == "selected")
         );
         workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::Prompts(Vec::new()))));
-        assert!(workspace.work.is_some());
+        assert!(workspace.prompt_nav.is_some());
+        assert!(workspace.work.is_none());
         // The UI-04 navigator is an overlay; Esc returns to the same inspector
         // section before a section switch is available.
         assert!(!press(&mut workspace, &sender, KeyCode::Esc));
-        assert!(workspace.work.is_none());
+        assert!(workspace.prompt_nav.is_none());
         assert!(!press(&mut workspace, &sender, KeyCode::Char('m')));
         assert!(
             matches!(requests.try_recv(), Ok(WorkspaceRequest::History { selection: HistorySelection::Session(row, SessionView::Details), .. }) if row.session_id == "selected")
@@ -7039,9 +7606,9 @@ mod tests {
             matches!(requests.try_recv(), Ok(WorkspaceRequest::Work(WorkCommand::Prompts(owner))) if owner.session == "selected")
         );
         workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::Prompts(Vec::new()))));
-        assert!(workspace.work.is_some());
+        assert!(workspace.prompt_nav.is_some());
         press(&mut workspace, &sender, KeyCode::Esc);
-        assert!(workspace.work.is_none());
+        assert!(workspace.prompt_nav.is_none());
 
         // `m` from the section content loads Details in place and preserves
         // content focus. Enter from the tab strip sets read focus.
@@ -7127,6 +7694,362 @@ mod tests {
             );
             assert!(text.contains("payments-helper"), "{width}: {text}");
             assert!(!text.contains("Name unavailable"), "{width}: {text}");
+        }
+    }
+
+    fn review_page() -> HistoryPage {
+        let id = agenturm_kernel::ExtensionId::parse("app.session-review").unwrap();
+        let mut page = session_history_page(&[]);
+        page.snapshot.panes.insert(
+            id.clone(),
+            agenturm_kernel::PaneModel {
+                title: "Review".into(),
+                rows: vec![MetricRow {
+                    label: "Checks".into(),
+                    value: "1 passed".into(),
+                }],
+            },
+        );
+        page.initial_pane = Some(id.clone());
+        page.review_pane = Some(id);
+        page
+    }
+
+    #[test]
+    fn review_copy_export_and_save_use_the_exact_anchor_and_keep_review_selected() {
+        let row = session("harness.codex", "review-me", "completed", None);
+        let mut workspace = Workspace::new();
+        workspace.history.push(HistoryView::new(
+            HistorySelection::Session(row.clone(), SessionView::Review),
+            review_page(),
+        ));
+        let (sender, requests) = mpsc::channel();
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('c')));
+        let WorkspaceRequest::Work(WorkCommand::ReviewReceipt(request)) =
+            requests.try_recv().unwrap()
+        else {
+            panic!("expected review receipt copy")
+        };
+        assert_eq!(request.anchor.source, "harness.codex");
+        assert_eq!(request.anchor.session, "review-me");
+        assert_eq!(request.format, crate::workbench::ReviewFormat::Text);
+        assert!(request.directory.is_none());
+        assert!(matches!(
+            workspace.history.last().map(|view| &view.selection),
+            Some(HistorySelection::Session(_, SessionView::Review))
+        ));
+
+        workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::ReviewDocument {
+            title: "Review receipt".into(),
+            text: "review receipt body".into(),
+            scope: "harness.codex / review-me".into(),
+        })));
+        assert!(workspace.view_io.clipboard.is_some());
+        assert!(workspace.message.as_deref().unwrap_or_default().contains("copied"));
+        assert!(matches!(
+            workspace.history.last().map(|view| &view.selection),
+            Some(HistorySelection::Session(_, SessionView::Review))
+        ));
+
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('x')));
+        let form = workspace.view_io.review_form.as_ref().unwrap();
+        assert_eq!(form.anchor.session, "review-me");
+        for ch in "/tmp/review-export".chars() {
+            press(&mut workspace, &sender, KeyCode::Char(ch));
+        }
+        assert!(!press(&mut workspace, &sender, KeyCode::Enter));
+        let WorkspaceRequest::Work(WorkCommand::ReviewReceipt(request)) =
+            requests.try_recv().unwrap()
+        else {
+            panic!("expected review receipt export")
+        };
+        assert_eq!(
+            request.directory.as_deref(),
+            Some("/tmp/review-export"),
+            "exact destination is carried"
+        );
+        workspace.finish(Err("Cannot export review receipt: AlreadyExists".into()));
+        assert!(
+            workspace.view_io.review_form.is_some(),
+            "a collision keeps the destination form open"
+        );
+        assert!(!press(&mut workspace, &sender, KeyCode::Enter));
+        let _retry = requests.try_recv().expect("the form retries the same directory");
+        workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::ReviewDocument {
+            title: "Review receipt".into(),
+            text: "receipt".into(),
+            scope: "harness.codex / review-me / exported".into(),
+        })));
+        assert!(workspace.view_io.review_form.is_none());
+
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('s')));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::Work(WorkCommand::DraftReviewTask { anchor, .. }))
+                if anchor.session == "review-me"
+        ));
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('g')));
+        assert!(workspace.message.as_deref().unwrap_or_default().contains("workspace mapping"));
+        assert!(matches!(
+            workspace.history.last().map(|view| &view.selection),
+            Some(HistorySelection::Session(_, SessionView::Review))
+        ));
+    }
+
+    #[test]
+    fn review_control_order_is_deterministic_and_escape_returns_to_review() {
+        let row = session("harness.codex", "controls", "completed", None);
+        let mut workspace = Workspace::new();
+        workspace.history.push(HistoryView::new(
+            HistorySelection::Session(row, SessionView::Review),
+            review_page(),
+        ));
+        let (sender, requests) = mpsc::channel();
+        assert!(!press(&mut workspace, &sender, KeyCode::Tab));
+        assert_eq!(
+            workspace.history.last().unwrap().page.review_control,
+            Some(0)
+        );
+        assert!(!press(&mut workspace, &sender, KeyCode::Tab));
+        assert_eq!(
+            workspace.history.last().unwrap().page.review_control,
+            Some(1)
+        );
+        assert!(!press(&mut workspace, &sender, KeyCode::BackTab));
+        assert_eq!(
+            workspace.history.last().unwrap().page.review_control,
+            Some(0)
+        );
+        assert!(!press(&mut workspace, &sender, KeyCode::Enter));
+        let request = match requests.try_recv() {
+            Ok(request) => request,
+            Err(error) => panic!("review control sent no request: {error}"),
+        };
+        match request {
+            WorkspaceRequest::History { selection, .. } => assert!(matches!(
+                selection,
+                HistorySelection::Session(_, SessionView::Review)
+            )),
+            _ => panic!("review control did not request the same Review page"),
+        }
+        assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+        assert!(workspace.history.last().unwrap().page.review_control.is_none());
+        assert_eq!(workspace.history.len(), 1);
+    }
+
+    #[test]
+    fn turn_review_route_keeps_the_exact_turn_and_returns_to_it() {
+        let row = session("harness.codex", "turn-session", "completed", None);
+        let turn = RecordedTurn {
+            harness_id: "harness.codex".into(),
+            session_id: "turn-session".into(),
+            turn_id: "turn-7".into(),
+            worker_id: Some("worker-a".into()),
+            snapshot_id: row.snapshot_id,
+            lifecycle: Some(("completed".into(), None)),
+        };
+        let mut workspace = Workspace::new();
+        workspace.history.push(HistoryView::new(
+            HistorySelection::Turn(turn.clone()),
+            session_history_page(&["Turn activity"]),
+        ));
+        let (sender, requests) = mpsc::channel();
+        assert!(!workspace.key(
+            &sender,
+            event::KeyEvent::new(KeyCode::Char('r'), KeyModifiers::CONTROL)
+        ));
+        let WorkspaceRequest::History {
+            selection: HistorySelection::TurnReview(pinned),
+            ..
+        } = requests.try_recv().unwrap()
+        else {
+            panic!("expected a turn-scoped Review request")
+        };
+        assert_eq!(pinned.turn_id, "turn-7");
+        assert_eq!(pinned.worker_id.as_deref(), Some("worker-a"));
+        workspace.finish(Ok(WorkspaceResponse::History(review_page())));
+        assert!(matches!(
+            workspace.history.last().map(|view| &view.selection),
+            Some(HistorySelection::TurnReview(turn)) if turn.turn_id == "turn-7"
+        ));
+        assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+        assert!(matches!(
+            workspace.history.last().map(|view| &view.selection),
+            Some(HistorySelection::Turn(turn)) if turn.turn_id == "turn-7"
+        ));
+    }
+
+    #[test]
+    fn inspector_prompts_open_the_navigator_and_escape_returns_to_the_section() {
+        let row = session("harness.codex", "prompt-session", "running", None);
+        let mut workspace = Workspace::new();
+        workspace.history.push(HistoryView::new(
+            HistorySelection::Session(row, SessionView::Overview),
+            session_history_page(&["Session overview", "Session details"]),
+        ));
+        let (sender, requests) = mpsc::channel();
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('P')));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::Work(WorkCommand::Prompts(anchor)))
+                if anchor.session == "prompt-session"
+        ));
+        workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::Prompts(vec![
+            PromptEntry {
+                anchor: WorkAnchor {
+                    source: "harness.codex".into(),
+                    session: "prompt-session".into(),
+                    worker: None,
+                    turn: Some("turn-1".into()),
+                },
+                event_id: "event-1".into(),
+                revision: 0,
+                timestamp: 1,
+                snapshot_id: None,
+                history_identity: None,
+            },
+        ]))));
+        let navigator = workspace.prompt_nav.as_ref().unwrap();
+        assert_eq!(
+            navigator.status_line(),
+            "1 loaded · oldest first"
+        );
+        assert_eq!(workspace.focus(), keymap::Focus::PromptNavigator);
+        assert!(!press(&mut workspace, &sender, KeyCode::Enter));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::Work(WorkCommand::RevealPrompt(entry, _)))
+                if entry.event_id == "event-1"
+        ));
+        assert!(workspace.prompt_read_epoch.is_some());
+        // Reader focus owns the first Escape (closing the pending read); the
+        // navigator owns the next one and leaves the Prompts section.
+        assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+        assert!(workspace.prompt_nav.is_some());
+        assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+        assert!(workspace.prompt_nav.is_none());
+        assert!(matches!(
+            workspace.history.last().map(|view| &view.selection),
+            Some(HistorySelection::Session(_, SessionView::Overview))
+        ));
+        assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+        assert!(workspace.history.is_empty(), "the next Esc returns to the roster");
+    }
+
+    #[test]
+    fn evidence_filter_is_pane_local_and_survives_a_page_replacement() {
+        let width = 80;
+        let id = agenturm_kernel::ExtensionId::parse("app.session-activity").unwrap();
+        let mut page = session_history_page(&[]);
+        page.snapshot.panes.insert(
+            id.clone(),
+            agenturm_kernel::PaneModel {
+                title: "Activity".into(),
+                rows: Vec::new(),
+            },
+        );
+        page.initial_pane = Some(id.clone());
+        page.evidence_tables.insert(
+            id.clone(),
+            crate::EvidenceSpec {
+                title: "Activity",
+                inspector: "Event detail",
+                columns: &[("Action", 2)],
+                empty: "No activity",
+            }
+            .table(vec![
+                crate::EvidenceRow {
+                    cells: vec!["tool read".into()],
+                    details: vec![MetricRow {
+                        label: "Result".into(),
+                        value: "passed".into(),
+                    }],
+                },
+                crate::EvidenceRow {
+                    cells: vec!["tool write".into()],
+                    details: vec![MetricRow {
+                        label: "Result".into(),
+                        value: "failed".into(),
+                    }],
+                },
+            ]),
+        );
+        let mut workspace = Workspace::new();
+        workspace.history.push(HistoryView::new(
+            HistorySelection::All(WorkspaceView::Activity),
+            page,
+        ));
+        let (sender, _requests) = mpsc::channel();
+        let view = workspace.history.last().unwrap();
+        assert_eq!(view.page.ui.evidence_visible(), vec![0, 1]);
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('/')));
+        for ch in "write".chars() {
+            press(&mut workspace, &sender, KeyCode::Char(ch));
+        }
+        assert!(!press(&mut workspace, &sender, KeyCode::Enter));
+        let view = workspace.history.last().unwrap();
+        assert_eq!(view.page.ui.evidence_visible(), vec![1]);
+        assert!(view.page.ui.evidence_filter_label().unwrap().contains("write"));
+        // A new page of the same pane keeps the committed filter.
+        let mut next = session_history_page(&[]);
+        next.snapshot.panes.insert(
+            id.clone(),
+            agenturm_kernel::PaneModel {
+                title: "Activity".into(),
+                rows: Vec::new(),
+            },
+        );
+        next.initial_pane = Some(id.clone());
+        next.evidence_tables.insert(
+            id,
+            crate::EvidenceSpec {
+                title: "Activity",
+                inspector: "Event detail",
+                columns: &[("Action", 2)],
+                empty: "No activity",
+            }
+            .table(vec![
+                crate::EvidenceRow {
+                    cells: vec!["tool write".into()],
+                    details: vec![],
+                },
+                crate::EvidenceRow {
+                    cells: vec!["tool read".into()],
+                    details: vec![],
+                },
+            ]),
+        );
+        let mut replacement = PageView::new(next, false);
+        replacement.inherit_filters(&workspace.history.last().unwrap().page);
+        assert_eq!(replacement.ui.evidence_visible(), vec![0]);
+        let _ = width;
+    }
+
+    #[test]
+    fn palette_exposes_review_workflow_tasks_search_and_incidents() {
+        let mut workspace = Workspace::new();
+        workspace.agents.catalog = Some(catalog(vec![session(
+            "harness.codex",
+            "palette",
+            "running",
+            None,
+        )]));
+        workspace.open_palette();
+        let labels = workspace
+            .palette
+            .entries()
+            .iter()
+            .map(|entry| entry.label.as_str())
+            .collect::<Vec<_>>();
+        for expected in [
+            "Review recorded work",
+            "Workflow inbox",
+            "Saved tasks",
+            "Search saved tasks",
+            "Workflow incidents",
+            "To review",
+        ] {
+            assert!(labels.contains(&expected), "missing {expected}: {labels:?}");
         }
     }
 }

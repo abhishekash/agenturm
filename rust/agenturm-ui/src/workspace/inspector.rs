@@ -241,6 +241,85 @@ pub(super) fn draw(
     );
 }
 
+/// Renders the three-section tab strip with the UI-04 prompt navigator in the
+/// body. The navigator owns its own reader, chooser and status line.
+pub(super) fn draw_prompts(
+    frame: &mut Frame,
+    session: &RecordedSession,
+    state: State,
+    navigator: &mut crate::workspace::prompt::PromptNavigator,
+    pending: bool,
+    message: Option<&str>,
+) {
+    let area = frame.area();
+    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+        frame.render_widget(
+            Paragraph::new("Terminal too small · widen the window to inspect Agenturm")
+                .centered()
+                .style(theme::foreground(theme::palette().primary)),
+            area,
+        );
+        return;
+    }
+    let [head, tabs, body, footer] = Layout::vertical([
+        Constraint::Length(2),
+        Constraint::Length(1),
+        Constraint::Min(1),
+        Constraint::Length(3),
+    ])
+    .areas(area);
+    let name = visible_text(&command_center::name(session));
+    let context = format!(
+        " {} · {} · recorded {} · {}",
+        visible_text(session.provider_label()),
+        visible_text(&project_label(session)),
+        visible_text(session.state.as_deref().unwrap_or("unknown")),
+        age(session.updated_at_unix_ns),
+    );
+    frame.render_widget(
+        Paragraph::new(Line::from(vec![
+            Span::styled(
+                format!(" Agenturm · {name}"),
+                theme::foreground(theme::palette().text).add_modifier(Modifier::BOLD),
+            ),
+            Span::styled(format!("   {context}"), label_style()),
+        ]))
+        .block(Block::default().borders(Borders::BOTTOM)),
+        head,
+    );
+    let mut line = Vec::new();
+    for tab in Tab::ORDER {
+        let active = tab == state.tab;
+        let mut style = if active {
+            selection_style()
+        } else {
+            Style::default()
+        };
+        let marker = if active { "›" } else { " " };
+        if active && !state.tabs_focused {
+            style = style.add_modifier(Modifier::UNDERLINED);
+        }
+        line.push(Span::styled(format!(" {marker}{} ", tab.label()), style));
+        line.push(Span::raw("  "));
+    }
+    line.push(Span::styled("READ: prompts", theme::muted()));
+    frame.render_widget(Paragraph::new(Line::from(line)), tabs);
+    navigator.set_layout(area.width);
+    navigator.draw(frame, body);
+    let mut lines = Vec::new();
+    if let Some(error) = message {
+        lines.push(Line::styled(visible_text(error), label_style()));
+    } else if pending {
+        lines.push(Line::styled("Loading this prompt page…", label_style()));
+    }
+    lines.push(Line::from(format!(
+        "{} · {}",
+        navigator.status_line(),
+        navigator.hints_for(area.width)
+    )));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), footer);
+}
+
 fn project_label(session: &RecordedSession) -> String {
     if session.project_origin.is_none() {
         return "No recorded project".into();

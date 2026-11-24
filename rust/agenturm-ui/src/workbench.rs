@@ -163,6 +163,42 @@ pub enum OperationDetailKind {
     Edit,
 }
 
+/// The exact review document the shell asks the app to render. The app owns
+/// receipt composition; the shell never reconstructs captured or provider text.
+#[derive(Clone, Copy, Debug, Eq, PartialEq)]
+pub enum ReviewFormat {
+    Text,
+    Markdown,
+    Json,
+    Html,
+}
+
+impl ReviewFormat {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Text => "text",
+            Self::Markdown => "markdown",
+            Self::Json => "json",
+            Self::Html => "html",
+        }
+    }
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewDocumentRequest {
+    pub anchor: WorkAnchor,
+    pub format: ReviewFormat,
+    pub directory: Option<String>,
+}
+
+/// One recorded check, edit or error the receipt exposes for a task draft.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct ReviewExcerpt {
+    pub kind: String,
+    pub label: String,
+    pub source: String,
+}
+
 pub struct PromptDelivery {
     buffer: Vec<u8>,
     frames: mpsc::Sender<Vec<u8>>,
@@ -347,6 +383,13 @@ pub enum WorkCommand {
         session: RecordedSession,
         note: String,
     },
+    ReviewReceipt(Box<ReviewDocumentRequest>),
+    ReviewExcerpts(WorkAnchor),
+    DraftReviewTask {
+        anchor: WorkAnchor,
+        title: String,
+        note: String,
+    },
     Tasks(Option<u64>),
     Handoffs(Option<u64>),
     SaveTask {
@@ -362,6 +405,34 @@ pub enum WorkCommand {
         completed: bool,
     },
     TaskLinks(u64),
+    TaskBrief(u64),
+    SaveTaskBrief {
+        id: u64,
+        expected_revision: Option<u64>,
+        intent: String,
+        acceptance_criteria: String,
+        constraints: String,
+        open_questions: String,
+        next_action: String,
+    },
+    TaskDecisions(u64),
+    AddTaskDecision {
+        id: u64,
+        expected_revision: Option<u64>,
+        kind: String,
+        text: String,
+        rationale: String,
+        scope: String,
+        supersedes_id: Option<u64>,
+    },
+    PreviewHandoff {
+        id: u64,
+        format: String,
+    },
+    ExportHandoffAs {
+        id: u64,
+        directory: String,
+    },
     LinkTask {
         id: u64,
         anchor: WorkAnchor,
@@ -482,6 +553,22 @@ pub enum WorkResult {
         session: RecordedSession,
         items: Vec<ReviewNoteEntry>,
     },
+    ReviewDocument {
+        title: String,
+        text: String,
+        scope: String,
+    },
+    ReviewExcerpts {
+        anchor: WorkAnchor,
+        items: Vec<ReviewExcerpt>,
+    },
+    TaskDraft {
+        id: Option<u64>,
+        revision: Option<u64>,
+        anchor: Option<WorkAnchor>,
+        title: String,
+        note: String,
+    },
     Tasks {
         items: Vec<TaskEntry>,
         older: Option<u64>,
@@ -489,6 +576,25 @@ pub enum WorkResult {
     TaskLinks {
         id: u64,
         items: Vec<WorkAnchor>,
+    },
+    TaskBrief {
+        id: u64,
+        revision: Option<u64>,
+        intent: String,
+        acceptance_criteria: String,
+        constraints: String,
+        open_questions: String,
+        next_action: String,
+    },
+    TaskDecisions {
+        id: u64,
+        revision: Option<u64>,
+        items: Vec<TaskDecisionEntry>,
+    },
+    HandoffPreview {
+        id: u64,
+        format: String,
+        text: String,
     },
     TaskWorkspace {
         root: String,
@@ -551,6 +657,7 @@ pub(super) enum WorkInput {
     Reveal(PromptEntry),
     RevealTelemetry(TelemetrySpanEntry),
     RevealEvaluation(evaluation::EvaluationDetailEntry),
+    Copy(String),
     None,
     Back,
     Close,
@@ -561,6 +668,93 @@ struct EvaluationReturn {
     page: Box<evaluation::EvaluationPage>,
     cursor: ListState,
     scroll: u16,
+}
+
+/// One structured brief editor with the revision it was read at. Mirrors the
+/// operator-authored task brief; no captured content is reconstructed.
+#[derive(Clone, Debug)]
+struct TaskBriefDraft {
+    id: u64,
+    revision: Option<u64>,
+    fields: [String; 5],
+    initial: [String; 5],
+    active: usize,
+    dirty_confirm: bool,
+}
+
+const BRIEF_LABELS: [&str; 5] = [
+    "Intent",
+    "Acceptance criteria",
+    "Constraints",
+    "Open questions",
+    "Next action",
+];
+
+/// One decision version as presented by the app; prior versions stay visible.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TaskDecisionEntry {
+    pub id: u64,
+    pub kind: String,
+    pub text: String,
+    pub rationale: String,
+    pub scope: String,
+    pub supersedes: Option<u64>,
+}
+
+/// A decision version chooser with the exact revision it was read at.
+#[derive(Clone)]
+struct TaskDecisionView {
+    id: u64,
+    revision: Option<u64>,
+    items: Vec<TaskDecisionEntry>,
+    selected: usize,
+}
+
+/// A minimal decision draft. The operator authors the text; supersession keeps
+/// prior versions and uses the read revision as the optimistic guard.
+#[derive(Clone, Debug)]
+struct DecisionDraft {
+    id: u64,
+    revision: Option<u64>,
+    supersedes: Option<u64>,
+    kind: String,
+    field: usize,
+    text: String,
+    rationale: String,
+    scope: String,
+}
+
+impl Workbench {
+    fn task_page_filtered(&self, items: &[TaskEntry]) -> Vec<usize> {
+        if !self.task_search.active() {
+            return (0..items.len()).collect();
+        }
+        items
+            .iter()
+            .enumerate()
+            .filter_map(|(index, task)| {
+                let mut fields = vec![
+                    task.title.clone(),
+                    task.note.clone(),
+                    task.id.to_string(),
+                    format!("revision {}", task.revision),
+                ];
+                if let Some(anchor) = &task.anchor {
+                    fields.push(anchor.source.clone());
+                    fields.push(anchor.session.clone());
+                    if let Some(worker) = &anchor.worker {
+                        fields.push(worker.clone());
+                    }
+                    if let Some(turn) = &anchor.turn {
+                        fields.push(turn.clone());
+                    }
+                }
+                self.task_search
+                    .matches(fields.iter().map(String::as_str))
+                    .then_some(index)
+            })
+            .collect()
+    }
 }
 
 pub(super) struct Workbench {
@@ -579,6 +773,14 @@ pub(super) struct Workbench {
     workflow_settings: Option<workflow_settings::Settings>,
     workflow_alerts: Option<workflow_alerts::Alerts>,
     show_workflow_alerts: bool,
+    review_document: Option<(String, String, String)>,
+    review_excerpts: Option<(WorkAnchor, Vec<ReviewExcerpt>, ListState)>,
+    handoff_preview: Option<(u64, String, String)>,
+    task_search: crate::pane_filter::Filter,
+    task_brief: Option<TaskBriefDraft>,
+    task_decisions: Option<TaskDecisionView>,
+    decision_draft: Option<DecisionDraft>,
+    handoff_export: Option<(u64, String, String)>,
 }
 
 impl Workbench {
@@ -599,13 +801,113 @@ impl Workbench {
             workflow_settings: None,
             workflow_alerts: None,
             show_workflow_alerts: false,
+            review_document: None,
+            review_excerpts: None,
+            handoff_preview: None,
+            task_search: crate::pane_filter::Filter::default(),
+            task_brief: None,
+            task_decisions: None,
+            decision_draft: None,
+            handoff_export: None,
         };
         work.reset_cursor();
+        if matches!(
+            work.data,
+            WorkResult::TaskDraft { .. }
+                | WorkResult::TaskBrief { .. }
+                | WorkResult::TaskDecisions { .. }
+                | WorkResult::HandoffPreview { .. }
+                | WorkResult::ReviewDocument { .. }
+                | WorkResult::ReviewExcerpts { .. }
+        ) {
+            let data = std::mem::replace(&mut work.data, WorkResult::Status(String::new()));
+            work.apply(data);
+        }
         work
     }
 
     pub(super) fn apply(&mut self, data: WorkResult) {
         let data = match data {
+            WorkResult::ReviewDocument {
+                title,
+                text,
+                scope,
+            } => {
+                self.review_document = Some((title, text, scope));
+                return;
+            }
+            WorkResult::ReviewExcerpts { anchor, items } => {
+                self.review_excerpts = Some((
+                    anchor,
+                    items,
+                    ListState::default().with_selected(Some(0)),
+                ));
+                return;
+            }
+            WorkResult::TaskDraft {
+                id,
+                revision,
+                anchor,
+                title,
+                note,
+            } => {
+                self.target = anchor.clone();
+                self.data = WorkResult::Status(String::new());
+                self.cursor = ListState::default();
+                self.draft = Some(Draft::Task {
+                    id,
+                    revision,
+                    anchor,
+                    title,
+                    note,
+                    editing_note: false,
+                });
+                return;
+            }
+            WorkResult::TaskBrief {
+                id,
+                revision,
+                intent,
+                acceptance_criteria,
+                constraints,
+                open_questions,
+                next_action,
+            } => {
+                let fields = [
+                    intent,
+                    acceptance_criteria,
+                    constraints,
+                    open_questions,
+                    next_action,
+                ];
+                let initial = fields.clone();
+                self.task_brief = Some(TaskBriefDraft {
+                    id,
+                    revision,
+                    fields: initial.clone(),
+                    initial,
+                    active: 0,
+                    dirty_confirm: false,
+                });
+                return;
+            }
+            WorkResult::TaskDecisions {
+                id,
+                revision,
+                items,
+            } => {
+                self.task_decisions = Some(TaskDecisionView {
+                    id,
+                    revision,
+                    selected: 0,
+                    items,
+                });
+                return;
+            }
+            WorkResult::HandoffPreview { id, format, text } => {
+                self.handoff_preview = Some((id, format, text));
+                return;
+            }
             WorkResult::WorkflowSettings { policy, authority } => {
                 if let Some(settings) = &mut self.workflow_settings {
                     settings.apply(policy, authority);
@@ -701,6 +1003,87 @@ impl Workbench {
         {
             self.cursor.select(Some(index));
         }
+    }
+
+    /// This-view help lines for the shared `F1` overlay. The workbench keeps no
+    /// second help table: it supplies only the exact current context.
+    pub(super) fn context_help(&self) -> Vec<String> {
+        let mut lines = Vec::new();
+        match &self.data {
+            WorkResult::Workflow {
+                items,
+                partial,
+                deliveries,
+            } => {
+                lines.push(if *partial {
+                    "Workflow page is partial · earlier history is not loaded".into()
+                } else {
+                    "Workflow page · newest retained requests".into()
+                });
+                if let Some(item) = items.get(self.cursor.selected().unwrap_or_default()) {
+                    lines.push(format!(
+                        "Observed owner · {} / {} · worker {} · turn {}",
+                        item.owner.source,
+                        item.owner.session,
+                        item.owner.worker.as_deref().unwrap_or("session"),
+                        item.owner.turn.as_deref().unwrap_or("unscoped"),
+                    ));
+                    lines.push(format!(
+                        "Approval state · {} · Seen only acknowledges locally",
+                        if item.seen { "seen" } else { "pending" }
+                    ));
+                }
+                if let Some((_, delivery)) = deliveries
+                    .iter()
+                    .find(|(request, _)| items.get(self.cursor.selected().unwrap_or_default()).is_some_and(|item| item == request))
+                {
+                    lines.push(format!(
+                        "Delivery · {} · attempt {} · policy revision {}",
+                        delivery_label(delivery.state),
+                        delivery.attempt,
+                        delivery.policy_revision
+                    ));
+                }
+                lines.push(
+                    "Settings dirty drafts require a second Esc to discard · Ctrl+S saves".into(),
+                );
+            }
+            WorkResult::Tasks { .. } => {
+                lines.push(
+                    "Saved task search is page-local · the loaded count is not whole-history coverage"
+                        .into(),
+                );
+                if self.task_search.active() {
+                    lines.push(format!(
+                        "Task filter · {} · Esc clears, Ctrl+A clears the draft",
+                        self.task_search.query()
+                    ));
+                }
+                lines.push(
+                    "Brief and decisions carry the task revision they were read at".into(),
+                );
+            }
+            WorkResult::Handoffs { .. } => {
+                lines.push(
+                    "Handoff preview is operator-authored · export writes Markdown and HTML to a new directory"
+                        .into(),
+                );
+            }
+            _ => {}
+        }
+        lines
+    }
+
+    pub(super) fn workflow_visible(&self) -> bool {
+        matches!(self.data, WorkResult::Workflow { .. })
+    }
+
+    pub(super) fn tasks_visible(&self) -> bool {
+        matches!(self.data, WorkResult::Tasks { .. })
+    }
+
+    pub(super) fn handoffs_visible(&self) -> bool {
+        matches!(self.data, WorkResult::Handoffs { .. })
     }
 
     pub(super) fn prompt_owner(&self) -> Option<&WorkAnchor> {
@@ -803,7 +1186,7 @@ impl Workbench {
                 host::current_indices(&capture.sample, &self.host_filter).len()
             }),
             WorkResult::ReviewNotes { items, .. } => items.len(),
-            WorkResult::Tasks { items, .. } => items.len(),
+            WorkResult::Tasks { .. } => self.task_indices().len(),
             WorkResult::Handoffs { items, .. } => items.len(),
             WorkResult::TaskLinks { items, .. } => items.len(),
             WorkResult::TaskWorkspace { .. } => 0,
@@ -813,6 +1196,12 @@ impl Workbench {
             WorkResult::Prompts(items) => items.len(),
             WorkResult::TelemetrySpans(spans) => spans.len(),
             WorkResult::Investigation(_)
+            | WorkResult::ReviewDocument { .. }
+            | WorkResult::ReviewExcerpts { .. }
+            | WorkResult::TaskDraft { .. }
+            | WorkResult::TaskBrief { .. }
+            | WorkResult::TaskDecisions { .. }
+            | WorkResult::HandoffPreview { .. }
             | WorkResult::WorkflowAlerts(_)
             | WorkResult::WorkflowSettings { .. }
             | WorkResult::WorkflowResume(_)
@@ -823,9 +1212,62 @@ impl Workbench {
     }
 
     fn selected_task(&self) -> Option<&TaskEntry> {
-        match &self.data {
-            WorkResult::Tasks { items, .. } => items.get(self.cursor.selected()?),
-            _ => None,
+        self.task_at(self.cursor.selected().unwrap_or_default())
+    }
+
+    fn task_indices(&self) -> Vec<usize> {
+        let WorkResult::Tasks { items, .. } = &self.data else {
+            return Vec::new();
+        };
+        self.task_page_filtered(items)
+    }
+
+    fn task_at(&self, position: usize) -> Option<&TaskEntry> {
+        let WorkResult::Tasks { items, .. } = &self.data else {
+            return None;
+        };
+        self.task_indices()
+            .get(position)
+            .and_then(|index| items.get(*index))
+    }
+
+    pub(super) fn start_task_search(&mut self) {
+        if matches!(self.data, WorkResult::Tasks { .. }) {
+            let _ = self.task_search.key(KeyCode::Char('/'));
+        }
+    }
+
+    fn task_filter_key(&mut self, key: KeyCode) -> bool {
+        if !matches!(self.data, WorkResult::Tasks { .. }) {
+            return false;
+        }
+        if key != KeyCode::Char('/')
+            && !self.task_search.editing()
+            && !(key == KeyCode::Esc && self.task_search.active())
+        {
+            return false;
+        }
+        let previous = self.cursor.selected();
+        let previous_id = self.task_at(previous.unwrap_or_default()).map(|task| task.id);
+        match self.task_search.key(key) {
+            crate::pane_filter::FilterKey::Ignored => false,
+            crate::pane_filter::FilterKey::Handled => true,
+            crate::pane_filter::FilterKey::Changed => {
+                let visible = self.task_indices();
+                let position = previous_id
+                    .and_then(|id| {
+                        visible.iter().position(|index| {
+                            matches!(&self.data, WorkResult::Tasks { items, .. }
+                                if items.get(*index).is_some_and(|task| task.id == id))
+                        })
+                    })
+                    .unwrap_or_else(|| {
+                        crate::pane_filter::selection(&visible, previous).unwrap_or_default()
+                    });
+                self.cursor.select((!visible.is_empty()).then_some(position));
+                self.review_note_scroll = 0;
+                true
+            }
         }
     }
 
@@ -897,6 +1339,9 @@ impl Workbench {
     }
 
     pub(super) fn key(&mut self, key: event::KeyEvent) -> WorkInput {
+        if let Some(input) = self.overlay_key(key) {
+            return input;
+        }
         if self.resume_preview.is_some() {
             return if key.code == KeyCode::Esc {
                 self.resume_preview = None;
@@ -921,6 +1366,9 @@ impl Workbench {
         }
         if self.draft.is_some() {
             return self.edit_key(key);
+        }
+        if self.task_filter_key(key.code) {
+            return WorkInput::None;
         }
         if key.code == KeyCode::Char('?') {
             self.help = true;
@@ -1030,6 +1478,270 @@ impl Workbench {
         }
     }
 
+    /// Review, brief, decision and handoff overlays own their keys before the
+    /// list beneath them. A dirty brief or decision requires an explicit second
+    /// Escape; the shell never discards an authored draft silently.
+    fn overlay_key(&mut self, key: event::KeyEvent) -> Option<WorkInput> {
+        if let Some((_, text, _)) = &self.review_document {
+            return match key.code {
+                KeyCode::Esc => {
+                    self.review_document = None;
+                    Some(WorkInput::None)
+                }
+                KeyCode::Char('c') => Some(WorkInput::Copy(text.clone())),
+                KeyCode::PageDown => {
+                    self.review_note_scroll = self.review_note_scroll.saturating_add(4);
+                    Some(WorkInput::None)
+                }
+                KeyCode::PageUp => {
+                    self.review_note_scroll = self.review_note_scroll.saturating_sub(4);
+                    Some(WorkInput::None)
+                }
+                _ => Some(WorkInput::None),
+            };
+        }
+        if let Some((anchor, items, selection)) = &mut self.review_excerpts {
+            match key.code {
+                KeyCode::Esc => {
+                    self.review_excerpts = None;
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    let next = (selection.selected().unwrap_or_default() + 1)
+                        .min(items.len().saturating_sub(1));
+                    selection.select((!items.is_empty()).then_some(next));
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    let next = selection.selected().unwrap_or_default().saturating_sub(1);
+                    selection.select((!items.is_empty()).then_some(next));
+                }
+                KeyCode::Enter => {
+                    let Some(excerpt) = selection
+                        .selected()
+                        .and_then(|index| items.get(index))
+                        .cloned()
+                    else {
+                        return Some(WorkInput::None);
+                    };
+                    return Some(WorkInput::Command(WorkCommand::DraftReviewTask {
+                        anchor: anchor.clone(),
+                        title: format!("Excerpt · {}", excerpt.label),
+                        note: format!("{} · {}", excerpt.kind, excerpt.source),
+                    }));
+                }
+                _ => {}
+            }
+            return Some(WorkInput::None);
+        }
+        if self.handoff_export.is_some() {
+            let (id, format, directory) = self
+                .handoff_export
+                .as_mut()
+                .expect("handoff export checked");
+            match key.code {
+                KeyCode::Esc => {
+                    self.handoff_export = None;
+                    return Some(WorkInput::None);
+                }
+                KeyCode::Enter if directory.trim().is_empty() => {}
+                KeyCode::Enter => {
+                    return Some(WorkInput::Command(WorkCommand::ExportHandoffAs {
+                        id: *id,
+                        directory: directory.trim().to_owned(),
+                    }));
+                }
+                KeyCode::Backspace => {
+                    directory.pop();
+                }
+                KeyCode::Char(c)
+                    if !c.is_control()
+                        && !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && directory.len() + c.len_utf8() <= 4096 =>
+                {
+                    directory.push(c);
+                }
+                _ => {}
+            }
+            let _ = format;
+            return Some(WorkInput::None);
+        }
+        if let Some((id, format, text)) = &self.handoff_preview {
+            return match key.code {
+                KeyCode::Esc => {
+                    self.handoff_preview = None;
+                    Some(WorkInput::None)
+                }
+                KeyCode::Char('c') => Some(WorkInput::Copy(text.clone())),
+                KeyCode::Char('x') => {
+                    self.handoff_export = Some((*id, format.clone(), String::new()));
+                    Some(WorkInput::None)
+                }
+                KeyCode::PageDown => {
+                    self.review_note_scroll = self.review_note_scroll.saturating_add(4);
+                    Some(WorkInput::None)
+                }
+                KeyCode::PageUp => {
+                    self.review_note_scroll = self.review_note_scroll.saturating_sub(4);
+                    Some(WorkInput::None)
+                }
+                _ => Some(WorkInput::None),
+            };
+        }
+        if let Some(brief) = &mut self.task_brief {
+            let dirty = brief.fields != brief.initial;
+            match key.code {
+                KeyCode::Esc => {
+                    if dirty && !brief.dirty_confirm {
+                        brief.dirty_confirm = true;
+                    } else {
+                        self.task_brief = None;
+                    }
+                }
+                KeyCode::Tab => {
+                    brief.active = (brief.active + 1) % BRIEF_LABELS.len();
+                    brief.dirty_confirm = false;
+                }
+                KeyCode::BackTab => {
+                    brief.active = (brief.active + BRIEF_LABELS.len() - 1) % BRIEF_LABELS.len();
+                    brief.dirty_confirm = false;
+                }
+                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    let fields = brief.fields.clone();
+                    return Some(WorkInput::Command(WorkCommand::SaveTaskBrief {
+                        id: brief.id,
+                        expected_revision: brief.revision,
+                        intent: fields[0].clone(),
+                        acceptance_criteria: fields[1].clone(),
+                        constraints: fields[2].clone(),
+                        open_questions: fields[3].clone(),
+                        next_action: fields[4].clone(),
+                    }));
+                }
+                KeyCode::Backspace => {
+                    brief.fields[brief.active].pop();
+                    brief.dirty_confirm = false;
+                }
+                KeyCode::Enter => {
+                    if brief.fields[brief.active].len() < 4096 {
+                        brief.fields[brief.active].push('\n');
+                        brief.dirty_confirm = false;
+                    }
+                }
+                KeyCode::Char(c)
+                    if !c.is_control()
+                        && !key.modifiers.contains(KeyModifiers::CONTROL)
+                        && brief.fields[brief.active].len() + c.len_utf8() <= 4096 =>
+                {
+                    brief.fields[brief.active].push(c);
+                    brief.dirty_confirm = false;
+                }
+                _ => {}
+            }
+            return Some(WorkInput::None);
+        }
+        if let Some(draft) = &mut self.decision_draft {
+            match key.code {
+                KeyCode::Esc => {
+                    self.decision_draft = None;
+                    return Some(WorkInput::None);
+                }
+                KeyCode::Tab => {
+                    draft.field = (draft.field + 1) % 3;
+                    return Some(WorkInput::None);
+                }
+                KeyCode::BackTab => {
+                    draft.field = (draft.field + 2) % 3;
+                    return Some(WorkInput::None);
+                }
+                KeyCode::Char('a') if key.modifiers.is_empty() => draft.kind = "accepted".into(),
+                KeyCode::Char('r') if key.modifiers.is_empty() => draft.kind = "rejected".into(),
+                KeyCode::Char('s') if key.modifiers.contains(KeyModifiers::CONTROL) => {
+                    if draft.text.trim().is_empty() {
+                        return Some(WorkInput::None);
+                    }
+                    return Some(WorkInput::Command(WorkCommand::AddTaskDecision {
+                        id: draft.id,
+                        expected_revision: draft.revision,
+                        kind: draft.kind.clone(),
+                        text: draft.text.clone(),
+                        rationale: draft.rationale.clone(),
+                        scope: draft.scope.clone(),
+                        supersedes_id: draft.supersedes,
+                    }));
+                }
+                KeyCode::Backspace => {
+                    match draft.field {
+                        0 => draft.text.pop(),
+                        1 => draft.rationale.pop(),
+                        _ => draft.scope.pop(),
+                    };
+                }
+                KeyCode::Char(c)
+                    if !c.is_control()
+                        && !key.modifiers.contains(KeyModifiers::CONTROL) =>
+                {
+                    match draft.field {
+                        0 => draft.text.push(c),
+                        1 => draft.rationale.push(c),
+                        _ => draft.scope.push(c),
+                    }
+                }
+                _ => {}
+            }
+            return Some(WorkInput::None);
+        }
+        if let Some(decisions) = &mut self.task_decisions {
+            match key.code {
+                KeyCode::Esc => {
+                    if self.decision_draft.is_some() {
+                        self.decision_draft = None;
+                    } else {
+                        self.task_decisions = None;
+                    }
+                }
+                KeyCode::Down | KeyCode::Char('j') => {
+                    decisions.selected = (decisions.selected + 1)
+                        .min(decisions.items.len().saturating_sub(1));
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    decisions.selected = decisions.selected.saturating_sub(1);
+                }
+                KeyCode::Char('n') => {
+                    self.decision_draft = Some(DecisionDraft {
+                        id: decisions.id,
+                        revision: decisions.revision,
+                        supersedes: None,
+                        kind: "accepted".into(),
+                        field: 0,
+                        text: String::new(),
+                        rationale: String::new(),
+                        scope: String::new(),
+                    });
+                }
+                KeyCode::Char('s') => {
+                    if let Some(item) = decisions.items.get(decisions.selected) {
+                        self.decision_draft = Some(DecisionDraft {
+                            id: decisions.id,
+                            revision: decisions.revision,
+                            supersedes: Some(item.id),
+                            kind: item.kind.clone(),
+                            field: 0,
+                            text: item.text.clone(),
+                            rationale: item.rationale.clone(),
+                            scope: item.scope.clone(),
+                        });
+                    }
+                }
+                _ => {}
+            }
+            if self.decision_draft.is_some() {
+                // The new draft owns the next keys.
+                return Some(WorkInput::None);
+            }
+            return Some(WorkInput::None);
+        }
+        None
+    }
+
     fn action(&mut self, key: KeyCode, selected: usize) -> WorkInput {
         match (&self.data, key) {
             (WorkResult::Evaluations(page), key) => return page.action(key, selected),
@@ -1051,8 +1763,8 @@ impl Workbench {
                     editing_note: false,
                 });
             }
-            (WorkResult::Tasks { items, .. }, KeyCode::Char('e'))
-                if let Some(task) = items.get(selected) =>
+            (WorkResult::Tasks { .. }, KeyCode::Char('e'))
+                if let Some(task) = self.task_at(selected) =>
             {
                 self.draft = Some(Draft::Task {
                     id: Some(task.id),
@@ -1063,8 +1775,8 @@ impl Workbench {
                     editing_note: false,
                 });
             }
-            (WorkResult::Tasks { items, .. }, KeyCode::Char('c'))
-                if let Some(task) = items.get(selected) =>
+            (WorkResult::Tasks { .. }, KeyCode::Char('c'))
+                if let Some(task) = self.task_at(selected) =>
             {
                 return WorkInput::Command(WorkCommand::CompleteTask {
                     id: task.id,
@@ -1072,8 +1784,8 @@ impl Workbench {
                     completed: !task.completed,
                 });
             }
-            (WorkResult::Tasks { items, .. }, KeyCode::Char('h'))
-                if let Some(from) = items.get(selected).and_then(|task| task.anchor.clone())
+            (WorkResult::Tasks { .. }, KeyCode::Char('h'))
+                if let Some(from) = self.task_at(selected).and_then(|task| task.anchor.clone())
                     && let Some(to) = self.target.clone()
                     && (from.source != to.source || from.session != to.session) =>
             {
@@ -1084,8 +1796,8 @@ impl Workbench {
                     note: String::new(),
                 });
             }
-            (WorkResult::Tasks { items, .. }, KeyCode::Char('l'))
-                if let Some(item) = items.get(selected)
+            (WorkResult::Tasks { .. }, KeyCode::Char('l'))
+                if let Some(item) = self.task_at(selected)
                     && let Some(anchor) = self.target.clone() =>
             {
                 return WorkInput::Command(WorkCommand::LinkTask {
@@ -1093,10 +1805,20 @@ impl Workbench {
                     anchor,
                 });
             }
-            (WorkResult::Tasks { items, .. }, KeyCode::Char('r'))
-                if let Some(item) = items.get(selected) =>
+            (WorkResult::Tasks { .. }, KeyCode::Char('r'))
+                if let Some(item) = self.task_at(selected) =>
             {
                 return WorkInput::Command(WorkCommand::TaskLinks(item.id));
+            }
+            (WorkResult::Tasks { .. }, KeyCode::Char('p'))
+                if let Some(item) = self.task_at(selected) =>
+            {
+                return WorkInput::Command(WorkCommand::TaskBrief(item.id));
+            }
+            (WorkResult::Tasks { .. }, KeyCode::Char('v'))
+                if let Some(item) = self.task_at(selected) =>
+            {
+                return WorkInput::Command(WorkCommand::TaskDecisions(item.id));
             }
             (WorkResult::TaskLinks { id, items }, KeyCode::Delete)
                 if let Some(anchor) = items.get(selected) =>
@@ -1106,13 +1828,13 @@ impl Workbench {
                     anchor: anchor.clone(),
                 });
             }
-            (WorkResult::Tasks { items, .. }, KeyCode::Char('g'))
-                if let Some(item) = items.get(selected) =>
+            (WorkResult::Tasks { .. }, KeyCode::Char('g'))
+                if let Some(item) = self.task_at(selected) =>
             {
                 return WorkInput::Command(WorkCommand::TaskWorkspace(item.id));
             }
-            (WorkResult::Tasks { items, .. }, KeyCode::Char('G'))
-                if let Some(item) = items.get(selected) =>
+            (WorkResult::Tasks { .. }, KeyCode::Char('G'))
+                if let Some(item) = self.task_at(selected) =>
             {
                 self.draft = Some(Draft::Capture {
                     id: item.id,
@@ -1128,8 +1850,8 @@ impl Workbench {
             ) => {
                 return WorkInput::Command(WorkCommand::Tasks(None));
             }
-            (WorkResult::Tasks { items, .. }, KeyCode::Delete)
-                if let Some(item) = items.get(selected) =>
+            (WorkResult::Tasks { .. }, KeyCode::Delete)
+                if let Some(item) = self.task_at(selected) =>
             {
                 self.draft = Some(Draft::Delete {
                     id: item.id,
@@ -1157,7 +1879,10 @@ impl Workbench {
             (WorkResult::Handoffs { items, .. }, KeyCode::Char('x'))
                 if let Some(item) = items.get(selected) =>
             {
-                return WorkInput::Command(WorkCommand::ExportHandoff(item.id));
+                return WorkInput::Command(WorkCommand::PreviewHandoff {
+                    id: item.id,
+                    format: "markdown".into(),
+                });
             }
             (WorkResult::Handoffs { .. }, KeyCode::Char('b')) => {
                 return WorkInput::Command(WorkCommand::Tasks(None));
@@ -1316,14 +2041,20 @@ impl Workbench {
     }
 
     pub(super) fn editing(&self) -> bool {
-        self.draft.is_some() || self.workflow_settings.is_some()
+        self.draft.is_some()
+            || self.workflow_settings.is_some()
+            || self.task_brief.is_some()
+            || self.decision_draft.is_some()
+            || self.handoff_export.is_some()
     }
 
     fn scrollable_details(&self) -> bool {
-        matches!(
-            self.data,
-            WorkResult::ReviewNotes { .. } | WorkResult::Evaluations(_)
-        )
+        self.review_document.is_some()
+            || self.handoff_preview.is_some()
+            || matches!(
+                self.data,
+                WorkResult::ReviewNotes { .. } | WorkResult::Evaluations(_)
+            )
     }
 
     pub(super) fn draw(&mut self, frame: &mut Frame, pending: bool, status: Option<&str>) {
@@ -1346,6 +2077,252 @@ impl Workbench {
             alerts.draw(frame, pending, status);
             return;
         }
+        if let Some((title, text, scope)) = &self.review_document {
+            let [header, body, footer] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ])
+            .areas(area);
+            frame.render_widget(
+                Paragraph::new(format!(" Agenturm / {}", visible_text(title))).style(heading_style()),
+                header,
+            );
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(visible_text(scope)),
+                    Line::from(""),
+                    Line::from(visible_text(text)),
+                ])
+                .scroll((self.review_note_scroll, 0))
+                .block(panel(" Bounded review receipt "))
+                .wrap(Wrap { trim: false }),
+                body,
+            );
+            draw_footer(
+                frame,
+                footer,
+                "↑↓/PgUp/PgDn read · c copy receipt · Esc review",
+                pending,
+                status,
+            );
+            return;
+        }
+        if let Some((_, items, selection)) = &mut self.review_excerpts {
+            let [header, body, footer] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ])
+            .areas(area);
+            frame.render_widget(
+                Paragraph::new(" Agenturm / Review excerpts").style(heading_style()),
+                header,
+            );
+            let list = items.iter().map(|item| {
+                ListItem::new(visible_text(&format!(
+                    "{} · {} · {}",
+                    item.kind, item.label, item.source
+                )))
+            });
+            frame.render_stateful_widget(
+                List::new(list)
+                    .block(panel(" Excerpts from this loaded page "))
+                    .highlight_symbol("› ")
+                    .highlight_style(selection_style()),
+                body,
+                selection,
+            );
+            draw_footer(
+                frame,
+                footer,
+                "↑↓ select · Enter draft task · Esc review",
+                pending,
+                status,
+            );
+            return;
+        }
+        if let Some((_, format, text)) = &self.handoff_preview {
+            let [header, body, footer] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ])
+            .areas(area);
+            frame.render_widget(
+                Paragraph::new(" Agenturm / Handoff preview").style(heading_style()),
+                header,
+            );
+            frame.render_widget(
+                Paragraph::new(visible_text(text))
+                    .scroll((self.review_note_scroll, 0))
+                    .wrap(Wrap { trim: false })
+                    .block(panel(format!(" {format} · preview "))),
+                body,
+            );
+            draw_footer(
+                frame,
+                footer,
+                "↑↓/PgUp/PgDn read · c copy · x export · Esc handoffs",
+                pending,
+                status,
+            );
+            return;
+        }
+        if let Some((_, format, directory)) = &self.handoff_export {
+            let [header, body, footer] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ])
+            .areas(area);
+            frame.render_widget(
+                Paragraph::new(" Agenturm / Export handoff").style(heading_style()),
+                header,
+            );
+            frame.render_widget(
+                Paragraph::new(vec![
+                    Line::from(format!("Format {format}")),
+                    Line::from(""),
+                    Line::from("New directory:"),
+                    Line::from(visible_text(directory)),
+                    Line::from(""),
+                    Line::from("Writes handoff.md and handoff.html; an existing destination is refused."),
+                    Line::from(status.map(visible_text).unwrap_or_default()),
+                ])
+                .block(panel(" Export "))
+                .wrap(Wrap { trim: false }),
+                body,
+            );
+            draw_footer(
+                frame,
+                footer,
+                "Type a new directory · Enter export · Esc cancel",
+                pending,
+                status,
+            );
+            return;
+        }
+        if let Some(brief) = &self.task_brief {
+            let [header, body, footer] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ])
+            .areas(area);
+            frame.render_widget(
+                Paragraph::new(" Agenturm / Task brief").style(heading_style()),
+                header,
+            );
+            let mut lines = Vec::new();
+            for (index, label) in BRIEF_LABELS.iter().enumerate() {
+                let active = index == brief.active;
+                lines.push(Line::styled(
+                    format!("{} {label}", if active { "›" } else { " " }),
+                    if active { selection_style() } else { heading_style() },
+                ));
+                for chunk in brief.fields[index].lines() {
+                    lines.push(Line::from(visible_text(chunk)));
+                }
+                lines.push(Line::from(""));
+            }
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .block(panel(" Operator-authored brief fields "))
+                    .wrap(Wrap { trim: false }),
+                body,
+            );
+            let keys = if brief.dirty_confirm {
+                "Esc again to discard · Ctrl+S save"
+            } else {
+                "Tab fields · Enter new line · Ctrl+S save · Esc cancel"
+            };
+            draw_footer(frame, footer, keys, pending, status);
+            return;
+        }
+        if let Some(draft) = &self.decision_draft {
+            let [header, body, footer] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ])
+            .areas(area);
+            frame.render_widget(
+                Paragraph::new(" Agenturm / Task decision").style(heading_style()),
+                header,
+            );
+            let field = |index: usize, label: &str, value: &str| {
+                let active = draft.field == index;
+                vec![
+                    Line::styled(
+                        format!("{} {label}", if active { "›" } else { " " }),
+                        if active { selection_style() } else { heading_style() },
+                    ),
+                    Line::from(visible_text(value)),
+                    Line::from(""),
+                ]
+            };
+            let mut lines = vec![
+                Line::from(format!(
+                    "{} · {}",
+                    draft.kind,
+                    draft
+                        .supersedes
+                        .map_or_else(|| "new version".into(), |id| format!("supersedes {id}"))
+                )),
+                Line::from(""),
+            ];
+            lines.extend(field(0, "Decision text", &draft.text));
+            lines.extend(field(1, "Rationale", &draft.rationale));
+            lines.extend(field(2, "Scope", &draft.scope));
+            frame.render_widget(
+                Paragraph::new(lines)
+                    .block(panel(" Accepted or rejected · versioned "))
+                    .wrap(Wrap { trim: false }),
+                body,
+            );
+            draw_footer(
+                frame,
+                footer,
+                "Tab fields · a accepted · r rejected · Ctrl+S save · Esc cancel",
+                pending,
+                status,
+            );
+            return;
+        }
+        if let Some(decisions) = &self.task_decisions {
+            let [header, body, footer] = Layout::vertical([
+                Constraint::Length(1),
+                Constraint::Min(1),
+                Constraint::Length(2),
+            ])
+            .areas(area);
+            frame.render_widget(
+                Paragraph::new(" Agenturm / Task decisions").style(heading_style()),
+                header,
+            );
+            let items = decisions.items.iter().enumerate().map(|(index, item)| {
+                let marker = if index == decisions.selected { "›" } else { " " };
+                ListItem::new(visible_text(&format!(
+                    "{marker} #{} {} · {}{}",
+                    item.id,
+                    item.kind,
+                    item.text.lines().next().unwrap_or_default(),
+                    item.supersedes
+                        .map_or_else(String::new, |id| format!(" · supersedes {id}"))
+                )))
+            });
+            frame.render_widget(List::new(items).block(panel(" Versions ")), body);
+            draw_footer(
+                frame,
+                footer,
+                "↑↓ versions · n add · s supersede · Esc task",
+                pending,
+                status,
+            );
+            return;
+        }
+
         let footer_height = if matches!(self.data, WorkResult::Workflow { .. }) {
             3
         } else {
@@ -1383,7 +2360,7 @@ impl Workbench {
         if self.help {
             frame.render_widget(Paragraph::new(" Workbench keys"), header);
             frame.render_widget(
-                Paragraph::new("Tasks · n new linked · N blank · e edit · c done\nl link selected session or turn · r links · Del delete\nG capture Git · g saved Git · h new handoff · o handoffs\nHandoffs · e edit · x export MD+HTML · Del delete · b tasks\nWorkflow · r seen · l locate · c copy resume · R refresh\nTab incidents · S settings · T retry eligible delivery\nPrompts · Enter reveal · m activity details · Esc close\nHost history · Enter drill down · ] older · Esc back")
+                Paragraph::new("Tasks · n new linked · N blank · e edit · c done · / search page\nl link selected session or turn · r links · p brief · v decisions\nG capture Git · g saved Git · h new handoff · o handoffs\nHandoffs · e edit · x preview · c copy · export from the preview\nWorkflow · r seen · l locate · c copy resume · R refresh\nTab incidents · S settings (dirty draft arms a discard) · T retry delivery\nIncident detail · observed owner · approval state · delivery attempt\nPrompts · Enter reveal · m activity details · Esc close\nHost history · Enter drill down · ] older · Esc back")
                     .wrap(Wrap { trim: false }).block(panel("")),
                 body,
             );
@@ -1532,11 +2509,19 @@ impl Workbench {
                     .unwrap_or_default(),
                 "No decision notes for this session",
             ),
-            WorkResult::Tasks { items, .. } => (
-                "Saved tasks",
-                "n new · N blank · e edit · l link · r runs · ? help",
-                items
+            WorkResult::Tasks { .. } => (
+                if self.task_search.active() {
+                    "Saved tasks · filtered page"
+                } else {
+                    "Saved tasks"
+                },
+                "n new · N blank · e edit · l link · r runs · / search · ? help",
+                self.task_indices()
                     .iter()
+                    .filter_map(|index| match &self.data {
+                        WorkResult::Tasks { items, .. } => items.get(*index),
+                        _ => None,
+                    })
                     .map(|item| {
                         format!(
                             "{}  {}",
@@ -1545,8 +2530,12 @@ impl Workbench {
                         )
                     })
                     .collect(),
-                items.get(selected).map(task_details).unwrap_or_default(),
-                "No saved tasks",
+                self.task_at(selected).map(task_details).unwrap_or_default(),
+                if self.task_search.active() {
+                    "No task on this page matches the search · Ctrl+A clears the draft, Esc clears the filter"
+                } else {
+                    "No saved tasks"
+                },
             ),
             WorkResult::Handoffs { items, .. } => (
                 "Handoffs",
@@ -1690,6 +2679,12 @@ impl Workbench {
             | WorkResult::HostInventory(_)
             | WorkResult::HostNow(_)
             | WorkResult::Investigation(_)
+            | WorkResult::ReviewDocument { .. }
+            | WorkResult::ReviewExcerpts { .. }
+            | WorkResult::TaskDraft { .. }
+            | WorkResult::TaskBrief { .. }
+            | WorkResult::TaskDecisions { .. }
+            | WorkResult::HandoffPreview { .. }
             | WorkResult::WorkflowAlerts(_)
             | WorkResult::WorkflowSettings { .. }
             | WorkResult::WorkflowResume(_)
@@ -1741,15 +2736,25 @@ impl Workbench {
             } else {
                 Paragraph::new(details).wrap(Wrap { trim: false })
             };
-            let title = self
-                .workflow_delivery(selected)
-                .map(|delivery| format!("Details · Delivery {}", delivery_label(delivery.state)));
+            let title = self.workflow_delivery(selected).map(|delivery| {
+                format!(
+                    "Details · Delivery {} · attempt {} · policy r{}",
+                    delivery_label(delivery.state),
+                    delivery.attempt,
+                    delivery.policy_revision
+                )
+            });
             frame.render_widget(
                 paragraph.block(panel(title.as_deref().unwrap_or("Details"))),
                 detail,
             );
         }
-        draw_footer(frame, footer, keys, pending, status);
+        let keys = if let Some(label) = self.task_search.label() {
+            format!("{label} · {keys}")
+        } else {
+            keys.to_owned()
+        };
+        draw_footer(frame, footer, &keys, pending, status);
     }
 }
 
@@ -1807,12 +2812,17 @@ fn handoff_details(handoff: &HandoffEntry) -> Vec<Line<'static>> {
 }
 
 fn request_details(request: &RequestEntry) -> Vec<Line<'static>> {
-    let mut lines = anchor_details(&request.owner);
+    let mut lines = vec![Line::from("Observed owner")];
+    lines.extend(anchor_details(&request.owner));
     lines.push(Line::from(visible_text(&format!(
         "{} · {}",
         request.reason,
         workspace::age(request.timestamp)
     ))));
+    lines.push(Line::from(format!(
+        "Approval state · {} · Seen acknowledges locally only",
+        if request.seen { "seen" } else { "pending" }
+    )));
     lines.push(Line::from("Respond in the native agent terminal."));
     lines
 }
@@ -1882,5 +2892,150 @@ fn draft_text(draft: &Draft) -> (&'static str, Vec<Line<'static>>) {
             lines.extend(note.lines().map(|line| Line::from(visible_text(line))));
             (" New handoff", lines)
         }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    fn key(code: KeyCode) -> event::KeyEvent {
+        event::KeyEvent::new(code, KeyModifiers::NONE)
+    }
+
+    fn tasks() -> WorkResult {
+        WorkResult::Tasks {
+            items: vec![
+                TaskEntry {
+                    id: 1,
+                    revision: 4,
+                    anchor: Some(WorkAnchor {
+                        source: "harness.codex".into(),
+                        session: "payments-api".into(),
+                        worker: None,
+                        turn: None,
+                    }),
+                    title: "Payments API follow-up".into(),
+                    note: "check retries".into(),
+                    completed: false,
+                },
+                TaskEntry {
+                    id: 2,
+                    revision: 8,
+                    anchor: None,
+                    title: "Agenturm docs".into(),
+                    note: String::new(),
+                    completed: false,
+                },
+            ],
+            older: Some(9),
+        }
+    }
+
+    #[test]
+    fn task_search_is_page_local_and_preserves_the_selected_identity() {
+        let mut work = Workbench::new(tasks(), None);
+        let _ = work.key(key(KeyCode::Char('/')));
+        for ch in "payments".chars() {
+            let _ = work.key(key(KeyCode::Char(ch)));
+        }
+        let _ = work.key(key(KeyCode::Enter));
+        assert_eq!(work.task_indices(), vec![0]);
+        assert_eq!(work.task_at(0).unwrap().id, 1);
+        assert_eq!(work.len(), 1);
+        let _ = work.key(key(KeyCode::Char('/')));
+        let _ = work.key(key(KeyCode::Esc));
+        let _ = work.key(key(KeyCode::Esc));
+        assert_eq!(work.task_indices(), vec![0, 1]);
+        assert_eq!(
+            work.task_search.label(),
+            None,
+            "Esc clears the committed page filter"
+        );
+    }
+
+    #[test]
+    fn task_brief_and_decisions_carry_the_read_revision_and_guard_dirty_drafts() {
+        let mut work = Workbench::new(tasks(), None);
+        assert!(work.task_at(0).is_some(), "selected task exists before brief");
+        assert!(matches!(
+            work.key(key(KeyCode::Char('p'))),
+            WorkInput::Command(WorkCommand::TaskBrief(1))
+        ));
+        work.apply(WorkResult::TaskBrief {
+            id: 1,
+            revision: Some(4),
+            intent: "ship".into(),
+            acceptance_criteria: String::new(),
+            constraints: String::new(),
+            open_questions: String::new(),
+            next_action: String::new(),
+        });
+        let brief = work.task_brief.as_ref().unwrap();
+        assert_eq!(brief.id, 1);
+        assert_eq!(brief.revision, Some(4));
+        let _ = work.key(key(KeyCode::Char('x')));
+        let _ = work.key(key(KeyCode::Esc));
+        assert!(work.task_brief.as_ref().unwrap().dirty_confirm);
+        let _ = work.key(key(KeyCode::Esc));
+        assert!(work.task_brief.is_none());
+
+        assert!(matches!(
+            work.key(key(KeyCode::Char('v'))),
+            WorkInput::Command(WorkCommand::TaskDecisions(1))
+        ));
+        work.apply(WorkResult::TaskDecisions {
+            id: 1,
+            revision: Some(4),
+            items: vec![TaskDecisionEntry {
+                id: 9,
+                kind: "accepted".into(),
+                text: "ship it".into(),
+                rationale: String::new(),
+                scope: String::new(),
+                supersedes: None,
+            }],
+        });
+        let decisions = work.task_decisions.as_ref().unwrap();
+        assert_eq!(decisions.id, 1);
+        assert_eq!(decisions.revision, Some(4));
+        let _ = work.key(key(KeyCode::Char('n')));
+        assert_eq!(work.decision_draft.as_ref().unwrap().kind, "accepted");
+        let _ = work.key(key(KeyCode::Char('r')));
+        let _ = work.key(key(KeyCode::Char('x')));
+        assert_eq!(work.decision_draft.as_ref().unwrap().kind, "rejected");
+        let _ = work.key(event::KeyEvent::new(
+            KeyCode::Char('s'),
+            KeyModifiers::CONTROL,
+        ));
+        assert!(matches!(
+            work.decision_draft.as_ref().map(|draft| draft.text.as_str()),
+            Some("x")
+        ));
+        let _ = work.key(key(KeyCode::Esc));
+        assert!(work.decision_draft.is_none());
+    }
+
+    #[test]
+    fn handoff_preview_owns_copy_and_export_and_keeps_the_form_on_failure() {
+        let mut work = Workbench::new(
+            WorkResult::HandoffPreview {
+                id: 3,
+                format: "markdown".into(),
+                text: "# Task 3 handoff".into(),
+            },
+            None,
+        );
+        assert!(work.handoff_preview.is_some());
+        let copied = work.key(key(KeyCode::Char('c')));
+        assert!(matches!(copied, WorkInput::Copy(text) if text.contains("Task 3")));
+        let _ = work.key(key(KeyCode::Char('x')));
+        assert!(work.handoff_export.is_some());
+        assert!(matches!(
+            work.key(key(KeyCode::Esc)),
+            WorkInput::None
+        ));
+        assert!(work.handoff_export.is_none());
+        assert!(work.handoff_preview.is_some());
     }
 }

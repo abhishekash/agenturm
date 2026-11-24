@@ -210,6 +210,15 @@ pub(super) fn add_session_panes(
     }
 }
 
+/// Review rows for one exact recorded turn. The same typed checks, edits,
+/// errors, usage and context projection as the session Review, scoped by the
+/// query the app already pinned to the turn.
+pub(super) fn turn_review_rows(snapshot: &Snapshot) -> Vec<MetricRow> {
+    let evidence: Vec<_> = snapshot.observations.iter().collect();
+    let endings = recorded_turn_endings(&evidence);
+    review_rows(&evidence, &endings)
+}
+
 /// Overview leads with recorded work and coverage. Exact identifiers belong to
 /// the Details section; a missing value is labelled as unknown, never invented.
 fn session_overview_rows(

@@ -2624,6 +2624,11 @@ fn load_workspace_history(
             Some(&turn.session_id),
             Some(turn.snapshot_id),
         ),
+        HistorySelection::TurnReview(turn) => (
+            Some(turn.harness_id.as_str()),
+            Some(&turn.session_id),
+            Some(turn.snapshot_id),
+        ),
     };
     let query = ObservationQuery {
         harness_id: source.map(str::to_owned),
@@ -2706,6 +2711,15 @@ fn load_workspace_history(
                 turn.worker_id.as_deref(),
             );
             Ok(inspector_activity::turn_page(snapshot, &turn))
+        }
+        HistorySelection::TurnReview(turn) => {
+            let snapshot = app.kernel.refresh_worker_turn_with_store(
+                store,
+                query,
+                &turn.turn_id,
+                turn.worker_id.as_deref(),
+            );
+            Ok(inspector_activity::turn_review_page(snapshot, &turn))
         }
         HistorySelection::Session(session, view) => {
             let select_pane: fn(session_evidence::SessionPaneIds) -> ExtensionId = match view {
@@ -2929,6 +2943,63 @@ pub fn execute_selected_review(
     let store = Store::open_read_only(&options.db)
         .map_err(|error| format!("open existing store failed: {error}"))?;
     review_from_store(&store, options, selection, output)
+}
+
+/// Renders the bounded review receipt for a cockpit Review scope. The shell
+/// supplies exact identifiers and a format/destination; receipt composition and
+/// every grant-sensitive read stay in the app.
+pub(crate) fn review_receipt_for_scope(
+    store: &impl HistoryReader,
+    db: &std::path::Path,
+    harness_id: &str,
+    session_id: &str,
+    turn_id: Option<&str>,
+    worker_id: Option<&str>,
+    format: &str,
+    directory: Option<&str>,
+) -> Result<String, String> {
+    let output = ReviewOutput {
+        format: Some(review_receipt::ReviewFormat::parse(format)?),
+        directory: directory.map(PathBuf::from),
+    };
+    let options = HistoryQueryOptions {
+        db: db.to_path_buf(),
+        harness_id: Some(harness_id.to_owned()),
+        session_id: Some(session_id.to_owned()),
+        before: None,
+        snapshot_id: None,
+        limit: INSPECT_PAGE_SIZE,
+    };
+    if let Some(turn_id) = turn_id {
+        let selection = ReviewSelection {
+            anchor: ReviewAnchor::Turn {
+                turn_id: turn_id.to_owned(),
+                worker_id: worker_id.map(str::to_owned),
+            },
+            linked_traces: false,
+        };
+        return review_from_store(store, &options, &selection, &output);
+    }
+    let page = store
+        .query_observations(&options.observation_query())
+        .map_err(|error| format!("Read review evidence failed: {error}"))?;
+    let snapshot = page.snapshot_id;
+    let mut data = history_page_data(page);
+    if let Some(identity) = store.workspace_history_identity() {
+        data["history_identity"] = serde_json::json!(identity);
+    }
+    review_receipt::render(
+        data,
+        review_receipt::ReviewScope {
+            harness_id,
+            session_id,
+            turn_id: None,
+            trace_id: None,
+            worker_id,
+        },
+        snapshot,
+        &output,
+    )
 }
 
 fn query_from_store(

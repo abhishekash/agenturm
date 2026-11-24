@@ -139,6 +139,10 @@ impl Browser {
     pub(super) fn active(&mut self, ui: &UiModel) -> Option<&mut OperationList> {
         self.panes.get_mut(ui.panes.get(ui.selected)?.id.as_ref()?)
     }
+
+    pub(super) fn active_ref(&self, ui: &UiModel) -> Option<&OperationList> {
+        self.panes.get(ui.panes.get(ui.selected)?.id.as_ref()?)
+    }
 }
 
 impl OperationList {

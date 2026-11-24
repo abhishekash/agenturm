@@ -156,6 +156,20 @@ impl EvidenceTable {
         selected: usize,
         inspection: &Inspection,
     ) {
+        self.draw_expanded_filtered(frame, area, None, selected, inspection);
+    }
+
+    pub(super) fn draw_expanded_filtered(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        visible: Option<&[usize]>,
+        selected_position: usize,
+        inspection: &Inspection,
+    ) {
+        let selected = visible
+            .and_then(|rows| rows.get(selected_position).copied())
+            .unwrap_or(selected_position);
         let width = area.width.saturating_sub(2).max(1);
         let height = usize::from(area.height.saturating_sub(2));
         let lines = self.detail_view(selected, width);
@@ -184,8 +198,22 @@ impl EvidenceTable {
         selected: usize,
         expandable: bool,
     ) {
+        self.draw_with_inspector_filtered(frame, area, None, selected, expandable);
+    }
+
+    pub(super) fn draw_with_inspector_filtered(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        visible: Option<&[usize]>,
+        selected_position: usize,
+        expandable: bool,
+    ) {
+        let selected = visible
+            .and_then(|rows| rows.get(selected_position).copied())
+            .unwrap_or(selected_position);
         let (list, inspector) = panes(area);
-        self.draw_list(frame, list, selected);
+        self.draw_list_filtered(frame, list, visible, selected_position);
         let width = inspector.width.saturating_sub(2).max(1);
         let height = usize::from(inspector.height.saturating_sub(2));
         let mut lines = if self.has_detail(selected) {
@@ -220,12 +248,30 @@ impl EvidenceTable {
         );
     }
 
+    #[allow(dead_code)]
     fn draw_list(&self, frame: &mut Frame, area: Rect, selected: usize) {
-        if self.rows.is_empty() {
+        self.draw_list_filtered(frame, area, None, selected);
+    }
+
+    fn draw_list_filtered(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        visible: Option<&[usize]>,
+        selected: usize,
+    ) {
+        let rows_source: Vec<usize> = visible
+            .map(<[usize]>::to_vec)
+            .unwrap_or_else(|| (0..self.rows.len()).collect());
+        if rows_source.is_empty() {
             frame.render_widget(
-                Paragraph::new(self.spec.empty)
-                    .wrap(ratatui::widgets::Wrap { trim: true })
-                    .block(panel(self.spec.title)),
+                Paragraph::new(if visible.is_some() {
+                    "No loaded row matches this page filter · Esc clears"
+                } else {
+                    self.spec.empty
+                })
+                .wrap(ratatui::widgets::Wrap { trim: true })
+                .block(panel(self.spec.title)),
                 area,
             );
             return;
@@ -238,21 +284,29 @@ impl EvidenceTable {
             .map(|&(_, weight)| Constraint::Fill(weight));
         let header =
             Row::new(self.spec.columns.iter().map(|&(title, _)| title)).style(heading_style());
-        let rows = self.rows.iter().enumerate().map(|(index, row)| {
-            Row::new(row.cells.iter().enumerate().map(|(column, value)| {
-                let cell = Cell::from(visible_text(value));
-                if self.spec.columns.get(column).is_some_and(|(name, _)| {
-                    matches!(
-                        *name,
-                        "Result" | "Severity" | "Root result" | "State" | "Status" | "Coverage"
-                    )
-                }) {
-                    cell.style(theme::status(value))
-                } else {
-                    cell
-                }
-            }))
-            .style(theme::row(index))
+        let rows = rows_source.iter().filter_map(|index| {
+            let row = self.rows.get(*index)?;
+            Some(
+                Row::new(row.cells.iter().enumerate().map(|(column, value)| {
+                    let cell = Cell::from(visible_text(value));
+                    if self.spec.columns.get(column).is_some_and(|(name, _)| {
+                        matches!(
+                            *name,
+                            "Result"
+                                | "Severity"
+                                | "Root result"
+                                | "State"
+                                | "Status"
+                                | "Coverage"
+                        )
+                    }) {
+                        cell.style(theme::status(value))
+                    } else {
+                        cell
+                    }
+                }))
+                .style(theme::row(*index)),
+            )
         });
         let mut cursor = TableState::default().with_selected(Some(selected));
         let table = Table::new(rows, columns)

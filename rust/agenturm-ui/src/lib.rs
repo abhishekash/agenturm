@@ -46,8 +46,10 @@ pub use workbench::workflow_resume::{ResumeRuntime, WorkflowResume};
 pub use agenturm_kernel::workflow_notifications::WorkflowDelivery;
 pub use workbench::{
     CurrentHostSample, HandoffEntry, OperationDetailEntry, OperationDetailKind, PromptDelivery,
-    PromptEntry, RequestEntry, RequestProof, ReviewEditSelection, ReviewNoteEntry, TaskEntry,
-    TelemetryLogEntry, TelemetrySpanEntry, WorkAnchor, WorkCommand, WorkResult, WorkflowAlertInbox,
+    PromptEntry, RequestEntry, RequestProof, ReviewDocumentRequest, ReviewEditSelection,
+    ReviewExcerpt, ReviewFormat, ReviewNoteEntry, TaskDecisionEntry, TaskEntry,
+    TelemetryLogEntry, TelemetrySpanEntry, WorkAnchor, WorkCommand, WorkResult,
+    WorkflowAlertInbox,
 };
 
 pub use workspace::{
@@ -64,6 +66,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use std::collections::BTreeMap;
 use std::io;
 use unicode_width::UnicodeWidthChar;
 
@@ -82,6 +85,9 @@ struct Pane {
 pub struct UiModel {
     panes: Vec<Pane>,
     evidence: EvidenceTables,
+    /// Page-local filter per selected evidence pane. The committed query moves
+    /// with the pane across older/newer pages; the draft only lives here.
+    evidence_filter: BTreeMap<ExtensionId, pane_filter::Filter>,
     evidence_inspection: Option<evidence_view::Inspection>,
     selected: usize,
     scroll: usize,
@@ -154,6 +160,7 @@ impl UiModel {
         Self {
             panes,
             evidence: EvidenceTables::new(),
+            evidence_filter: BTreeMap::new(),
             evidence_inspection: None,
             selected: 0,
             scroll: 0,
@@ -238,16 +245,147 @@ impl UiModel {
         self.evidence.get(id)
     }
 
+    fn selected_evidence_id(&self) -> Option<ExtensionId> {
+        self.panes.get(self.selected)?.id.clone()
+    }
+
+    fn evidence_matches(table: &EvidenceTable, filter: &pane_filter::Filter, index: usize) -> bool {
+        let Some(row) = table.rows.get(index) else {
+            return false;
+        };
+        filter.matches(
+            row.cells
+                .iter()
+                .map(String::as_str)
+                .chain(
+                    row.details
+                        .iter()
+                        .flat_map(|detail| [detail.label.as_str(), detail.value.as_str()]),
+                )
+                .chain(
+                    table
+                        .context
+                        .iter()
+                        .flat_map(|detail| [detail.label.as_str(), detail.value.as_str()]),
+                ),
+        )
+    }
+
+    /// Actual row indices in the selected evidence table after its page-local
+    /// filter. The returned order is the rendered order.
+    fn evidence_visible(&self) -> Vec<usize> {
+        let Some(table) = self.selected_evidence() else {
+            return Vec::new();
+        };
+        let Some(id) = self.selected_evidence_id() else {
+            return (0..table.rows.len()).collect();
+        };
+        let Some(filter) = self.evidence_filter.get(&id) else {
+            return (0..table.rows.len()).collect();
+        };
+        (0..table.rows.len())
+            .filter(|index| Self::evidence_matches(table, filter, *index))
+            .collect()
+    }
+
+    fn evidence_actual_row(&self) -> Option<usize> {
+        let visible = self.evidence_visible();
+        visible.get(self.scroll).copied()
+    }
+
+    pub(crate) fn evidence_filter_editing(&self) -> bool {
+        self.selected_evidence_id()
+            .and_then(|id| self.evidence_filter.get(&id))
+            .is_some_and(pane_filter::Filter::editing)
+    }
+
+    pub(crate) fn evidence_filter_label(&self) -> Option<String> {
+        let id = self.selected_evidence_id()?;
+        self.evidence_filter.get(&id)?.label()
+    }
+
+    fn evidence_filter_active(&self) -> bool {
+        self.selected_evidence_id()
+            .and_then(|id| self.evidence_filter.get(&id))
+            .is_some_and(pane_filter::Filter::active)
+    }
+
+    /// Applies `/`, editing keys and Esc-clear to the selected evidence pane.
+    pub(crate) fn evidence_filter_key(&mut self, key: KeyCode) -> bool {
+        let Some(id) = self.selected_evidence_id() else {
+            return false;
+        };
+        let table = match self.evidence.get(&id) {
+            Some(table) => table,
+            None => return false,
+        };
+        let previous_actual = self.evidence_actual_row();
+        let filter = self.evidence_filter.entry(id.clone()).or_default();
+        match filter.key(key) {
+            pane_filter::FilterKey::Ignored => false,
+            pane_filter::FilterKey::Handled => true,
+            pane_filter::FilterKey::Changed => {
+                let visible = (0..table.rows.len())
+                    .filter(|index| Self::evidence_matches(table, filter, *index))
+                    .collect::<Vec<_>>();
+                let position = previous_actual
+                    .and_then(|actual| visible.iter().position(|index| *index == actual))
+                    .unwrap_or_else(|| pane_filter::selection(&visible, previous_actual).unwrap_or(0));
+                self.scroll = position;
+                self.update_scroll_limit();
+                self.evidence_inspection = None;
+                true
+            }
+        }
+    }
+
+    /// Adopts the committed filters of the previous page for panes that still
+    /// exist. A draft is deliberately not carried: only an applied query is
+    /// part of the retained page identity.
+    fn inherit_evidence_filters(&mut self, previous: &Self) {
+        for (id, filter) in &previous.evidence_filter {
+            if self.evidence.contains_key(id) {
+                self.evidence_filter
+                    .insert(id.clone(), filter.committed());
+            }
+        }
+        if let Some(table) = self.selected_evidence() {
+            let visible = self.evidence_visible();
+            let _ = table;
+            self.scroll = self.scroll.min(visible.len().saturating_sub(1));
+        }
+        self.update_scroll_limit();
+    }
+
+    /// Export target for the selected evidence row: pane title, row, visible
+    /// position and total visible rows.
+    pub(crate) fn selected_evidence_export(&self) -> Option<(&str, &EvidenceRow, usize, usize)> {
+        let table = self.selected_evidence()?;
+        let pane = self.panes.get(self.selected)?;
+        let visible = self.evidence_visible();
+        let actual = *visible.get(self.scroll)?;
+        Some((
+            pane.title.as_str(),
+            table.rows.get(actual)?,
+            self.scroll,
+            visible.len(),
+        ))
+    }
+
+
+
     /// Routes input to the active metadata inspector before regular history keys.
     fn evidence_key(&mut self, key: KeyCode) -> bool {
         if self.help {
             return false;
         }
         if self.evidence_inspection.is_none() {
-            if key == KeyCode::Enter {
+            if key == KeyCode::Enter
+                && let Some(actual) = self.evidence_actual_row()
+            {
                 self.evidence_inspection = self
                     .selected_evidence()
-                    .and_then(|table| table.open_inspection(self.scroll));
+                    .and_then(|table| table.open_inspection(actual));
             }
             return self.evidence_inspection.is_some();
         }
@@ -266,15 +404,17 @@ impl UiModel {
 
     fn evidence_inspection_bounds(&self) -> (usize, usize) {
         let page = usize::from(self.viewport_height.saturating_sub(6).max(1));
+        let actual = self.evidence_actual_row().unwrap_or_default();
         let limit = self.selected_evidence().map_or(0, |table| {
-            table.inspection_limit(self.scroll, self.viewport_width, page)
+            table.inspection_limit(actual, self.viewport_width, page)
         });
         (page, limit)
     }
 
     fn update_scroll_limit(&mut self) {
-        if let Some(table) = self.selected_evidence() {
-            self.scroll_limit = table.rows.len().saturating_sub(1);
+        if self.selected_evidence().is_some() {
+            let visible = self.evidence_visible().len();
+            self.scroll_limit = visible.saturating_sub(1);
             self.scroll = self.scroll.min(self.scroll_limit);
             return;
         }
@@ -343,6 +483,14 @@ impl UiModel {
                 self.scroll_up();
                 false
             }
+            KeyCode::Home => {
+                self.scroll = 0;
+                false
+            }
+            KeyCode::End => {
+                self.scroll = self.scroll_limit;
+                false
+            }
             _ => false,
         }
     }
@@ -401,6 +549,9 @@ struct PageView {
     findings: Option<(ExtensionId, findings::Browser)>,
     operation_picker: Option<(OperationDetailKind, ListState)>,
     review_edit_preview: bool,
+    /// Tab-focus position across the Review control strip. The list is fixed
+    /// so focus order is deterministic at every width.
+    review_control: Option<usize>,
     telemetry_spans: Vec<TelemetrySpanEntry>,
     evaluation_traces: Vec<TraceEvaluationEntry>,
     evaluation_picker: Option<ListState>,
@@ -461,6 +612,7 @@ impl PageView {
                 .map(|(id, data)| (id, findings::Browser::new(data))),
             operation_picker: None,
             review_edit_preview: page.features.review_edit_preview,
+            review_control: None,
             telemetry_spans,
             evaluation_traces,
             evaluation_picker: None,
@@ -469,6 +621,7 @@ impl PageView {
     fn inherit_filters(&mut self, previous: &Self) {
         self.operation_table
             .inherit_filters(&previous.operation_table);
+        self.ui.inherit_evidence_filters(&previous.ui);
         if let (Some((id, next)), Some((previous_id, prior))) =
             (&mut self.findings, &previous.findings)
             && id == previous_id
@@ -696,13 +849,19 @@ fn draw(
             area,
         );
         evidence_view::header(frame, model, head);
+        let visible = model.evidence_visible();
+        let filtered = model.evidence_filter_active();
+        let rows = filtered.then_some(visible.as_slice());
         let keys = if let Some(inspection) = &model.evidence_inspection {
-            table.draw_expanded(frame, body, model.scroll, inspection);
+            table.draw_expanded_filtered(frame, body, rows, model.scroll, inspection);
             "↑↓ scroll · PgUp/PgDn page · Esc back"
         } else {
-            table.draw_with_inspector(frame, body, model.scroll, true);
-            "↑↓ select · Enter inspect · ←/→ panes · ? help"
+            table.draw_with_inspector_filtered(frame, body, rows, model.scroll, true);
+            "↑↓ select · Enter inspect · / filter · ←/→ panes · ? help"
         };
+        let keys = model
+            .evidence_filter_label()
+            .map_or_else(|| keys.to_owned(), |label| format!("{label} · {keys}"));
         frame.render_widget(Paragraph::new(keys), foot);
         return;
     }

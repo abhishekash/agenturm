@@ -1,10 +1,11 @@
 use agenturm_kernel::{ExtensionId, Observation, ObservationKind, ObservationQuery, ReadSnapshot};
 use agenturm_store::{
-    ReviewKey, ReviewVersion as StoredReviewVersion, Store, WorkspaceAnchor, WorkspaceLedger,
+    ReviewKey, ReviewVersion as StoredReviewVersion, Store, TaskBriefUpdate, TaskDecisionInput,
+    TaskDecisionKind, WorkspaceAnchor, WorkspaceLedger,
 };
 use agenturm_ui::{
     HandoffEntry, PromptEntry, RecordedSession, RequestEntry, RequestProof, ReviewNoteEntry,
-    ReviewVersion, TaskEntry, WorkAnchor, WorkCommand, WorkResult,
+    ReviewVersion, TaskDecisionEntry, TaskEntry, WorkAnchor, WorkCommand, WorkResult,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -100,6 +101,82 @@ pub(super) fn execute(
         WorkCommand::SaveReviewNote { session, note } => {
             review_notes(store, db, session, Some(&note))
         }
+        WorkCommand::ReviewReceipt(request) => {
+            let text = crate::review_receipt_for_scope(
+                store,
+                db,
+                &request.anchor.source,
+                &request.anchor.session,
+                request.anchor.turn.as_deref(),
+                request.anchor.worker.as_deref(),
+                request.format.as_str(),
+                request.directory.as_deref(),
+            )?;
+            let mut scope = format!(
+                "{} / {}",
+                request.anchor.source, request.anchor.session
+            );
+            if let Some(turn) = &request.anchor.turn {
+                scope.push_str(&format!(" / turn {turn}"));
+            }
+            if let Some(worker) = &request.anchor.worker {
+                scope.push_str(&format!(" / worker {worker}"));
+            }
+            if let Some(directory) = &request.directory {
+                scope.push_str(&format!(" / exported to {directory}"));
+            } else {
+                scope.push_str(" / loaded review evidence");
+            }
+            Ok(WorkResult::ReviewDocument {
+                title: "Review receipt".into(),
+                text,
+                scope,
+            })
+        }
+        WorkCommand::ReviewExcerpts(anchor) => {
+            let text = crate::review_receipt_for_scope(
+                store,
+                db,
+                &anchor.source,
+                &anchor.session,
+                anchor.turn.as_deref(),
+                anchor.worker.as_deref(),
+                "json",
+                None,
+            )?;
+            let value: serde_json::Value = serde_json::from_str(&text)
+                .map_err(|_| "Cannot read the review excerpt index")?;
+            let items = value["excerpts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|item| {
+                    Some(agenturm_ui::ReviewExcerpt {
+                        kind: item["kind"].as_str()?.to_owned(),
+                        label: item["label"].as_str()?.to_owned(),
+                        source: item["source"].as_str()?.to_owned(),
+                    })
+                })
+                .collect();
+            Ok(WorkResult::ReviewExcerpts { anchor, items })
+        }
+        WorkCommand::DraftReviewTask {
+            anchor,
+            title,
+            note,
+        } => {
+            let ledger = store.workspace_ledger(db)?;
+            let saved = ledger
+                .create_task(Some(&to_store(anchor.clone())?), &title, &note)
+                .map_err(string)?;
+            Ok(WorkResult::TaskDraft {
+                id: Some(saved.id),
+                revision: Some(saved.revision),
+                anchor: saved.anchor.map(from_store),
+                title: saved.title,
+                note: saved.note,
+            })
+        }
         WorkCommand::Tasks(before) => tasks(&store.workspace_ledger(db)?, before),
         WorkCommand::Handoffs(before) => handoffs(&store.workspace_ledger(db)?, before),
         WorkCommand::SaveTask {
@@ -155,6 +232,88 @@ pub(super) fn execute(
             handoffs(&ledger, None)
         }
         WorkCommand::TaskLinks(id) => task_links(&store.workspace_ledger(db)?, id),
+        WorkCommand::TaskBrief(id) => task_brief(&store.workspace_ledger(db)?, id),
+        WorkCommand::SaveTaskBrief {
+            id,
+            expected_revision,
+            intent,
+            acceptance_criteria,
+            constraints,
+            open_questions,
+            next_action,
+        } => {
+            let ledger = store.workspace_ledger(db)?;
+            ledger
+                .update_task_brief(
+                    id,
+                    &TaskBriefUpdate {
+                        intent: Some(intent),
+                        acceptance_criteria: Some(acceptance_criteria),
+                        constraints: Some(constraints),
+                        open_questions: Some(open_questions),
+                        next_action: Some(next_action),
+                    },
+                    expected_revision,
+                )
+                .map_err(string)?
+                .ok_or("That task is no longer available")?;
+            task_brief(&ledger, id)
+        }
+        WorkCommand::TaskDecisions(id) => task_decisions(&store.workspace_ledger(db)?, id),
+        WorkCommand::AddTaskDecision {
+            id,
+            expected_revision,
+            kind,
+            text,
+            rationale,
+            scope,
+            supersedes_id,
+        } => {
+            let ledger = store.workspace_ledger(db)?;
+            let kind = match kind.as_str() {
+                "accepted" => TaskDecisionKind::Accepted,
+                "rejected" => TaskDecisionKind::Rejected,
+                _ => return Err("Choose accepted or rejected".into()),
+            };
+            ledger
+                .add_task_decision(
+                    id,
+                    &TaskDecisionInput {
+                        kind,
+                        text,
+                        rationale,
+                        scope,
+                        supersedes_id,
+                    },
+                    expected_revision,
+                )
+                .map_err(string)?
+                .ok_or("That task is no longer available")?;
+            task_decisions(&ledger, id)
+        }
+        WorkCommand::PreviewHandoff { id, format } => {
+            let ledger = store.workspace_ledger(db)?;
+            let handoff = ledger
+                .task_handoff(id)
+                .map_err(string)?
+                .ok_or("That task is no longer available")?;
+            let html = format == "html";
+            let text = super::handoff_export::render_task(&handoff, true, html);
+            Ok(WorkResult::HandoffPreview { id, format, text })
+        }
+        WorkCommand::ExportHandoffAs { id, directory } => {
+            let ledger = store.workspace_ledger(db)?;
+            let handoff = ledger
+                .task_handoff(id)
+                .map_err(string)?
+                .ok_or("That task is no longer available")?;
+            let destination =
+                super::handoff_export::export_task(Path::new(&directory), &handoff, true)?;
+            Ok(WorkResult::Status(format!(
+                "Saved Markdown and HTML to {}",
+                destination.display()
+            )))
+        }
         WorkCommand::LinkTask { id, anchor } => {
             let ledger = store.workspace_ledger(db)?;
             ledger.link_task(id, &to_store(anchor)?).map_err(string)?;
@@ -536,6 +695,44 @@ fn tasks(ledger: &WorkspaceLedger, before: Option<u64>) -> Result<WorkResult, St
             })
             .collect(),
         older: page.next_before,
+    })
+}
+
+fn task_brief(ledger: &WorkspaceLedger, id: u64) -> Result<WorkResult, String> {
+    let (task, brief) = ledger
+        .task_brief(id)
+        .map_err(string)?
+        .ok_or("That task is no longer available")?;
+    Ok(WorkResult::TaskBrief {
+        id: task.id,
+        revision: Some(task.revision),
+        intent: brief.intent,
+        acceptance_criteria: brief.acceptance_criteria,
+        constraints: brief.constraints,
+        open_questions: brief.open_questions,
+        next_action: brief.next_action,
+    })
+}
+
+fn task_decisions(ledger: &WorkspaceLedger, id: u64) -> Result<WorkResult, String> {
+    let (task, decisions) = ledger
+        .task_decisions(id)
+        .map_err(string)?
+        .ok_or("That task is no longer available")?;
+    Ok(WorkResult::TaskDecisions {
+        id: task.id,
+        revision: Some(task.revision),
+        items: decisions
+            .into_iter()
+            .map(|item| TaskDecisionEntry {
+                id: item.id,
+                kind: item.decision.kind.as_str().to_owned(),
+                text: item.decision.text,
+                rationale: item.decision.rationale,
+                scope: item.decision.scope,
+                supersedes: item.decision.supersedes_id,
+            })
+            .collect(),
     })
 }
 
