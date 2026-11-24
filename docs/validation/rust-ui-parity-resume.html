@@ -1,0 +1,143 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Ui Parity Resume</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-resume.md">Markdown source ↗</a></nav><h1>Rust UI parity: continuation and integration</h1>
+<p>24 November 2026. <strong>In progress; not a full-parity acceptance or release.</strong></p>
+<h2>Recovery and isolation</h2>
+<p>Continues the session exported as
+<code>2026-11-24-200436-use-a-new-worktree-and-not-affect-the-other-agent.txt</code>.
+The earlier implementation merged UI-01 through UI-06 into <code>a633c68</code> before
+the shell-integration agent exhausted its model quota.</p>
+<p>The original shell worktree contained uncommitted changes in 12 files. They
+were copied without modifying the original worktree, preserved as <code>2b162cb</code>,
+and are being corrected and validated rather than assumed complete.
+The main checkout and pre-existing lane worktrees remain untouched.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Role</th>
+<th>New isolated worktree</th>
+<th>Branch</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Integration</td>
+<td><code>/tmp/opencode/agenturm-ui-parity-resume</code></td>
+<td><code>work/ui-parity-resume</code></td>
+</tr>
+<tr>
+<td>Shell implementation</td>
+<td><code>/tmp/opencode/agenturm-ui-parity-shell</code></td>
+<td><code>work/ui-parity-shell-resume</code></td>
+</tr>
+<tr>
+<td>Read-only shell audit</td>
+<td><code>/tmp/opencode/agenturm-ui-parity-audit</code></td>
+<td><code>work/ui-parity-audit-resume</code></td>
+</tr>
+<tr>
+<td>Theme/help/palette visual work</td>
+<td><code>/tmp/opencode/agenturm-ui-parity-visual</code></td>
+<td><code>work/ui-parity-visual-resume</code></td>
+</tr>
+<tr>
+<td>Independent acceptance</td>
+<td><code>/tmp/opencode/agenturm-ui-parity-acceptance</code></td>
+<td><code>work/ui-parity-acceptance-resume</code></td>
+</tr>
+</tbody>
+</table></div>
+<p>Shared shell files have one implementation owner. The visual lane owns only
+<code>theme.rs</code>, <code>help.rs</code> and <code>palette.rs</code>; the auditor does not change feature
+code. Rust builds use one compiler job to limit memory pressure. No other
+agent's processes were stopped and no global model or billing settings changed.</p>
+<h2>Current upstream compatibility</h2>
+<p>Upstream main was fetched into the dedicated
+<code>refs/agenturm-parity-resume/upstream-main</code> ref, without moving another
+worktree's branch. Its observed head was
+<code>57b75805e3dbbe1222be89332c303def35b766e4</code>.
+Merge <code>d7c3eed</code> incorporates the newer native evidence and Claude edit-detail
+work. The plan's add/add conflict retained the user's requirement that missing
+native names receive a human-understandable contextual fallback, never the
+literal <code>Name unavailable</code>.</p>
+<h2>Validation ledger</h2>
+<p>The first diagnostic run used:</p>
+<pre><code class="language-sh">cargo test --locked -p agenturm-ui -p agenturm-app -j 1
+</code></pre>
+<p>It compiled and exited <strong>101</strong>: 183 app unit tests and 81 app integration
+tests passed; the UI suite had 134 passes and two failures:</p>
+<ul>
+<li><code>inspector_prompts_open_the_navigator_and_escape_returns_to_the_section</code>:
+Escape did not finish returning to the roster.</li>
+<li><code>review_control_order_is_deterministic_and_escape_returns_to_review</code>:
+activating the first Review control sent no request.</li>
+</ul>
+<p>Log: <code>/tmp/opencode/agenturm-parity-recovery-tests.log</code>.
+Upstream integration happened during this diagnostic run, so it does <strong>not</strong>
+qualify a frozen source SHA or executable. Both failures need fixes and a
+fresh integrated run. The final installed-candidate gate belongs to the
+independent acceptance lane, not these historical lane test counts.</p>
+<h2>Architecture and acceptance boundaries</h2>
+<p>The shell must consume provider-neutral typed facts and preserve source,
+session, worker, turn, snapshot and version identity. Private readers retain
+the existing grant, active-display, redraw-before-acknowledgement and timeout
+fences. Missing worker proof is unavailability, not permission to relabel
+main-session content. Copy/export must identify the actual selected scope.</p>
+<p>Remaining qualification includes the exact installed binary, the tagged
+Python 0.2.8 oracle, comparable fixtures at 120×32, 80×24 and 60×18, private
+reader revocation, nested navigation and terminal restoration. Mouse parity,
+unsupported provider capabilities and intentional disclosure differences
+cannot be promoted to accepted parity by passing unit tests.</p>
+<h2>Cross-project consistency review</h2>
+<p>This is a review of local source checkouts, not a deployment or remote-state
+attestation. No website/profile files were changed.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Destination</th>
+<th>Result</th>
+<th>Evidence and scope</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>App README and Python keyboard guide</td>
+<td>Published-Python baseline retained</td>
+<td><code>README.md</code> and <code>docs/keyboard-navigation.md</code> describe the existing Python workflows and their own verification. Do not rewrite their historical claims as qualification of this Rust candidate.</td>
+</tr>
+<tr>
+<td>Rust workflow documentation</td>
+<td>Historical release coverage retained</td>
+<td><code>docs/rfcs/rust-cockpit-workflow-coverage.md</code> describes previously published Rust binaries; this continuation is separate, unreleased work.</td>
+</tr>
+<tr>
+<td>Website</td>
+<td>Existing integration-list drift</td>
+<td>Local <code>agenturm-dev/src/pages/index.astro</code> lists Codex, Claude Code, OpenCode and Pi, while the app README also lists Kiro. Python install instructions and loopback/privacy wording remain appropriate to the published package. Rust parity is not advertised as released.</td>
+</tr>
+<tr>
+<td>GitHub profile</td>
+<td>Existing integration-list drift</td>
+<td>Local <code>github-profile/README.md</code> also omits Kiro. Its <code>uvx agenturm</code> command, local-by-default wording and native-terminal approval boundary agree with the published app.</td>
+</tr>
+<tr>
+<td>Brand/theme</td>
+<td>Tokens agree in inspected sources; full asset review not performed</td>
+<td>Website <code>src/styles/global.css</code> uses dark-default/light-toggle tokens. Profile <code>scripts/build_profile_assets.py</code> uses the matching dark palette and references the site's tower drawing. No brand assets changed in this work.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Website and profile synchronization is outside this implementation request.
+Their pre-existing drift is recorded rather than silently modifying other
+repositories or advertising an unqualified Rust cutover.</p>
+<h2>Related evidence</h2>
+<ul>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-ui-parity-plan.md">Implementation plan</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-ui-parity-shared-contracts.md">Shared contracts</a></li>
+<li><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-inventory.md">Original 234-row reference inventory</a></li>
+</ul>
+<p>The inventory records its original baseline; its counts are not a current
+acceptance score. Final results must identify the candidate actually tested.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
