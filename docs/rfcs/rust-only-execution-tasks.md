@@ -47,7 +47,7 @@ for new assignments. The older A–E IDs retain their original acceptance criter
 
 | Track | Current assignment | Category |
 | --- | --- | --- |
-| FD1 / A1–A3 | Claude async launch attribution implemented (`worker_launch` fact, no completion claim); Pi worker shapes stay gated (no local witness); Codex exec/JS checks recorded for coverage work; CF9 owns installed acceptance. | Core feature development |
+| FD1 / A1–A3 | Claude async launch attribution implemented (`worker_launch` fact, no completion claim); Pi worker shapes stay gated (no local witness); Codex exec/JS checks recorded (native `exec` calls now shell-categorized; wrapper check recognition open); CF9 owns installed acceptance. | Core feature development |
 | FD2 / B3–B4 | Claude edit detail implemented with the harness-generic operation contract (schema 23); Pi/OpenCode/Kiro edit detail and beyond-Codex MCP detail remain; CF8 owns installed acceptance. | Core feature development |
 | FD3 / B6 | Provenance-aware, duplicate-safe combined usage/cost totals. | Core feature development |
 | FD4 / B6 | Implemented slice: native remote cockpit route-file option, exact current-request verification and receiver-side unique-pane resolution with presented attach command; routed via CF7 for installed/paired and security-review acceptance. Per-host persistence and non-ssh transports remain open. | Core feature development |
