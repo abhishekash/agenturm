@@ -42,7 +42,7 @@ pub use automatic_retention::{
 pub use backup::BackupError;
 pub use content_grant::{
     CodexOperationEvidence, CodexOperationSelection, ContentGrant, ContentGrantScope, ContentKind,
-    UserTextEvidence,
+    MAX_PROMPT_REFERENCES, UserTextEvidence,
 };
 pub use eval_detail::{
     EvalDetailRecord, EvalDetailSelection, EvalFindingSelection, EvalResultDetail, EvalScoreDetail,

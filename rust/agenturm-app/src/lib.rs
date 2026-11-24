@@ -31,6 +31,7 @@ mod native_session_context;
 #[cfg(target_os = "linux")]
 mod new_window;
 mod private_output;
+mod prompt_history;
 #[cfg(target_os = "linux")]
 mod remote_history;
 #[cfg(target_os = "linux")]
