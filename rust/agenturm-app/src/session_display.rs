@@ -7,7 +7,11 @@ pub(super) fn add_context(snapshot: &mut Snapshot, pane: &ExtensionId, session: 
         return;
     };
     let mut rows = vec![MetricRow {
-        label: if session.task_title.is_some() {
+        label: if session
+            .task_title
+            .as_deref()
+            .is_some_and(|title| !title.trim().is_empty())
+        {
             "Task name"
         } else {
             "Session name"
@@ -15,11 +19,14 @@ pub(super) fn add_context(snapshot: &mut Snapshot, pane: &ExtensionId, session: 
         .into(),
         value: session.display_name().into_owned(),
     }];
+    rows.push(MetricRow {
+        label: "Provider".into(),
+        value: session.provider_label().into(),
+    });
     if let Some(context) = &session.native_context {
         for (label, value) in [
             ("Agent name", context.agent_name.as_deref()),
             ("Agent role", context.agent_role.as_deref()),
-            ("Agent path", context.agent_path.as_deref()),
             ("Model provider", context.model_provider.as_deref()),
             ("Last recorded activity", context.last_activity.as_deref()),
         ] {
@@ -44,12 +51,28 @@ pub(super) fn add_context(snapshot: &mut Snapshot, pane: &ExtensionId, session: 
             }
             .into(),
         });
+    } else {
+        rows.push(MetricRow {
+            label: "Project".into(),
+            value: "No recorded project".into(),
+        });
     }
-    // Keep exact identity reachable even when a long display name wraps at 60 columns.
-    let position = pane
-        .rows
-        .iter()
-        .position(|row| row.label == "Session")
-        .map_or(0, |index| index + 1);
-    pane.rows.splice(position..position, rows);
+    rows.push(MetricRow {
+        label: "Recorded state".into(),
+        value: session.state.as_deref().unwrap_or("Unknown").into(),
+    });
+    if let Some(reason) = session
+        .reason
+        .as_deref()
+        .filter(|reason| !reason.is_empty())
+    {
+        rows.push(MetricRow {
+            label: "Recorded reason".into(),
+            value: reason.into(),
+        });
+    }
+    // Human context leads the Overview; exact source, session and worker
+    // identity stays in Details.
+    rows.append(&mut pane.rows);
+    pane.rows = rows;
 }

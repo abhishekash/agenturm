@@ -310,6 +310,7 @@ mod tests {
             },
             reviewed: false,
             history_identity: Some(store.history_identity().unwrap()),
+            worker_id: None,
             pending_requests: Vec::new(),
         };
         let query = ObservationQuery {

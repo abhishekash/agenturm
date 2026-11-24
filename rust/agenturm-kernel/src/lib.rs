@@ -2976,6 +2976,7 @@ mod tests {
 }
 
 pub mod retained_history;
+pub mod session_scope;
 pub mod workflow_alerts;
 pub mod workflow_notifications;
 

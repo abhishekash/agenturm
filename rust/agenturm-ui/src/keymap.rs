@@ -73,6 +73,8 @@ pub(crate) mod id {
     pub(crate) const SESSION_CHOOSER: &str = "session.choose";
     pub(crate) const SCOPE_TODAY: &str = "session.today";
     pub(crate) const SCOPE_HISTORY: &str = "session.history";
+    pub(crate) const SESSION_ERRORS: &str = "session.errors";
+    pub(crate) const SESSION_SUBTREE: &str = "evidence.scope.subtree";
     pub(crate) const SCOPE_SELECTED: &str = "evidence.scope.session";
     pub(crate) const SCOPE_ALL: &str = "evidence.scope.all";
     pub(crate) const LIVE_PAUSE: &str = "live.pause";
@@ -112,6 +114,7 @@ pub(crate) mod id {
     pub(crate) const SESSION_USAGE: &str = "session.usage";
     pub(crate) const HOST_NOW: &str = "host.now";
     pub(crate) const INSPECTOR_MODE: &str = "session.inspector-mode";
+    pub(crate) const INSPECTOR_SECTIONS: &str = "session.sections";
     pub(crate) const SEARCH: &str = "view.search";
     pub(crate) const INSPECT: &str = "view.inspect";
     pub(crate) const BACK: &str = "view.back";
@@ -315,19 +318,35 @@ pub(crate) const ACTIONS: &[Action] = &[
     ),
     action(
         id::SCOPE_TODAY,
-        "",
+        "T",
         "Show Today",
-        "Active work, pending input and today's reported outcomes",
+        "Recorded current work, pending input and today's reported outcomes",
         Group::Session,
-        &[Context::CommandCenter, Context::History],
+        &[Context::CommandCenter],
     ),
     action(
         id::SCOPE_HISTORY,
-        "",
+        "O",
         "Show History",
         "All retained sessions, including earlier unreviewed work",
         Group::Session,
-        &[Context::CommandCenter, Context::History],
+        &[Context::CommandCenter],
+    ),
+    action(
+        id::SESSION_ERRORS,
+        "E",
+        "Errors only",
+        "Recorded failed or interrupted runs on the loaded page",
+        Group::Session,
+        &[Context::CommandCenter],
+    ),
+    action(
+        id::SESSION_SUBTREE,
+        "S",
+        "Evidence subtree scope",
+        "Add confirmed delegated descendants to the selected agent scope",
+        Group::Evidence,
+        &[Context::CommandCenter],
     ),
     action(
         id::SCOPE_SELECTED,
@@ -644,8 +663,16 @@ pub(crate) const ACTIONS: &[Action] = &[
     action(
         id::INSPECTOR_MODE,
         "m",
-        "Inspector mode",
+        "Inspector section",
         "Cycle the inspector section from session content",
+        Group::Review,
+        &[Context::History],
+    ),
+    action(
+        id::INSPECTOR_SECTIONS,
+        "←/→ · Ctrl+←/→",
+        "Choose inspector section",
+        "Move the tab strip between Overview, Prompts and Details; Ctrl works from content",
         Group::Review,
         &[Context::History],
     ),
