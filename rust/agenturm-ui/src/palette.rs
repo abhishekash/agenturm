@@ -5,12 +5,13 @@
 //! shell generic and lets the command-center, inspector and workflow lanes add
 //! commands without touching the input loop.
 
-use crate::{heading_style, label_style, panel, selection_style, surface, theme, visible_text};
+use crate::{panel, selection_style, surface, theme};
 use crossterm::event::{KeyCode, KeyEvent, KeyModifiers};
 use ratatui::Frame;
 use ratatui::layout::{Constraint, Layout, Rect};
 use ratatui::text::{Line, Span};
-use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph, Wrap};
+use ratatui::widgets::{Clear, List, ListItem, ListState, Paragraph};
+use unicode_width::UnicodeWidthStr;
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum Kind {
@@ -260,13 +261,9 @@ impl Palette {
         let area = frame.area();
         let width = area.width.saturating_sub(2).min(88);
         let height = area.height.saturating_sub(2).min(24);
-        if width < 20 || height < 6 {
-            frame.render_widget(
-                Paragraph::new("Terminal too small · widen for the palette · Esc cancel")
-                    .centered()
-                    .style(theme::foreground(theme::palette().primary)),
-                area,
-            );
+        // Border + search + count + one result + two detail rows + hint.
+        if width < 20 || height < 8 {
+            theme::resize_notice(frame, "22×10 for the palette");
             return;
         }
         let popup = Rect::new(
@@ -283,34 +280,37 @@ impl Palette {
         let block = panel(title).border_style(theme::foreground(theme::palette().primary));
         let inner = block.inner(popup);
         frame.render_widget(block, popup);
-        if inner.height < 4 || inner.width < 10 {
-            return;
-        }
         let [search, count, list, detail, hint] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Length(1),
-            Constraint::Min(3),
+            Constraint::Min(1),
             Constraint::Length(2),
             Constraint::Length(1),
         ])
         .areas(inner);
 
         let search_line = if self.query.is_empty() {
-            " Search  type a destination, session or action…".to_owned()
+            theme::clip_cells(" Search  type to search…", usize::from(search.width))
         } else {
-            format!(" Search  {}▏", visible_text(&self.query))
+            format!(
+                " Search  {}▏",
+                theme::tail_cells(&self.query, usize::from(search.width.saturating_sub(10)))
+            )
         };
         frame.render_widget(
-            Paragraph::new(search_line)
-                .style(surface(theme::palette().panel))
-                .wrap(Wrap { trim: false }),
+            Paragraph::new(search_line).style(surface(theme::palette().panel)),
             search,
         );
+        let session_count = self
+            .entries
+            .iter()
+            .filter(|entry| entry.key != "session|all")
+            .count();
         let count_text = match self.kind {
             Some(Kind::Sessions) => format!(
                 " {} session{} · {} visible",
-                self.entries.len().saturating_sub(1),
-                if self.entries.len() == 2 { "" } else { "s" },
+                session_count,
+                if session_count == 1 { "" } else { "s" },
                 self.visible.len()
             ),
             _ => format!(
@@ -324,6 +324,7 @@ impl Palette {
 
         let mut state = ListState::default()
             .with_selected((!self.visible.is_empty()).then_some(self.selection));
+        let label_width = usize::from(list.width.saturating_sub(2));
         let show_detail = inner.width >= 54;
         let items = self.visible.iter().filter_map(|index| {
             let entry = self.entries.get(*index)?;
@@ -332,14 +333,21 @@ impl Palette {
             } else {
                 StyleText::unavailable()
             };
+            let label = if entry.enabled {
+                entry.label.clone()
+            } else {
+                format!("[Unavailable] {}", entry.label)
+            };
+            let group = format!("  ·  {}", crate::visible_text(&entry.group));
+            let show_group = show_detail
+                && !entry.group.is_empty()
+                && UnicodeWidthStr::width(crate::visible_text(&label).as_str())
+                    + UnicodeWidthStr::width(group.as_str())
+                    <= label_width;
             let mut item = ListItem::new(Line::from(vec![
-                Span::styled(entry.label.clone(), style.label),
+                Span::styled(theme::clip_cells(&label, label_width), style.label),
                 Span::styled(
-                    if show_detail && !entry.group.is_empty() {
-                        format!("  ·  {}", entry.group)
-                    } else {
-                        String::new()
-                    },
+                    if show_group { group } else { String::new() },
                     theme::muted(),
                 ),
             ]));
@@ -359,9 +367,9 @@ impl Palette {
         if self.visible.is_empty() {
             frame.render_widget(
                 Paragraph::new(if self.query.is_empty() {
-                    " Nothing available in this context."
+                    "Nothing available in this context."
                 } else {
-                    " No matches · clear the search with Ctrl+A."
+                    "No matches · Ctrl+A"
                 })
                 .style(theme::muted()),
                 Rect::new(list.x, list.y, list.width, 1),
@@ -369,27 +377,34 @@ impl Palette {
         }
 
         let detail_lines = self.selected().map_or_else(
-            || vec![Line::from("")],
+            || vec![String::new()],
             |entry| {
                 let status = if entry.enabled {
                     entry.detail.clone()
                 } else {
                     format!("Unavailable · {}", entry.detail)
                 };
-                vec![
-                    Line::styled(entry.label.clone(), heading_style()),
-                    Line::from(format!(" {}  {}", status, entry.group)).style(label_style()),
-                ]
+                let mut lines = theme::wrap_cells(&status, usize::from(detail.width));
+                // Reserve both rows for the reason, not a duplicate of the
+                // selected label. Disclose clipping rather than silently hiding it.
+                if lines.len() > 2 {
+                    lines.truncate(2);
+                    lines[1] =
+                        theme::clip_cells(&format!("{}…", lines[1]), usize::from(detail.width));
+                }
+                lines
             },
         );
         frame.render_widget(
-            Paragraph::new(detail_lines).wrap(Wrap { trim: false }),
+            Paragraph::new(detail_lines.into_iter().map(Line::from).collect::<Vec<_>>())
+                .style(theme::foreground(theme::palette().text)),
             detail,
         );
         frame.render_widget(
-            Paragraph::new(match self.kind {
-                Some(Kind::Sessions) => "↑↓ browse · Enter apply · Esc cancel · type to search",
-                _ => "↑↓ choose · Enter run · Esc cancel · type to search",
+            Paragraph::new(match (self.kind, hint.width) {
+                (_, 0..=35) => "Esc cancel · Enter · ↑↓",
+                (Some(Kind::Sessions), _) => "Esc cancel · Enter apply · ↑↓ browse · F1 help",
+                _ => "Esc cancel · Enter run · ↑↓ choose · F1 help",
             })
             .style(theme::muted())
             .centered(),
@@ -420,6 +435,164 @@ impl StyleText {
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    fn text(terminal: &Terminal<TestBackend>) -> String {
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn selected_long_label_does_not_hide_the_unavailable_reason() {
+        let label = format!("界e\u{301}👩🏽‍💻 {}", "long-label-".repeat(14));
+        let mut palette = Palette::default();
+        palette.open_commands(vec![Entry::unavailable(
+            "one",
+            &label,
+            "Needs a selected session",
+            "GROUP",
+        )]);
+        for (width, height) in [(120, 32), (80, 24), (60, 18), (22, 10)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| palette.draw(frame)).unwrap();
+            let buffer = terminal.backend().buffer();
+            let rendered = text(&terminal);
+            assert!(rendered.contains("[Unavailable]"), "{width}: {rendered}");
+            assert!(rendered.contains("Unavailable ·"), "{width}: {rendered}");
+            if width >= 60 {
+                assert!(
+                    rendered.contains("Needs a selected session"),
+                    "{width}: {rendered}"
+                );
+                assert!(rendered.contains("界"));
+                assert!(rendered.contains("e\u{301}"));
+                assert!(rendered.contains("👩🏽‍💻"));
+            }
+            assert!(rendered.contains('…'), "long labels disclose clipping");
+            assert!(rendered.contains("Esc cancel"));
+            let marker = buffer
+                .content()
+                .iter()
+                .find(|cell| cell.symbol() == "›")
+                .unwrap();
+            assert!(marker.modifier.contains(ratatui::style::Modifier::BOLD));
+            if !crate::colors() {
+                assert!(marker.modifier.contains(ratatui::style::Modifier::REVERSED));
+                assert!(
+                    buffer
+                        .content()
+                        .iter()
+                        .all(|cell| cell.fg == ratatui::style::Color::Reset
+                            && cell.bg == ratatui::style::Color::Reset)
+                );
+            }
+            assert_eq!(palette.key(key(KeyCode::Enter)), Outcome::Open);
+            assert_eq!(palette.selected().unwrap().key, "one");
+        }
+    }
+
+    #[test]
+    fn resize_keeps_selected_identity_and_the_editing_end_of_the_query_visible() {
+        let mut palette = Palette::default();
+        let query = format!("{}界e\u{301}👩🏽‍💻TAIL", "query".repeat(17));
+        palette.open_commands(vec![
+            Entry::command("first", "First", &query, "GROUP"),
+            Entry::command("exact", "Exact selected session", &query, "GROUP"),
+        ]);
+        palette.select_key("exact");
+        for ch in query.chars() {
+            palette.key(key(KeyCode::Char(ch)));
+        }
+        for (width, height) in [(120, 32), (80, 24), (60, 18), (21, 9), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| palette.draw(frame)).unwrap();
+            assert_eq!(palette.selected().unwrap().key, "exact");
+            assert_eq!(palette.query(), query);
+            if width >= 60 {
+                assert!(
+                    text(&terminal).contains("TAIL▏"),
+                    "search cursor and suffix must be visible"
+                );
+            } else {
+                assert!(text(&terminal).contains("Esc back"));
+            }
+        }
+    }
+
+    #[test]
+    fn empty_and_no_match_states_keep_cancel_and_clear_reachable() {
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let mut palette = Palette::default();
+            palette.open_commands(vec![]);
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal.draw(|frame| palette.draw(frame)).unwrap();
+            assert!(text(&terminal).contains("Nothing available"));
+            assert!(!text(&terminal).contains('›'));
+            palette.open_commands(entries());
+            palette.key(key(KeyCode::Char('!')));
+            terminal.draw(|frame| palette.draw(frame)).unwrap();
+            assert!(text(&terminal).contains("No matches"));
+            assert!(text(&terminal).contains("Ctrl+A"));
+            assert!(text(&terminal).contains("Esc cancel"));
+            assert!(palette.selected().is_none());
+            assert_eq!(palette.key(key(KeyCode::Enter)), Outcome::Open);
+            palette.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+            assert_eq!(palette.selected().unwrap().key, "go.agents");
+        }
+    }
+
+    #[test]
+    fn session_count_excludes_only_an_explicit_all_sessions_entry() {
+        let mut palette = Palette::default();
+        let session = Entry::command(
+            "session|source|exact",
+            "Exact session",
+            "Recorded identity",
+            "SESSIONS",
+        );
+        for entries in [
+            vec![session.clone()],
+            vec![
+                Entry::command("session|all", "All sessions", "Clear scope", "SESSIONS"),
+                session,
+            ],
+        ] {
+            palette.open_sessions(entries);
+            let mut terminal = Terminal::new(TestBackend::new(60, 18)).unwrap();
+            terminal.draw(|frame| palette.draw(frame)).unwrap();
+            assert!(text(&terminal).contains("1 session ·"));
+            assert!(!text(&terminal).contains("0 sessions"));
+        }
+    }
+
+    #[test]
+    fn minimum_palette_scrolls_to_the_selected_result_and_below_floor_clears() {
+        let mut palette = Palette::default();
+        palette.open_commands(entries());
+        palette.select_key("view.review");
+        let mut terminal = Terminal::new(TestBackend::new(22, 10)).unwrap();
+        terminal.draw(|frame| palette.draw(frame)).unwrap();
+        assert!(text(&terminal).contains("› [Unavailable]"));
+        for (width, height) in [(21, 10), (22, 9), (19, 5), (1, 1)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| {
+                    frame.render_widget(Paragraph::new("OLD CONTENT"), frame.area());
+                    palette.draw(frame);
+                })
+                .unwrap();
+            assert!(!text(&terminal).contains("OLD CONTENT"));
+            if width >= 16 {
+                assert!(text(&terminal).contains("Esc back"));
+            }
+            assert_eq!(palette.selected().unwrap().key, "view.review");
+        }
+        assert_eq!(palette.key(key(KeyCode::Esc)), Outcome::Cancel);
+    }
 
     fn key(code: KeyCode) -> KeyEvent {
         KeyEvent::new(code, KeyModifiers::NONE)
