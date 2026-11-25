@@ -72,13 +72,13 @@ Do not build different sources concurrently into one Cargo target directory.
 
 The separate UI implementation candidate `17206a4` was coordinator-qualified
 for its recorded scope, but this follow-up changes Activity evidence behavior.
-Use branch `feature/ui-parity-next` after its implementation PR is integrated;
+Use commit `81c7357` on branch `feature/ui-parity-next` after it is integrated;
 the prior 991-test and PTY results do not qualify these changes.
 
 | ID | Required test | Acceptance | Status |
 | --- | --- | --- | --- |
-| UI05-A | Activity prompt-only filter and page query | At 120×32, 80×24 and 60×18, toggle `F` and the palette command. Only typed `Native request` events remain; prompt text is not read or inferred. Combine `/` search with the toggle, handle an empty prompt set, preserve the selected event when it remains visible, preserve mode across older/newer page replacement, and restore all events on the second toggle. Verify another pane and MCP `f` server filtering are unaffected. Compare the tagged Python `Prompts` button journey. | Not run; implementation `feature/ui-parity-next`. |
-| UI05-B | Activity worker attribution | Inspect ordinary activity with a recorded worker, no worker, WorkerSpawn and WorkerLaunch. Show exact worker, `Worker: Unreported`, or separately named `Parent worker: Unreported` as appropriate. Verify the same rows at all three sizes; do not infer a parent or child ID. | Not run; implementation `feature/ui-parity-next`. |
+| UI05-A | Activity prompt-only filter and page query | At 120×32, 80×24 and 60×18, toggle `F` and the palette command. Only typed `Native request` events remain; prompt text is not read or inferred. Combine `/` search with the toggle, handle an empty prompt set, preserve the selected event when it remains visible, preserve mode across older/newer page replacement, and restore all events on the second toggle. Verify another pane and MCP `f` server filtering are unaffected. Compare the tagged Python `Prompts` button journey. | Not run; implementation `81c7357`. |
+| UI05-B | Activity worker attribution | Inspect ordinary activity with a recorded worker, no worker, WorkerSpawn and WorkerLaunch. Show exact worker, `Worker: Unreported`, or separately named `Parent worker: Unreported` as appropriate. Verify the same rows at all three sizes; do not infer a parent or child ID. | Not run; implementation `81c7357`. |
 
 Run these against a frozen integrated source and binary. Keep UI-Q's paired
 screen matrix, live broker/private grant cases, release archive and independent

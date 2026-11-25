@@ -124,7 +124,7 @@ Do not build different sources concurrently into one Cargo target directory.</p>
 <h2>UI-05 follow-up handoff — not run</h2>
 <p>The separate UI implementation candidate <code>17206a4</code> was coordinator-qualified
 for its recorded scope, but this follow-up changes Activity evidence behavior.
-Use branch <code>feature/ui-parity-next</code> after its implementation PR is integrated;
+Use commit <code>81c7357</code> on branch <code>feature/ui-parity-next</code> after it is integrated;
 the prior 991-test and PTY results do not qualify these changes.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -140,13 +140,13 @@ the prior 991-test and PTY results do not qualify these changes.</p>
 <td>UI05-A</td>
 <td>Activity prompt-only filter and page query</td>
 <td>At 120×32, 80×24 and 60×18, toggle <code>F</code> and the palette command. Only typed <code>Native request</code> events remain; prompt text is not read or inferred. Combine <code>/</code> search with the toggle, handle an empty prompt set, preserve the selected event when it remains visible, preserve mode across older/newer page replacement, and restore all events on the second toggle. Verify another pane and MCP <code>f</code> server filtering are unaffected. Compare the tagged Python <code>Prompts</code> button journey.</td>
-<td>Not run; implementation <code>feature/ui-parity-next</code>.</td>
+<td>Not run; implementation <code>81c7357</code>.</td>
 </tr>
 <tr>
 <td>UI05-B</td>
 <td>Activity worker attribution</td>
 <td>Inspect ordinary activity with a recorded worker, no worker, WorkerSpawn and WorkerLaunch. Show exact worker, <code>Worker: Unreported</code>, or separately named <code>Parent worker: Unreported</code> as appropriate. Verify the same rows at all three sizes; do not infer a parent or child ID.</td>
-<td>Not run; implementation <code>feature/ui-parity-next</code>.</td>
+<td>Not run; implementation <code>81c7357</code>.</td>
 </tr>
 </tbody>
 </table></div>

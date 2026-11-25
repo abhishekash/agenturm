@@ -63,9 +63,9 @@ for new assignments. The older A–E IDs retain their original acceptance criter
 
 The [UI parity plan](rust-ui-parity-plan.md) tracks the current candidate and
 gaps. Candidate `17206a4` contains integrated UI-01–UI-07 work, but remains
-unreleased and is not full parity. Follow-up branch `feature/ui-parity-next`
-adds Activity's `F`/palette prompt-only filter over typed NativeRequest rows and
-explicit `Worker: Unreported` details. App compile check passes; no tests have
+unreleased and is not full parity. Follow-up commit `81c7357` on
+`feature/ui-parity-next` adds Activity's `F`/palette prompt-only filter over
+typed NativeRequest rows and explicit `Worker: Unreported` details. App compile check passes; no tests have
 run for this follow-up. The [delegated test plan](../validation/rust-core-feature-test-plan.md#ui-05-follow-up-handoff--not-run)
 assigns UI05-A/UI05-B to the separate test owner. Remaining UI-05/UI-06 work
 and UI-Q stay open. Keep provider details in adapter/app proof contracts and

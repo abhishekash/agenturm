@@ -25,9 +25,9 @@ here without overwriting their branches.
   coordinator qualification. It has not been merged or released and is not
   full parity. The [UI plan](rust-ui-parity-plan.md#implementation-status--26-november-2026)
   now separates delivered candidate work, implementation gaps, and UI-Q gates.
-- **Feature work resumed:** branch `feature/ui-parity-next` is based on the
-  qualified candidate plus merged main. It adds the Activity prompt-only toggle
-  over typed NativeRequest rows and explicit “Unreported” Activity worker detail;
+- **Feature work resumed:** commit `81c7357` on `feature/ui-parity-next` is based
+  on the qualified candidate plus merged main. It adds the Activity prompt-only
+  toggle over typed NativeRequest rows and explicit “Unreported” Activity worker detail;
   `cargo check --offline --locked -p agenturm-app` passes. Broad and paired
   acceptance is not run. The [delegated test plan](../validation/rust-core-feature-test-plan.md#ui-05-follow-up-handoff--not-run)
   assigns UI05-A/UI05-B to the separate test owner. Continue one UI-05/UI-06
