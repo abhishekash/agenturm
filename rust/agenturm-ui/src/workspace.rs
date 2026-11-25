@@ -1387,12 +1387,10 @@ impl Workspace {
         self.prompt_read_key = None;
         let view = match destination {
             Destination::Agents => {
-                if self.pending.is_none() {
-                    self.history.clear();
-                    self.inspector = inspector::State::default();
-                    self.generation = self.generation.wrapping_add(1);
-                    self.message = None;
-                }
+                self.history.clear();
+                self.inspector = inspector::State::default();
+                self.generation = self.generation.wrapping_add(1);
+                self.message = None;
                 return;
             }
             Destination::Host => {
@@ -3067,10 +3065,11 @@ impl Workspace {
         };
         // Activating a button does not move focus into the evidence body.
         // Keep the originating control available after a read or nested form.
-        if key != Some('\u{0}') && self.history.len() == depth {
-            if let Some(view) = self.history.last_mut() {
-                view.page.review_control = Some(index);
-            }
+        if key != Some('\u{0}')
+            && self.history.len() == depth
+            && let Some(view) = self.history.last_mut()
+        {
+            view.page.review_control = Some(index);
         }
         quit
     }
@@ -7756,7 +7755,7 @@ mod tests {
                     .catalog
                     .as_ref()
                     .map(|c| &c.sessions[item.index]))
-                .all(|row| errors_only(row))
+                .all(errors_only)
         );
         workspace.run_action(&sender, keymap::id::SESSION_ERRORS);
         assert!(!workspace.agents.errors_only);
@@ -8635,6 +8634,25 @@ mod tests {
             assert_eq!(workspace.history.len(), usize::from(from_turn));
             assert_eq!(workspace.agents.current(), Some(&row));
         }
+    }
+
+    #[test]
+    fn agents_navigation_supersedes_a_pending_destination_instead_of_ignoring_the_key() {
+        let mut workspace = Workspace::new();
+        let (sender, requests) = mpsc::channel();
+        workspace.navigate(&sender, Destination::Activity);
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::History { .. })
+        ));
+        assert!(workspace.pending.is_some());
+        press(&mut workspace, &sender, KeyCode::Char('1'));
+        workspace.finish(Ok(WorkspaceResponse::History(session_history_page(&[
+            "Activity",
+        ]))));
+        assert!(workspace.history.is_empty());
+        assert!(workspace.pending.is_none());
+        assert!(workspace.message.as_deref().unwrap().contains("Discarded"));
     }
 
     #[test]

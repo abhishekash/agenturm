@@ -612,11 +612,11 @@ mod tests {
         let mut picker = Picker::with_path(None);
         picker.open();
         for (width, height) in [(120, 32), (80, 24), (60, 18), (22, 11)] {
-            for selected in 0..NAMES.len() {
+            for (selected, name) in NAMES.iter().enumerate() {
                 picker.select(selected);
                 let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
                 terminal.draw(|frame| picker.draw(frame)).unwrap();
-                assert!(text(&terminal).contains(&format!("› {}", NAMES[selected])));
+                assert!(text(&terminal).contains(&format!("› {name}")));
                 let marker = terminal
                     .backend()
                     .buffer()

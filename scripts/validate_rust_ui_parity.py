@@ -125,7 +125,7 @@ def run_journey(binary, db, base, width, height, exit_key, results):
             # Run an actual enabled destination through palette dispatch.
             capture("palette-again", palette, b"\x10")
             capture("palette-activity", lambda text: palette(text) and "Activity" in text, b"Activity")
-            capture("activity", lambda text: "Activity" in text and "Command palette" not in text, b"\r")
+            capture("activity", lambda text: "No recorded activity on this page." in text and "Command palette" not in text, b"\r")
             capture("agents-key", roster, b"1")
             # Root key and resize checks deliberately use no selected identity:
             # a seeded session/prompt gate must follow separately.

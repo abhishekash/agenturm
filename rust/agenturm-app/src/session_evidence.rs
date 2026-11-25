@@ -2090,6 +2090,6 @@ mod tests {
         );
         assert!(details_value("Capture policy").contains("require a current grant"));
         assert!(details_value("Diagnostics").starts_with("3 recorded failure signals"));
-        assert_eq!(details_value("Last recorded update").is_empty(), false);
+        assert!(!details_value("Last recorded update").is_empty());
     }
 }

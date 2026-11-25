@@ -135,16 +135,48 @@ pub(crate) fn window(
 }
 
 /// Loads one prompt-history page under the current grant.
+pub(crate) fn scoped_window(
+    references: Vec<PromptReference>,
+    turn: Option<&str>,
+    before: Option<&PromptCursor>,
+    page: usize,
+) -> PromptPage {
+    let limited = references.len() >= agenturm_store::MAX_PROMPT_REFERENCES;
+    let references = references
+        .into_iter()
+        .filter(|reference| turn.is_none_or(|turn| reference.turn_id == turn))
+        .collect();
+    let mut result = window(
+        references,
+        before,
+        page,
+        agenturm_store::MAX_PROMPT_REFERENCES,
+    );
+    result.limited = limited;
+    result
+}
+
+/// Loads one prompt-history page under the current grant.
+pub(crate) struct PromptReadScope<'a> {
+    pub(crate) source: &'a ExtensionId,
+    pub(crate) session: &'a str,
+    pub(crate) turn: Option<&'a str>,
+}
+
+/// Loads one prompt-history page under the current grant.
 pub(crate) fn load_page(
     db: &Path,
     config: &Path,
-    source: &ExtensionId,
-    session: &str,
-    turn: Option<&str>,
+    scope: PromptReadScope<'_>,
     before: Option<&PromptCursor>,
     page: usize,
     writer: Option<&Store>,
 ) -> Result<PromptPage, PromptHistoryError> {
+    let PromptReadScope {
+        source,
+        session,
+        turn,
+    } = scope;
     if session.trim().is_empty() {
         return Err(PromptHistoryError::MissingIdentity);
     }
@@ -153,19 +185,7 @@ pub(crate) fn load_page(
         let references =
             crate::content_preview::list_user_prompts(db, config, source, session, writer)
                 .map_err(PromptHistoryError::Denied)?;
-        let limited = references.len() >= agenturm_store::MAX_PROMPT_REFERENCES;
-        let references = references
-            .into_iter()
-            .filter(|reference| turn.is_none_or(|turn| reference.turn_id == turn))
-            .collect();
-        let mut result = window(
-            references,
-            before,
-            page,
-            agenturm_store::MAX_PROMPT_REFERENCES,
-        );
-        result.limited = limited;
-        Ok(result)
+        Ok(scoped_window(references, turn, before, page))
     }
     #[cfg(not(target_os = "linux"))]
     {
@@ -290,9 +310,11 @@ mod tests {
         let error = load_page(
             Path::new("/nonexistent"),
             Path::new("/nonexistent"),
-            &ExtensionId::parse("harness.fixture").unwrap(),
-            " ",
-            None,
+            PromptReadScope {
+                source: &ExtensionId::parse("harness.fixture").unwrap(),
+                session: " ",
+                turn: None,
+            },
             None,
             DEFAULT_PROMPT_PAGE,
             None,

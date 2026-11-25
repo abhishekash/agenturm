@@ -1086,10 +1086,11 @@ impl PromptNavigator {
                 _ => {}
             }
         }
-        if code == KeyCode::Char('m') && self.scope.worker.is_some() {
-            if let Some(main) = &self.scope.main_session {
-                return PromptInput::MainSession(main.clone());
-            }
+        if code == KeyCode::Char('m')
+            && self.scope.worker.is_some()
+            && let Some(main) = &self.scope.main_session
+        {
+            return PromptInput::MainSession(main.clone());
         }
         match self.focus {
             PromptFocus::Reader => match code {
@@ -1646,7 +1647,7 @@ impl PromptNavigator {
         if rows == 0 {
             return;
         }
-        let width = area.width.saturating_sub(2).min(78).max(20);
+        let width = area.width.saturating_sub(2).clamp(20, 78);
         let height = u16::try_from(rows + 2)
             .unwrap_or(u16::MAX)
             .min(area.height.saturating_sub(1))

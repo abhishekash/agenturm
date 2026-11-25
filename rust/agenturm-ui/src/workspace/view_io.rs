@@ -111,9 +111,7 @@ impl Workspace {
         if !self.review_controls_focused() {
             return None;
         }
-        let Some(anchor) = self.review_anchor() else {
-            return None;
-        };
+        let anchor = self.review_anchor()?;
         if key
             .modifiers
             .intersects(KeyModifiers::CONTROL | KeyModifiers::ALT)

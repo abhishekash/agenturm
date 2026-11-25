@@ -504,6 +504,39 @@ fn prompt_history_page(
     owner: WorkAnchor,
     before: Option<agenturm_ui::PromptHistoryCursor>,
 ) -> Result<WorkResult, String> {
+    Ok(prompt_history_with(owner, before, |owner, cursor| {
+        let config =
+            prompt_config(db).map_err(crate::prompt_history::PromptHistoryError::Unavailable)?;
+        let source = ExtensionId::parse(&owner.source)
+            .map_err(|_| crate::prompt_history::PromptHistoryError::MissingIdentity)?;
+        crate::prompt_history::load_page(
+            db,
+            &config,
+            crate::prompt_history::PromptReadScope {
+                source: &source,
+                session: &owner.session,
+                turn: owner.turn.as_deref(),
+            },
+            cursor,
+            crate::prompt_history::DEFAULT_PROMPT_PAGE,
+            writer,
+        )
+    }))
+}
+
+/// Shared local/broker page policy. Transport readers supply only their
+/// existing grant-checked references; scope and cursor proofs stay identical.
+pub(super) fn prompt_history_with(
+    owner: WorkAnchor,
+    before: Option<agenturm_ui::PromptHistoryCursor>,
+    read: impl FnOnce(
+        &WorkAnchor,
+        Option<&crate::prompt_history::PromptCursor>,
+    ) -> Result<
+        crate::prompt_history::PromptPage,
+        crate::prompt_history::PromptHistoryError,
+    >,
+) -> WorkResult {
     use agenturm_ui::{PromptAvailability as Availability, PromptHistoryPage};
     let mut result = PromptHistoryPage {
         anchor: owner.clone(),
@@ -514,6 +547,10 @@ fn prompt_history_page(
         older: None,
         availability: Availability::Granted,
     };
+    if owner.session.trim().is_empty() {
+        result.availability = Availability::MissingIdentity;
+        return WorkResult::PromptHistory(result);
+    }
     // The listing proof currently has no worker field. Never relabel main-
     // session references with an unproven requested worker identity.
     if owner.worker.is_some() {
@@ -521,7 +558,7 @@ fn prompt_history_page(
             "This prompt capability cannot prove exact worker scope; use exact worker Activity"
                 .into(),
         );
-        return Ok(WorkResult::PromptHistory(result));
+        return WorkResult::PromptHistory(result);
     }
     let cursor = before
         .as_ref()
@@ -529,22 +566,7 @@ fn prompt_history_page(
             observed_at_unix_ns: cursor.timestamp,
             event_id: cursor.event_id.clone(),
         });
-    let page = (|| {
-        let config =
-            prompt_config(db).map_err(crate::prompt_history::PromptHistoryError::Unavailable)?;
-        let source = ExtensionId::parse(&owner.source)
-            .map_err(|_| crate::prompt_history::PromptHistoryError::MissingIdentity)?;
-        crate::prompt_history::load_page(
-            db,
-            &config,
-            &source,
-            &owner.session,
-            owner.turn.as_deref(),
-            cursor.as_ref(),
-            crate::prompt_history::DEFAULT_PROMPT_PAGE,
-            writer,
-        )
-    })();
+    let page = read(&owner, cursor.as_ref());
     match page {
         Ok(page) => {
             if let Some(before) = &before
@@ -557,7 +579,7 @@ fn prompt_history_page(
                 result.availability = Availability::Stale(
                     "The retained prompt window changed; reopen Prompts".into(),
                 );
-                return Ok(WorkResult::PromptHistory(result));
+                return WorkResult::PromptHistory(result);
             }
             result.retained = page.retained;
             result.limited = page.limited;
@@ -598,7 +620,7 @@ fn prompt_history_page(
             result.availability = Availability::Unavailable(reason)
         }
     }
-    Ok(WorkResult::PromptHistory(result))
+    WorkResult::PromptHistory(result)
 }
 
 pub(super) fn execute_prompt(
@@ -1462,6 +1484,95 @@ mod tests {
         assert!(
             matches!(page.availability, agenturm_ui::PromptAvailability::Unavailable(reason) if reason.contains("cannot prove exact worker"))
         );
+    }
+
+    #[test]
+    fn local_and_broker_prompt_policy_share_exact_turn_cap_cursor_and_stale_checks() {
+        let anchor = WorkAnchor {
+            source: "harness.fixture".into(),
+            session: "session".into(),
+            worker: None,
+            turn: Some("exact-turn".into()),
+        };
+        let references = |snapshot: u64| {
+            (0..256)
+                .map(|index| crate::content_preview::PromptReference {
+                    event_id: format!("event-{index:04}"),
+                    revision: 0,
+                    turn_id: if index < 200 {
+                        "exact-turn"
+                    } else {
+                        "other-turn"
+                    }
+                    .into(),
+                    observed_at_unix_ns: index,
+                    snapshot_id: Some(snapshot.into()),
+                    history_identity: Some("history".into()),
+                })
+                .collect()
+        };
+        let load =
+            |snapshot, owner: &WorkAnchor, cursor: Option<&crate::prompt_history::PromptCursor>| {
+                Ok(crate::prompt_history::scoped_window(
+                    references(snapshot),
+                    owner.turn.as_deref(),
+                    cursor,
+                    100,
+                ))
+            };
+        let WorkResult::PromptHistory(first) =
+            prompt_history_with(anchor.clone(), None, |owner, cursor| load(9, owner, cursor))
+        else {
+            panic!("page");
+        };
+        assert_eq!(first.entries.len(), 100);
+        assert_eq!(first.retained, 200);
+        assert!(first.limited);
+        assert!(
+            first
+                .entries
+                .iter()
+                .all(|row| row.anchor.turn.as_deref() == Some("exact-turn"))
+        );
+        let before = first.older.unwrap();
+        let WorkResult::PromptHistory(second) =
+            prompt_history_with(anchor.clone(), Some(before.clone()), |owner, cursor| {
+                load(9, owner, cursor)
+            })
+        else {
+            panic!("page");
+        };
+        assert_eq!(second.entries.len(), 100);
+        assert!(second.older.is_none());
+        assert!(second.entries.iter().all(|row| {
+            !first
+                .entries
+                .iter()
+                .any(|prior| prior.event_id == row.event_id)
+        }));
+        let WorkResult::PromptHistory(stale) =
+            prompt_history_with(anchor.clone(), Some(before), |owner, cursor| {
+                load(10, owner, cursor)
+            })
+        else {
+            panic!("page");
+        };
+        assert!(matches!(
+            stale.availability,
+            agenturm_ui::PromptAvailability::Stale(_)
+        ));
+        assert!(stale.entries.is_empty());
+        let WorkResult::PromptHistory(denied) = prompt_history_with(anchor, None, |_, _| {
+            Err(crate::prompt_history::PromptHistoryError::Denied(
+                "Grant revoked".into(),
+            ))
+        }) else {
+            panic!("page");
+        };
+        assert!(matches!(
+            denied.availability,
+            agenturm_ui::PromptAvailability::Denied(_)
+        ));
     }
 
     #[test]
