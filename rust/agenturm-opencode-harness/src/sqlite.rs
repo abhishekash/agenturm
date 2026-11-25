@@ -2,7 +2,7 @@
 //! pages complete rows; only coarse facts cross the process boundary.
 
 use agenturm_protocol::observation::{
-    McpCall, McpMethod, NativeCostBasis, ReportedCost, mcp_tool_labels,
+    McpCall, McpMethod, NativeCostBasis, ReportedCost, mcp_tool_labels, opencode_patch_change,
 };
 use agenturm_source_process::Result;
 use rusqlite::{Connection, OpenFlags, OptionalExtension, params};
@@ -40,6 +40,7 @@ struct Cursor {
     legacy: bool,
     turns: bool,
     proofs: bool,
+    patches: bool,
     epoch: String,
     signature: String,
     identities: String,
@@ -61,15 +62,16 @@ impl Cursor {
         }
         let parts: Vec<_> = raw.split(':').collect();
         let legacy = parts.first() == Some(&"oc1");
-        let has_proofs = parts.first() == Some(&"oc4");
-        if !matches!(parts.first().copied(), Some("oc1" | "oc2" | "oc3" | "oc4"))
-            || (if has_proofs {
-                !(13..=13 + MAX_PROMPT_PROOFS).contains(&parts.len())
-                    || parts[13..].iter().any(|value| !valid_digest(value))
-            } else {
-                parts.len() != if legacy { 12 } else { 13 }
-            })
-            || ![parts[1], parts[2]].iter().all(|s| valid_digest(s))
+        let has_proofs = matches!(parts.first().copied(), Some("oc4" | "oc5"));
+        if !matches!(
+            parts.first().copied(),
+            Some("oc1" | "oc2" | "oc3" | "oc4" | "oc5")
+        ) || (if has_proofs {
+            !(13..=13 + MAX_PROMPT_PROOFS).contains(&parts.len())
+                || parts[13..].iter().any(|value| !valid_digest(value))
+        } else {
+            parts.len() != if legacy { 12 } else { 13 }
+        }) || ![parts[1], parts[2]].iter().all(|s| valid_digest(s))
             || (!legacy && !valid_digest(parts[3]))
             || !matches!(parts[if legacy { 4 } else { 5 }], "m" | "p" | "s" | "d")
         {
@@ -97,8 +99,9 @@ impl Cursor {
         }
         Ok(Some(Self {
             legacy,
-            turns: matches!(parts[0], "oc3" | "oc4"),
+            turns: matches!(parts[0], "oc3" | "oc4" | "oc5"),
             proofs: has_proofs,
+            patches: parts[0] == "oc5",
             epoch: parts[1].to_owned(),
             signature: parts[2].to_owned(),
             identities: if legacy {
@@ -120,7 +123,8 @@ impl Cursor {
 
     fn encode(&self, prompt_proofs: &[String]) -> String {
         let mut cursor = format!(
-            "oc4:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            "{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}:{}",
+            if self.patches { "oc5" } else { "oc4" },
             self.epoch,
             self.signature,
             self.identities,
@@ -238,6 +242,9 @@ fn columns(db: &Connection, table: &str) -> Result<HashSet<String>> {
 struct SessionRelationshipColumns {
     parent: bool,
     fork: bool,
+    /// The newer native `part` table carrying patch evidence exists with its
+    /// required columns. Older databases without it simply have no patches.
+    native_parts: bool,
 }
 
 fn check_schema(db: &Connection) -> Result<SessionRelationshipColumns> {
@@ -280,9 +287,24 @@ fn check_schema(db: &Connection) -> Result<SessionRelationshipColumns> {
             return Err(invalid("unsupported OpenCode SQLite layout"));
         }
     }
+    let native_parts = columns(db, "part")
+        .map(|found| {
+            [
+                "id",
+                "message_id",
+                "session_id",
+                "time_created",
+                "time_updated",
+                "data",
+            ]
+            .iter()
+            .all(|column| found.contains(*column))
+        })
+        .unwrap_or(false);
     Ok(SessionRelationshipColumns {
         parent: session_columns.contains("parent_id"),
         fork: session_columns.contains("fork_session_id"),
+        native_parts,
     })
 }
 
@@ -566,6 +588,7 @@ fn message_facts(
     cursor: &Cursor,
     row: SourceRow<'_>,
     native_costs: bool,
+    native_parts: bool,
 ) -> Result<Vec<Value>> {
     if row.session.is_empty()
         || row.session.len() > 256
@@ -592,6 +615,11 @@ fn message_facts(
         "user" => vec![scope.record("message", json!({"role":"user"}))],
         "assistant" => {
             let mut facts = vec![scope.record("message", json!({"role":"assistant"}))];
+            // A patch summary outside an active turn cannot satisfy the host
+            // admission rule, so it is withheld without failing the line.
+            if native_costs && native_parts && turn.is_some() {
+                facts.extend(patch_part_facts(db, cursor, &scope)?);
+            }
             if native_costs
                 && raw["time"]["completed"]
                     .as_i64()
@@ -703,6 +731,82 @@ fn inline_tool_facts(
             ..*message
         };
         facts.extend(tool_facts(&scope, tool)?);
+    }
+    if incomplete {
+        facts.push(message.diagnostic("oversized_opencode_row"));
+    }
+    Ok(facts)
+}
+
+/// Emits one bounded `file_change` fact per native patch part attached to the
+/// assistant message in the caller's scope. The newer native `part` table
+/// records per-message patch evidence as an edited-path list plus a producer
+/// hash; only the bounded file count and a canonical record digest cross this
+/// boundary, and malformed patches are withheld without failing the line.
+fn patch_part_facts(
+    db: &Connection,
+    cursor: &Cursor,
+    message: &FactScope<'_>,
+) -> Result<Vec<Value>> {
+    const MAX_PATCH_PARTS: usize = 4;
+    let mut statement = db.prepare_cached(
+        "SELECT CASE WHEN length(CAST(id AS BLOB)) BETWEEN 1 AND 512 THEN id END,
+                time_updated, CASE WHEN length(CAST(data AS BLOB))<=?4 THEN data END
+         FROM part WHERE message_id=?1 AND session_id=?2
+           AND (length(CAST(data AS BLOB))>?4 OR CASE WHEN length(CAST(data AS BLOB))<=?4 THEN
+                 CASE WHEN json_valid(data) THEN json_extract(data,'$.type') END END='patch')
+         ORDER BY id LIMIT ?3",
+    )?;
+    let mut rows = statement.query(params![
+        message.row,
+        message.session,
+        MAX_PATCH_PARTS + 1,
+        MAX_ROW_BYTES
+    ])?;
+    let mut facts = Vec::new();
+    let mut incomplete = false;
+    while let Some(row) = rows.next()? {
+        let part: Option<String> = row.get(0)?;
+        let updated: i64 = row.get(1)?;
+        let data: Option<String> = row.get(2)?;
+        let (Some(part), Some(data)) = (part, data) else {
+            incomplete = true;
+            continue;
+        };
+        if part.is_empty() || part.len() > 512 {
+            return Err(invalid("invalid OpenCode part identity"));
+        }
+        if facts.len() >= MAX_PATCH_PARTS {
+            incomplete = true;
+            break;
+        }
+        let raw: Value = match serde_json::from_str(&data) {
+            Ok(raw) => raw,
+            Err(_) => {
+                incomplete = true;
+                continue;
+            }
+        };
+        let Some(change) = opencode_patch_change(&raw) else {
+            continue;
+        };
+        let Ok(time_ns) = stamp(updated) else {
+            incomplete = true;
+            continue;
+        };
+        let operation = opaque(&[&cursor.epoch, message.session, message.row, &part]);
+        let scope = FactScope {
+            epoch: message.epoch,
+            table: "native-part",
+            session: message.session,
+            row: &part,
+            revision: message.revision,
+            time_ns: &time_ns,
+            operation: Some(&operation),
+            turn: message.turn,
+        };
+        let payload = serde_json::to_value(change)?;
+        facts.push(scope.record("file_change", payload));
     }
     if incomplete {
         facts.push(message.diagnostic("oversized_opencode_row"));
@@ -1112,6 +1216,7 @@ pub fn prove_user_prompts(
             let hash = prompt_digest(&event_id, expected.turn_id, rowid, seq, updated, &raw);
             if !proof
                 .strip_prefix("oc4:")
+                .or_else(|| proof.strip_prefix("oc5:"))
                 .is_some_and(|proofs| proofs.split(':').any(|value| value == hash))
             {
                 continue;
@@ -1130,6 +1235,160 @@ pub fn prove_user_prompts(
     checkpoint.verify(path)?;
     Ok(ProvenUserPrompts {
         texts: found,
+        stamp: checkpoint,
+    })
+}
+
+/// Exact retained coordinates for one native patch part. The digest and file
+/// count come from the admitted `file_change` observation; nothing here is
+/// client-supplied. No path text is requested by identity alone.
+#[derive(Clone, Copy)]
+pub struct PatchPartEvidence<'a> {
+    pub event_id: &'a str,
+    pub operation_id: &'a str,
+    pub turn_id: &'a str,
+    pub session_id: &'a str,
+    pub observed_at_unix_ns: u64,
+    pub digest: &'a str,
+    pub files: u16,
+}
+
+pub struct ProvenPatchPart {
+    /// The native edited-path list of the one matched patch part, untruncated;
+    /// the caller applies its own disclosure bounds before any output.
+    pub files: Vec<String>,
+    pub stamp: PromptSourceStamp,
+}
+
+const PATCH_SOURCE_CHANGED: &str =
+    "OpenCode edit source changed or no longer matches the committed checkpoint";
+const PATCH_UNAVAILABLE: &str = "OpenCode edit detail is unavailable in the current source";
+/// One session's native part rows stay small on supported databases; a larger
+/// session fails closed instead of scanning unbounded history.
+const MAX_PART_SCAN_ROWS: i64 = 8_192;
+
+/// Reconstructs one exact native patch part from a read-only SQLite
+/// transaction. Every retained claim — the part and message identity encoded
+/// in the event and operation IDs, the observed timestamp, the canonical record
+/// digest, and the file count — is recomputed from the live row and must match
+/// exactly and uniquely before any path is disclosed. The native Git
+/// hash stays opaque and is not used as a content proof. The retained SHA-256
+/// commitment binds the actual patch record, including its path list. The
+/// caller rechecks the database/WAL stamp and grant at disclosure.
+pub fn prove_patch_part(
+    path: &Path,
+    raw_cursor: &str,
+    evidence: &PatchPartEvidence<'_>,
+) -> Result<ProvenPatchPart> {
+    if evidence.session_id.is_empty()
+        || evidence.session_id.len() > 256
+        || evidence.event_id.len() > 256
+        || evidence.operation_id.len() > 200
+        || evidence.turn_id.len() > 200
+        || evidence.files == 0
+        || usize::from(evidence.files) > agenturm_protocol::observation::FileChange::MAX_FILES
+        || !valid_digest(evidence.digest)
+    {
+        return Err(invalid(PATCH_UNAVAILABLE));
+    }
+    let checkpoint =
+        PromptSourceStamp(fingerprint(path).map_err(|_| invalid(PATCH_SOURCE_CHANGED))?);
+    let (epoch, _signature) = &checkpoint.0;
+    let cursor = Cursor::parse(raw_cursor)?
+        .filter(|cursor| cursor.patches && cursor.epoch == *epoch)
+        .ok_or_else(|| invalid(PATCH_SOURCE_CHANGED))?;
+    preflight_sidecars(path)?;
+    let db = Connection::open_with_flags(
+        path,
+        OpenFlags::SQLITE_OPEN_READ_ONLY | OpenFlags::SQLITE_OPEN_NO_MUTEX,
+    )?;
+    db.busy_timeout(std::time::Duration::from_millis(250))?;
+    db.execute_batch("PRAGMA query_only=ON; BEGIN")?;
+    let schema = check_schema(&db)?;
+    if !schema.native_parts {
+        return Err(invalid(PATCH_UNAVAILABLE));
+    }
+    let session_parts: i64 = db.query_row(
+        "SELECT COUNT(*) FROM (SELECT 1 FROM part WHERE session_id=?1 LIMIT ?2)",
+        params![evidence.session_id, MAX_PART_SCAN_ROWS + 1],
+        |row| row.get(0),
+    )?;
+    if session_parts > MAX_PART_SCAN_ROWS {
+        return Err(invalid(PATCH_UNAVAILABLE));
+    }
+    let mut statement = db.prepare(
+        "SELECT rowid,
+                CASE WHEN length(CAST(id AS BLOB)) BETWEEN 1 AND 512 THEN id END,
+                CASE WHEN length(CAST(message_id AS BLOB)) BETWEEN 1 AND 512 THEN message_id END, time_updated,
+                CASE WHEN length(CAST(data AS BLOB))<=?2 THEN data END
+         FROM part WHERE session_id=?1
+           AND CASE WHEN length(CAST(data AS BLOB))<=?2 THEN
+                 CASE WHEN json_valid(data) THEN json_extract(data,'$.type') END END='patch'
+         ORDER BY rowid LIMIT ?3",
+    )?;
+    let mut rows = statement.query(params![
+        evidence.session_id,
+        MAX_ROW_BYTES,
+        MAX_PART_SCAN_ROWS
+    ])?;
+    let mut found: Option<Vec<String>> = None;
+    while let Some(row) = rows.next()? {
+        let part: Option<String> = row.get(1)?;
+        let message: Option<String> = row.get(2)?;
+        let updated: i64 = row.get(3)?;
+        let data: Option<String> = row.get(4)?;
+        let (Some(part), Some(message), Some(data)) = (part, message, data) else {
+            continue;
+        };
+        if part.is_empty() || part.len() > 512 || message.len() > 512 {
+            continue;
+        }
+        let operation = opaque(&[&cursor.epoch, evidence.session_id, &message, &part]);
+        let event = wire_id(
+            &cursor.epoch,
+            "native-part",
+            evidence.session_id,
+            &part,
+            "file_change",
+        );
+        if event != evidence.event_id || operation != evidence.operation_id {
+            continue;
+        }
+        if found.is_some() {
+            return Err(invalid(PATCH_UNAVAILABLE));
+        }
+        let time_ns = stamp(updated)?.parse::<u64>()?;
+        if time_ns != evidence.observed_at_unix_ns
+            || part_turn(&db, &cursor, evidence.session_id, &message)?.as_deref()
+                != Some(evidence.turn_id)
+        {
+            return Err(invalid(PATCH_UNAVAILABLE));
+        }
+        let raw: Value = serde_json::from_str(&data)?;
+        let Some(change) = opencode_patch_change(&raw) else {
+            return Err(invalid(PATCH_UNAVAILABLE));
+        };
+        if change.digest != evidence.digest || change.files != evidence.files {
+            return Err(invalid(PATCH_UNAVAILABLE));
+        }
+        let files = raw
+            .get("files")
+            .and_then(Value::as_array)
+            .ok_or_else(|| invalid(PATCH_UNAVAILABLE))?
+            .iter()
+            .map(|file| {
+                file.as_str()
+                    .filter(|path| !path.is_empty())
+                    .map(str::to_owned)
+                    .ok_or_else(|| invalid(PATCH_UNAVAILABLE))
+            })
+            .collect::<Result<Vec<_>>>()?;
+        found = Some(files);
+    }
+    checkpoint.verify(path)?;
+    let files = found.ok_or_else(|| invalid(PATCH_UNAVAILABLE))?;
+    Ok(ProvenPatchPart {
+        files,
         stamp: checkpoint,
     })
 }
@@ -1178,9 +1437,9 @@ fn poll_with_native_costs(
     let replacement = previous.as_ref().is_some_and(|c| c.epoch != epoch);
     let sweep_finished = previous.as_ref().is_some_and(|c| c.phase == 'd');
     if sweep_finished
-        && previous
-            .as_ref()
-            .is_some_and(|c| c.signature == signature && !replacement && c.proofs)
+        && previous.as_ref().is_some_and(|c| {
+            c.signature == signature && !replacement && c.proofs && (!native_costs || c.patches)
+        })
     {
         return Ok(batch(source_id, raw_cursor, &[]));
     }
@@ -1195,7 +1454,9 @@ fn poll_with_native_costs(
     let start_sweep = previous.is_none()
         || replacement
         || sweep_finished
-        || previous.as_ref().is_some_and(|c| !c.proofs);
+        || previous
+            .as_ref()
+            .is_some_and(|c| !c.proofs || (native_costs && !c.patches));
     let prior_counts = previous
         .as_ref()
         .map(|c| (c.message_count, c.part_count, c.session_count));
@@ -1244,6 +1505,7 @@ fn poll_with_native_costs(
             legacy: false,
             turns: true,
             proofs: true,
+            patches: native_costs,
             epoch,
             signature,
             identities,
@@ -1369,7 +1631,13 @@ fn poll_with_native_costs(
                 data: &data,
             };
             if phase == 'm' {
-                let facts = message_facts(&db, &cursor, row, native_costs)?;
+                let facts = message_facts(
+                    &db,
+                    &cursor,
+                    row,
+                    native_costs,
+                    relationship_columns.native_parts,
+                )?;
                 if kind == "user"
                     && let Some(fact) = facts.first()
                     && let Some(event) = fact["event_id"].as_str()
@@ -1587,6 +1855,7 @@ mod tests {
                 data: r#"{"outcome":"failed"}"#,
             },
             true,
+            false,
         )
         .unwrap();
         assert_eq!(facts[0]["identity"]["turn_id"], turn);
@@ -1633,6 +1902,7 @@ mod tests {
                 data: &content,
             },
             true,
+            false,
         )
         .unwrap();
         assert!(
@@ -1652,6 +1922,7 @@ mod tests {
                 data: &content,
             },
             true,
+            false,
         )
         .unwrap();
         let turn = &later[0]["identity"]["turn_id"];
@@ -1686,6 +1957,7 @@ mod tests {
                 data: r#"{"outcome":"unknown"}"#,
             },
             true,
+            false,
         )
         .unwrap();
         assert!(ambiguous.is_empty());
@@ -1713,5 +1985,216 @@ mod tests {
             None,
         )
         .unwrap()
+    }
+
+    fn fixture_database(path: &Path) {
+        let db = Connection::open(path).unwrap();
+        db.execute_batch(
+            "CREATE TABLE session_v2(id TEXT PRIMARY KEY, time_created INTEGER, time_updated INTEGER);
+             CREATE TABLE session_message(id TEXT, session_id TEXT, type TEXT, seq INTEGER,
+                time_created INTEGER, time_updated INTEGER, data TEXT);
+             CREATE TABLE session_part(message_id TEXT, session_id TEXT, ordinal INTEGER, type TEXT,
+                call_id TEXT, time_created INTEGER, time_updated INTEGER, data TEXT);
+             CREATE TABLE part(id TEXT, message_id TEXT, session_id TEXT,
+                time_created INTEGER, time_updated INTEGER, data TEXT);
+             INSERT INTO session_v2 VALUES('ses_1',1,1);
+             INSERT INTO session_message VALUES
+                ('msg_user','ses_1','user',1,10,10,'{\"text\":\"private fixture prompt\"}'),
+                ('msg_previous','ses_1','idle',2,15,15,'{\"outcome\":\"succeeded\"}'),
+                ('msg_asst','ses_1','assistant',3,20,20,'{}'),
+                ('msg_end','ses_1','idle',4,30,30,'{\"outcome\":\"succeeded\"}');
+             INSERT INTO part VALUES('prt_patch','msg_asst','ses_1',20,25,
+                '{\"type\":\"patch\",\"files\":[\"/fixture/private-a.rs\",\"/fixture/private-b.rs\"],
+                  \"hash\":\"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0\"}');",
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn patch_parts_emit_bounded_change_facts_and_prove_their_exact_rows() {
+        let unique = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "agenturm-patch-proof-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let path = directory.join("opencode.db");
+        fixture_database(&path);
+        let batch = poll(&path, "harness.opencode", "", 256, 1024 * 1024).unwrap();
+        let legacy = poll_legacy(&path, "harness.opencode", "", 256, 1024 * 1024).unwrap();
+        assert!(
+            legacy["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .all(|record| record["kind"] != "file_change")
+        );
+        assert!(legacy["cursor"].as_str().unwrap().starts_with("oc4:"));
+        // Upgrading a settled old cursor must sweep even with no source write.
+        let upgraded = poll(
+            &path,
+            "harness.opencode",
+            legacy["cursor"].as_str().unwrap(),
+            256,
+            1024 * 1024,
+        )
+        .unwrap();
+        assert!(upgraded["cursor"].as_str().unwrap().starts_with("oc5:"));
+        assert!(
+            upgraded["records"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|record| record["kind"] == "file_change")
+        );
+        let records = batch["records"].as_array().unwrap();
+        let change = records
+            .iter()
+            .find(|record| record["kind"] == "file_change")
+            .expect("the patch part records a file change fact");
+        assert_eq!(change["payload"]["files"], 2);
+        assert!(valid_digest(change["payload"]["digest"].as_str().unwrap()));
+        assert_eq!(change["identity"]["session_id"], "ses_1");
+        assert!(change["identity"]["turn_id"].is_string());
+        assert!(change["identity"]["operation_id"].is_string());
+        // The edited paths stay in the source database.
+        let wire = serde_json::to_string(&batch).unwrap();
+        assert!(!wire.contains("/fixture/private-a.rs"));
+        assert!(!wire.contains("private fixture prompt"));
+        let evidence = PatchPartEvidence {
+            event_id: change["event_id"].as_str().unwrap(),
+            operation_id: change["identity"]["operation_id"].as_str().unwrap(),
+            turn_id: change["identity"]["turn_id"].as_str().unwrap(),
+            session_id: "ses_1",
+            observed_at_unix_ns: 25_000_000,
+            digest: change["payload"]["digest"].as_str().unwrap(),
+            files: 2,
+        };
+        let proven = prove_patch_part(&path, batch["cursor"].as_str().unwrap(), &evidence).unwrap();
+        assert_eq!(
+            proven.files,
+            vec![
+                "/fixture/private-a.rs".to_owned(),
+                "/fixture/private-b.rs".to_owned()
+            ]
+        );
+
+        // A turnless assistant message withholds the summary without a proof.
+        let mut turnless = evidence;
+        turnless.turn_id = "oc:0000000000000000000000000000000000000000000000000000000000000000";
+        assert!(prove_patch_part(&path, batch["cursor"].as_str().unwrap(), &turnless).is_err());
+        // A different digest never discloses the retained row.
+        let mut foreign = evidence;
+        foreign.digest = "bbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbbb";
+        assert!(prove_patch_part(&path, batch["cursor"].as_str().unwrap(), &foreign).is_err());
+        let mut missing = evidence;
+        missing.event_id = "oc:ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff";
+        assert!(prove_patch_part(&path, batch["cursor"].as_str().unwrap(), &missing).is_err());
+        // A same-count path rewrite with the SAME producer hash and time
+        // must invalidate the retained content commitment.
+        let db = Connection::open(&path).unwrap();
+        db.execute(
+            "UPDATE part SET data=?1 WHERE id='prt_patch'",
+            [r#"{"type":"patch","files":["/fixture/rewritten.rs","/fixture/private-b.rs"],"hash":"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0"}"#],
+        )
+        .unwrap();
+        drop(db);
+        assert!(prove_patch_part(&path, batch["cursor"].as_str().unwrap(), &evidence).is_err());
+        let corrected = poll(
+            &path,
+            "harness.opencode",
+            batch["cursor"].as_str().unwrap(),
+            256,
+            1024 * 1024,
+        )
+        .unwrap();
+        let corrected_change = corrected["records"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|record| record["kind"] == "file_change")
+            .unwrap();
+        assert_eq!(corrected_change["event_id"], change["event_id"]);
+        assert_ne!(
+            corrected_change["payload"]["digest"],
+            change["payload"]["digest"]
+        );
+        assert_eq!(corrected_change["revision"], 1);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn malformed_patch_parts_withhold_the_change_fact_without_failing_the_line() {
+        let db = Connection::open_in_memory().unwrap();
+        db.execute_batch(
+            "CREATE TABLE session_message(id TEXT, session_id TEXT, type TEXT, seq INTEGER);
+             CREATE TABLE part(id TEXT, message_id TEXT, session_id TEXT,
+                time_created INTEGER, time_updated INTEGER, data TEXT);
+             INSERT INTO session_message VALUES
+                ('msg_idle','s','idle',1),('msg_asst','s','assistant',2),('msg_end','s','idle',3);
+             INSERT INTO part VALUES
+                ('prt_empty','msg_asst','s',0,0,'{\"type\":\"patch\",\"files\":[],\"hash\":\"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0\"}'),
+                ('prt_badhash','msg_asst','s',0,0,'{\"type\":\"patch\",\"files\":[\"/a\"],\"hash\":\"not-a-digest\"}'),
+                ('prt_nofile','msg_asst','s',0,0,'{\"type\":\"patch\",\"files\":[\"/a\",123],\"hash\":\"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0\"}'),
+                ('prt_ok','msg_asst','s',0,0,'{\"type\":\"patch\",\"files\":[\"/a\"],\"hash\":\"a1b2c3d4e5f6a7b8c9d0e1f2a3b4c5d6e7f8a9b0\"}');",
+        )
+        .unwrap();
+        let cursor = Cursor::parse(&format!(
+            "oc4:{}:{}:{}:0:m:0:3:0:1:3:0:1",
+            "a".repeat(64),
+            "b".repeat(64),
+            "c".repeat(64)
+        ))
+        .unwrap()
+        .unwrap();
+        let scope = FactScope {
+            epoch: &cursor.epoch,
+            table: "message",
+            session: "s",
+            row: "msg_asst",
+            revision: cursor.revision,
+            time_ns: "0",
+            operation: None,
+            turn: None,
+        };
+        let facts = patch_part_facts(&db, &cursor, &scope).unwrap();
+        assert_eq!(facts.len(), 1);
+        assert_eq!(facts[0]["kind"], "file_change");
+        assert_eq!(facts[0]["payload"]["files"], 1);
+        let wire = serde_json::to_string(&facts).unwrap();
+        assert!(!wire.contains("/a"));
+    }
+
+    #[test]
+    fn patch_commitments_bind_paths_and_reject_ambiguous_counts() {
+        let patch = json!({"type":"patch","files":["/private/a.rs"],"hash":"a".repeat(40)});
+        let summary = opencode_patch_change(&patch).unwrap();
+        assert!(summary.is_valid());
+        let mut changed = patch.clone();
+        changed["files"] = json!(["/private/b.rs"]);
+        assert_ne!(
+            opencode_patch_change(&changed).unwrap().digest,
+            summary.digest
+        );
+        // Canonical object ordering/whitespace does not change the proof.
+        let reordered: Value = serde_json::from_str(&format!(
+            "{{ \"hash\":\"{}\", \"files\":[\"/private/a.rs\"],\"type\":\"patch\" }}",
+            "a".repeat(40)
+        ))
+        .unwrap();
+        assert_eq!(opencode_patch_change(&reordered), Some(summary));
+        for files in [
+            json!([]),
+            json!(["/a", "/a"]),
+            json!(["/a", null]),
+            json!(vec!["/a"; 257]),
+        ] {
+            let mut invalid = patch.clone();
+            invalid["files"] = files;
+            assert!(opencode_patch_change(&invalid).is_none());
+        }
     }
 }

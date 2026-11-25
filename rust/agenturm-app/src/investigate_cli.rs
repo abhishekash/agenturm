@@ -854,7 +854,10 @@ mod linux {
         verify_reference(reference, authority, history, |proof, failed| {
             let evidence = match proof {
                 Proven::Prompt(prompt) => json!({"text": prompt.text}),
-                Proven::Edit(edit) => json!({"changes": edit.changes}),
+                Proven::Edit(edit) => match &edit.provider_detail {
+                    Some(detail) => json!({"provider_detail": detail}),
+                    None => json!({"changes": edit.changes}),
+                },
                 Proven::Command(command) => {
                     json!({"recorded_invocation": command.recorded_invocation})
                 }
@@ -887,7 +890,7 @@ mod linux {
             {
                 None
             }
-            (EvidenceKind::Path, ObservationKind::FileEdit(_))
+            (EvidenceKind::Path, ObservationKind::FileEdit(_) | ObservationKind::FileChange(_))
                 if row.identity.worker_id.is_none() =>
             {
                 Some(row.identity.operation_id.clone()?)

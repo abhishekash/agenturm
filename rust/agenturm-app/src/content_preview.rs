@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "Usage: agenturm content binding --config <path> --source-id <id> [--kind codex.mcp_payload|codex.edit_detail|claude.edit_detail|codex.command_detail]\n       agenturm content grant --db <path> --config <path> --source-id <id> [--kind codex.mcp_payload|codex.edit_detail|claude.edit_detail|codex.command_detail]\n       agenturm content revoke --db <path> --source-id <id> [--kind codex.mcp_payload|codex.edit_detail|claude.edit_detail|codex.command_detail]\n       agenturm content list --db <path> --config <path> --source-id <id> --session-id <id>\n       agenturm content preview --db <path> --config <path> --source-id <id> [--session-id <id>] --event-id <id> --revision <revision>\n       agenturm content preview --kind codex.mcp_payload --db <path> --config <path> --source-id <id> --session-id <id> --operation-id <id> --event-id <id> --revision <revision>\n       agenturm content preview --kind codex.edit_detail|claude.edit_detail|codex.command_detail --db <path> --config <path> --source-id <id> --session-id <id> --turn-id <id> --operation-id <id> --event-id <id> --revision <revision>";
+const USAGE: &str = "Usage: agenturm content binding --config <path> --source-id <id> [--kind codex.mcp_payload|codex.edit_detail|claude.edit_detail|opencode.edit_detail|codex.command_detail]\n       agenturm content grant --db <path> --config <path> --source-id <id> [--kind codex.mcp_payload|codex.edit_detail|claude.edit_detail|opencode.edit_detail|codex.command_detail]\n       agenturm content revoke --db <path> --source-id <id> [--kind codex.mcp_payload|codex.edit_detail|claude.edit_detail|opencode.edit_detail|codex.command_detail]\n       agenturm content list --db <path> --config <path> --source-id <id> --session-id <id>\n       agenturm content preview --db <path> --config <path> --source-id <id> [--session-id <id>] --event-id <id> --revision <revision>\n       agenturm content preview --kind codex.mcp_payload --db <path> --config <path> --source-id <id> --session-id <id> --operation-id <id> --event-id <id> --revision <revision>\n       agenturm content preview --kind codex.edit_detail|claude.edit_detail|opencode.edit_detail|codex.command_detail --db <path> --config <path> --source-id <id> --session-id <id> --turn-id <id> --operation-id <id> --event-id <id> --revision <revision>";
 
 /// Proof-eligible metadata for a single retained user prompt. The selection
 /// grants no authority and is checked anew before any text is delivered.
@@ -37,6 +37,7 @@ enum ContentOperationKind {
     Mcp,
     Edit,
     ClaudeEdit,
+    OpenCodeEdit,
     Command,
 }
 
@@ -103,6 +104,7 @@ pub(crate) fn parse(args: &[String]) -> Result<ContentOptions, String> {
         Some("codex.mcp_payload") => Some(ContentOperationKind::Mcp),
         Some("codex.edit_detail") => Some(ContentOperationKind::Edit),
         Some("claude.edit_detail") => Some(ContentOperationKind::ClaudeEdit),
+        Some("opencode.edit_detail") => Some(ContentOperationKind::OpenCodeEdit),
         Some("codex.command_detail") => Some(ContentOperationKind::Command),
         _ => return Err(USAGE.into()),
     };
@@ -438,6 +440,7 @@ mod linux {
                     ContentOperationKind::Mcp => ContentKind::CodexMcpPayload,
                     ContentOperationKind::Edit => ContentKind::CodexEditDetail,
                     ContentOperationKind::ClaudeEdit => ContentKind::ClaudeEditDetail,
+                    ContentOperationKind::OpenCodeEdit => ContentKind::OpenCodeEditDetail,
                     ContentOperationKind::Command => ContentKind::CodexCommandDetail,
                 };
                 store
@@ -526,9 +529,9 @@ mod linux {
             ContentOperationKind::Mcp => agenturm_content::OperationDetailKind::Mcp,
             // The edit detail kind is shared across harnesses: the pinned
             // source's plugin decides which provider contract applies.
-            ContentOperationKind::Edit | ContentOperationKind::ClaudeEdit => {
-                agenturm_content::OperationDetailKind::Edit
-            }
+            ContentOperationKind::Edit
+            | ContentOperationKind::ClaudeEdit
+            | ContentOperationKind::OpenCodeEdit => agenturm_content::OperationDetailKind::Edit,
             ContentOperationKind::Command => agenturm_content::OperationDetailKind::Command,
         }
     }
@@ -547,6 +550,7 @@ mod linux {
             ContentOperationKind::Mcp => ContentKind::CodexMcpPayload,
             ContentOperationKind::Edit => ContentKind::CodexEditDetail,
             ContentOperationKind::ClaudeEdit => ContentKind::ClaudeEditDetail,
+            ContentOperationKind::OpenCodeEdit => ContentKind::OpenCodeEditDetail,
             ContentOperationKind::Command => ContentKind::CodexCommandDetail,
         };
         if source.scope().kind() != expected {
@@ -561,7 +565,9 @@ mod linux {
     fn operation_description(kind: ContentOperationKind) -> &'static str {
         match kind {
             ContentOperationKind::Mcp => "MCP payload",
-            ContentOperationKind::Edit | ContentOperationKind::ClaudeEdit => "file edit",
+            ContentOperationKind::Edit
+            | ContentOperationKind::ClaudeEdit
+            | ContentOperationKind::OpenCodeEdit => "file edit",
             ContentOperationKind::Command => "command invocation",
         }
     }
@@ -572,6 +578,7 @@ mod linux {
             | ContentOperationKind::Edit
             | ContentOperationKind::Command => "Codex",
             ContentOperationKind::ClaudeEdit => "Claude Code",
+            ContentOperationKind::OpenCodeEdit => "OpenCode",
         }
     }
     pub(super) fn resolver(

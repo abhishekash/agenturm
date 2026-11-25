@@ -3015,6 +3015,9 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                     "kind":"file_edit", "added":edit.added, "updated":edit.updated,
                     "deleted":edit.deleted, "moved":edit.moved,
                 }),
+                ObservationKind::FileChange(change) => serde_json::json!({
+                    "kind":"file_change", "files":change.files, "digest":change.digest,
+                }),
                 ObservationKind::McpCall {
                     server,
                     tool,

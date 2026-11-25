@@ -193,8 +193,11 @@ fn reveal(
     verify_reference(&reference, authority, history, |proof, _| {
         let text = match proof {
             Proven::Prompt(prompt) => prompt.text.clone(),
-            Proven::Edit(edit) => serde_json::to_string_pretty(&edit.changes)
-                .map_err(|_| "Cannot format the verified path evidence")?,
+            Proven::Edit(edit) => match &edit.provider_detail {
+                Some(detail) => serde_json::to_string_pretty(detail),
+                None => serde_json::to_string_pretty(&edit.changes),
+            }
+            .map_err(|_| "Cannot format the verified path evidence")?,
             Proven::Command(command) => serde_json::to_string_pretty(&command.recorded_invocation)
                 .map_err(|_| "Cannot format the verified command evidence")?,
         };

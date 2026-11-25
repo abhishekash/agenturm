@@ -4,4 +4,7 @@
 
 mod sqlite;
 
-pub use sqlite::{PromptSourceStamp, UserPromptEvidence, poll, poll_legacy, prove_user_prompts};
+pub use sqlite::{
+    PatchPartEvidence, PromptSourceStamp, ProvenPatchPart, UserPromptEvidence, poll, poll_legacy,
+    prove_patch_part, prove_user_prompts,
+};
