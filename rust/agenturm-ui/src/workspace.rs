@@ -1920,6 +1920,16 @@ impl Workspace {
         {
             return false;
         }
+        if key == KeyCode::Char('F') && view.page.ui.activity_prompts_available() {
+            if let Some(enabled) = view.page.ui.toggle_activity_prompts() {
+                self.message = Some(if enabled {
+                    "Activity filter · user prompts only".into()
+                } else {
+                    "Activity filter · all recorded events".into()
+                });
+            }
+            return true;
+        }
         if let Some(analytics::HistoryAnalytics::Metrics(browser)) = view.active_analytics_mut()
             && (key == KeyCode::Char('/') || browser.editing_filter())
         {
@@ -3419,6 +3429,11 @@ impl Workspace {
             | keymap::id::EVIDENCE_PAGE => {
                 (!history).then_some("Open a retained evidence page first")
             }
+            keymap::id::ACTIVITY_PROMPTS => self
+                .history
+                .last()
+                .is_none_or(|view| !view.page.ui.activity_prompts_available())
+                .then_some("Select the Activity pane first"),
             keymap::id::SEARCH => {
                 let focus = self.focus();
                 (focus.text_entry() || focus.chooser())
@@ -3785,6 +3800,7 @@ impl Workspace {
             keymap::id::HANDOFF_PREVIEW => return self.send_key(sender, plain_key('x')),
             keymap::id::HANDOFF_COPY => return self.send_key(sender, plain_key('c')),
             keymap::id::EVIDENCE_FILTER => return self.send_key(sender, plain_key('/')),
+            keymap::id::ACTIVITY_PROMPTS => return self.send_key(sender, plain_key('F')),
             keymap::id::EVIDENCE_HOME_END => {
                 return self.send_key(sender, plain_code(KeyCode::Home));
             }

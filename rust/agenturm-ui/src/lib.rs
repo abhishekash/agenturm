@@ -88,6 +88,9 @@ pub struct UiModel {
     /// Page-local filter per selected evidence pane. The committed query moves
     /// with the pane across older/newer pages; the draft only lives here.
     evidence_filter: BTreeMap<ExtensionId, pane_filter::Filter>,
+    /// Python's Activity Prompts control, projected from typed NativeRequest
+    /// rows and retained while moving among evidence panes.
+    activity_prompts_only: bool,
     evidence_inspection: Option<evidence_view::Inspection>,
     selected: usize,
     scroll: usize,
@@ -161,6 +164,7 @@ impl UiModel {
             panes,
             evidence: EvidenceTables::new(),
             evidence_filter: BTreeMap::new(),
+            activity_prompts_only: false,
             evidence_inspection: None,
             selected: 0,
             scroll: 0,
@@ -277,15 +281,48 @@ impl UiModel {
         let Some(table) = self.selected_evidence() else {
             return Vec::new();
         };
-        let Some(id) = self.selected_evidence_id() else {
-            return (0..table.rows.len()).collect();
-        };
-        let Some(filter) = self.evidence_filter.get(&id) else {
-            return (0..table.rows.len()).collect();
-        };
+        let prompts_only = self.activity_prompts_only && self.selected_title() == Some("Activity");
+        let filter = self
+            .selected_evidence_id()
+            .and_then(|id| self.evidence_filter.get(&id));
         (0..table.rows.len())
-            .filter(|index| Self::evidence_matches(table, filter, *index))
+            .filter(|index| {
+                let row = &table.rows[*index];
+                (!prompts_only
+                    || row
+                        .cells
+                        .get(1)
+                        .is_some_and(|kind| kind == "Native request"))
+                    && filter.is_none_or(|filter| Self::evidence_matches(table, filter, *index))
+            })
             .collect()
+    }
+
+    pub(crate) fn activity_prompts_only(&self) -> bool {
+        self.activity_prompts_only && self.selected_title() == Some("Activity")
+    }
+
+    pub(crate) fn activity_prompts_available(&self) -> bool {
+        self.selected_title() == Some("Activity")
+            && self.selected_evidence().is_some()
+            && self.evidence_inspection.is_none()
+            && !self.evidence_filter_editing()
+    }
+
+    /// Toggles the Activity-only projection. Prompt membership comes from the
+    /// provider-neutral NativeRequest row kind, never from prompt text.
+    pub(crate) fn toggle_activity_prompts(&mut self) -> Option<bool> {
+        if !self.activity_prompts_available() {
+            return None;
+        }
+        let previous = self.evidence_actual_row();
+        self.activity_prompts_only = !self.activity_prompts_only;
+        let visible = self.evidence_visible();
+        self.scroll = previous
+            .and_then(|actual| visible.iter().position(|index| *index == actual))
+            .unwrap_or(0);
+        self.update_scroll_limit();
+        Some(self.activity_prompts_only)
     }
 
     fn evidence_actual_row(&self) -> Option<usize> {
@@ -300,14 +337,23 @@ impl UiModel {
     }
 
     pub(crate) fn evidence_filter_label(&self) -> Option<String> {
-        let id = self.selected_evidence_id()?;
-        self.evidence_filter.get(&id)?.label()
+        let search = self
+            .selected_evidence_id()
+            .and_then(|id| self.evidence_filter.get(&id))
+            .and_then(pane_filter::Filter::label);
+        match (self.activity_prompts_only(), search) {
+            (true, Some(search)) => Some(format!("User prompts only · {search}")),
+            (true, None) => Some("User prompts only · F all activity".into()),
+            (false, search) => search,
+        }
     }
 
     fn evidence_filter_active(&self) -> bool {
-        self.selected_evidence_id()
-            .and_then(|id| self.evidence_filter.get(&id))
-            .is_some_and(pane_filter::Filter::active)
+        self.activity_prompts_only()
+            || self
+                .selected_evidence_id()
+                .and_then(|id| self.evidence_filter.get(&id))
+                .is_some_and(pane_filter::Filter::active)
     }
 
     /// Applies `/`, editing keys and Esc-clear to the selected evidence pane.
@@ -345,6 +391,7 @@ impl UiModel {
     /// exist. A draft is deliberately not carried: only an applied query is
     /// part of the retained page identity.
     fn inherit_evidence_filters(&mut self, previous: &Self) {
+        self.activity_prompts_only = previous.activity_prompts_only;
         for (id, filter) in &previous.evidence_filter {
             if self.evidence.contains_key(id) {
                 self.evidence_filter.insert(id.clone(), filter.committed());
@@ -870,6 +917,9 @@ fn draw(
         let keys = if let Some(inspection) = &model.evidence_inspection {
             table.draw_expanded_filtered(frame, body, rows, model.scroll, inspection);
             "↑↓ scroll · PgUp/PgDn page · Esc back"
+        } else if table.spec.title == "Activity" {
+            table.draw_with_inspector_filtered(frame, body, rows, model.scroll, true);
+            "↑↓ select · Enter inspect · / filter · F prompts only · ←/→ panes · ? help"
         } else {
             table.draw_with_inspector_filtered(frame, body, rows, model.scroll, true);
             "↑↓ select · Enter inspect · / filter · ←/→ panes · ? help"

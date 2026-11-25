@@ -123,6 +123,7 @@ pub(crate) mod id {
     pub(crate) const HANDOFF_PREVIEW: &str = "handoff.preview";
     pub(crate) const HANDOFF_COPY: &str = "handoff.copy";
     pub(crate) const EVIDENCE_FILTER: &str = "evidence.filter";
+    pub(crate) const ACTIVITY_PROMPTS: &str = "activity.prompts-only";
     pub(crate) const EVIDENCE_HOME_END: &str = "evidence.home-end";
     pub(crate) const EVIDENCE_PAGE: &str = "evidence.page";
     pub(crate) const PROMPT_READ: &str = "prompt.read";
@@ -481,6 +482,14 @@ pub(crate) const ACTIONS: &[Action] = &[
         "/ filter · Esc clear",
         "Evidence page filter",
         "Apply every query word to the selected evidence table; the committed filter follows older and newer pages",
+        Group::Search,
+        &[Context::History],
+    ),
+    action(
+        id::ACTIVITY_PROMPTS,
+        "F",
+        "User prompts only",
+        "Show typed native request events in Activity; press F again to restore all activity",
         Group::Search,
         &[Context::History],
     ),

@@ -112,31 +112,25 @@ Not run here: full workspace tests, PTY/tmux acceptance, paired Python frames, i
 
 ## Remaining gaps and ownership
 
-1. **Activity page-local filter and prompt-only view.** The Activity body is an `EvidenceTable` stored in the shared `UiModel`; there is no per-table filter field and `lib.rs` owns `evidence_key`. Needs hook 1.
-2. **Trace tree/list navigation, parent/child focus and linked-evidence traversal.** Trace rows are built and drawn by `workspace.rs` and `rust/agenturm-app/src/session_evidence/table.rs`, outside this lane. The current detail already carries parent span, target source, status and duration; missing is tree navigation and a stable return identity across Activity ⇄ call ⇄ exemplar ⇄ trace.
-3. **Generic Operations related-evidence key.** The shell only accepts `t` when the operation table `is_mcp()`, although an Operations row can carry the same typed `mcp_event`. The detail panel now renders the exact call; the key remains shell-gated (hook 2).
-4. **Selection-scoped copy/export.** `workspace/view_io.rs` still exports pane metadata. The new `LoadedView::selected_evidence` helper is ready for the shell to prefer a selected evidence row and disclose the scope (hook 3).
-5. **MCP aggregate metric calls.** Python shows aggregate metric-only MCP calls (e.g. Cursor). The Rust UI has no typed fact for that cohort, so the inventory deliberately shows loaded-call counts only and says so. Provider-specific payload viewing remains behind FD2 grants.
-6. **Session-scoped Metrics.** `MetricBrowser::scoped` and source-filtered queries exist, but the app starts the catalog unscoped and there is no session Metrics view. Needs app/shared routing; not changed here.
-7. **Diagnostics, health, reconnect and receiver-retry copy.** These surfaces are not in this lane's files. Findings retry/policy text is likewise not a Finding action.
-8. **Activity worker attribution.** The Activity row details are built by `session_evidence/table.rs`; an absent worker is omitted there rather than rendered as Unreported. Operations now do this explicitly (hook 4 if Activity should match exactly).
+The list below was written before the UI-02 shell integration and should be read
+against source candidate `17206a4` plus the current follow-up branch. The earlier
+shell hooks for evidence filtering, generic Operations trace navigation, and
+selection-scoped copy/export are now present in the integrated source.
 
-## Shared-shell hooks for UI-02
+1. **Activity prompt-only view.** The current follow-up adds the Python-style `F` toggle, palette action, and persistent footer label. It filters only typed `Native request` rows, combines with the ordinary page query, and preserves the selection when possible. Compile and paired acceptance remain pending; the generic text filter is still a separate control.
+2. **Trace tree/list navigation, parent/child focus and linked-evidence traversal.** Trace rows are built and drawn by `workspace.rs` and `rust/agenturm-app/src/session_evidence/table.rs`. Current detail carries parent span, target source, status and duration; missing are tree navigation and a stable return identity across Activity ⇄ call ⇄ exemplar ⇄ trace.
+3. **MCP aggregate metric calls.** Python shows aggregate metric-only MCP calls (e.g. Cursor). The Rust UI has no typed fact for that cohort, so the inventory deliberately shows loaded-call counts only and says so. Provider-specific payload viewing remains behind FD2 grants.
+4. **Session-scoped Metrics.** `MetricBrowser::scoped` and source-filtered queries exist, but the app starts the catalog unscoped and there is no session Metrics view. Needs app/shared routing; not changed here.
+5. **Diagnostics, health, reconnect and receiver-retry copy.** These surfaces are not in this lane's files. Findings retry/policy text is likewise not a Finding action.
+6. **Activity worker attribution.** The current follow-up adds an explicit `Worker: Unreported` detail when a row has no typed worker identity. Parent worker remains separately labeled for WorkerSpawn/WorkerLaunch. Focused and paired acceptance remains delegated to UI-Q.
 
-These are the exact integration points. None of them requires a provider branch.
+## Remaining implementation seams
 
-1. **Evidence-table local filter (Activity, Traces, Usage, Findings tables).**
-   - Add per-pane filter state to the shared model, e.g. `evidence_filter: BTreeMap<ExtensionId, pane_filter::Filter>` alongside `evidence` in `rust/agenturm-ui/src/lib.rs`.
-   - In `metadata_filter_key` (`workspace.rs`), when the selected pane has an `EvidenceTable`, route `/` and subsequent editing keys exactly like `OperationList::search_key`'s local branch: apply `Filter::matches` to `cells` plus every `MetricRow` label/value, remap selection with `pane_filter::selection`, show `Filter page: …`, clear on `Esc`, and carry the committed filter in `HistoryView::inherit_filters` so history pages preserve it.
-   - The visibility count and `Page` wording should distinguish page-local rows from scope counts.
-2. **Operation related evidence.** In the `workspace.rs` operation block, replace the `code == 't' && table.is_mcp()` guard with a check for a selected row's typed `mcp_event` (`table.selected_row().and_then(|row| row.mcp_event.as_ref())`). Keep the existing `OperationDetailKind::Mcp` matcher; it already compares source, event and revision. Then the detail line `t opens the linked retained trace` is true for Operations as well.
-3. **Selection-scoped copy/export.** In `workspace/view_io.rs::loaded_view`, before the pane fallback:
-   - if an `EvidenceTable` is selected and `open_inspection(selected)` is possible, return `LoadedView::selected_evidence(pane.title, scope, row, selected, table.rows.len())`;
-   - if an `OperationList` row is selected, export that row's `evidence` with a scope naming the operation, source and page;
-   - keep the loaded-page pane document as the fallback and show the returned `scope` in the export form so format/destination still name what is written.
-4. **Contextual help and footer.** Add `Home/End` to the global metrics help, `v` to Usage (done locally in `HistoryAnalytics::help`), `PgUp/PgDn` to the `Ctrl+F` help line, and `/ filter · Esc clear` to the Activity/Operations help. Host help should keep the `/` and history-paging hints.
-5. **Trace navigation.** When trace work is scheduled, add the tree state in `workspace.rs` and typed child/parent navigation over `TraceSpan.parent_span_id`; carry `HistorySelection` identity plus selected span/trace so return restores the same tree node. No new provider grant is needed.
-6. **Activity attribution parity.** If Activity should state absent workers explicitly, add `("Worker", "Unreported")` in `session_evidence/table.rs` rather than inferring from the UI.
+- Keep filters and focus in the UI model; keep source/session/worker/turn and snapshot identity in the request contract.
+- Build tree navigation from typed parent/child span IDs and retain the selected node in the back-stack identity.
+- Request a typed kernel fact for aggregate metric-only MCP cohorts before rendering that count; do not infer this cohort from provider names or untyped payloads.
+- Add session Metrics routing through the shared query/app path, not a provider-specific screen shortcut.
+- Route diagnostics, health and receiver retry through existing app services and explicit capability outcomes.
 
 ## Pluggable-seam notes
 

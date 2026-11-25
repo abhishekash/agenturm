@@ -1,6 +1,6 @@
 # Core feature development: delegated test plan
 
-Updated 23 November 2026. The user assigned this implementation session to
+Updated 26 November 2026. The user assigned this implementation session to
 **core feature development** and a separate agent to test execution. This plan
 is the handoff contract. It supplements Q1–Q10 in the
 [remaining-work plan](../rfcs/rust-migration-remaining-plan.md).
@@ -18,7 +18,13 @@ scoped Store lib/test Clippy and a genuine metric-point identity upgrade
 regression pass. The reference Review fixture's `--help` now documents and can
 show the required import-path setup without loading the reference first.
 
-For the next broad execution use the corrective PR's merged head, record its
+The PR #394 standalone-fixture `--locked` failure was caused by a stale fixture
+lockfile. PR #395 merged the offline lockfile correction as `6c9ec8e`; the exact
+fixture build passes locally with `--offline --locked`, and fresh merged CI is
+running. The full PR #395 coordinator status remains separate from this plan's
+delegated source and artifact tests.
+
+For the next core broad execution use the current integrated main head, record its
 exact SHA and freeze artifacts. Keep this matrix pending until those actual
 CF1–CF5 and related Review identity scenarios run. Add an explicit shell loop
 (`for script in scripts/*.sh; do bash -n "$script" || exit; done`) rather than
@@ -61,6 +67,22 @@ baselines, not results for the new feature slices. Every new row starts
 Worktree paths identify current ownership, not release artifacts. The developer
 must supply the final integrated commit before the test owner freezes a binary.
 Do not build different sources concurrently into one Cargo target directory.
+
+## UI-05 follow-up handoff — not run
+
+The separate UI implementation candidate `17206a4` was coordinator-qualified
+for its recorded scope, but this follow-up changes Activity evidence behavior.
+Use branch `feature/ui-parity-next` after its implementation PR is integrated;
+the prior 991-test and PTY results do not qualify these changes.
+
+| ID | Required test | Acceptance | Status |
+| --- | --- | --- | --- |
+| UI05-A | Activity prompt-only filter and page query | At 120×32, 80×24 and 60×18, toggle `F` and the palette command. Only typed `Native request` events remain; prompt text is not read or inferred. Combine `/` search with the toggle, handle an empty prompt set, preserve the selected event when it remains visible, preserve mode across older/newer page replacement, and restore all events on the second toggle. Verify another pane and MCP `f` server filtering are unaffected. Compare the tagged Python `Prompts` button journey. | Not run; implementation `feature/ui-parity-next`. |
+| UI05-B | Activity worker attribution | Inspect ordinary activity with a recorded worker, no worker, WorkerSpawn and WorkerLaunch. Show exact worker, `Worker: Unreported`, or separately named `Parent worker: Unreported` as appropriate. Verify the same rows at all three sizes; do not infer a parent or child ID. | Not run; implementation `feature/ui-parity-next`. |
+
+Run these against a frozen integrated source and binary. Keep UI-Q's paired
+screen matrix, live broker/private grant cases, release archive and independent
+sign-off as separate gates.
 
 ## CF1 — native session presence
 
