@@ -98,8 +98,8 @@ try:
                 run('content','revoke','--db',db,'--source-id','harness.pi.uiq')
                 cockpit = AcceptanceCockpit([str(binary),'cockpit','--db',str(db)],env,transcript,width=width,height=height)
                 frame('reopened-roster',lambda t:'Agenturm command center' in t and 'All 1' in t)
-                frame('denied-reopen',lambda t:any(word in t.lower() for word in ('grant','approved','denied','unavailable')),b'P',forbidden=('UIQ_LATEST_REQUEST_MARKER',))
-                cockpit.send(b'\x1b')
+                frame('denied-reopen',lambda t:'Prompt access denied' in t and 'Agenturm command center' not in t,b'P',forbidden=('UIQ_LATEST_REQUEST_MARKER',))
+                frame('denied-return',lambda t:'Agenturm command center' in t,b'\x1b',forbidden=('UIQ_LATEST_REQUEST_MARKER',))
                 cockpit.finish(b'q')
                 journey.update(status='passed',termios_restored=True)
             finally:

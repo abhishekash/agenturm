@@ -1631,10 +1631,15 @@ impl Workspace {
         // The navigator may drop/replace its body on these keys. Extract its
         // redaction acknowledgement BEFORE it mutates, and send only after the
         // next flushed public frame.
+        let main_navigation = code == KeyCode::Char('m')
+            && self.prompt_nav.as_ref().is_some_and(|nav| {
+                nav.scope().worker.is_some() && nav.scope().main_session.is_some()
+            });
         if matches!(
             code,
-            KeyCode::Left | KeyCode::Esc | KeyCode::Char('[' | ']' | 'l' | 'm')
-        ) {
+            KeyCode::Left | KeyCode::Esc | KeyCode::Char('[' | ']' | 'l')
+        ) || main_navigation
+        {
             self.redact_prompt_nav(false);
         }
         let Some(nav) = &mut self.prompt_nav else {
@@ -8559,6 +8564,17 @@ mod tests {
         assert!(matches!(ack.try_recv(), Err(mpsc::TryRecvError::Empty)));
         workspace.acknowledge_redaction();
         assert_eq!(ack.try_recv(), Ok(()));
+    }
+
+    #[test]
+    fn an_unavailable_main_session_key_does_not_mutate_a_private_reader() {
+        let (mut workspace, ack, _guarded) = inline_private_fixture();
+        let (sender, requests) = mpsc::channel();
+        press(&mut workspace, &sender, KeyCode::Char('m'));
+        assert!(workspace_text(&mut workspace, 80, 24).contains("PRIVATE_FIRST_LINE_MARKER"));
+        assert!(workspace.redact_then_acknowledge.is_none());
+        assert!(matches!(ack.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        assert!(requests.try_recv().is_err());
     }
 
     #[test]
