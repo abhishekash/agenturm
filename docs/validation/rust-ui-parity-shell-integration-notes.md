@@ -66,7 +66,7 @@ Additional evidence: `worker_prompt_scope_without_worker_listing_proof_is_explic
 `review_copy_export_and_save_use_the_exact_anchor_and_keep_review_selected`,
 and the evidence-filter regression in `workspace::tests`.
 
-Executed focused checks:
+Historical focused checks (before final runtime qualification):
 
 ```sh
 cargo test --locked -p agenturm-ui --lib -j 1 -- --test-threads=1
@@ -80,15 +80,32 @@ new store-backed handoff/snapshot/scope cases. Logs are
 The initial diagnostic failures and intermediate failures remain in separate
 logs; they are not counted as successful candidate runs.
 
+Final runtime `17206a42ae60709171f9b2f26b7fea0bbd982083` also passed the locked
+workspace build, all 991 tests across 96 suites, strict app/UI clippy and 159
+fresh-process monochrome UI tests. Six empty-history and three populated
+local-private PTY journeys passed; six more smoke journeys passed on the
+extracted selected-debug QA archive. See the [qualification report](rust-ui-parity-acceptance.md)
+and [evidence ledger](rust-ui-parity-evidence-17206a4.json).
+
+Further integration fixes supersede pending root navigation, keep an unavailable
+main-session reader key inert, and share typed proof-bound prompt paging between
+local and broker readers. Test harness corrections wait for actual destination
+and denial frames, preserve cells on a no-op resize, and retain the retention
+receiver's stdout pipe instead of racing a BrokenPipe. No failed diagnostic run
+is relabelled as a pass.
+
 ## Limits still requiring qualification
 
 - This is not the full paired screen/state/theme matrix against an installed
   Python wheel. The Python preparation uses exact tagged source and locked
-  dependencies; the Rust empty-history PTY smoke cannot establish populated
-  prompt, provider, attached-receiver, clipboard or private-redraw behavior.
+  dependencies. Populated local-private PTY checks now establish selected prompt
+  reads, display expiry and post-revocation denial, but not all providers,
+  attached receivers, clipboard or emulator-level private-redraw behavior.
 - Headless buffer assertions exercise the shared lifecycle but do not prove a
   particular terminal emulator's flush, clipboard or color behavior. The final
-  build/test/PTY ledger must identify the binary actually used.
+  build/test/PTY ledger identifies the binary actually used. Live broker
+  revocation remains a separate isolated root-capable fixture; CLI revocation
+  in the local PTY run occurs after closing the writer-owning cockpit.
 - Worker prompt listing without retained worker proof remains unavailable.
   Older prompt paging cannot exceed the adapter window. Raw deliveries without
   adapter normalization label Readable unavailable; Original remains granted.

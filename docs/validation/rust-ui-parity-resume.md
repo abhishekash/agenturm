@@ -1,24 +1,30 @@
 # Rust UI parity: continuation and integration
 
-25 November 2026. **Integration validation in progress; not a full-parity acceptance or release.**
+25 November 2026. **Integration qualification passed; not a full-parity acceptance or release.**
 
 ## Latest continuation
 
 The second shell and acceptance subagents stopped at a subscription usage limit.
 Their unfinished files were preserved without editing their worktrees. The
 coordinator continued directly, completed the shell correctness fixes and added
-regressions for the independent audit findings. The focused UI run passed 157
-tests; store-backed app regressions passed. The shared overlay tests passed 21
-tests normally and 21 with `NO_COLOR=1`. See the
+regressions for the independent audit findings. The final frozen runtime
+`17206a42ae60709171f9b2f26b7fea0bbd982083` passed the locked workspace build,
+991 tests across 96 suites, strict app/UI clippy and 159 fresh-process
+`NO_COLOR=1` UI tests. Six empty-history and three populated private-prompt PTY
+journeys passed at 120×32, 80×24 and 60×18; the extracted selected-debug QA
+archive passed another six smoke journeys. See the
+[final qualification and remaining gates](rust-ui-parity-acceptance.md),
 [shell integration note](rust-ui-parity-shell-integration-notes.md),
 [visual lane note](rust-ui-parity-ui07-lane-notes.md), and
 [independent Python acceptance preparation](rust-ui-parity-acceptance-prep.md).
 
 The Python preparation records 47 passing exact-tag tests, 42 reference captures
 and fixed-clock policy checks; it is not Rust acceptance. The coordinator also
-reran the acceptance harness's four self-tests successfully. Workspace build,
-lint and exact-binary terminal qualification are the next gates. No changes have
-been pushed or merged remotely at this point.
+reran the acceptance harness's four self-tests successfully. Final Rust checks
+are coordinator qualification, not independent final acceptance. A subsequent
+documentation-only commit records the results without relabelling its PR head
+as the tested runtime. This integration does not publish a release or change
+the default installation.
 
 ## Recovery and isolation
 
@@ -29,7 +35,7 @@ the shell-integration agent exhausted its model quota.
 
 The original shell worktree contained uncommitted changes in 12 files. They
 were copied without modifying the original worktree, preserved as `2b162cb`,
-and are being corrected and validated rather than assumed complete.
+and were corrected and validated rather than assumed complete.
 The main checkout and pre-existing lane worktrees remain untouched.
 
 | Role | New isolated worktree | Branch |
@@ -50,7 +56,8 @@ agent's processes were stopped and no global model or billing settings changed.
 Upstream main was fetched into the dedicated
 `refs/agenturm-parity-resume/upstream-main` ref, without moving another
 worktree's branch. Its observed head was
-`57b75805e3dbbe1222be89332c303def35b766e4`.
+`1b00428f2625d2e65a27c155321b3b72a2091f7b` (#394 OpenCode edit-detail), now
+merged into the tested runtime.
 Merge `d7c3eed` incorporates the newer native evidence and Claude edit-detail
 work. The plan's add/add conflict retained the user's requirement that missing
 native names receive a human-understandable contextual fallback, never the
@@ -74,9 +81,10 @@ tests passed; the UI suite had 134 passes and two failures:
 
 Log: `/tmp/opencode/agenturm-parity-recovery-tests.log`.
 Upstream integration happened during this diagnostic run, so it does **not**
-qualify a frozen source SHA or executable. Both failures need fixes and a
-fresh integrated run. The final installed-candidate gate belongs to the
-independent acceptance lane, not these historical lane test counts.
+qualify a frozen source SHA or executable. Both failures were fixed and
+covered by the final integrated run; this historical failure is retained for
+provenance. The final independent acceptance gate remains open, regardless of
+the coordinator's successful exact-binary qualification.
 
 ## Architecture and acceptance boundaries
 
@@ -86,9 +94,11 @@ the existing grant, active-display, redraw-before-acknowledgement and timeout
 fences. Missing worker proof is unavailability, not permission to relabel
 main-session content. Copy/export must identify the actual selected scope.
 
-Remaining qualification includes the exact installed binary, the tagged
-Python 0.2.8 oracle, comparable fixtures at 120×32, 80×24 and 60×18, private
-reader revocation, nested navigation and terminal restoration. Mouse parity,
+The tagged Python oracle and selected Rust exact-debug-binary journeys passed,
+including nested navigation, live expiry, post-revocation denial and terminal
+restoration. Remaining qualification includes a full identical-fixture paired
+matrix, release artifacts, live broker revocation in an isolated root-capable
+fixture, and final independent UI-Q sign-off. Mouse parity,
 unsupported provider capabilities and intentional disclosure differences
 cannot be promoted to accepted parity by passing unit tests.
 

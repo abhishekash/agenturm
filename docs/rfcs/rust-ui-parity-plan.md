@@ -1,10 +1,42 @@
 # Rust cockpit UI parity implementation plan
 
-23 November 2026 · Python reference **0.2.8** · Rust planning baseline **`fd398c1`** on main
+26 November 2026 · Python reference **0.2.8** · Rust planning baseline **`fd398c1`** on main
 
 Build the full Python 0.2.8 cockpit experience into the Rust terminal app. A user must be able to discover work, choose an exact session, read its latest progress and earlier requests, investigate history, review the result, and resume follow-up work with the same evidence, discoverable controls, and predictable back navigation.
 
 The approved Agenturm command center remains the landing screen: full-width project groups, named tasks, selectable status counts, newest updated first, and Enter to open the inspector. Preserve the Rust evidence and permission model. Match Python's visual hierarchy, layout quality, density, focus, and workflow outcomes elsewhere. Record any layout, key, or policy difference for explicit acceptance.
+
+## Implementation status — 26 November 2026
+
+The paused UI lanes were reconciled from the Claude/OpenCode session record and
+the isolated integration candidate. The current UI candidate is
+`17206a42ae60709171f9b2f26b7fea0bbd982083` on
+`work/ui-parity-resume`; it includes upstream main through PR #394, but has not
+been merged to `main`, published, or accepted as full Python parity. Its
+coordinator qualification passed a locked workspace build, 991 tests across 96
+suites, strict app/UI Clippy, 159 fresh-process `NO_COLOR=1` UI tests, selected
+empty and populated PTY journeys at 120×32, 80×24 and 60×18, and a selected
+debug QA archive smoke. See the [qualification report](../validation/rust-ui-parity-acceptance.md)
+and [continuation record](../validation/rust-ui-parity-resume.md) for exact
+scope and limits.
+
+| Lane | Consolidated state | Remaining implementation or acceptance |
+| --- | --- | --- |
+| UI-01 Reference inventory | Original 234-row Python 0.2.8 inventory retained. | Reclassify every row against the current candidate; attach source and journey evidence; resolve unaccepted required differences. |
+| UI-02 Shared shell | Shared key/action dispatch, contextual help, command palette and theme routing integrated in the candidate. | Complete the full binding/control journey comparison, including forms, clipboard, mouse and all compact/error states. |
+| UI-03 Command center and inspector | Today/History, chooser, named roster behavior, inspector Overview/Prompts/Details and nested navigation are implemented in the candidate. | Pin primary-event identity through linked Activity; add inspector Locate/acknowledge/dismiss with distinct dismissed-error semantics; add subtree evidence queries when the kernel exposes them; catalog capture policy. |
+| UI-04 Prompts and history | Integrated navigator/reader, wide and compact modes, exact grant behavior, paging and late-response fencing are implemented. | Add cursor-backed paging beyond the adapter’s bounded window; resolve no-copy policy differences; proactively clear on idle-policy changes; qualify attached/provider journeys. |
+| UI-05 Evidence and observability screens | Interaction/rendering updates exist for Activity, Operations, Findings, Metrics, Usage, Host, Investigations and evidence export. | Activity page-local/prompt-only filters; trace tree and linked-evidence traversal; general Operation-to-evidence links; selected-row copy/export shell integration; typed MCP aggregate metric cohort; session-scoped Metrics route; diagnostics/health/reconnect/retry integration; explicit Unreported worker in Activity. |
+| UI-06 Review and workflow | Review receipts, incident state/owner and safe retry, settings draft confirmation, resume-unavailable reason, task search CLI and handoff collision checks are implemented in the candidate. | Review copy/export/save-task/excerpt/draft/Git/map actions; turn-scoped Review; persistent incident acknowledgment; cockpit task search and Decisions/Brief/version selector; handoff preview/copy; provider private detail remains coordinated with FD2. |
+| UI-07 Themes and visual system | Five palettes, semantic styles, help and palette fallback geometry are integrated. | Run the paired visual matrix; review the documented Solarized muted-on-panel contrast result (4.23:1); verify overlays and history at compact sizes. |
+| UI-Q Installed parity | Selected coordinator qualification passed on the candidate and an extracted selected-debug archive. | Independent full identical-fixture matrix, exact release artifact and ARM64, live broker revocation in an isolated root-capable fixture, and final independent sign-off remain open. |
+
+The candidate’s lane checks are not a release gate. Keep the pluggable
+architecture: UI behavior consumes provider-neutral typed kernel facts;
+provider-specific proof stays in adapters and grant-aware app services; panes
+and capabilities use their extension seams. Do not hardcode a new provider in
+the UI to close a presentation gap. Keep all unaccepted UI-Q items and the
+default cutover gate open.
 
 ## Reference and scope
 

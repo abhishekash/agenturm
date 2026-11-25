@@ -1,490 +1,233 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>Agenturm · UI-05 lane notes</title>
-<style>
-  :root {
-    color-scheme: light dark;
-    --bg: #f5f2ec;
-    --surface: #fffdf8;
-    --surface-2: #efe9df;
-    --text: #241f1a;
-    --muted: #6a6158;
-    --line: #d7cec0;
-    --accent: #6b4fd3;
-    --accent-soft: #e7e0fb;
-    --ok: #176b47;
-    --ok-soft: #dff3e8;
-    --warn: #8a5a00;
-    --warn-soft: #ffefc9;
-    --risk: #a22c3d;
-    --risk-soft: #ffe1e5;
-    --code: #f1ece3;
-    --shadow: 0 1px 2px rgb(40 30 20 / 8%), 0 10px 30px rgb(40 30 20 / 5%);
-    --radius: 14px;
-    --max: 1120px;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --bg: #151312;
-      --surface: #1e1b19;
-      --surface-2: #262220;
-      --text: #f2ece4;
-      --muted: #b3a89b;
-      --line: #3a3430;
-      --accent: #b8a6ff;
-      --accent-soft: #2e2747;
-      --ok: #7fd8ad;
-      --ok-soft: #163a2b;
-      --warn: #ffd37a;
-      --warn-soft: #3a2f16;
-      --risk: #ff9eab;
-      --risk-soft: #421d23;
-      --code: #262220;
-      --shadow: 0 1px 2px rgb(0 0 0 / 35%), 0 12px 34px rgb(0 0 0 / 25%);
-    }
-  }
-  * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
-  body {
-    margin: 0;
-    background: var(--bg);
-    color: var(--text);
-    font: 16px/1.62 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, Helvetica, Arial, sans-serif;
-    -webkit-text-size-adjust: 100%;
-  }
-  a { color: var(--accent); text-underline-offset: 2px; }
-  a:hover { text-decoration-thickness: 2px; }
-  code, pre { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, "Liberation Mono", monospace; }
-  code {
-    background: var(--code);
-    border: 1px solid var(--line);
-    border-radius: 6px;
-    padding: .08em .35em;
-    font-size: .92em;
-    overflow-wrap: anywhere;
-  }
-  pre {
-    background: var(--code);
-    border: 1px solid var(--line);
-    border-radius: 10px;
-    padding: 1rem 1.1rem;
-    overflow-x: auto;
-    font-size: .86rem;
-    line-height: 1.55;
-  }
-  pre code { background: none; border: 0; padding: 0; font-size: inherit; }
-  header.hero {
-    background:
-      radial-gradient(1100px 320px at 8% -20%, var(--accent-soft), transparent 70%),
-      var(--surface);
-    border-bottom: 1px solid var(--line);
-  }
-  .wrap { width: min(100% - 2rem, var(--max)); margin-inline: auto; }
-  .hero-inner { padding: 2.6rem 0 2.2rem; }
-  .eyebrow {
-    display: inline-block;
-    font-size: .78rem;
-    font-weight: 700;
-    letter-spacing: .14em;
-    text-transform: uppercase;
-    color: var(--accent);
-  }
-  h1 {
-    margin: .5rem 0 .6rem;
-    font-size: clamp(1.7rem, 4.4vw, 2.7rem);
-    line-height: 1.13;
-    letter-spacing: -.02em;
-  }
-  .lede { max-width: 78ch; margin: 0; color: var(--muted); font-size: 1.02rem; }
-  .meta {
-    display: flex;
-    flex-wrap: wrap;
-    gap: .45rem;
-    margin-top: 1.15rem;
-  }
-  .pill {
-    display: inline-flex;
-    align-items: center;
-    gap: .35rem;
-    border: 1px solid var(--line);
-    background: var(--surface-2);
-    border-radius: 999px;
-    padding: .18rem .62rem;
-    font-size: .8rem;
-    color: var(--muted);
-    white-space: nowrap;
-  }
-  .pill.ok { background: var(--ok-soft); border-color: transparent; color: var(--ok); }
-  .pill.warn { background: var(--warn-soft); border-color: transparent; color: var(--warn); }
-  .pill.risk { background: var(--risk-soft); border-color: transparent; color: var(--risk); }
-  .pill.accent { background: var(--accent-soft); border-color: transparent; color: var(--accent); }
-  main { padding: 2rem 0 4rem; }
-  section { margin: 2.2rem 0 0; }
-  section:first-of-type { margin-top: 0; }
-  h2 {
-    font-size: clamp(1.22rem, 2.5vw, 1.55rem);
-    letter-spacing: -.01em;
-    margin: 0 0 .65rem;
-    padding-top: .2rem;
-  }
-  h3 { font-size: 1.02rem; margin: 1.3rem 0 .4rem; }
-  p { margin: .55rem 0; }
-  ul, ol { padding-left: 1.35rem; }
-  li { margin: .28rem 0; }
-  .card {
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow);
-    padding: 1.15rem 1.2rem;
-  }
-  .grid { display: grid; gap: .9rem; }
-  .grid.two { grid-template-columns: repeat(auto-fit, minmax(270px, 1fr)); }
-  .grid.three { grid-template-columns: repeat(auto-fit, minmax(210px, 1fr)); }
-  .stat .k { display: block; font-size: .78rem; text-transform: uppercase; letter-spacing: .1em; color: var(--muted); }
-  .stat .v { display: block; font-size: 1.55rem; font-weight: 720; margin-top: .25rem; letter-spacing: -.02em; }
-  .stat .s { display: block; color: var(--muted); font-size: .84rem; margin-top: .15rem; }
-  .table-wrap {
-    background: var(--surface);
-    border: 1px solid var(--line);
-    border-radius: var(--radius);
-    box-shadow: var(--shadow);
-    overflow: auto;
-    margin-top: .75rem;
-  }
-  table { border-collapse: collapse; width: 100%; min-width: 720px; font-size: .9rem; }
-  caption { text-align: left; padding: .8rem 1rem; color: var(--muted); font-size: .82rem; }
-  th, td { padding: .68rem .8rem; border-bottom: 1px solid var(--line); text-align: left; vertical-align: top; }
-  th { position: sticky; top: 0; background: var(--surface-2); font-size: .78rem; text-transform: uppercase; letter-spacing: .07em; color: var(--muted); }
-  tr:last-child td { border-bottom: 0; }
-  td.changed { color: var(--text); }
-  .tag { display: inline-block; border-radius: 6px; padding: .1rem .4rem; font-size: .74rem; font-weight: 650; white-space: nowrap; }
-  .tag.ok { background: var(--ok-soft); color: var(--ok); }
-  .tag.warn { background: var(--warn-soft); color: var(--warn); }
-  .tag.risk { background: var(--risk-soft); color: var(--risk); }
-  .tag.accent { background: var(--accent-soft); color: var(--accent); }
-  .callout {
-    border-left: 4px solid var(--accent);
-    background: var(--accent-soft);
-    border-radius: 0 10px 10px 0;
-    padding: .75rem .9rem;
-    margin: .9rem 0;
-  }
-  .callout.warn { border-left-color: var(--warn); background: var(--warn-soft); }
-  .callout.risk { border-left-color: var(--risk); background: var(--risk-soft); }
-  .callout p:first-child { margin-top: 0; }
-  .callout p:last-child { margin-bottom: 0; }
-  .hook {
-    display: grid;
-    grid-template-columns: auto 1fr;
-    gap: .75rem 1rem;
-    align-items: start;
-    padding: .9rem 0;
-    border-bottom: 1px dashed var(--line);
-  }
-  .hook:last-child { border-bottom: 0; }
-  .hook .n {
-    display: grid;
-    place-items: center;
-    width: 1.8rem;
-    height: 1.8rem;
-    border-radius: 50%;
-    background: var(--accent-soft);
-    color: var(--accent);
-    font-weight: 720;
-    font-size: .86rem;
-  }
-  .hook h3 { margin: 0 0 .25rem; font-size: .98rem; }
-  .hook p { margin: .25rem 0; }
-  .split { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(300px, 1fr)); }
-  .files { columns: 2; column-gap: 1.2rem; font-size: .88rem; }
-  .files code { display: inline-block; margin: .18rem 0; break-inside: avoid; }
-  footer {
-    border-top: 1px solid var(--line);
-    color: var(--muted);
-    padding: 1.4rem 0 2.6rem;
-    font-size: .85rem;
-  }
-  .toc { display: flex; flex-wrap: wrap; gap: .35rem .6rem; font-size: .86rem; }
-  .toc a { text-decoration: none; border-bottom: 1px dotted var(--line); }
-  @media (max-width: 640px) {
-    .files { columns: 1; }
-    table { min-width: 640px; }
-    .hero-inner { padding-top: 1.8rem; }
-  }
-  @media print {
-    :root { --shadow: none; }
-    header.hero { background: var(--surface); }
-    .card, .table-wrap { break-inside: avoid; }
-  }
-</style>
-</head>
-<body>
-<header class="hero">
-  <div class="wrap hero-inner">
-    <span class="eyebrow">Agenturm · Rust cockpit parity</span>
-    <h1>UI-05 · Observability evidence screens</h1>
-    <p class="lede">Lane notes for Activity, Operations, MCP, Traces, Metrics, Usage, Findings, Host and retained history search. Typed facts only: kernel ports, supervised source adapters and harness adapters stay authoritative, and no provider-specific branch entered the UI.</p>
-    <div class="meta">
-      <span class="pill accent">23 November 2026</span>
-      <span class="pill">branch <code>work/ui05-screens</code></span>
-      <span class="pill">tip <code>179da32</code></span>
-      <span class="pill">oracle <code>v0.2.8</code></span>
-      <span class="pill ok">86 UI tests pass</span>
-      <span class="pill warn">UI-Q still owns paired acceptance</span>
-    </div>
-  </div>
-</header>
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Ui Parity Ui05 Lane Notes</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 26 November 2026</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-ui05-lane-notes.md">Markdown source ↗</a></nav><h1>Rust cockpit UI parity · UI-05 lane notes</h1>
+<p>23 November 2026 · worktree <code>work/ui05-screens</code> · branch tip <code>179da32</code> (plan baseline <code>fd398c1</code>) · Python oracle <code>v0.2.8</code> (<code>2802d79930728bb331db1d4d718d6dea1c9c374d</code>)</p>
+<p>This lane covers the observability evidence screens: Activity/Operations, MCP, Traces, Metrics, Usage, Findings, Host, retained-evidence paging and history search, and the copy/export scope of those screens. It preserves the pluggable architecture: every new label or control reads typed facts already produced by kernel ports, supervised source adapters and harness adapters. No provider-specific branch was added to a UI module.</p>
+<p>The HTML companion is <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-ui05-lane-notes.html">rust-ui-parity-ui05-lane-notes.html</a>.</p>
+<h2>Status</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>This lane</th>
+<th>Verified</th>
+<th>Remaining</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Activity</td>
+<td>Selected-evidence detail composition, empty/truncation copy, status styling for State/Status/Coverage</td>
+<td>Ratatui buffer checks at 120×32, 80×24, 60×18</td>
+<td>Page-local filter and prompt-only view need shared <code>UiModel</code> state (see hooks 1).</td>
+</tr>
+<tr>
+<td>Operations</td>
+<td><code>/</code> page-local filter over tool, server, result, latency and every recorded evidence field; filter preserved across older/newer pages; explicit Unreported result/server/latency; exact worker scope; linked MCP call identity</td>
+<td>Three-width render, filter/clear, page inheritance, selection mapping</td>
+<td>Related-evidence key for the generic Operations pane is still gated by the shared shell (hook 2).</td>
+</tr>
+<tr>
+<td>MCP</td>
+<td>One inventory row per exact server name joining configured declarations and observed calls; <code>Disabled config</code>, <code>Configured · idle</code>, <code>Observed &amp; config</code>, <code>Observed, disabled</code>; deduplicated client/scope origin; page-local call/error counts</td>
+<td>Inventory at three widths; selection and return preserved; server filter/paging inheritance still pass</td>
+<td>Aggregate metric-only MCP calls (e.g. Cursor) need an FD2 typed fact; payload-unavailable reason stays in the shell.</td>
+</tr>
+<tr>
+<td>Traces</td>
+<td>Evidence-table detail and return semantics; parent, target source, status and duration remain in the selected tree detail</td>
+<td>Existing trace/return journeys still pass</td>
+<td>Tree/list keyboard navigation and parent/child focus live in <code>workspace.rs</code> and <code>session_evidence/table.rs</code>; not changed in this lane.</td>
+</tr>
+<tr>
+<td>Metrics</td>
+<td>Home/End for the catalog, points and scrollable details; existing retained search, descriptions, pinned snapshots, older/newer pages and exemplars retained</td>
+<td>Home/End unit check plus existing three-width browser journey</td>
+<td>Session-scoped initial metric query is not wired; <code>MetricBrowser::scoped</code> exists but the app still starts unscoped.</td>
+</tr>
+<tr>
+<td>Usage</td>
+<td><code>v</code> chart/list toggle; list shows date, value, report count (wide) and per-day markers/legend (compact); unreported, today, retention cutoff, scan limit and incomplete telemetry disclosed; chart/list recorded in export scope</td>
+<td>List and chart at 120×32, 80×24, 60×18; mode/cost/currency journeys still pass</td>
+<td>Combined and separate cohorts were already present; no new coverage change.</td>
+</tr>
+<tr>
+<td>Findings</td>
+<td>Exact occurrence total in the page summary; group caption count; detail adds occurrence N of M, kind, severity, full scope/source and the granted source route with an explicit unavailable route</td>
+<td>Three-width drilldown, filtering and exact occurrence retainment</td>
+<td>Retry/policy-change copy is not a Finding UI action; diagnostics surfaces belong to the shell/app lanes.</td>
+</tr>
+<tr>
+<td>Host</td>
+<td>Recorded process and history titles labelled <code>not live</code>; recorded provenance (source, viewer-clock age, recorded Unix ns, hostname where it fits) always present for recorded drills; process history says whether the exact source/boot/PID/start is present in the newest loaded sample (<code>exited or unreadable</code>)</td>
+<td>Recorded identity, source switch, reorder and current-vs-recorded tests at three widths</td>
+<td>Live process refresh/reordering was already implemented; current/sample liveness is still never inferred from recorded state.</td>
+</tr>
+<tr>
+<td>Retained history search</td>
+<td>Bounded back stack for investigation pages (max 4) with PgUp; PgDn next; page number and page-local/end-of-scope disclosure; mode/scope/query edits clear the stack; private query preserved across pages</td>
+<td>Paging and private-query persistence tests at 120/80/60</td>
+<td>Reconnect/restart preservation remains the shell/app lifecycle contract; late responses are already ignored by the app.</td>
+</tr>
+<tr>
+<td>Copy/export</td>
+<td><code>LoadedView::selected_evidence</code> helper for a single selected row; plain text discloses loaded-page coverage and row count; sanitization and size limits unchanged</td>
+<td>Unit export test including control-escape sanitization</td>
+<td>The shared shell still exports pane metadata by default (hook 3).</td>
+</tr>
+</tbody>
+</table></div>
+<h2>What changed</h2>
+<h3><code>rust/agenturm-ui/src/operation_table.rs</code></h3>
+<ul>
+<li>MCP inventory is now one row per exact recorded server name, matching the Python inventory rather than emitting a configured row and a separate observed row. Declarations are deduplicated by <code>(client, scope)</code>; the loaded page contributes exact call and error counts.</li>
+<li>States are explicit: <code>Disabled config</code> (disabled, no loaded calls), <code>Configured · idle</code> (enabled/unknown, no loaded calls), <code>Observed &amp; config</code>, <code>Observed, disabled</code>, and <code>Observed</code> for names with calls but no declaration.</li>
+<li>Non-MCP operations panes (<code>Activity</code>/<code>Operations</code>) own a bounded <code>/</code> filter. Every whitespace-separated query word must match some recorded field in the row (tool, server, result, latency or evidence value). <code>Esc</code> clears the applied filter; <code>Enter</code> applies it. <code>Browser::inherit_filters</code> carries the committed query onto older/newer pages and preserves the nearest visible selection.</li>
+<li>The operation detail panel always renders <code>Server</code>, <code>Result</code>, <code>Latency</code> and <code>Worker</code>; absent values read <code>Unreported</code>, and a missing worker reads <code>Unreported (main session or not recorded)</code>. The exact linked retained MCP call (<code>source / event rN</code>) is shown when the row carries <code>mcp_event</code>; otherwise the panel says there is no linked MCP call.</li>
+</ul>
+<h3><code>rust/agenturm-ui/src/findings.rs</code></h3>
+<ul>
+<li>The page summary now reports groups, total exact occurrences and examined observations separately, so a group count is never mistaken for the occurrence count.</li>
+<li>The selected-group caption names the source, signal, exact occurrence count and the route into exact evidence.</li>
+<li>Occurrence detail adds <code>Occurrence N of M on this loaded page</code>, <code>Kind</code>, <code>Severity</code>, <code>Scope</code>, <code>Event</code>, <code>Revision</code>, <code>Snapshot</code>, session/turn/worker/operation identities and a <code>Source route</code> line derived from the typed <code>FindingSource</code> variant. An absent source is reported as unavailable, not as a silent omission.</li>
+</ul>
+<h3><code>rust/agenturm-ui/src/metric_history.rs</code></h3>
+<ul>
+<li>Home/End select the first/last catalog series or point in the current page; the same keys scroll series details, point details and exemplar traces to the start/end. Hints name the behavior.</li>
+</ul>
+<h3><code>rust/agenturm-ui/src/usage_chart.rs</code> and <code>workspace/analytics.rs</code></h3>
+<ul>
+<li><code>v</code> toggles a seven-day list beside the existing chart. The list shows the selected measure, each UTC date and value, the report count where width permits, and per-day coverage. Compact rows use <code>—</code>, <code>†</code>, <code>*</code> and <code>‡</code> markers with a legend; wide rows spell out unreported, today, retention/scan limits and incomplete telemetry.</li>
+<li>The export document scope records <code>chart</code> or <code>list</code>, so a copied/exported document cannot masquerade as the other representation. Contextual help names <code>v</code>, Home/End and the retained-page keys.</li>
+</ul>
+<h3><code>rust/agenturm-ui/src/workbench/host.rs</code></h3>
+<ul>
+<li>Recorded process pages are titled <code>Recorded host processes · not live</code> (also <code>partial · not live</code>); recorded process history is <code>Recorded process history · loaded samples · not live</code>.</li>
+<li>Recorded process drills always show their source, viewer-clock age and recorded Unix timestamp. Hostname appears where the exact sample carries it and the compact inspector has room.</li>
+<li>Process history adds <code>Latest loaded sample</code>: present for the exact source/boot/PID/start, absent with <code>exited or unreadable</code>, or unavailable when the identity is not in the loaded page. Current-sample and recorded-sample presentations remain separate.</li>
+</ul>
+<h3><code>rust/agenturm-ui/src/workbench/investigation.rs</code></h3>
+<ul>
+<li>Investigation pages now form a bounded back stack (four pages). <code>PgDn</code> moves to the next bounded page; <code>PgUp</code> returns to the stored previous page without re-reading. The footer shows <code>Page N</code>, <code>PgUp previous</code>, <code>PgDn more</code>, <code>page-local</code> or <code>end of scope</code>.</li>
+<li>Changing mode with Tab/Shift+Tab, changing the failures scope with <code>s</code>, editing or clearing a private query, or pressing Enter for a fresh search resets the page stack. The exact private query and mode are preserved when paging.</li>
+<li>History identity and the pinned snapshot are still carried by every read request; page-local limits remain explicit.</li>
+</ul>
+<h3><code>rust/agenturm-ui/src/evidence_view.rs</code></h3>
+<ul>
+<li>Selected detail keeps page context before the selected row's recorded fields. An empty detail now says <code>No recorded detail for this selected row</code> and tells the user to select another row or press Enter. Truncation hints distinguish an expandable inspector (<code>Enter to read the full detail</code>) from one that only needs more width.</li>
+<li>State/Status/Coverage columns join Result/Severity/Root result in status styling.</li>
+</ul>
+<h3><code>rust/agenturm-ui/src/loaded_view.rs</code></h3>
+<ul>
+<li><code>LoadedView::selected_evidence(title, scope, row, position, total)</code> builds an explicit single-row export document that names the selected position and says <code>loaded page only</code>.</li>
+<li><code>plain_text</code> now always discloses row count with coverage. Escaping, clipboard encoding and export limits are unchanged.</li>
+</ul>
+<h2>Verification</h2>
+<p>Commands run in <code>/tmp/agenturm-ui05-screens/rust</code> with the pinned 1.100.0 toolchain and offline locked dependencies:</p>
+<pre><code class="language-text">cargo build --offline --locked
+  Finished `dev` profile … in 40s (agenturm-ui and agenturm-app compiled)
 
-<main class="wrap">
-  <nav class="card" aria-label="Contents">
-    <div class="toc">
-      <a href="#status">Status</a>
-      <a href="#changed">What changed</a>
-      <a href="#verification">Verification</a>
-      <a href="#remaining">Remaining gaps</a>
-      <a href="#hooks">Shared-shell hooks</a>
-      <a href="#seams">Pluggable seams</a>
-      <a href="#journeys">Acceptance journeys</a>
-      <a href="#files">Files changed</a>
-    </div>
-  </nav>
+cargo test --offline --locked -p agenturm-ui --lib
+  test result: ok. 86 passed; 0 failed; 0 ignored
+  (baseline before this lane: 76 passed)
 
-  <section id="status" aria-labelledby="status-h">
-    <h2 id="status-h">Status by surface</h2>
-    <div class="grid three">
-      <div class="card stat"><span class="k">UI tests</span><span class="v">86</span><span class="s">baseline was 76; ten new targeted checks</span></div>
-      <div class="card stat"><span class="k">Owned modules</span><span class="v">9</span><span class="s">all inside the UI lane; no shared shell edits</span></div>
-      <div class="card stat"><span class="k">Provider hardcodes</span><span class="v">0</span><span class="s">typed facts and grant paths only</span></div>
-    </div>
+cargo test --offline --locked -p agenturm-app --lib findings
+  test result: ok. 12 passed; 0 failed
 
-    <div class="table-wrap">
-      <table>
-        <caption>Implemented here, verified here, and deliberately left for another owner.</caption>
-        <thead>
-          <tr><th>Surface</th><th>This lane</th><th>Verified</th><th>Remaining</th></tr>
-        </thead>
-        <tbody>
-          <tr><td><strong>Activity</strong></td><td class="changed">Selected-evidence detail composition, empty and truncation copy, status styling for State/Status/Coverage.</td><td>Ratatui buffer checks at 120×32, 80×24 and 60×18.</td><td>Page-local filter and prompt-only view need shared model state.</td></tr>
-          <tr><td><strong>Operations</strong></td><td class="changed"><code>/</code> page-local filter over tool, server, result, latency and every recorded evidence field; filter preserved across pages; explicit Unreported result/server/latency; exact worker scope; linked MCP call identity.</td><td>Three-width render, filter and clear, page inheritance, selection mapping.</td><td>Generic Operations related-evidence key stays shell-gated.</td></tr>
-          <tr><td><strong>MCP</strong></td><td class="changed">One inventory row per exact server name; configured + observed join; <em>Disabled config</em>, <em>Configured · idle</em>, <em>Observed &amp; config</em>; deduplicated client/scope origin.</td><td>Inventory at three widths; selection and return preserved; server-filter and paging tests still pass.</td><td>Aggregate metric-only calls need an FD2 fact; payload-unavailable reason stays in the shell.</td></tr>
-          <tr><td><strong>Traces</strong></td><td class="changed">Selected tree detail and return semantics retained; status styling.</td><td>Existing trace return journeys still pass.</td><td>Tree/list keyboard navigation and parent/child focus are in shared shell and app table code.</td></tr>
-          <tr><td><strong>Metrics</strong></td><td class="changed">Home/End for catalog, points and scrollable details; retained search, descriptions, pinned snapshots, older/newer pages and exemplars retained.</td><td>Home/End unit check plus the three-width browser journey.</td><td>Session-scoped initial metric query is not wired.</td></tr>
-          <tr><td><strong>Usage</strong></td><td class="changed"><code>v</code> chart/list toggle; date/value/report count and per-day coverage markers; unreported, today, retention, scan and incomplete disclosed; chart/list in export scope.</td><td>List and chart at three widths; mode, cost and currency journeys still pass.</td><td>No new coverage change beyond existing cohorts.</td></tr>
-          <tr><td><strong>Findings</strong></td><td class="changed">Exact occurrence total in the summary; group caption count; occurrence N of M, kind, severity, scope/source and granted source route.</td><td>Three-width drilldown, filtering and exact occurrence retainment.</td><td>Retry and policy-change copy is not a Finding UI action.</td></tr>
-          <tr><td><strong>Host</strong></td><td class="changed">Recorded process and history titles say <em>not live</em>; recorded provenance always present; newest-sample presence and <em>exited or unreadable</em>.</td><td>Recorded identity, source switch, reorder and current-vs-recorded tests at three widths.</td><td>Live refresh/reordering already existed; recorded state never establishes process liveness.</td></tr>
-          <tr><td><strong>History search</strong></td><td class="changed">Bounded page back stack with PgUp; PgDn next; page number and page-local/end-of-scope; private query preserved.</td><td>Paging, boundaries and private-query persistence at three widths.</td><td>Reconnect/restart persistence remains the shell/app lifecycle contract.</td></tr>
-          <tr><td><strong>Copy/export</strong></td><td class="changed"><code>LoadedView::selected_evidence</code> helper; row count and loaded-page coverage; sanitization unchanged.</td><td>Sanitization, size and scope unit checks.</td><td>Shared shell still exports pane metadata by default.</td></tr>
-        </tbody>
-      </table>
-    </div>
-  </section>
+cargo test --offline --locked -p agenturm-app --lib mcp_inventory
+  test result: ok. 4 passed; 0 failed
 
-  <section id="changed" aria-labelledby="changed-h">
-    <h2 id="changed-h">What changed</h2>
-    <div class="split">
-      <article class="card">
-        <h3>Activity, Operations and MCP</h3>
-        <ul>
-          <li><code>operation_table.rs</code>: the inventory is now one row per exact server name. Configuration and loaded calls join by the recorded name; states distinguish disabled, idle, observed + configured and observed-only.</li>
-          <li>Operations panes own a bounded <code>/</code> filter. Every query word must match a recorded field; <code>Esc</code> clears, <code>Enter</code> applies, and older/newer pages inherit the committed filter.</li>
-          <li>The operation detail always shows Server, Result, Latency and Worker. Missing values read <code>Unreported</code>; a missing worker reads <code>Unreported (main session or not recorded)</code>; the exact <code>source / event rN</code> MCP call is shown when typed evidence carries it.</li>
-          <li><code>evidence_view.rs</code>: page context precedes the selected row, empty rows say so, and truncation hints distinguish <em>Enter to read the full detail</em> from <em>widen the terminal</em>.</li>
-        </ul>
-      </article>
-      <article class="card">
-        <h3>Findings and diagnostics copy</h3>
-        <ul>
-          <li><code>findings.rs</code>: the summary reports groups, exact occurrences and examined observations separately.</li>
-          <li>Group caption names source, signal, occurrence count and the exact-evidence route.</li>
-          <li>Occurrence detail adds N of M, kind, severity, scope, source, event, revision, snapshot and a <code>Source route</code> line.</li>
-          <li>Routes derive from typed <code>FindingSource</code> variants and an absent source is explicit, never silent.</li>
-        </ul>
-      </article>
-      <article class="card">
-        <h3>Metrics and Usage</h3>
-        <ul>
-          <li><code>metric_history.rs</code>: Home/End select first/last in the catalog and points; the same keys scroll series, point and exemplar detail.</li>
-          <li><code>usage_chart.rs</code>: <code>v</code> toggles a seven-day list. Compact rows use <code>—</code>, <code>†</code>, <code>*</code>, <code>‡</code> with a legend; wide rows spell out coverage.</li>
-          <li>Export scope records <code>chart</code> or <code>list</code>; contextual help names <code>v</code>, Home/End and retained-page keys.</li>
-        </ul>
-      </article>
-      <article class="card">
-        <h3>Host and history search</h3>
-        <ul>
-          <li><code>host.rs</code>: recorded pages say <em>not live</em>; source, viewer-clock age and recorded Unix timestamp are always shown; hostname appears where it fits.</li>
-          <li>Process history reports whether the exact source/boot/PID/start is present in the newest loaded sample, or <em>exited or unreadable</em>.</li>
-          <li><code>investigation.rs</code>: bounded four-page back stack, PgUp/PgDn, page number, page-local and end-of-scope disclosure; mode/scope/query edits reset the stack; private queries persist while paging.</li>
-          <li><code>loaded_view.rs</code>: a selected-row export helper and explicit row counts; escaping and limits unchanged.</li>
-        </ul>
-      </article>
-    </div>
-  </section>
+cargo test --offline --locked -p agenturm-app --lib host
+  test result: ok. 12 passed; 0 failed
 
-  <section id="verification" aria-labelledby="verification-h">
-    <h2 id="verification-h">Verification</h2>
-    <p>Run in <code>/tmp/agenturm-ui05-screens/rust</code> with the pinned 1.100.0 toolchain, offline and locked.</p>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Command</th><th>Result</th></tr></thead>
-        <tbody>
-          <tr><td><code>cargo build --offline --locked</code></td><td><span class="tag ok">success</span> agenturm-ui and agenturm-app compiled</td></tr>
-          <tr><td><code>cargo test --offline --locked -p agenturm-ui --lib</code></td><td><span class="tag ok">86 passed</span> baseline 76; no failures</td></tr>
-          <tr><td><code>cargo test --offline --locked -p agenturm-app --lib findings</code></td><td><span class="tag ok">12 passed</span></td></tr>
-          <tr><td><code>cargo test --offline --locked -p agenturm-app --lib mcp_inventory</code></td><td><span class="tag ok">4 passed</span></td></tr>
-          <tr><td><code>cargo test --offline --locked -p agenturm-app --lib host</code></td><td><span class="tag ok">12 passed</span></td></tr>
-          <tr><td><code>cargo test --offline --locked -p agenturm-app --lib investigate</code></td><td><span class="tag ok">1 passed</span></td></tr>
-          <tr><td><code>cargo test --offline --locked -p agenturm-app --lib usage_history</code></td><td><span class="tag warn">0 tests</span> module has no unit tests</td></tr>
-        </tbody>
-      </table>
-    </div>
-    <div class="callout warn">
-      <p><strong>Not run here.</strong> Full workspace tests, PTY/tmux acceptance, paired Python frames, installed-candidate acceptance and the final optimized release gate remain UI-Q. No result above is extrapolated to them.</p>
-    </div>
-    <h3>New targeted checks</h3>
-    <ul>
-      <li>Merged MCP inventory states and three-width inventory rendering.</li>
-      <li>Operations local filtering, clearing, selection and cross-page filter inheritance.</li>
-      <li>Explicit Unreported operation attribution and linked-call detail.</li>
-      <li>Findings occurrence totals, exact-scope detail and source-route disclosure.</li>
-      <li>Metric catalog and detail Home/End behavior.</li>
-      <li>Usage list markers, coverage legend and chart/list toggle at three widths.</li>
-      <li>Recorded Host provenance, three-width process identity and an exact process missing from the newest loaded sample.</li>
-      <li>Investigation paging, page boundaries and private-query persistence.</li>
-      <li>Selected-evidence export scope and control-escape sanitization.</li>
-      <li>Evidence-table empty detail and truncation copy.</li>
-    </ul>
-  </section>
+cargo test --offline --locked -p agenturm-app --lib investigate
+  test result: ok. 1 passed; 0 failed
 
-  <section id="remaining" aria-labelledby="remaining-h">
-    <h2 id="remaining-h">Remaining gaps and ownership</h2>
-    <ol>
-      <li><strong>Activity page-local filter and prompt-only view.</strong> The Activity body is an <code>EvidenceTable</code> in the shared <code>UiModel</code>; there is no per-table filter field and <code>lib.rs</code> owns <code>evidence_key</code>. Needs hook 1.</li>
-      <li><strong>Trace tree/list navigation, parent/child focus and linked traversal.</strong> Trace rows are built and drawn by <code>workspace.rs</code> and <code>session_evidence/table.rs</code>, outside this lane. Detail already carries parent span, target source, status and duration.</li>
-      <li><strong>Generic Operations related evidence.</strong> The shell only accepts <code>t</code> when the operation table <code>is_mcp()</code>, although an Operations row can carry the same typed <code>mcp_event</code>. The detail line now names the exact call; the key remains shell-gated.</li>
-      <li><strong>Selection-scoped copy/export.</strong> <code>workspace/view_io.rs</code> still exports pane metadata. <code>LoadedView::selected_evidence</code> is ready for the shell.</li>
-      <li><strong>MCP aggregate metric calls.</strong> Python shows aggregate metric-only MCP calls (for example Cursor). Rust has no typed fact for that cohort, so the inventory shows loaded-call counts only and says so. Provider payload viewing stays behind FD2 grants.</li>
-      <li><strong>Session-scoped Metrics.</strong> <code>MetricBrowser::scoped</code> and source-filtered queries exist, but the app starts unscoped and there is no session Metrics view.</li>
-      <li><strong>Diagnostics, health, reconnect and receiver-retry copy.</strong> These surfaces are not in this lane's files. Findings retry/policy text is likewise not a Finding action.</li>
-      <li><strong>Activity worker attribution.</strong> Activity details are built by <code>session_evidence/table.rs</code>; an absent worker is omitted there. Operations now state it explicitly.</li>
-    </ol>
-  </section>
-
-  <section id="hooks" aria-labelledby="hooks-h">
-    <h2 id="hooks-h">Exact shared-shell hooks for UI-02</h2>
-    <div class="card">
-      <div class="hook">
-        <span class="n">1</span>
-        <div>
-          <h3>Evidence-table local filter</h3>
-          <p>Add per-pane filter state in <code>rust/agenturm-ui/src/lib.rs</code>, for example <code>evidence_filter: BTreeMap&lt;ExtensionId, pane_filter::Filter&gt;</code>. In <code>metadata_filter_key</code>, route <code>/</code> and editing keys for the selected <code>EvidenceTable</code>: match cells plus every <code>MetricRow</code> label/value, remap with <code>pane_filter::selection</code>, show <code>Filter page: …</code>, clear on Esc, and carry the committed filter through history-page inheritance.</p>
-        </div>
-      </div>
-      <div class="hook">
-        <span class="n">2</span>
-        <div>
-          <h3>Operation related evidence</h3>
-          <p>In the <code>workspace.rs</code> operation block, replace <code>code == 't' &amp;&amp; table.is_mcp()</code> with a selected-row <code>mcp_event</code> check. Keep the existing <code>OperationDetailKind::Mcp</code> matcher; it already compares source, event and revision.</p>
-        </div>
-      </div>
-      <div class="hook">
-        <span class="n">3</span>
-        <div>
-          <h3>Selection-scoped copy and export</h3>
-          <p>In <code>workspace/view_io.rs::loaded_view</code>, prefer <code>LoadedView::selected_evidence(pane.title, scope, row, selected, total)</code> when an evidence table has a selected row with detail. For an operation row, export its typed evidence with a scope naming the operation, source and page. Keep the pane document as fallback and show the returned scope in the export form.</p>
-        </div>
-      </div>
-      <div class="hook">
-        <span class="n">4</span>
-        <div>
-          <h3>Help and footer text</h3>
-          <p>Add Home/End to the global metrics help, <code>v</code> to Usage (already local), PgUp/PgDn to the Ctrl+F help line, and <code>/ filter · Esc clear</code> to Activity/Operations help. Host help keeps <code>/</code> and history paging.</p>
-        </div>
-      </div>
-      <div class="hook">
-        <span class="n">5</span>
-        <div>
-          <h3>Trace navigation</h3>
-          <p>When scheduled, add tree state to <code>workspace.rs</code> over typed <code>TraceSpan.parent_span_id</code> and carry the <code>HistorySelection</code> plus selected span/trace so return restores the same tree node. No new provider grant is needed.</p>
-        </div>
-      </div>
-      <div class="hook">
-        <span class="n">6</span>
-        <div>
-          <h3>Activity attribution parity</h3>
-          <p>If Activity should state absent workers explicitly, add <code>("Worker", "Unreported")</code> in <code>session_evidence/table.rs</code> rather than inferring it in the UI.</p>
-        </div>
-      </div>
-    </div>
-  </section>
-
-  <section id="seams" aria-labelledby="seams-h">
-    <h2 id="seams-h">Pluggable architecture and seam implications</h2>
-    <div class="split">
-      <div class="card">
-        <h3>Kept typed and provider-neutral</h3>
-        <ul>
-          <li><strong>Inventory:</strong> joined only by typed <code>ConfiguredMcpServer.name</code> and <code>OperationRow.server</code>; <code>enabled</code> comes from the explicit configuration reader. Counts stay page-local.</li>
-          <li><strong>Findings:</strong> routes are <code>FindingSource::{Command, Telemetry, Log, Evaluation}</code>; the UI names the route but never opens a payload itself.</li>
-          <li><strong>Usage:</strong> arithmetic uses <code>UsageDay</code>, <code>UsageTotals</code>, <code>CombinedUsageTotals</code> and <code>UsageCurrencyTotal</code>; coverage comes from typed partial/cutoff/truncation flags.</li>
-          <li><strong>Host:</strong> current vs recorded uses <code>CurrentHostSample.recorded_source</code> and exact <code>HostSample</code> boot/PID/start identity. Recorded evidence never claims liveness.</li>
-          <li><strong>Investigation:</strong> every request keeps typed history identity, snapshot, cursor and owner scope; the app remains the grant and scope authority.</li>
-        </ul>
-      </div>
-      <div class="card">
-        <h3>Still typed-fact gaps</h3>
-        <ul>
-          <li>Aggregate metric-only MCP calls need an FD2 retained fact; they are not inferred from provider names.</li>
-          <li>Provider-specific MCP payload reasons remain behind FD2 proof and a valid grant.</li>
-          <li>Session-scoped metrics need an app/shared routing change, not a UI guess.</li>
-          <li>No kernel port, supervisor, adapter or plugin-host change was needed in this lane.</li>
-        </ul>
-      </div>
-    </div>
-  </section>
-
-  <section id="journeys" aria-labelledby="journeys-h">
-    <h2 id="journeys-h">Acceptance journeys</h2>
-    <div class="card">
-      <ul>
-        <li><strong>MCP.</strong> <code>3</code> → <code>i</code> for idle/disabled/observed states, origin, page calls and errors. <code>Esc</code>, <code>f</code> cycles server filters, <code>/query</code> + Enter searches the retained scope, Enter inspects, <code>t</code> follows the linked trace, Esc restores the same server/query/call.</li>
-        <li><strong>Operations.</strong> <code>/worker</code> + Enter filters the loaded page; Enter inspects Result/Worker/Trace (Unreported where absent); Esc clears; <code>[</code>/<code>]</code> keeps the same filter.</li>
-        <li><strong>Metrics.</strong> <code>6</code> → <code>/description</code> + Enter, <code>Home</code>/<code>End</code>, <code>[</code>/<code>]</code>, Enter points, <code>e</code> exemplars, Enter exact span; three Escs return to the same series and snapshot.</li>
-        <li><strong>Usage.</strong> Open Usage → <code>v</code> list, <code>s</code> cohorts, <code>t</code> counters, <code>n</code> totals, <code>C</code> cost currency. Check <code>Unreported</code>, <code>†</code>, <code>*</code>, <code>‡</code> at 60×18 and with <code>NO_COLOR=1</code>.</li>
-        <li><strong>Findings.</strong> <code>7</code> → Enter occurrences → Enter detail; verify N of M, scope, source and source route; <code>s</code> opens the granted source; Esc returns to the same occurrence.</li>
-        <li><strong>Host.</strong> <code>5</code> or <code>H</code> → <code>/</code> search; open a recorded sample → process → history; verify <em>not live</em>, source/age and <em>Latest loaded sample</em>. Esc returns through the same process.</li>
-        <li><strong>History search.</strong> <code>Ctrl+F</code> → mode → query → Enter; PgDn shows Page 2 and PgUp previous; PgUp restores the prior page and query; Esc closes.</li>
-        <li><strong>Copy/export.</strong> <code>c</code> requests an OSC 52 write and reports terminal support; <code>x</code> opens the destination form and writes MD/HTML/JSON. Until hook 3, the document is the loaded page.</li>
-      </ul>
-    </div>
-  </section>
-
-  <section id="files" aria-labelledby="files-h">
-    <h2 id="files-h">Files changed</h2>
-    <div class="card files">
-      <code>rust/agenturm-ui/src/evidence_view.rs</code><br>
-      <code>rust/agenturm-ui/src/findings.rs</code><br>
-      <code>rust/agenturm-ui/src/loaded_view.rs</code><br>
-      <code>rust/agenturm-ui/src/metric_history.rs</code><br>
-      <code>rust/agenturm-ui/src/operation_table.rs</code><br>
-      <code>rust/agenturm-ui/src/usage_chart.rs</code><br>
-      <code>rust/agenturm-ui/src/workbench/host.rs</code><br>
-      <code>rust/agenturm-ui/src/workbench/investigation.rs</code><br>
-      <code>rust/agenturm-ui/src/workspace/analytics.rs</code><br>
-      <code>docs/validation/rust-ui-parity-ui05-lane-notes.md</code><br>
-      <code>docs/validation/rust-ui-parity-ui05-lane-notes.html</code>
-    </div>
-    <p style="color:var(--muted); font-size:.88rem; margin-top:.8rem;">No shared shell file was edited. <code>keymap.rs</code>, <code>workspace.rs</code>, <code>workbench.rs</code>, <code>lib.rs</code>, <code>theme.rs</code> and UI-06 workflow/task modules remain owned by their lanes.</p>
-  </section>
-</main>
-
-<footer>
-  <div class="wrap">
-    <p>Agenturm UI-05 lane · worktree <code>work/ui05-screens</code> · reference Python <code>v0.2.8</code> · self-contained document, no external assets.</p>
-  </div>
-</footer>
-</body>
-</html>
+cargo test --offline --locked -p agenturm-app --lib usage_history
+  test result: ok. 0 passed; 0 failed (no unit tests in that module)
+</code></pre>
+<p>The UI suite now includes targeted checks for:</p>
+<ul>
+<li>merged MCP inventory states and three-width inventory rendering;</li>
+<li>Operations local filtering, clearing, selection and cross-page filter inheritance;</li>
+<li>explicit Unreported operation attribution and linked-call detail;</li>
+<li>Findings occurrence totals, exact-scope detail and source-route disclosure;</li>
+<li>metric catalog/detail Home/End behavior;</li>
+<li>usage list markers, coverage legend and chart/list toggle at three widths;</li>
+<li>recorded Host provenance, three-width process identity, and an exact process missing from the newest loaded sample;</li>
+<li>investigation paging, page boundaries and private query persistence;</li>
+<li>selected-evidence export scope and control-escape sanitization;</li>
+<li>evidence-table empty detail and truncation copy.</li>
+</ul>
+<p>Not run here: full workspace tests, PTY/tmux acceptance, paired Python frames, installed-candidate acceptance and the final optimized release gate. Those remain UI-Q.</p>
+<h2>Remaining gaps and ownership</h2>
+<ol>
+<li><strong>Activity page-local filter and prompt-only view.</strong> The Activity body is an <code>EvidenceTable</code> stored in the shared <code>UiModel</code>; there is no per-table filter field and <code>lib.rs</code> owns <code>evidence_key</code>. Needs hook 1.</li>
+<li><strong>Trace tree/list navigation, parent/child focus and linked-evidence traversal.</strong> Trace rows are built and drawn by <code>workspace.rs</code> and <code>rust/agenturm-app/src/session_evidence/table.rs</code>, outside this lane. The current detail already carries parent span, target source, status and duration; missing is tree navigation and a stable return identity across Activity ⇄ call ⇄ exemplar ⇄ trace.</li>
+<li><strong>Generic Operations related-evidence key.</strong> The shell only accepts <code>t</code> when the operation table <code>is_mcp()</code>, although an Operations row can carry the same typed <code>mcp_event</code>. The detail panel now renders the exact call; the key remains shell-gated (hook 2).</li>
+<li><strong>Selection-scoped copy/export.</strong> <code>workspace/view_io.rs</code> still exports pane metadata. The new <code>LoadedView::selected_evidence</code> helper is ready for the shell to prefer a selected evidence row and disclose the scope (hook 3).</li>
+<li><strong>MCP aggregate metric calls.</strong> Python shows aggregate metric-only MCP calls (e.g. Cursor). The Rust UI has no typed fact for that cohort, so the inventory deliberately shows loaded-call counts only and says so. Provider-specific payload viewing remains behind FD2 grants.</li>
+<li><strong>Session-scoped Metrics.</strong> <code>MetricBrowser::scoped</code> and source-filtered queries exist, but the app starts the catalog unscoped and there is no session Metrics view. Needs app/shared routing; not changed here.</li>
+<li><strong>Diagnostics, health, reconnect and receiver-retry copy.</strong> These surfaces are not in this lane's files. Findings retry/policy text is likewise not a Finding action.</li>
+<li><strong>Activity worker attribution.</strong> The Activity row details are built by <code>session_evidence/table.rs</code>; an absent worker is omitted there rather than rendered as Unreported. Operations now do this explicitly (hook 4 if Activity should match exactly).</li>
+</ol>
+<h2>Shared-shell hooks for UI-02</h2>
+<p>These are the exact integration points. None of them requires a provider branch.</p>
+<ol>
+<li><strong>Evidence-table local filter (Activity, Traces, Usage, Findings tables).</strong>
+<ul>
+<li>Add per-pane filter state to the shared model, e.g. <code>evidence_filter: BTreeMap&lt;ExtensionId, pane_filter::Filter&gt;</code> alongside <code>evidence</code> in <code>rust/agenturm-ui/src/lib.rs</code>.</li>
+<li>In <code>metadata_filter_key</code> (<code>workspace.rs</code>), when the selected pane has an <code>EvidenceTable</code>, route <code>/</code> and subsequent editing keys exactly like <code>OperationList::search_key</code>'s local branch: apply <code>Filter::matches</code> to <code>cells</code> plus every <code>MetricRow</code> label/value, remap selection with <code>pane_filter::selection</code>, show <code>Filter page: …</code>, clear on <code>Esc</code>, and carry the committed filter in <code>HistoryView::inherit_filters</code> so history pages preserve it.</li>
+<li>The visibility count and <code>Page</code> wording should distinguish page-local rows from scope counts.</li>
+</ul>
+</li>
+<li><strong>Operation related evidence.</strong> In the <code>workspace.rs</code> operation block, replace the <code>code == 't' &amp;&amp; table.is_mcp()</code> guard with a check for a selected row's typed <code>mcp_event</code> (<code>table.selected_row().and_then(|row| row.mcp_event.as_ref())</code>). Keep the existing <code>OperationDetailKind::Mcp</code> matcher; it already compares source, event and revision. Then the detail line <code>t opens the linked retained trace</code> is true for Operations as well.</li>
+<li><strong>Selection-scoped copy/export.</strong> In <code>workspace/view_io.rs::loaded_view</code>, before the pane fallback:
+<ul>
+<li>if an <code>EvidenceTable</code> is selected and <code>open_inspection(selected)</code> is possible, return <code>LoadedView::selected_evidence(pane.title, scope, row, selected, table.rows.len())</code>;</li>
+<li>if an <code>OperationList</code> row is selected, export that row's <code>evidence</code> with a scope naming the operation, source and page;</li>
+<li>keep the loaded-page pane document as the fallback and show the returned <code>scope</code> in the export form so format/destination still name what is written.</li>
+</ul>
+</li>
+<li><strong>Contextual help and footer.</strong> Add <code>Home/End</code> to the global metrics help, <code>v</code> to Usage (done locally in <code>HistoryAnalytics::help</code>), <code>PgUp/PgDn</code> to the <code>Ctrl+F</code> help line, and <code>/ filter · Esc clear</code> to the Activity/Operations help. Host help should keep the <code>/</code> and history-paging hints.</li>
+<li><strong>Trace navigation.</strong> When trace work is scheduled, add the tree state in <code>workspace.rs</code> and typed child/parent navigation over <code>TraceSpan.parent_span_id</code>; carry <code>HistorySelection</code> identity plus selected span/trace so return restores the same tree node. No new provider grant is needed.</li>
+<li><strong>Activity attribution parity.</strong> If Activity should state absent workers explicitly, add <code>(&quot;Worker&quot;, &quot;Unreported&quot;)</code> in <code>session_evidence/table.rs</code> rather than inferring from the UI.</li>
+</ol>
+<h2>Pluggable-seam notes</h2>
+<ul>
+<li><strong>Inventory</strong> is joined only by the typed <code>ConfiguredMcpServer.name</code> and <code>OperationRow.server</code>, with <code>enabled: Option&lt;bool&gt;</code> from the explicit configuration reader. Counts remain page-local; no MCP client is special-cased. Aggregate metric-only calls are deliberately not inferred.</li>
+<li><strong>Findings routes</strong> are selected from the existing <code>FindingSource::{Command, Telemetry, Log, Evaluation}</code> enum. The UI names the grant route but never opens a payload itself; <code>s</code> still goes through the current-grant private viewer.</li>
+<li><strong>Usage</strong> list arithmetic uses <code>UsageDay</code>, <code>UsageTotals</code>, <code>CombinedUsageTotals</code> and <code>UsageCurrencyTotal</code>; coverage markers come from <code>retention_partial</code>, <code>scan_partial</code>, <code>partial_traces</code> and <code>cost_currencies_truncated</code>. No provider-specific cost or token math was introduced.</li>
+<li><strong>Host</strong> current-versus-recorded is derived from <code>CurrentHostSample.recorded_source</code> and exact <code>HostSample { boot_id, pid, start_ticks }</code> identity. Recorded evidence never claims liveness; the newest-sample presence is an explicit recorded fact.</li>
+<li><strong>Investigation</strong> keeps the typed <code>history_identity</code>, <code>ReadSnapshot</code>, cursor and owner scope in every request. The page stack is UI state only; the app remains the grant and scope authority.</li>
+<li><strong>No kernel port, adapter, plugin or process-plugin host changes</strong> were needed. Remaining typed-fact gaps are the MCP aggregate metric cohort (FD2) and any provider payload reason already owned by FD2.</li>
+</ul>
+<h2>Acceptance journeys</h2>
+<p>All keys assume the current Rust workspace dispatch; Esc returns one layer at a time.</p>
+<ul>
+<li><strong>MCP.</strong> <code>3</code> → <code>i</code>: idle/disabled/observed states, origin, page calls and errors. <code>Esc</code>, <code>f</code> cycles server filters, <code>/query</code> + Enter searches the retained scope, Enter inspects the call, <code>t</code> follows the linked trace, Esc restores the same server/query/call.</li>
+<li><strong>Operations.</strong> Open Operations, <code>/worker</code> + Enter filters the loaded page; Enter inspects and shows Result/Worker/Trace (Unreported where absent); Esc clears the filter; <code>[</code>/<code>]</code> keeps the same filter.</li>
+<li><strong>Metrics.</strong> <code>6</code> → <code>/description</code> + Enter, <code>Home</code>/<code>End</code>, <code>[</code>/<code>]</code>, Enter opens points, <code>e</code> cycles exemplars, Enter opens the exact span, three Escs return to the same series and snapshot.</li>
+<li><strong>Usage.</strong> Open Usage → <code>v</code> for list, <code>s</code> for combined/native/span/trace/log, <code>t</code> for counters, <code>n</code> for totals, <code>C</code> for cost currency. Check <code>Unreported</code>, <code>†</code>, <code>*</code>, <code>‡</code> at 60×18 and with <code>NO_COLOR=1</code>.</li>
+<li><strong>Findings.</strong> <code>7</code> → Enter occurrences → Enter detail; verify occurrence N of M, scope, source and source route; <code>s</code> opens the granted source; Esc returns to the same occurrence and group.</li>
+<li><strong>Host.</strong> <code>5</code> or <code>H</code> → <code>/</code> searches the current sample; record history with <code>H</code>/reader and open a sample → process → history; verify <code>not live</code>, source/age, and <code>Latest loaded sample</code> present or exited. Esc returns through the same process.</li>
+<li><strong>History search.</strong> <code>Ctrl+F</code> → mode → query → Enter; <code>PgDn</code> shows <code>Page 2</code> and <code>PgUp previous</code>; <code>PgUp</code> restores the exact prior page and query; Esc closes.</li>
+<li><strong>Copy/export.</strong> <code>c</code> requests an OSC 52 write and reports terminal support; <code>x</code> opens the destination form and writes MD/HTML/JSON. Until hook 3 lands, the document is the loaded page; the helper now makes the selected row form available.</li>
+</ul>
+<h2>Files changed</h2>
+<pre><code class="language-text">rust/agenturm-ui/src/evidence_view.rs
+rust/agenturm-ui/src/findings.rs
+rust/agenturm-ui/src/loaded_view.rs
+rust/agenturm-ui/src/metric_history.rs
+rust/agenturm-ui/src/operation_table.rs
+rust/agenturm-ui/src/usage_chart.rs
+rust/agenturm-ui/src/workbench/host.rs
+rust/agenturm-ui/src/workbench/investigation.rs
+rust/agenturm-ui/src/workspace/analytics.rs
+docs/validation/rust-ui-parity-ui05-lane-notes.md
+docs/validation/rust-ui-parity-ui05-lane-notes.html
+</code></pre>
+<p>No shared shell file was edited: <code>keymap.rs</code>, <code>workspace.rs</code>, <code>workbench.rs</code>, <code>lib.rs</code>, <code>theme.rs</code> and UI-06 workflow/task modules remain owned by their lanes.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

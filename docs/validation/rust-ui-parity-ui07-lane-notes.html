@@ -1,89 +1,233 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
-<title>UI-07 · Shared overlay visual follow-up · Agenturm</title>
-<style>
-:root{color-scheme:light dark;--canvas:#f5f7f3;--surface:#fff;--text:#20291f;--muted:#53614f;--line:#c9d2c4;--accent:#3c5700;--soft:#eaf0df;--warn:#7d4600;--warn-bg:#fff1de}
-@media(prefers-color-scheme:dark){:root{--canvas:#151a17;--surface:#1c221e;--text:#edf1e7;--muted:#abb4a5;--line:#485448;--accent:#dceb5a;--soft:#29352a;--warn:#ffd39a;--warn-bg:#382b1d}}
-*{box-sizing:border-box}body{margin:0;background:var(--canvas);color:var(--text);font:16px/1.6 system-ui,sans-serif}header,main,footer{width:min(74rem,calc(100% - 2rem));margin:auto}header{padding:2.5rem 0 1rem;border-bottom:1px solid var(--line)}main{padding-bottom:2rem}footer{padding:1rem 0 2rem;border-top:1px solid var(--line);color:var(--muted)}h1{font-size:clamp(1.6rem,4vw,2.5rem);line-height:1.2;margin:.3rem 0}h2{margin-top:2rem;font-size:1.35rem}h3{font-size:1.05rem;margin:.2rem 0}a{color:var(--accent)}a:focus-visible{outline:3px solid var(--accent);outline-offset:3px}.kicker{color:var(--accent);font-weight:700;text-transform:uppercase;letter-spacing:.08em;font-size:.8rem}.meta{color:var(--muted)}.notice{padding:1rem;border-left:4px solid var(--warn);background:var(--warn-bg)}.grid{display:grid;grid-template-columns:repeat(auto-fit,minmax(min(100%,18rem),1fr));gap:1rem}.card{padding:1rem;border:1px solid var(--line);border-radius:.5rem;background:var(--surface)}code,pre{font-family:ui-monospace,SFMono-Regular,Consolas,monospace}code{font-size:.9em;overflow-wrap:anywhere}pre{padding:1rem;background:var(--soft);white-space:pre-wrap;overflow-wrap:anywhere;border-radius:.4rem;font-size:.86rem}table{width:100%;border-collapse:collapse;background:var(--surface)}th,td{padding:.7rem;border:1px solid var(--line);text-align:left;vertical-align:top;overflow-wrap:anywhere}th{background:var(--soft)}li{margin:.4rem 0}nav{display:flex;gap:.7rem;flex-wrap:wrap;padding:.7rem 0}p{margin:.7rem 0}@media(max-width:42rem){body{font-size:15px}header{padding-top:1.4rem}th,td{padding:.4rem;font-size:.9rem}}@media print{body{background:white;color:black}nav{display:none}.card,.notice{break-inside:avoid}a{color:inherit}}
-</style>
-</head>
-<body>
-<header>
-<div class="kicker">Agenturm · Rust cockpit parity · 24 November 2026</div>
-<h1>UI-07: shared overlay visual follow-up</h1>
-<p class="meta">Baseline <code>a633c68</code> · <code>work/ui-parity-visual-resume</code> · Python <code>v0.2.8 / 2802d79930728bb331db1d4d718d6dea1c9c374d</code></p>
-<p class="notice"><strong>Scoped implementation only. Rust tests were added, not executed.</strong> No Cargo build/check/test was run because the coordinating agent prohibited builds under memory pressure. Full-screen, installed and paired acceptance remain open.</p>
-<nav aria-label="Contents"><a href="#scope">Scope</a><a href="#fixes">Fixes</a><a href="#sizes">Sizes</a><a href="#tests">Checks</a><a href="#gaps">Remaining gates</a></nav>
-</header>
-<main>
-<section id="scope">
-<h2>Scope and architecture</h2>
-<p>Only <code>rust/agenturm-ui/src/theme.rs</code>, <code>palette.rs</code> and <code>help.rs</code> were edited, plus these lane notes. No shared dispatch, keymap, workspace, workbench, app, kernel or adapter code was changed. The main agent is recovering shell integration separately.</p>
-<p>The plan, shared contracts (Markdown/HTML), inventory and UI-03/04/05/06 notes were read. Tagged <code>themes.py</code>, <code>ui_layout.py</code>, <code>terminal_ui.py</code>, theme and inspector tests were inspected with <code>git show</code>. This is source evidence, not executed Python tests or paired frames. Python's exact theme chooser is framework-owned.</p>
-<p>Observation, Current, Bright, Dark and Solarized retain their original RGB values. Styling stays semantic; palette entries remain host-supplied metadata with stable keys. No provider branch, private-content read, duplicate action inventory or alternate execution path was introduced.</p>
-</section>
-<section id="fixes">
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Ui Parity Ui07 Lane Notes</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 26 November 2026</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-ui07-lane-notes.md">Markdown source ↗</a></nav><h1>UI-07 · Shared overlay visual and responsive follow-up</h1>
+<p>24 November 2026 · baseline <code>a633c68</code> · branch <code>work/ui-parity-visual-resume</code> ·
+worktree <code>/tmp/opencode/agenturm-ui-parity-visual</code> · Python oracle <strong>v0.2.8</strong>
+(<code>2802d79930728bb331db1d4d718d6dea1c9c374d</code>)</p>
+<p><strong>Status: scoped implementation; Rust tests added, not executed. Full UI parity
+and installed/paired acceptance are not claimed.</strong></p>
+<p><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-ui07-lane-notes.html">Self-contained HTML companion</a></p>
+<h2>Scope and reference</h2>
+<p>Exclusive code ownership is <code>rust/agenturm-ui/src/{theme,palette,help}.rs</code>.
+No shell dispatch, <code>lib.rs</code>, <code>keymap.rs</code>, <code>workspace.rs</code>, <code>workbench.rs</code>, app,
+kernel, adapter or other screen was edited. The main agent is recovering shell
+integration separately. The plan, shared Markdown/HTML contracts, UI-07 inventory
+rows and UI-03/04/05/06 lane notes were read before editing.</p>
+<p>Tagged <code>themes.py</code>, <code>ui_layout.py</code>, <code>terminal_ui.py</code>,
+<code>tests/test_terminal_themes.py</code> and <code>tests/test_inspector_layout.py</code> were inspected
+using <code>git show</code>, without checking out the tag. These establish palette roles,
+compact evidence priority, the prompt breakpoint and focus expectations. They
+are <strong>source reference, not paired frames or executed Python tests</strong>. Python's
+theme chooser is Textual-owned (inventory V-02); exact rendering still needs its
+installed wheel/dependency version.</p>
 <h2>Concrete fixes</h2>
-<div class="grid">
-<article class="card"><h3>Appearance</h3><p>An undersized active picker no longer disappears. A cleared resize notice puts Escape first. Every selected theme has a <code>›</code> marker and semantic bold/selection style, independent of color.</p><p>Save errors keep cancel/retry visible before a separate clipped error line. Preview/cancel, Space retry/apply, reload and Unix 0600 persistence have new tests.</p></article>
-<article class="card"><h3>Palette and session chooser</h3><p>The two detail rows now show the selected reason instead of wrapping a duplicate long title over it. Truncation has an ellipsis. Disabled rows explicitly say <code>[Unavailable]</code>.</p><p>Labels clip by cells without splitting graphemes; controls are escaped; group labels yield to subjects. Search keeps its editing suffix/cursor visible. Session counts exclude only the explicit “All sessions” entry.</p></article>
-<article class="card"><h3>Help</h3><p>Scrolling and rendering now use the same inner width/height. End reaches the real last content row. Headings and body wrap by grapheme; controls are escaped.</p><p>Resize keeps the logical line/display-byte anchor. Too-small fallback leaves reading state intact. Skipping in <code>usize</code> avoids a <code>u16</code> scroll wrap.</p></article>
-<article class="card"><h3>Too-small and monochrome</h3><p>All owned fallback frames clear old content and lead with <code>Esc back · resize</code>. Query, selection and theme preview are not silently canceled.</p><p>Existing NO_COLOR reverse/bold selection remains; text markers communicate selected and unavailable states. No environment mutation is used in tests.</p></article>
-</div>
-</section>
-<section id="sizes">
-<h2>Source-derived screen budget</h2>
-<p>These dimensions are calculated from the layout source, <strong>not observed installed frames</strong>. Each overlay has one border; Help's footer sits outside it.</p>
-<table><thead><tr><th>Terminal</th><th>Appearance / list rows</th><th>Palette / result rows</th><th>Help inner body</th></tr></thead><tbody>
-<tr><td>120×32</td><td>68×14 / 10 (five choices)</td><td>88×24 / 17</td><td>118×29</td></tr>
-<tr><td>80×24</td><td>68×14 / 10 (five choices)</td><td>78×22 / 15</td><td>78×21</td></tr>
-<tr><td>60×18</td><td>58×14 / 10 (five choices)</td><td>58×16 / 9</td><td>58×15</td></tr>
-</tbody></table>
-<p>Measured component minima: <strong>22×11 appearance</strong> (five choices plus hints), <strong>22×10 palette</strong> (one selected result, reason and cancel), <strong>20×6 Help</strong> (three text rows). Below these thresholds the owned component shows a resize notice and still handles Escape. A 1×1 buffer is only a panic-safety case, not a readable interface.</p>
-<p>These minima do not change or certify the global application floor: baseline Rust still declares 38×8; the Python acceptance floor is 60×18. Full-screen compact single-pane behavior remains with screen/shell owners.</p>
-</section>
-<section id="tests">
-<h2>Checks and regression coverage</h2>
-<p><strong>Executed:</strong> owned-file <code>rustfmt --edition 2024 --check</code> and <code>git diff --check</code>, both clean. Static Python checks confirmed all 80 RGB roles match tagged Python and owned overlay contrast pairs exceed 4.5:1. The HTML parsed with the standard HTML parser and has one embedded stylesheet, no external asset elements. This is not a browser visual check. <strong>Not executed:</strong> any Cargo build/check/test, paired Python run, installed candidate, PTY or terminal-emulator capture. Earlier lane results do not qualify this patch.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Owned surface</th>
+<th>Before</th>
+<th>After</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Appearance</td>
+<td>Below its threshold it returned without drawing, leaving an invisible active picker. Selection depended on background/bold.</td>
+<td>Below its measured overlay floor it clears the frame and shows an Escape-first resize notice. Every selected theme has <code>›</code> plus semantic selection styling.</td>
+</tr>
+<tr>
+<td>Appearance save error</td>
+<td>A long wrapped error could hide cancel/retry; only the happy save path had coverage.</td>
+<td>Cancel/retry precede a separate, clipped save-failure line. Preview remains reversible on error. Tests exercise failure, Esc restore, Space retry/apply, owner-only file mode and fresh-picker reload.</td>
+</tr>
+<tr>
+<td>Palette/session chooser</td>
+<td>A wrapped duplicate selected label could consume both detail rows and hide the unavailable reason. Long queries hid the editing cursor. Raw labels/groups were not escaped by this renderer.</td>
+<td>Both detail rows show the reason, with an ellipsis on truncation. Labels clip on grapheme/cell boundaries; query tail and cursor stay visible; displayed controls are escaped. Low-priority group text is omitted before subject text.</td>
+</tr>
+<tr>
+<td>Palette accessibility</td>
+<td>Unselected disabled rows were color-only; undersized layouts could reserve no useful result rows.</td>
+<td>Disabled rows say <code>[Unavailable]</code>; selected rows retain <code>›</code> and bold/reverse selection. The measured minimum reserves a visible selected result, two detail rows and cancel hint. No-match copy keeps <code>Ctrl+A</code> visible even at the overlay minimum.</td>
+</tr>
+<tr>
+<td>Session count</td>
+<td>Always subtracted one entry, even if no “All sessions” row was supplied.</td>
+<td>Excludes only the explicit <code>session|all</code> entry. No provider/session identity inference.</td>
+</tr>
+<tr>
+<td>Help</td>
+<td>Scroll calculations used width <code>area−4</code> and height <code>area−2</code>, but actual text used width <code>area−2</code> and height <code>area−3</code>. End could not reliably reach the final row. Wrapping iterated characters and clipped headings.</td>
+<td>Scroll and rendering use the same inner rectangle and grapheme wrapping, including headings. End reaches the actual last body row. Resize preserves the logical line and display-byte anchor; too-small rendering leaves that anchor untouched. <code>usize</code> skipping avoids a <code>u16</code> scroll wrap.</td>
+</tr>
+<tr>
+<td>Shared fallback</td>
+<td>Resize messages could be drawn over old content, with Escape clipped off the far end.</td>
+<td>Owned overlays clear the frame and put <code>Esc back · resize</code> first. Fallback does not cancel a preview/query or reset Help's reading position.</td>
+</tr>
+</tbody>
+</table></div>
+<h2>Screen budget and size contract</h2>
+<p>The five original RGB palettes and their names are unchanged: <strong>Observation,
+Current, Bright, Dark, Solarized</strong>. All changes use semantic roles and the existing
+selection/NO_COLOR helpers. There is no second action/key inventory, provider
+branch, content read, private-text cache or execution path in these modules.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Terminal</th>
+<th>Appearance popup / list rows</th>
+<th>Palette popup / result rows</th>
+<th>Help inner body</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>120×32</td>
+<td>68×14 / 10 (five choices)</td>
+<td>88×24 / 17</td>
+<td>118×29</td>
+</tr>
+<tr>
+<td>80×24</td>
+<td>68×14 / 10 (five choices)</td>
+<td>78×22 / 15</td>
+<td>78×21</td>
+</tr>
+<tr>
+<td>60×18</td>
+<td>58×14 / 10 (five choices)</td>
+<td>58×16 / 9</td>
+<td>58×15</td>
+</tr>
+</tbody>
+</table></div>
+<p>These are <strong>source-derived geometry</strong>, not observed installed frames. Every
+overlay has one border. Help's footer is outside its border; the palette has
+one search line, one count line, two reason rows and one hint line. At 60 columns
+Escape and help/picker controls remain visible without nested borders.</p>
+<p>Measured component floors (outer gutters and borders included):</p>
 <ul>
-<li><strong>Theme:</strong> CJK, combining acute, ZWJ/skin-tone emoji, flags, variation selectors, control escaping and cell budgets; semantic RGB contrast; failure/cancel/Space retry/save/reload/0600; selected marker/style in all five themes at 120×32, 80×24, 60×18 and minimum; both floor boundaries and tiny buffers.</li>
-<li><strong>Palette:</strong> long selected Unicode label versus unavailable reason; explicit clipping; disabled activation; exact identity/query through resize; visible search suffix/cursor; empty/no-match/clear recovery; session count with/without “All sessions”; selected-last-result visibility at minimum; frame clearing below floor.</li>
-<li><strong>Help:</strong> actual viewport geometry and final body row at the three target sizes and minimum; Home; intact Unicode; logical line/byte reflow anchor; non-destructive undersizing; wrapped headings, escaped controls and NO_COLOR reset-color assertions.</li>
+<li>Appearance <strong>22×11</strong>: five options plus two hint/error rows.</li>
+<li>Palette <strong>22×10</strong>: one scrollable selected result plus two detail rows.</li>
+<li>Help <strong>20×6</strong>: three text rows plus border/footer.</li>
 </ul>
-<p>New cases use existing Ratatui TestBackend/buffer and state seams. No dependency or test harness was added. Exact test names are in the <a href="rust-ui-parity-ui07-lane-notes.md">Markdown notes</a>.</p>
-<h3>Run after memory is available</h3>
-<p>From <code>rust/</code>. NO_COLOR requires its own process because <code>colors()</code> caches the environment.</p>
-<pre>CARGO_BUILD_JOBS=1 cargo test --offline --locked -p agenturm-ui --lib theme::tests
+<p>Below those floors the owned component displays its resize notice. Escape is
+still consumed by the same overlay state machine. Extremely tiny buffers such
+as 1×1 are panic-safety cases, not readable interfaces. These component minima
+<strong>do not change or certify the application's global minimum</strong> (baseline
+<code>lib.rs</code> still declares 38×8; Python's acceptance floor is 60×18).</p>
+<h2>Added regression coverage — execution pending</h2>
+<p>All new Rust cases use existing Ratatui <code>TestBackend</code>/buffer or pure state seams;
+no harness or dependency was added. In addition to the existing overlay tests:</p>
+<ul>
+<li><code>theme::tests::overlay_text_keeps_graphemes_and_cell_budgets</code>: CJK, combining
+acute, skin-tone/ZWJ emoji, flags, variation selectors, control escaping and
+clipping budgets, including a glyph wider than the region.</li>
+<li><code>theme::tests::essential_overlay_text_and_selection_have_readable_rgb_contrast</code>:
+supplied RGB body/search, selected text, overlay muted hints and status pairs.</li>
+<li><code>theme::tests::failed_save_keeps_preview_cancel_and_space_retry_reopen_work</code>:
+persistence failure, cancel, retry/apply with Space, reload and Unix 0600.</li>
+<li><code>theme::tests::appearance_selection_has_a_marker_and_semantic_style_in_every_theme</code>:
+all five themes at 120×32, 80×24, 60×18 and 22×11; exact selected semantic
+background/foreground or NO_COLOR reverse/bold/reset-color assertions.</li>
+<li><code>theme::tests::undersized_appearance_replaces_the_frame_and_keeps_escape_working</code>:
+both floor boundaries, 19×5 and 1×1; preview identity is retained until Esc.</li>
+<li><code>palette::tests::selected_long_label_does_not_hide_the_unavailable_reason</code>:
+reason, Unicode label, ellipsis, selection style and disabled activation at the
+three acceptance sizes and the component minimum.</li>
+<li><code>palette::tests::resize_keeps_selected_identity_and_the_editing_end_of_the_query_visible</code>:
+long Unicode query, exact selected key and suffix/cursor through resize/fallback.</li>
+<li><code>palette::tests::empty_and_no_match_states_keep_cancel_and_clear_reachable</code>:
+distinct empty/no-match copy, no fabricated selection, clear and recovery.</li>
+<li><code>palette::tests::session_count_excludes_only_an_explicit_all_sessions_entry</code>:
+correct session count both with and without a supplied “All sessions” row.</li>
+<li><code>palette::tests::minimum_palette_scrolls_to_the_selected_result_and_below_floor_clears</code>:
+selected-last-row visibility at 22×10 and non-destructive fallback below it.</li>
+<li><code>help::tests::end_reaches_the_actual_last_body_row_at_each_size</code>: true inner
+geometry, final entry on the final content row, Home and intact Unicode.</li>
+<li><code>help::tests::help_reflow_preserves_the_logical_reading_anchor_and_too_small_is_non_destructive</code>:
+wide/compact reflow, logical line/byte containment and Esc.</li>
+<li><code>help::tests::headings_wrap_and_terminal_controls_are_displayed_as_text</code>:
+a genuinely wrapped heading, escaped controls and NO_COLOR reset colors.</li>
+</ul>
+<p><strong>Run here:</strong> <code>rustfmt --edition 2024 --check</code> on the three owned modules and
+<code>git diff --check</code> — both clean. Static Python checks confirmed all <strong>80 RGB
+roles match the tagged Python source</strong> and the owned overlay contrast pairs
+exceed 4.5:1. The HTML parsed with Python's standard HTML parser, contains one
+embedded stylesheet and no external asset elements; no browser visual check
+was run. No Cargo
+build, check or test was run: the coordinating agent explicitly prohibited
+builds because of memory pressure. No existing lane's earlier green result is
+attributed to this commit.</p>
+<h3>Commands for the integrating agent</h3>
+<p>From <code>rust/</code>, after memory is available (NO_COLOR must use a separate process;
+<code>colors()</code> caches the environment):</p>
+<pre><code class="language-sh">CARGO_BUILD_JOBS=1 cargo test --offline --locked -p agenturm-ui --lib theme::tests
 CARGO_BUILD_JOBS=1 cargo test --offline --locked -p agenturm-ui --lib palette::tests
 CARGO_BUILD_JOBS=1 cargo test --offline --locked -p agenturm-ui --lib help::tests
 NO_COLOR=1 CARGO_BUILD_JOBS=1 cargo test --offline --locked -p agenturm-ui --lib theme::tests
 NO_COLOR=1 CARGO_BUILD_JOBS=1 cargo test --offline --locked -p agenturm-ui --lib palette::tests
 NO_COLOR=1 CARGO_BUILD_JOBS=1 cargo test --offline --locked -p agenturm-ui --lib help::tests
 CARGO_BUILD_JOBS=1 cargo build --offline --locked
-CARGO_BUILD_JOBS=1 cargo test --offline --locked -p agenturm-ui -p agenturm-app</pre>
-</section>
-<section id="gaps">
-<h2>Contrast findings and remaining acceptance gates</h2>
-<p>Static sRGB essential-text minima by theme: <strong>12.87 / 14.61 / 13.68 / 13.87 / 10.50</strong>. Selected-text minima: <strong>11.28 / 13.76 / 11.97 / 9.71 / 7.17</strong>. Owned overlay muted-on-surface and status-on-surface pairs exceed 4.5:1. These are RGB calculations, not ANSI/emulator measurements.</p>
-<p class="notice"><strong>Open contrast finding:</strong> unchanged tagged Solarized muted-on-panel is <strong>4.23:1</strong>, below the essential-text target. Owned hints/counts use surface, and search uses text-on-panel. Other screen owners must audit muted-on-panel uses or approve a semantic fallback. NO_COLOR preserves structure but delegates default contrast to the terminal.</p>
+CARGO_BUILD_JOBS=1 cargo test --offline --locked -p agenturm-ui -p agenturm-app
+</code></pre>
+<h2>Contrast observations and remaining visual findings</h2>
+<p>Static sRGB contrast arithmetic gives minimum essential text/background ratios
+of 12.87, 14.61, 13.68, 13.87 and 10.50 for the five themes respectively;
+selected text/background minima are 11.28, 13.76, 11.97, 9.71 and 7.17. Overlay
+muted text on <code>surface</code> and status colors on <code>surface</code> exceed 4.5:1. These are
+RGB calculations, <strong>not terminal-emulator or ANSI-fallback measurements</strong>.</p>
+<p><strong>Finding:</strong> the unchanged tagged Solarized <code>muted</code> on <code>panel</code> pair is <strong>4.23:1</strong>,
+below the essential-text 4.5:1 target. Owned muted hints/counts use <code>surface</code>;
+search text uses <code>text</code> on <code>panel</code>. Other screen owners must audit uses of
+muted-on-panel or approve a semantic fallback/color change. This lane does not
+claim full-theme contrast qualification. NO_COLOR delegates default contrast
+to the terminal and preserves structure; it does not force black/white colors.</p>
+<p>Other findings are reported without editing their owners' files:</p>
 <ol>
-<li><strong>Full screens:</strong> the global floor, one active pane at 60×18, table density, inspector hierarchy and screen focus remap were not changed or certified.</li>
-<li><strong>Global wrapping:</strong> <code>lib.rs::wrap_display_width</code> still iterates characters. Other evidence/detail callers require a grapheme audit. Only the three owned overlays use the new helper.</li>
-<li><strong>Full values:</strong> palette labels/reasons disclose clipping, but there is no scrollable full-label/reason reader. The session inspector is the intended full-value route. Arbitrarily long disabled details need acceptance or a shared seam.</li>
-<li><strong>Shell integration:</strong> help-over-editor/chooser, F2 dispatch, return focus, private fences and the integrated prompt reader journey were not exercised.</li>
-<li><strong>State matrix:</strong> this patch covers overlay populated, empty, no-match, unavailable, save-error/retry and too-small. Startup/loading, partial/stale/disconnected, revocation and refresh safety remain full-screen/UI-Q gates.</li>
-<li><strong>Terminal restoration:</strong> normal quit, Ctrl+C, failed load and supported handoff require real PTY termios checks, including private-frame clearing/ACK.</li>
-<li><strong>Paired installed acceptance:</strong> run the same fixture in tagged Python and exact Rust at 120×32, 80×24, 60×18, every theme plus NO_COLOR, every root view/inspector/state and below-floor quit/resize. Record source/binary hashes, wheel/dependency versions, terminal/OS and capture paths.</li>
+<li><strong>Full-screen compact layout/floor:</strong> <code>lib.rs</code>, <code>evidence_view.rs</code> and shared
+workbench/shell modules retain their own floor/layout policies. Component
+fixes do not establish one active pane at 60×18 or a coherent global floor.</li>
+<li><strong>Global character wrapping:</strong> <code>lib.rs::wrap_display_width</code> still iterates
+characters, not graphemes. Only these overlays now use <code>theme::wrap_cells</code>;
+other evidence/detail callers still require CJK/combining/emoji audit.</li>
+<li><strong>Long palette values:</strong> labels/reasons explicitly disclose clipping, but
+there is no scrollable full-label/detail reader in the palette. The selected
+session's inspector remains the intended full-value route. Arbitrarily long
+disabled reasons/identities need explicit acceptance or a shared detail seam.</li>
+<li><strong>Focus/overlay integration:</strong> help-over-editor/chooser, F2 theme dispatch,
+focus restoration after close, private-content fences and prompt reflow are
+shell-owned. No integrated key-delivery or prompt-reader journey was run.</li>
+<li><strong>State matrix:</strong> this patch covers overlay populated, empty, no-match,
+unavailable, save-error/retry and too-small states. Startup, async loading,
+partial/stale/disconnected, permission revocation, refresh safety and cached
+permitted evidence need full-screen owner/UI-Q runs. It does not fabricate
+these states inside data-only overlays.</li>
+<li><strong>Terminal restoration:</strong> quit, interrupt, failed load and supported handoff
+need real PTY termios checks, including private-frame clearing/ACK. This lane
+does not own terminal lifecycle and did not run them.</li>
 </ol>
-<p>Re-run inspector → Prompts → older request → original → Review/Activity → return, forms/drafts/help/chooser resize, copy/export and receiver cases. Buffer assertions do not prove real-terminal rendering, mouse equivalence, clipboard behavior, permission enforcement, live races or terminal cleanup.</p>
-<h3>Deliberate differences, not blanket parity</h3>
-<p>Rust retains its F2 five-choice appearance picker and data-driven Ctrl+P cockpit palette. Exact Textual chooser/mouse parity is unclaimed. Palette reasons take precedence over repeating the title. The approved grouped landing screen, prompt no-copy policy, provider capability gaps and workflow/task gaps remain as documented by UI-03/04/05/06.</p>
-</section>
-</main>
-<footer>UI-07 · Isolated visual lane · No push or merge. Self-contained HTML with embedded CSS, no external assets, responsive layout and light/dark support. See the Markdown companion for the complete test-name handoff.</footer>
-</body>
-</html>
+<h2>Deliberate differences and acceptance gates</h2>
+<ul>
+<li>Rust keeps F2 appearance and a dedicated five-choice picker; Ctrl+P remains
+the data-driven cockpit palette. Exact Python framework chooser/mouse parity
+is not claimed. Palette reasons now take priority over repeating the title.</li>
+<li>The approved project-grouped landing screen, prompt no-copy policy, remaining
+provider capability gaps and workflow/task gaps are unchanged; see the
+UI-03/04/05/06 notes rather than interpreting this lane as their completion.</li>
+<li>UI-Q must pair the <strong>same fixture</strong> in installed Python and Rust at 120×32,
+80×24 and 60×18, all five themes plus NO_COLOR, every root view/inspector and
+state, and below-floor resize/quit cases. Record exact source/executable hashes,
+wheel/dependency versions, OS, terminal environment and capture paths.</li>
+<li>Re-run actual inspector → Prompts → older request → original → Review/Activity
+→ return, forms/drafts/help/chooser resize, copy/export and receiver cases.
+Buffer assertions cannot certify terminal rendering, mouse equivalence,
+clipboard behavior, permissions, live response races or termios restoration.</li>
+</ul>
+<p><strong>Pluggable seam impact:</strong> none changed. Palette entries remain host-supplied
+metadata with stable keys; themes remain semantic; Help reads the existing
+inventory. No provider-specific rendering, fallback data or bypass was added.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

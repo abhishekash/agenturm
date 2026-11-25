@@ -1,11 +1,13 @@
 # Rust-only execution tasks
 
-Progress updated 23 November 2026 against merged native PR #379 (`52ec13b`), Findings PR #380 (`ef3d647`) and the joined Host/Metrics development baseline. See the [detailed remaining-work plan](rust-migration-remaining-plan.md): **F = feature development, I = integration, Q = tests/qualification**. The status column below supersedes old scheduling labels such as “Start now”; dependencies and original acceptance criteria remain for traceability.
+Progress updated 26 November 2026. This board reconciles core migration through PR #394 and the separate UI candidate `17206a4`; neither UI parity nor cutover is complete. See the [detailed remaining-work plan](rust-migration-remaining-plan.md): **F = feature development, I = integration, Q = tests/qualification**. The status column below supersedes old scheduling labels such as “Start now”; dependencies and original acceptance criteria remain for traceability.
 
 - **Merged native baseline:** 813 tests / 96 suites, strict Clippy, exact optimized archive install/upgrade and 12 separate-UID KVM cases passed.
 - **Findings follow-up:** 819 tests / 96 suites, actual tagged development/optimized journeys and all applicable PR CI passed; PR #380 merged as `39474dd`; final joined-artifact regression remains.
 - **Host/Metrics joined baseline:** 833 tests / 96 suites, strict Clippy and all binaries; real metric HTTP and three-size terminal checks passed. The final Host refresh/context correction passed its 14 focused tests and the joined 833-test / 96-suite run with strict workspace Clippy/all binaries; the updated separate-UID Host KVM/three-size fixture also passed. Final optimized artifact qualification remains.
 - **Full migration:** incomplete. Do not add successive test totals or equate implemented code with final artifact acceptance. Default cutover and one-release-per-24-hours rules remain in force.
+- **PR #394 CI follow-up:** `cargo build --locked` failed because the standalone fixture lockfile omitted the new `sha2` dependency graph; dependent SDK jobs were skipped. The fixture lockfile is refreshed offline on the current follow-up branch, and `cargo build --offline --locked` passes. Fresh remote CI remains pending.
+- **UI candidate:** `17206a42ae60709171f9b2f26b7fea0bbd982083` passed coordinator qualification (991 tests / 96 suites, strict app/UI Clippy, 159 `NO_COLOR=1` UI tests, selected PTY journeys and a selected-debug archive smoke). It is not merged, published or independently accepted as full parity. See the [UI status and gaps](rust-ui-parity-plan.md#implementation-status--26-november-2026).
 
 ## Synchronized test progress
 
@@ -48,7 +50,7 @@ for new assignments. The older A–E IDs retain their original acceptance criter
 | Track | Current assignment | Category |
 | --- | --- | --- |
 | FD1 / A1–A3 | Claude async launch attribution implemented (`worker_launch` fact, no completion claim); Pi worker shapes stay gated (no local witness); Codex exec/JS checks recorded (native `exec` calls now shell-categorized; wrapper check recognition open); CF9 owns installed acceptance. | Core feature development |
-| FD2 / B3–B4 | Claude edit detail implemented with the harness-generic operation contract (schema 23); Pi/OpenCode/Kiro edit detail and beyond-Codex MCP detail remain; CF8 owns installed acceptance. | Core feature development |
+| FD2 / B3–B4 | Claude edit detail implemented; OpenCode patch-path detail with separate grants and exact retained-source proofs merged in PR #394. Pi/Kiro edit detail, unsupported OpenCode shapes and beyond-Codex MCP detail remain; CF8/CF10 own installed acceptance. | Core feature development |
 | FD3 / B6 | Provenance-aware, duplicate-safe combined usage/cost totals. | Core feature development |
 | FD4 / B6 | Implemented slice: native remote cockpit route-file option, exact current-request verification and receiver-side unique-pane resolution with presented attach command; routed via CF7 for installed/paired and security-review acceptance. Per-host persistence and non-ssh transports remain open. | Core feature development |
 | FD5 / B8 | Remote package discovery/download and additional decoder formats; local lifecycle is complete. | Separate extension development |
@@ -56,6 +58,16 @@ for new assignments. The older A–E IDs retain their original acceptance criter
 | FD7 / D2-Mac | Mac artifacts/install/paths/launchd/signing; Apple Silicon and Intel separate. | Separate platform development |
 | AP1 / B1, B5–B6 | Map SDK/CLI/keyboard inventory to implemented, test-only, genuinely missing, unavailable native evidence or scope decision. | Audit; do not count all rows as missing features |
 | CF1–CF5 / Q1–Q10 | Qualify completed source, artifact, UI and authority behavior; obtain real Kiro/production/Mac evidence as applicable. | Separate test agent; not feature development |
+
+## UI parity workstream snapshot
+
+The current implementation and open UI features are tracked separately in the
+[UI parity plan](rust-ui-parity-plan.md). The candidate at `17206a4` contains
+integrated UI-01–UI-07 work, but sits on an unreleased branch. The next feature
+slice should use that candidate as its base after CI repair, then take the
+explicit UI-05/UI-06 gaps in the plan. UI-Q remains separately owned by the test
+agent. Keep provider details in adapter/app proof contracts and keep screens
+provider-neutral.
 
 ## Review of the existing plan
 

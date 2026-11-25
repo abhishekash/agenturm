@@ -1,380 +1,676 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<title>UI-04 lane notes · prompts and retained history</title>
-<style>
-  :root {
-    color-scheme: light dark;
-    --canvas: #f6f7f4;
-    --surface: #ffffff;
-    --surface-alt: #eef1ec;
-    --text: #1d241e;
-    --muted: #5b665d;
-    --border: #d3dacf;
-    --accent: #1f6b46;
-    --accent-soft: #e2f0e7;
-    --warn: #8a4b12;
-    --warn-soft: #fbf0e2;
-    --good: #19613f;
-    --code-bg: #eef0ea;
-    --shadow: 0 1px 2px rgba(20, 35, 24, .08);
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --canvas: #121714;
-      --surface: #1a211c;
-      --surface-alt: #212a24;
-      --text: #e6ece5;
-      --muted: #a5b0a6;
-      --border: #334036;
-      --accent: #74c69d;
-      --accent-soft: #1f3529;
-      --warn: #f0b37e;
-      --warn-soft: #33261a;
-      --good: #8fd6ae;
-      --code-bg: #111713;
-      --shadow: 0 1px 2px rgba(0, 0, 0, .35);
-    }
-  }
-  * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
-  body {
-    margin: 0;
-    background: var(--canvas);
-    color: var(--text);
-    font: 16px/1.55 ui-sans-serif, system-ui, -apple-system, "Segoe UI", Roboto, "Helvetica Neue", Arial, sans-serif;
-  }
-  header.hero {
-    background: linear-gradient(135deg, var(--accent-soft), var(--surface));
-    border-bottom: 1px solid var(--border);
-  }
-  .wrap { width: min(1080px, 100% - 2rem); margin-inline: auto; }
-  .hero .wrap { padding: 2.6rem 0 2rem; }
-  .eyebrow { margin: 0 0 .4rem; color: var(--accent); font-weight: 650; letter-spacing: .08em; text-transform: uppercase; font-size: .76rem; }
-  h1 { margin: 0 0 .6rem; font-size: clamp(1.75rem, 4vw, 2.6rem); line-height: 1.15; letter-spacing: -.015em; }
-  .subtitle { margin: 0; max-width: 68ch; color: var(--muted); font-size: 1.02rem; }
-  .meta { margin-top: 1.2rem; display: flex; flex-wrap: wrap; gap: .45rem; }
-  .pill { background: var(--surface); border: 1px solid var(--border); border-radius: 999px; padding: .24rem .65rem; font-size: .8rem; color: var(--muted); }
-  main { padding: 2rem 0 4rem; }
-  nav.toc { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 1rem 1.15rem; margin-bottom: 2rem; box-shadow: var(--shadow); }
-  nav.toc strong { display: block; margin-bottom: .45rem; font-size: .82rem; letter-spacing: .06em; text-transform: uppercase; color: var(--muted); }
-  nav.toc ol { margin: 0; padding-left: 1.25rem; columns: 2; column-gap: 2rem; }
-  @media (max-width: 620px) { nav.toc ol { columns: 1; } }
-  nav.toc a { color: var(--accent); text-decoration: none; }
-  nav.toc a:hover { text-decoration: underline; }
-  section { margin: 2.2rem 0; }
-  h2 { font-size: 1.32rem; margin: 0 0 .7rem; letter-spacing: -.01em; scroll-margin-top: 1rem; }
-  h3 { font-size: 1.05rem; margin: 1.4rem 0 .5rem; }
-  p, li { max-width: 82ch; }
-  code, kbd { font-family: ui-monospace, SFMono-Regular, Menlo, Consolas, monospace; font-size: .9em; }
-  code { background: var(--code-bg); border: 1px solid var(--border); border-radius: 5px; padding: .05em .3em; overflow-wrap: anywhere; }
-  kbd { background: var(--surface-alt); border: 1px solid var(--border); border-bottom-width: 2px; border-radius: 5px; padding: .06em .38em; white-space: nowrap; }
-  .card { background: var(--surface); border: 1px solid var(--border); border-radius: 14px; padding: 1.1rem 1.25rem; box-shadow: var(--shadow); }
-  .grid { display: grid; gap: 1rem; grid-template-columns: repeat(auto-fit, minmax(250px, 1fr)); }
-  .callout { border-left: 4px solid var(--accent); background: var(--accent-soft); border-radius: 0 12px 12px 0; padding: .85rem 1rem; }
-  .callout.warn { border-left-color: var(--warn); background: var(--warn-soft); }
-  .callout p { margin: .2rem 0; }
-  .table-wrap { overflow-x: auto; border: 1px solid var(--border); border-radius: 12px; background: var(--surface); }
-  table { width: 100%; border-collapse: collapse; min-width: 560px; font-size: .94rem; }
-  th, td { text-align: left; vertical-align: top; padding: .6rem .75rem; border-bottom: 1px solid var(--border); }
-  th { background: var(--surface-alt); font-size: .82rem; letter-spacing: .04em; text-transform: uppercase; color: var(--muted); }
-  tr:last-child td { border-bottom: 0; }
-  .tag { display: inline-block; border-radius: 999px; padding: .1rem .5rem; font-size: .74rem; font-weight: 650; border: 1px solid var(--border); }
-  .tag.ok { color: var(--good); background: var(--accent-soft); border-color: color-mix(in srgb, var(--good) 35%, transparent); }
-  .tag.gap { color: var(--warn); background: var(--warn-soft); border-color: color-mix(in srgb, var(--warn) 35%, transparent); }
-  pre { background: var(--code-bg); border: 1px solid var(--border); border-radius: 10px; padding: .85rem 1rem; overflow-x: auto; line-height: 1.45; }
-  pre code { background: none; border: 0; padding: 0; font-size: .86rem; }
-  ul.clean { padding-left: 1.15rem; }
-  ol.steps { padding-left: 1.35rem; }
-  ol.steps > li { margin-bottom: .65rem; }
-  footer { border-top: 1px solid var(--border); color: var(--muted); padding: 1.4rem 0 2.4rem; font-size: .86rem; }
-  a { color: var(--accent); }
-  @media print {
-    nav.toc { break-inside: avoid; }
-    section { break-inside: avoid-page; }
-    .hero { background: none; }
-  }
-</style>
-</head>
-<body>
-<header class="hero">
-  <div class="wrap">
-    <p class="eyebrow">Agenturm Rust cockpit parity · lane note</p>
-    <h1>UI-04 · Prompts, session activity and retained history</h1>
-    <p class="subtitle">Integrated request navigator, compact chooser, grant-fenced readable/original reader and bounded retained prompt pages. Python 0.2.8 is the reference oracle; this note records what was built, what was executed, and the exact hooks the shared shell still needs.</p>
-    <div class="meta">
-      <span class="pill">Worktree <code>work/ui04-prompts</code></span>
-      <span class="pill">Oracle <code>2802d79</code> · Python 0.2.8</span>
-      <span class="pill">Status: lane complete, shell wiring pending</span>
-      <span class="pill">23 November 2026</span>
-    </div>
-  </div>
-</header>
-
-<main class="wrap">
-  <nav class="toc" aria-label="Contents">
-    <strong>Contents</strong>
-    <ol>
-      <li><a href="#changed">What changed</a></li>
-      <li><a href="#navigation">Navigation contract</a></li>
-      <li><a href="#render">Wide and compact rendering</a></li>
-      <li><a href="#grants">Grant and scope coverage</a></li>
-      <li><a href="#paging">Retained evidence paging</a></li>
-      <li><a href="#investigation">History investigation</a></li>
-      <li><a href="#verification">Verification</a></li>
-      <li><a href="#hooks">Shell integration hooks</a></li>
-      <li><a href="#gaps">Remaining gaps</a></li>
-      <li><a href="#seams">Pluggable-seam implications</a></li>
-    </ol>
-  </nav>
-
-  <section id="changed">
-    <h2>1 · What changed</h2>
-    <div class="grid">
-      <div class="card">
-        <h3>Navigator and reader</h3>
-        <p><code>rust/agenturm-ui/src/workspace/prompt.rs</code> gains the integrated <code>PromptNavigator</code> and refactors <code>PromptScreen</code> onto a reusable <code>PromptBody</code> with a typed <code>PromptPresentation</code>. Added <kbd>PgUp</kbd>/<kbd>PgDn</kbd>/<kbd>End</kbd>, inline drawing, captions and presentation-at-open.</p>
-      </div>
-      <div class="card">
-        <h3>Bounded pages</h3>
-        <p><code>rust/agenturm-app/src/prompt_history.rs</code> adds a keyset cursor, deterministic newest-first pages, retained-cap disclosure, empty-scope distinction and typed errors over the existing grant-checked list path.</p>
-      </div>
-      <div class="card">
-        <h3>Honest cap</h3>
-        <p><code>agenturm-store</code> now publishes <code>MAX_PROMPT_REFERENCES = 256</code>, so the UI reports the real retained cap instead of duplicating a private constant.</p>
-      </div>
-    </div>
-    <div class="callout" style="margin-top:1rem">
-      <p><strong>Architecture.</strong> No provider, harness or extension ID is switched on in the UI. Request labels arrive through a typed presentation; the legacy leading-envelope heuristic is confined to the explicitly named compatibility constructor. A capture without adapter normalization is labelled <em>readable form unavailable</em>.</p>
-    </div>
-  </section>
-
-  <section id="navigation">
-    <h2>2 · Navigation contract</h2>
-    <h3>Wide · ≥ 120 columns</h3>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Key</th><th>Result</th></tr></thead>
-        <tbody>
-          <tr><td><kbd>↑</kbd> <kbd>↓</kbd></td><td>Select older / newer. Clamps at boundaries; never wraps.</td></tr>
-          <tr><td><kbd>Home</kbd> <kbd>End</kbd></td><td>First loaded / newest loaded.</td></tr>
-          <tr><td><kbd>Enter</kbd> <kbd>→</kbd></td><td><code>Read { entry, original, epoch }</code>; focus becomes the reader.</td></tr>
-          <tr><td><kbd>[</kbd> <kbd>]</kbd> <kbd>l</kbd></td><td>Previous / next / latest loaded request (select only).</td></tr>
-          <tr><td><kbd>z</kbd></td><td>Toggle the stored readable/original choice for the selected request; no read.</td></tr>
-          <tr><td><kbd>←</kbd> <kbd>Esc</kbd></td><td><code>Back</code>: leave Prompts for the inspector tabs.</td></tr>
-        </tbody>
-      </table>
-    </div>
-
-    <h3>Compact · 80×24 and 60×18</h3>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Key</th><th>Result</th></tr></thead>
-        <tbody>
-          <tr><td><kbd>↑</kbd> <kbd>↓</kbd> <kbd>Enter</kbd> <kbd>Space</kbd> (closed)</td><td>Open the one-line chooser; the selection does not move.</td></tr>
-          <tr><td><kbd>↑</kbd> <kbd>↓</kbd> <kbd>Home</kbd> <kbd>End</kbd> (open)</td><td>Move only the highlighted choice.</td></tr>
-          <tr><td><kbd>Enter</kbd> <kbd>Space</kbd> (open)</td><td>Confirm and read, even when the choice is unchanged.</td></tr>
-          <tr><td><kbd>Esc</kbd> (open)</td><td>Cancel; restore selection and close the chooser.</td></tr>
-          <tr><td><kbd>→</kbd> (closed)</td><td>Read the current request without opening the chooser.</td></tr>
-          <tr><td><kbd>[</kbd> <kbd>]</kbd> <kbd>l</kbd></td><td>Select <em>and read</em> previous / next / latest.</td></tr>
-          <tr><td><kbd>←</kbd> <kbd>Esc</kbd></td><td><code>Back</code>.</td></tr>
-        </tbody>
-      </table>
-    </div>
-
-    <h3>Reader</h3>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Key</th><th>Result</th></tr></thead>
-        <tbody>
-          <tr><td><kbd>↑</kbd> <kbd>↓</kbd> <kbd>PgUp</kbd> <kbd>PgDn</kbd> <kbd>Home</kbd> <kbd>End</kbd></td><td>Scroll only. The selected request never changes.</td></tr>
-          <tr><td><kbd>→</kbd> (original layout)</td><td>Pan captured text right; <kbd>Home</kbd> resets the column.</td></tr>
-          <tr><td><kbd>←</kbd> <kbd>Esc</kbd></td><td>Close the reader, clear the text, return to navigator / chooser.</td></tr>
-          <tr><td><kbd>[</kbd> <kbd>]</kbd> <kbd>l</kbd></td><td>Change request and re-read; the previous body is dropped before delivery.</td></tr>
-          <tr><td><kbd>z</kbd></td><td>Toggle readable/original in place and remember the choice.</td></tr>
-          <tr><td><kbd>m</kbd> (worker)</td><td><code>MainSession(anchor)</code>, only when a main session was verified.</td></tr>
-        </tbody>
-      </table>
-    </div>
-
-    <div class="callout" style="margin-top:1rem">
-      <p><strong>Resize.</strong> Navigator ⇄ chooser follows 120 columns. A focused reader stays a reader. An open chooser closes when crossing to wide. The reader keeps the first visible <em>source line</em>, not just the wrapped row, when reflow changes.</p>
-      <p><strong>Late data.</strong> A superseded page token reports <code>Discarded a late prompt response for a superseded view.</code> A stale reader epoch is <code>Late(Superseded)</code>; another request is <code>Late(OutOfScope)</code>. Rows outside the exact source/session/worker scope are filtered with a visible count.</p>
-    </div>
-  </section>
-
-  <section id="render">
-    <h2>3 · Wide and compact rendering</h2>
-    <div class="grid">
-      <div class="card">
-        <h3>Wide</h3>
-        <p><code>Requests · N loaded</code> index beside <code>Prompt i of N</code>. Before a grant the pane is metadata-only; after a grant the same pane renders the granted body with <code>Request i of N · age</code>.</p>
-      </div>
-      <div class="card">
-        <h3>Compact</h3>
-        <p>One chooser line (<code>Request i of N · label ▾/▴</code>) plus the reader body. The open chooser is a bounded popup — one row per request, at most ten visible, ellipsised by terminal cells — and never displaces the body.</p>
-      </div>
-      <div class="card">
-        <h3>Status line</h3>
-        <p>Loading, loaded count, earlier availability, <code>256 retained · older history in Activity</code>, empty exact scope, capture disabled, missing identity, denial, revocation, expiry, missing capture, stale source and transport errors each have distinct copy.</p>
-      </div>
-    </div>
-    <p>Availability states render at 120×32, 80×24 and 60×18. Below the shared terminal floor the module shows <code>Terminal too small · resize · Esc back</code>.</p>
-  </section>
-
-  <section id="grants">
-    <h2>4 · Grant and scope coverage</h2>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Case</th><th>Behavior</th><th>Test</th></tr></thead>
-        <tbody>
-          <tr><td>Grant denied</td><td><code>Denied(reason)</code>; metadata list stays useful; retry/activity copy remains.</td><td><span class="tag ok">passed</span></td></tr>
-          <tr><td>Revoked while reading</td><td>Body dropped; <code>Revoked</code>; captured text cleared.</td><td><span class="tag ok">passed</span></td></tr>
-          <tr><td>Expired</td><td>At 25 s the body is dropped; the existing redraw/ACK gate is reused.</td><td><span class="tag ok">passed</span></td></tr>
-          <tr><td>Stale source</td><td><code>Stale(reason)</code> scoped to the attempted read.</td><td><span class="tag ok">passed</span></td></tr>
-          <tr><td>Out-of-scope request / page row</td><td><code>OutOfScope(reason)</code>; rows filtered before merge; never widens scope.</td><td><span class="tag ok">passed</span></td></tr>
-          <tr><td>Truncated capture</td><td>Reader limit notice directs to Activity for the captured record.</td><td><span class="tag ok">passed</span></td></tr>
-          <tr><td>Missing capture</td><td><code>MissingCapture</code>; no invented selection.</td><td><span class="tag ok">passed</span></td></tr>
-          <tr><td>Late result after close/back</td><td><code>Late(Superseded)</code>; previous epoch cannot display.</td><td><span class="tag ok">passed</span></td></tr>
-          <tr><td>Worker context</td><td>Exact worker scope; disclosure; <kbd>m</kbd> only with a verified main anchor.</td><td><span class="tag ok">passed</span></td></tr>
-          <tr><td>Metadata-only context</td><td>Useful metadata; no read prompt; explicit unavailable copy.</td><td><span class="tag ok">passed</span></td></tr>
-          <tr><td>Capture disabled</td><td>Explicit disabled state; no fetch prompt.</td><td><span class="tag ok">passed</span></td></tr>
-          <tr><td>Unnormalized readable form</td><td>Labelled unavailable; <kbd>z</kbd> shows captured text.</td><td><span class="tag ok">passed</span></td></tr>
-        </tbody>
-      </table>
-    </div>
-
-    <h3>Copy and export</h3>
-    <div class="callout warn">
-      <p>The reference copies the readable or original request and previews an export. Rust keeps the private prompt display <strong>no-copy</strong>: <kbd>Ctrl+C</kbd> remains an interrupt in private/reader focus and <kbd>c</kbd>/<kbd>x</kbd> are disabled while a granted prompt is visible. This is the existing tighter disclosure policy, recorded as an intentional difference awaiting acceptance (inventory P-09). A future copy must be a grant-aware seam shared with evidence — never a direct text dump.</p>
-    </div>
-  </section>
-
-  <section id="paging">
-    <h2>5 · Retained evidence paging</h2>
-    <p>Prompt history now has an explicit page model, separate from the roster's History time scope:</p>
-    <ul class="clean">
-      <li><code>PromptCursor { observed_at_unix_ns, event_id }</code> is an exact keyset, not a row offset.</li>
-      <li><code>PromptPage</code> reports page rows, retained window size, the adapter cap, whether the cap was reached, and the next older cursor.</li>
-      <li><code>window()</code> sorts/deduplicates deterministically before slicing, so equal timestamps cannot shift identity.</li>
-      <li>The cap is disclosed as <code>256 retained · older history in Activity</code>; an empty exact scope is never presented as a complete transcript.</li>
-      <li>Activity/MCP/Traces/Review page identity and filters remain on the existing shell page stack and are untouched.</li>
-    </ul>
-    <div class="callout">
-      <p><strong>Honest limit.</strong> Until the adapter/kernel exposes a prompt cursor beyond its 256-row window, “earlier” is page-local <em>within the retained window</em> and is labelled that way. Inventory P-10 remains open.</p>
-    </div>
-  </section>
-
-  <section id="investigation">
-    <h2>6 · History investigation · <kbd>Ctrl+F</kbd> journeys</h2>
-    <p>Each query kind was executed against a real fixture adapter, not merely inspected.</p>
-    <div class="table-wrap">
-      <table>
-        <thead><tr><th>Journey</th><th>Rust kind</th><th>Verification</th></tr></thead>
-        <tbody>
-          <tr><td>Recorded paths</td><td><code>Path</code></td><td><span class="tag ok">codex test passed</span></td></tr>
-          <tr><td>Commands</td><td><code>Command</code></td><td><span class="tag ok">codex test passed</span></td></tr>
-          <tr><td>Instructions</td><td><code>Instruction</code></td><td><span class="tag ok">Pi test passed</span></td></tr>
-          <tr><td>Failures</td><td><code>Failures</code></td><td><span class="tag ok">2 tests passed</span></td></tr>
-          <tr><td>Failed commands</td><td><code>FailedCommand</code></td><td><span class="tag ok">codex test passed</span></td></tr>
-          <tr><td>Open exact occurrence</td><td><code>Reveal</code></td><td><span class="tag ok">Pi/Codex passed</span></td></tr>
-          <tr><td>Cancel / back</td><td><kbd>Esc</kbd></td><td><span class="tag ok">existing UI tests</span></td></tr>
-          <tr><td>Query/filter/occurrence restore</td><td>overlay + page stack</td><td><span class="tag ok">implemented</span></td></tr>
-          <tr><td>Policy change while idle</td><td>next read refuses</td><td><span class="tag gap">partial</span></td></tr>
-        </tbody>
-      </table>
-    </div>
-    <p>Attribution is exact: source/session, event/revision, turn and worker; unavailable rows stay in the result page; permission failures are scoped to the attempted query or read.</p>
-  </section>
-
-  <section id="verification">
-    <h2>7 · Verification</h2>
-    <pre><code>cd rust
-cargo build
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Ui Parity Ui04 Lane Notes</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 26 November 2026</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-ui04-lane-notes.md">Markdown source ↗</a></nav><h1>UI-04 lane notes · prompts, session activity and cross-session history</h1>
+<p><strong>Lane:</strong> UI-04 · session evidence UI owner
+<strong>Worktree:</strong> <code>/tmp/agenturm-ui04-prompts</code> · branch <code>work/ui04-prompts</code> (from the integrated parity branch)
+<strong>Reference oracle:</strong> Python <strong>0.2.8</strong> at <code>2802d79930728bb331db1d4d718d6dea1c9c374d</code>
+<strong>Status:</strong> navigator, reader and bounded prompt-history page model implemented and
+tested in the lane; shared dispatch, palette, help and app result wiring are
+listed below for the UI-02/UI-03 integration pass (this lane did not edit those
+files).</p>
+<hr></hr>
+<h2>1. What changed</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>File</th>
+<th>Change</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>rust/agenturm-ui/src/workspace/prompt.rs</code></td>
+<td>Added the integrated <code>PromptNavigator</code> (wide index, compact one-line chooser, reader/chooser/navigator focus, retained-page status, worker disclosure, grant/late-result states, deterministic rendering). Refactored the existing <code>PromptScreen</code> onto a reusable <code>PromptBody</code> + typed <code>PromptPresentation</code>, added <code>PgUp</code>/<code>PgDn</code>/<code>End</code>, inline <code>draw_region</code>, caption and presentation-at-open.</td>
+</tr>
+<tr>
+<td><code>rust/agenturm-app/src/prompt_history.rs</code></td>
+<td>New bounded prompt-history page model: exact keyset cursor, deterministic newest-first windowing, retained-cap disclosure, empty-scope distinction, typed <code>PromptHistoryError</code> and the existing granted list path.</td>
+</tr>
+<tr>
+<td><code>rust/agenturm-store/src/content_grant.rs</code></td>
+<td>Published <code>MAX_PROMPT_REFERENCES = 256</code> instead of a private duplicate, so the UI reports the real retained cap.</td>
+</tr>
+<tr>
+<td><code>rust/agenturm-store/src/lib.rs</code></td>
+<td>Re-exported the cap.</td>
+</tr>
+<tr>
+<td><code>rust/agenturm-app/src/lib.rs</code></td>
+<td>Declared the <code>prompt_history</code> module.</td>
+</tr>
+</tbody>
+</table></div>
+<p>No provider ID, harness ID or extension ID is switched on in the new UI. Request
+labels come from a typed presentation supplied by the caller/adapter; the
+legacy leading-envelope heuristic is retained only as the explicitly named
+compatibility path in <code>PromptPresentation::legacy_envelopes</code>, and an
+unnormalized capture is labelled <strong>readable form unavailable</strong>, never guessed.</p>
+<h3>Reader reuse</h3>
+<p><code>PromptScreen</code> still owns the existing grant plumbing: 25-second deadline,
+<code>active</code> display gate, <code>acknowledge</code> redaction channel, readable/original
+layout, tab stops, grapheme clipping and cell-width wrapping. The navigator adds
+an inline <code>draw_region</code> for the inspector but does not weaken the fence. The
+full-screen path used for MCP, edits, telemetry, evaluations and investigations
+is unchanged.</p>
+<hr></hr>
+<h2>2. Navigation contract (implemented in <code>PromptNavigator::key</code>)</h2>
+<h3>Wide (≥ 120 columns)</h3>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>↑</code> / <code>↓</code></td>
+<td>Select older / newer; clamps at boundaries, never wraps.</td>
+</tr>
+<tr>
+<td><code>Home</code> / <code>End</code></td>
+<td>First loaded / newest loaded.</td>
+</tr>
+<tr>
+<td><code>Enter</code> / <code>→</code></td>
+<td><code>PromptInput::Read { entry, original, epoch }</code>; focus becomes <code>Reader</code>.</td>
+</tr>
+<tr>
+<td><code>[</code> / <code>]</code></td>
+<td>Previous / next loaded request (select only while the navigator owns focus).</td>
+</tr>
+<tr>
+<td><code>l</code></td>
+<td>Latest loaded request.</td>
+</tr>
+<tr>
+<td><code>z</code></td>
+<td>Toggle the stored readable/original choice for the selected request only; no read.</td>
+</tr>
+<tr>
+<td><code>←</code> / <code>Esc</code></td>
+<td><code>PromptInput::Back</code> (one layer: Prompts section → inspector tabs).</td>
+</tr>
+</tbody>
+</table></div>
+<h3>Compact (80×24 and 60×18)</h3>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>↑</code>, <code>↓</code>, <code>Enter</code>, <code>Space</code> (chooser closed)</td>
+<td>Open the one-line chooser; the selection does not move.</td>
+</tr>
+<tr>
+<td><code>↑</code>, <code>↓</code>, <code>Home</code>, <code>End</code> (chooser open)</td>
+<td>Move the highlighted choice only.</td>
+</tr>
+<tr>
+<td><code>Enter</code> / <code>Space</code> (chooser open)</td>
+<td>Confirm the highlighted choice <strong>and read</strong>, even when it equals the current choice.</td>
+</tr>
+<tr>
+<td><code>Esc</code> (chooser open)</td>
+<td>Cancel; restore the prior selection and close the chooser.</td>
+</tr>
+<tr>
+<td><code>→</code> (chooser closed)</td>
+<td>Read the current request without opening the chooser.</td>
+</tr>
+<tr>
+<td><code>Home</code> / <code>End</code> (chooser closed)</td>
+<td>Select first / latest without reading.</td>
+</tr>
+<tr>
+<td><code>[</code> / <code>]</code> / <code>l</code></td>
+<td>Select and read the previous / next / latest request.</td>
+</tr>
+<tr>
+<td><code>z</code></td>
+<td>Toggle the stored presentation choice.</td>
+</tr>
+<tr>
+<td><code>←</code> / <code>Esc</code></td>
+<td><code>PromptInput::Back</code>.</td>
+</tr>
+</tbody>
+</table></div>
+<h3>Reader</h3>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Result</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>↑</code> / <code>↓</code> / <code>PgUp</code> / <code>PgDn</code> / <code>Home</code> / <code>End</code></td>
+<td>Scroll only. The selected request never changes.</td>
+</tr>
+<tr>
+<td><code>→</code> (original layout)</td>
+<td>Pan the captured text right; <code>Home</code> resets the column.</td>
+</tr>
+<tr>
+<td><code>←</code> / <code>Esc</code></td>
+<td>Close the reader, clear the text and return to the navigator (wide) or chooser (compact).</td>
+</tr>
+<tr>
+<td><code>[</code> / <code>]</code> / <code>l</code></td>
+<td>Change the selected request and immediately re-read it; the previous body is dropped before delivery.</td>
+</tr>
+<tr>
+<td><code>z</code></td>
+<td>Toggle readable/original in place and remember the choice.</td>
+</tr>
+<tr>
+<td><code>m</code> (worker scope with a verified main session)</td>
+<td><code>PromptInput::MainSession(anchor)</code>.</td>
+</tr>
+</tbody>
+</table></div>
+<h3>Resize and late data</h3>
+<ul>
+<li><code>Navigator ⇄ Chooser</code> follows the 120-column breakpoint.</li>
+<li>A focused reader <strong>stays</strong> a reader across the breakpoint (tagged behavior).</li>
+<li>An open chooser closes when the layout crosses to wide.</li>
+<li>The reader's visible <strong>source line</strong> (and offset within it) is retained when
+wrapping changes, not merely the wrapped row index.</li>
+<li>A page response with a superseded load token is discarded with
+<code>Discarded a late prompt response for a superseded view.</code></li>
+<li>A delivery with a stale reader epoch reports <code>Late(Superseded)</code>; a delivery
+for a different request reports <code>Late(OutOfScope)</code>. Neither replaces the
+current request or screen.</li>
+<li>Rows outside the exact source/session/worker scope are filtered with
+<code>Ignored N request(s) outside the selected source, session or worker scope.</code></li>
+</ul>
+<hr></hr>
+<h2>3. Wide and compact rendering</h2>
+<ul>
+<li>Wide: a <code>Requests · N loaded</code> index (ordinal + label + selection marker)
+beside a <code>Prompt i of N</code> reader pane. Before a grant the pane is
+metadata-only; after a grant the same pane renders the granted body with the
+<code>Request i of N · &lt;age&gt;</code> caption.</li>
+<li>Compact: one chooser line (<code>Request i of N · label ▾/▴</code>) plus the reader body.
+The open chooser is a bounded popup (one row per request, maximum ten visible,
+ellipsised by terminal cells) that never displaces the body.</li>
+<li>The status line is shared: loading, loaded count/older availability,
+<code>N retained · older history in Activity</code>, empty exact scope, capture
+disabled, missing identity, denial, revocation, expiry, missing capture,
+stale source and transport errors each have distinct copy.</li>
+<li>Availability states render at 120×32, 80×24 and 60×18 without panics; below
+the shared terminal floor the module shows <code>Terminal too small · resize · Esc back</code>.</li>
+</ul>
+<hr></hr>
+<h2>4. Grant, scope and disclosure coverage</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Case</th>
+<th>Behavior in the lane</th>
+<th>Evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Grant denied</td>
+<td><code>PromptStatus::Denied(reason)</code>; metadata list stays useful; activity/retry copy remains.</td>
+<td><code>grants_are_scoped_revoked_expired_and_late_deliveries_are_scoped</code></td>
+</tr>
+<tr>
+<td>Revoked while reading</td>
+<td>Body dropped, <code>Revoked</code>, status says captured text cleared.</td>
+<td>same test</td>
+</tr>
+<tr>
+<td>Expired</td>
+<td>At 25 s the body is dropped (<code>Expired</code>); caller reuses the redraw/ACK gate.</td>
+<td>same test</td>
+</tr>
+<tr>
+<td>Stale source</td>
+<td><code>PromptStatus::Stale(reason)</code> scoped to the attempted read.</td>
+<td><code>out_of_scope_pages_and_missing_capture_are_scoped_to_the_attempted_action</code></td>
+</tr>
+<tr>
+<td>Out-of-scope request</td>
+<td><code>PromptStatus::OutOfScope(reason)</code>; list/selection remain.</td>
+<td>same test + key-identity rejection</td>
+</tr>
+<tr>
+<td>Out-of-scope page rows</td>
+<td>Filtered before merge; never widens source/session/worker.</td>
+<td>same test</td>
+</tr>
+<tr>
+<td>Truncated capture</td>
+<td>Request flag; reader shows <code>Reader limit: text clipped · open Activity for the captured record</code>.</td>
+<td><code>unnormalized_capture_labels_the_readable_form_unavailable</code></td>
+</tr>
+<tr>
+<td>Missing capture</td>
+<td><code>PromptStatus::MissingCapture</code>; no invented selection.</td>
+<td>scoped-status test</td>
+</tr>
+<tr>
+<td>Late result after close/back</td>
+<td><code>Late(Superseded)</code>; previous epoch cannot display.</td>
+<td>grant test</td>
+</tr>
+<tr>
+<td>Worker context</td>
+<td>Exact worker scope is enforced; disclosure says main-session requests are not included and offers <code>m</code> only when a main anchor was verified.</td>
+<td><code>worker_scope_discloses_main_session_navigation_without_broadening</code></td>
+</tr>
+<tr>
+<td>Metadata-only context</td>
+<td><code>Metadata only · captured text is unavailable for this source.</code>; no read prompt is offered.</td>
+<td>availability render test</td>
+</tr>
+<tr>
+<td>Capture disabled</td>
+<td><code>Content capture is disabled for this source.</code>; no fetch prompt.</td>
+<td>availability render test</td>
+</tr>
+<tr>
+<td>Unnormalized readable form</td>
+<td><code>Readable form unavailable · the adapter did not supply a context-block normalization.</code>; <code>z</code> shows the captured text.</td>
+<td>unnormalized test</td>
+</tr>
+</tbody>
+</table></div>
+<p>Every read request carries exact <code>source</code>, <code>session</code>, optional <code>worker</code>,
+request <code>turn</code>, event id, revision, snapshot id and history identity. Grant and
+query enforcement stay in <code>agenturm-content</code>/<code>agenturm-app</code>; the UI stores
+identifiers only.</p>
+<h3>Copy and export</h3>
+<p>The reference copies the selected request's readable or original text and
+previews an export (<code>c</code> / <code>x</code>). Rust's private prompt display remains <strong>no-copy</strong>:
+<code>Ctrl+C</code> stays a terminal interrupt in private/reader focus, and <code>c</code>/<code>x</code> are
+disabled while a granted prompt is displayed. This is the existing tighter
+disclosure policy and is recorded as an <strong>intentional difference awaiting
+acceptance</strong> (inventory P-09), not as parity. If accepted otherwise, the copy
+must be a new grant-aware seam shared with evidence — never a direct text dump.</p>
+<hr></hr>
+<h2>5. Retained evidence paging</h2>
+<p>Prompt history now has an explicit page model, separate from the roster's
+History time scope:</p>
+<ul>
+<li><code>PromptCursor { observed_at_unix_ns, event_id }</code> is an exact keyset, not a
+row offset.</li>
+<li><code>PromptPage</code> reports the page rows, the retained window size, the adapter cap,
+whether the cap was reached, and the cursor for the next older page.</li>
+<li><code>window()</code> sorts/deduplicates deterministically and applies the cursor before
+slicing, so identity cannot shift on equal timestamps.</li>
+<li>The adapter cap (256) is disclosed as <code>256 retained · older history in Activity</code>; an empty exact scope is <code>No user prompts were captured for this session</code> and is never presented as a complete transcript.</li>
+<li>Filters, selection, query and snapshot are not part of prompt history pages:
+prompts are scoped by exact source/session/worker and a pinned history
+identity. The existing Activity/MCP/Traces/Review page stack and its
+<code>[</code>/<code>]</code>/<code>l</code> identity rules are untouched (owned by the shell/UI-05).</li>
+</ul>
+<p>The app page function is <code>prompt_history::load_page</code>, which calls the existing
+grant-checked <code>content_preview::list_user_prompts</code>. Until the adapter exposes a
+cursor beyond its 256-row window, &quot;earlier&quot; is <strong>page-local within the retained
+window</strong> and is labelled that way. This is the honest current limit; the
+inventory P-10 requirement (bounded adapter/kernel prompt-page cursor) remains.</p>
+<hr></hr>
+<h2>6. History investigation verification</h2>
+<p>The tagged <code>Ctrl+F</code> journeys map to the existing Investigation overlay. Each
+query kind was executed against a real fixture adapter in this lane, not merely
+inspected:</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Tagged journey</th>
+<th>Rust query kind</th>
+<th>Current grant/scope behavior</th>
+<th>Verification run</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Recorded paths</td>
+<td><code>Path</code></td>
+<td>Private; exact source/session/turn/worker, snapshot pinned; unmatched candidates report <code>unavailable</code>.</td>
+<td><code>codex_edit_and_command_details_require_exact_occurrences_and_independent_approvals</code> — <strong>passed</strong></td>
+</tr>
+<tr>
+<td>Commands</td>
+<td><code>Command</code></td>
+<td>Private; literal phrase; source-confirmed reference.</td>
+<td>same test — <strong>passed</strong></td>
+</tr>
+<tr>
+<td>Instructions</td>
+<td><code>Instruction</code></td>
+<td>Private; literal phrase; exact occurrence + reference.</td>
+<td><code>preview_requires_a_current_grant_and_exact_committed_pi_bytes</code> — <strong>passed</strong></td>
+</tr>
+<tr>
+<td>Failures</td>
+<td><code>Failures</code></td>
+<td>Metadata-only bounded candidate page; no private body without a grant.</td>
+<td><code>failure_investigation_includes_only_reported_log_errors_with_exact_scope</code>, <code>failure_candidates_page_retained_metadata_at_one_snapshot</code> — <strong>passed</strong></td>
+</tr>
+<tr>
+<td>Failed commands</td>
+<td><code>FailedCommand</code></td>
+<td>Private command query with failure confirmation.</td>
+<td>Codex command test — <strong>passed</strong></td>
+</tr>
+<tr>
+<td>Open exact occurrence</td>
+<td><code>InvestigationInput::Reveal</code></td>
+<td>Private viewer rechecks current grant/history; Esc returns to the result list.</td>
+<td>Pi/Codex tests — <strong>passed</strong></td>
+</tr>
+<tr>
+<td>Cancel / back</td>
+<td><code>Esc</code></td>
+<td>Pending result is dropped when the overlay closes; query is retained by the overlay.</td>
+<td>existing UI tests</td>
+</tr>
+<tr>
+<td>Query/filter/occurrence restore</td>
+<td>Overlay retains owner, history identity and page; history page stack retains selection.</td>
+<td><strong>Implemented</strong> per inventory P-20; no new search UI was added.</td>
+<td>existing <code>investigation_keeps_exact_turn_scope_and_returns_to_the_same_inspector</code></td>
+</tr>
+<tr>
+<td>Policy change while results are open</td>
+<td>A replacement source invalidates the pinned history before a new read; results are not proactively cleared while idle.</td>
+<td>App tests cover changed/replaced source denial. <strong>Partial</strong>: no idle policy-generation invalidation without an attempted read.</td>
+<td>Codex/Pi tests</td>
+</tr>
+</tbody>
+</table></div>
+<p>Attribution is exact: the overlay shows source/session, event/revision, turn and
+worker; unavailable rows stay in the result page and permission failures are
+scoped to the attempted query/read.</p>
+<hr></hr>
+<h2>7. Verification run in this lane</h2>
+<p>Commands were run from <code>rust/</code> on this worktree.</p>
+<pre><code>cargo build
 cargo test -p agenturm-ui --lib
 cargo test -p agenturm-app --lib
-# serial qualification run in this environment:
-CARGO_BUILD_JOBS=1 cargo test -p agenturm-ui -p agenturm-app -- --test-threads=1</code></pre>
-    <div class="grid">
-      <div class="card"><h3>Build</h3><p><span class="tag ok">passed</span> full workspace, debug.</p></div>
-      <div class="card"><h3>UI library</h3><p><span class="tag ok">112 passed</span> 0 failed. Includes 15 focused UI-04 tests.</p></div>
-      <div class="card"><h3>App library</h3><p><span class="tag ok">182 passed</span> 0 failed. Includes 5 focused prompt-page tests.</p></div>
-    </div>
-    <p style="margin-top:1rem">Focused UI-04 UI tests cover wide and compact navigation, unchanged compact confirmation, resize source-line preservation, live arrivals keeping the selected request, page identity/cap/empty scope, denied/revoked/expired/late/out-of-scope/missing-capture, worker disclosure, availability rendering at three sizes, unnormalized presentation, reader paging keys and the existing private readers. Focused app tests cover deterministic pages, cap disclosure, empty scope, duplicate/timestamp identity and missing identity before any read.</p>
-    <p>Fixture-backed prompt and investigation integration, run with the real plugin host and debug adapters:</p>
-    <ul class="clean">
-      <li><code>preview_requires_a_current_grant_and_exact_committed_pi_bytes</code> — <span class="tag ok">passed</span></li>
-      <li><code>codex_preview_reveals_only_exact_completed_native_user_items</code> — <span class="tag ok">passed</span></li>
-      <li><code>codex_edit_and_command_details_require_exact_occurrences_and_independent_approvals</code> — <span class="tag ok">passed</span></li>
-      <li><code>claude_and_kiro_preview_the_exact_native_user_rows</code> — <span class="tag ok">passed</span></li>
-      <li><code>failure_investigation_includes_only_reported_log_errors_with_exact_scope</code> — <span class="tag ok">passed</span></li>
-      <li><code>failure_candidates_page_retained_metadata_at_one_snapshot</code> — <span class="tag ok">passed</span></li>
-    </ul>
-    <p>The combined <code>cargo test -p agenturm-ui -p agenturm-app</code> qualification run was serial: <code>CARGO_BUILD_JOBS=1 … -- --test-threads=1</code>. It exited 0 with 25 green test binaries (3 unit, 20 integration, 2 doc-test), 0 failures. Parallel linking of the app integration binaries had hit a transient linker bus error in this environment; that was a resource failure, not a test failure.</p>
-  </section>
-
-  <section id="hooks">
-    <h2>8 · Exact hooks for UI-03 / shell integration</h2>
-    <ol class="steps">
-      <li><strong>Model fields.</strong> Add <code>prompt_nav: Option&lt;prompt::PromptNavigator&gt;</code>, the exact anchor and the read epoch to <code>Workspace</code>. Construct with <code>PromptScope { source, session, worker, turn, capture, main_session }</code>; feed pages only through <code>begin_load/accept_page</code>. Capture policy comes from the source capability, never from an empty list.</li>
-      <li><strong>Focus.</strong> Add <code>Focus::PromptNavigator</code>, <code>PromptChooser</code>, <code>PromptReader</code>. Treat <code>PromptReader</code> exactly as <code>PrivatePrompt</code>: before help/palette, <kbd>Ctrl+C</kbd> is an interrupt, <kbd>F1</kbd> does not read the body, Escape clears then returns.</li>
-      <li><strong>Dispatch.</strong> While Prompts is active, route <code>Up Down Home End Enter Right Left Space [ ] l z m Esc</code> to the navigator before global history actions and global navigation.</li>
-      <li><strong>Return semantics.</strong> <code>Read{entry,original,epoch}</code> sends the existing <code>RevealPrompt</code>; on delivery call <code>accept_reader(epoch,(event_id,revision),text,receiver,now)</code> and reuse the active-gate/redraw/ACK path. <code>Back</code> leaves Prompts for the tabs. <code>ReaderClosed</code> just redraws. <code>MainSession(anchor)</code> must re-resolve against the roster. <code>LoadEarlier</code>/<code>Retry</code> reissue the exact-scope page. <code>NoRequests</code> shows status only.</li>
-      <li><strong>Clear private text.</strong> On close/revoke/expiry/back call <code>take_reader/close_reader/revoke/expire</code>, move <code>acknowledge</code> into <code>redact_then_acknowledge</code>, redraw without the body, then ACK — the same contract as <code>dismiss_prompt</code>/<code>expire_prompt</code>.</li>
-      <li><strong>Render.</strong> In <code>draw_workspace_base</code>, render section tabs then <code>navigator.draw(frame,area)</code>; use <code>status_line()</code> and <code>hints_for(width)</code>. Keep the full-screen reader for non-prompt private content.</li>
-      <li><strong>Inventory / palette / help.</strong> Add <code>prompt.read</code>, <code>prompt.older</code>, <code>prompt.newer</code>, <code>prompt.latest</code>, <code>prompt.presentation</code>, <code>prompt.back</code>, <code>prompt.main-session</code>, <code>prompt.earlier-page</code>, <code>prompt.retry</code>; availability reasons must be explicit. Help shows exact scope, loaded count, cap, expiry and Escape order (chooser → reader → section → roster).</li>
-      <li><strong>Typed app result.</strong> Replace the fact-free <code>WorkResult::Prompts(Vec&lt;PromptEntry&gt;)</code> with entries + retained/cap/earlier/limited + availability, plus a page command carrying <code>anchor</code> and <code>PromptCursor</code>. Map <code>PromptHistoryError</code> 1:1.</li>
-      <li><strong>Typed presentation.</strong> Send <code>{ original, readable, hidden_context, truncated }</code> from adapters through the delivery seam and call <code>accept_reader_presentation</code>. This removes the compatibility parser; unknown normalization stays labelled unavailable.</li>
-    </ol>
-  </section>
-
-  <section id="gaps">
-    <h2>9 · Remaining gaps</h2>
-    <div class="callout warn">
-      <p><strong>Deliberate lane boundary.</strong> The navigator is not reachable from the built cockpit until the shared shell adds the fields, focus variants, dispatch arms, render hook and typed app result above. This is not a claim of installed parity.</p>
-    </div>
-    <ul class="clean">
-      <li>Prompt paging cannot go past the adapter's 256-row window (P-10).</li>
-      <li><code>WorkResult::Prompts</code> does not yet carry status/page facts, so Tab/Earlier is not user-reachable.</li>
-      <li>Context normalization remains adapter work; legacy deliveries use the compatibility heuristic.</li>
-      <li>Copy/export is the intentional tighter no-copy policy pending acceptance (P-09).</li>
-      <li>Mouse equivalence (P-24) is not implemented; keyboard-only acceptance is the current candidate.</li>
-      <li>The integrated PTY journey was not run because the shared render/dispatch hook is absent in this branch; component tests and real content/investigation fixtures were run.</li>
-      <li>Idle investigation policy invalidation (P-18) is partial: a changed source is refused on the next read, not proactively cleared.</li>
-      <li>Activity/MCP/Traces/Review page identity remains shell/UI-05 ownership and was not changed.</li>
-    </ul>
-  </section>
-
-  <section id="seams">
-    <h2>10 · Pluggable-seam implications</h2>
-    <div class="grid">
-      <div class="card">
-        <h3>Adapters stay authoritative</h3>
-        <p>The navigator consumes typed request metadata and presentation facts; it never parses harness files or provider envelopes. The one compatibility parser is named and isolated.</p>
-      </div>
-      <div class="card">
-        <h3>Grants stay in the app</h3>
-        <p>Listing, cursor proof and reveal remain in <code>agenturm-content</code>. The UI carries event/revision/snapshot/history identity back to the app; revocation and expiry clear the body before ACK.</p>
-      </div>
-      <div class="card">
-        <h3>Missing facts are labelled</h3>
-        <p>Readable form unavailable, metadata only, capture disabled and prompt history unavailable are explicit states. Nothing is guessed from silence or an empty list.</p>
-      </div>
-      <div class="card">
-        <h3>No seam bypass</h3>
-        <p>Nothing here bypasses kernel ports, supervised adapters, ExtensionPlugin/capability/pane seams or the process-plugin host. The navigator is a generic evidence view over host-supplied facts.</p>
-      </div>
-    </div>
-  </section>
-</main>
-
-<footer>
-  <div class="wrap">
-    <p>UI-04 lane note · Agenturm Rust cockpit parity · Python 0.2.8 reference <code>2802d79930728bb331db1d4d718d6dea1c9c374d</code> · worktree <code>work/ui04-prompts</code>.</p>
-    <p>Companion document: <code>docs/validation/rust-ui-parity-ui04-lane-notes.md</code>. Every test claim in this page was executed on this worktree; test names and results are reproduced from the lane run.</p>
-  </div>
-</footer>
-</body>
-</html>
+cargo test -p agenturm-ui -p agenturm-app
+# this environment links many integration binaries at once; the clean
+# qualification run was serial to avoid a transient linker bus error:
+CARGO_BUILD_JOBS=1 cargo test -p agenturm-ui -p agenturm-app -- --test-threads=1
+</code></pre>
+<p>Results:</p>
+<ul>
+<li><code>cargo build</code> — <strong>passed</strong> (full workspace, debug).</li>
+<li><code>cargo test -p agenturm-ui --lib</code> — <strong>112 passed, 0 failed</strong>.</li>
+<li><code>cargo test -p agenturm-app --lib</code> — <strong>182 passed, 0 failed</strong>.</li>
+<li><code>CARGO_BUILD_JOBS=1 cargo test -p agenturm-ui -p agenturm-app -- --test-threads=1</code>
+— <strong>exit 0</strong>, 25 test binaries green (3 unit targets, 20 integration
+targets, 2 doc-test targets), 0 failures.</li>
+<li>UI-04 focused UI tests — <strong>15 passed</strong> (wide/compact navigation, unchanged
+Enter, resize source-line preservation, live arrivals keeping the selected
+request, page identity/cap/empty scope,
+denied/revoked/expired/late/out-of-scope/missing-capture, worker disclosure,
+availability rendering at three sizes, unnormalized presentation, reader
+PgUp/PgDn/End, existing private-reader presentation tests).</li>
+<li>UI-04 focused app tests — <strong>5 passed</strong> (deterministic pages, cap disclosure,
+empty scope, duplicate/timestamp identity, missing identity before read).</li>
+<li>Fixture-backed prompt/investigation integration (real plugin host + debug
+adapters, not skipped):
+<ul>
+<li><code>preview_requires_a_current_grant_and_exact_committed_pi_bytes</code> — <strong>passed</strong></li>
+<li><code>codex_preview_reveals_only_exact_completed_native_user_items</code> — <strong>passed</strong></li>
+<li><code>codex_edit_and_command_details_require_exact_occurrences_and_independent_approvals</code> — <strong>passed</strong></li>
+<li><code>claude_and_kiro_preview_the_exact_native_user_rows</code> — <strong>passed</strong></li>
+<li><code>failure_investigation_includes_only_reported_log_errors_with_exact_scope</code> — <strong>passed</strong></li>
+<li><code>failure_candidates_page_retained_metadata_at_one_snapshot</code> — <strong>passed</strong></li>
+</ul>
+</li>
+</ul>
+<p>The fixture runs used
+<code>AGENTURM_RUNTIME_PLUGIN_HOST=target/debug/agenturm-plugin-host</code> with the
+matching <code>target/debug/agenturm-{pi,codex,claude,kiro}-harness</code> adapters. No
+test is claimed beyond what was executed here.</p>
+<hr></hr>
+<h2>8. Exact hooks for UI-03 / shell integration</h2>
+<h3>8.1 Model ownership</h3>
+<p>Add to <code>Workspace</code> (owned by UI-03 in <code>workspace.rs</code>):</p>
+<pre><code class="language-rust">prompt_nav: Option&lt;prompt::PromptNavigator&gt;,
+prompt_anchor: Option&lt;WorkAnchor&gt;,   // exact source/session/worker/turn
+prompt_read_epoch: Option&lt;u64&gt;,      // echo from PromptInput::Read
+</code></pre>
+<p>Construct with <code>PromptNavigator::new(PromptScope { source, session, worker, turn, capture, main_session })</code>, then one <code>begin_load()</code> +
+<code>accept_page(token, entries, meta)</code> when the prompt page arrives. Convert the
+existing <code>PromptEntry</code> rows with <code>PromptRequest::from(&amp;entry)</code>; attach labels
+only from adapter-normalized facts. <code>PromptCapture</code> must come from the source
+capability/policy, never inferred from an empty list.</p>
+<h3>8.2 New focus variants (<code>keymap.rs</code>, UI-03)</h3>
+<ul>
+<li><code>Focus::PromptNavigator</code></li>
+<li><code>Focus::PromptChooser</code></li>
+<li><code>Focus::PromptReader</code></li>
+</ul>
+<p><code>PromptReader</code> must have the <strong>same precedence as <code>PrivatePrompt</code></strong>: before
+help and palette, <code>Ctrl+C</code> remains interrupt, <code>F1</code> is not routed into the
+granted body, Escape clears the body and returns to the previous prompt focus.
+<code>PromptNavigator</code>/<code>PromptChooser</code> are public-list focuses and precede history
+page keys.</p>
+<h3>8.3 Dispatch (<code>workspace.rs</code>, UI-03)</h3>
+<p>While the Prompts section is active, route this key set to
+<code>PromptNavigator::key</code> <strong>before</strong> global history actions (<code>[</code>, <code>]</code>, <code>l</code>, <code>z</code>)
+and before global navigation:</p>
+<pre><code>Up Down Home End Enter Right Left Space [ ] l z m Esc
+</code></pre>
+<p>Return semantics:</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th><code>PromptInput</code></th>
+<th>Shell action</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>Read { entry, original, epoch }</code></td>
+<td>Send the existing <code>WorkCommand::RevealPrompt(Box::new(entry), delivery)</code>, store <code>delivery</code> receiver and <code>epoch</code>. On delivery call <code>navigator.accept_reader(epoch, (event_id, revision), text, receiver, now)</code>; then run the shared <code>active</code>-gate/redraw/ACK path. <code>original</code> must be applied to the constructed screen (<code>PromptScreen::set_original</code>) or the typed presentation path.</td>
+</tr>
+<tr>
+<td><code>Handled</code> / <code>Ignored</code></td>
+<td>No shell action. <code>Ignored</code> may be used to report an unavailable action.</td>
+</tr>
+<tr>
+<td><code>Back</code></td>
+<td>Leave the Prompts section for the inspector tabs; keep the selected session and inspector scroll. Increment the navigation generation.</td>
+</tr>
+<tr>
+<td><code>ReaderClosed</code></td>
+<td>Focus is already returned to navigator/chooser; redraw.</td>
+</tr>
+<tr>
+<td><code>MainSession(anchor)</code></td>
+<td>Only after re-resolving the anchor against the roster; open <code>WorkCommand::Prompts(anchor)</code>. Never construct a main-session identity.</td>
+</tr>
+<tr>
+<td><code>LoadEarlier</code></td>
+<td>Call the app's prompt page command with the cursor; replace/append only through <code>accept_page</code>.</td>
+</tr>
+<tr>
+<td><code>Retry</code></td>
+<td>Re-issue the current page at the same exact scope/snapshot.</td>
+</tr>
+<tr>
+<td><code>NoRequests</code></td>
+<td>Show the current status; no read.</td>
+</tr>
+</tbody>
+</table></div>
+<p>On reader close, revocation, expiry or back: call <code>navigator.take_reader()</code> /
+<code>close_reader()</code> / <code>revoke()</code> / <code>expire()</code>; move <code>acknowledge</code> into the existing
+<code>redact_then_acknowledge</code>, redraw <strong>without</strong> the body, then send the ACK. This
+is the same contract as <code>dismiss_prompt</code>/<code>expire_prompt</code> today.</p>
+<h3>8.4 Rendering</h3>
+<p>In <code>draw_workspace_base</code>, when <code>prompt_nav</code> is active render the inspector
+section tabs and then <code>navigator.draw(frame, area)</code> instead of the flat
+Workbench Prompts list. Use <code>navigator.status_line()</code> for the view status and
+<code>navigator.hints_for(width)</code> in the footer. Keep the full-screen
+<code>PromptScreen</code> path for all non-prompt private content.</p>
+<h3>8.5 Action inventory, palette and help</h3>
+<p>Add one <code>keymap::Action</code> row per user-visible action (UI-02/UI-03):</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Proposed id</th>
+<th>Keys</th>
+<th>Context</th>
+<th>Palette availability</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>prompt.read</code></td>
+<td><code>Enter / →</code></td>
+<td>PromptNavigator, PromptChooser</td>
+<td>enabled with a selection</td>
+</tr>
+<tr>
+<td><code>prompt.older</code></td>
+<td><code>[</code></td>
+<td>PromptNavigator</td>
+<td>&quot;No older loaded request&quot;</td>
+</tr>
+<tr>
+<td><code>prompt.newer</code></td>
+<td><code>]</code></td>
+<td>PromptNavigator</td>
+<td>&quot;Already at the newest loaded request&quot;</td>
+</tr>
+<tr>
+<td><code>prompt.latest</code></td>
+<td><code>l</code></td>
+<td>PromptNavigator</td>
+<td>enabled with a selection</td>
+</tr>
+<tr>
+<td><code>prompt.presentation</code></td>
+<td><code>z</code></td>
+<td>PromptNavigator, PromptReader</td>
+<td>&quot;Readable presentation unavailable&quot; when unnormalized</td>
+</tr>
+<tr>
+<td><code>prompt.back</code></td>
+<td><code>Esc / ←</code></td>
+<td>all three prompt focuses</td>
+<td>enabled</td>
+</tr>
+<tr>
+<td><code>prompt.main-session</code></td>
+<td><code>m</code></td>
+<td>PromptNavigator (worker only)</td>
+<td>&quot;Worker has no verified main session&quot;</td>
+</tr>
+<tr>
+<td><code>prompt.earlier-page</code></td>
+<td><code>Tab to Earlier prompts, Enter</code></td>
+<td>Prompts section</td>
+<td>&quot;No earlier retained requests&quot;</td>
+</tr>
+<tr>
+<td><code>prompt.retry</code></td>
+<td><code>Tab to Retry prompts, Enter</code></td>
+<td>Prompts section</td>
+<td>&quot;No failed prompt load&quot;</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>keymap::hint</code> must use these ids; <code>help_sections</code> must add a PROMPTS section
+showing the exact source/session/worker scope, loaded count, retained cap,
+reader expiry and the Escape order (chooser → reader → section → roster).
+Palette <code>view.prompts</code> should open the inspector Prompts section, not the
+standalone Workbench list.</p>
+<h3>8.6 App-side typed result (UI-03 + app owner)</h3>
+<p><code>WorkResult::Prompts(Vec&lt;PromptEntry&gt;)</code> currently cannot express capture
+policy, denial or retained-cap facts. Add a typed result (name is the app
+owner's choice):</p>
+<pre><code class="language-rust">PromptHistory {
+    entries: Vec&lt;PromptEntry&gt;,        // newest first
+    retained: usize,
+    retained_cap: usize,
+    earlier: bool,
+    limited: bool,
+    availability: PromptAvailability, // CaptureDisabled | MissingIdentity |
+                                      // EmptyScope | Denied(reason) | Unavailable(reason)
+}
+</code></pre>
+<p>and a page command carrying <code>anchor</code> plus an optional <code>prompt_history::PromptCursor</code>.
+<code>prompt_history::load_page</code> already returns these facts; map
+<code>PromptHistoryError</code> 1:1 to availability. Keep provider logic in the adapter.</p>
+<h3>8.7 Typed presentation seam (adapter → app → UI)</h3>
+<p>The current <code>PromptDelivery</code> sends raw text bytes. To remove the compatibility
+heuristic, extend the prompt delivery/result with a typed presentation:</p>
+<pre><code class="language-rust">PromptPresentation {
+    original: String,
+    readable: Option&lt;String&gt;,   // adapter-normalized body
+    hidden_context: usize,      // count of typed leading context blocks
+    truncated: bool,            // reader/export limit reached
+}
+</code></pre>
+<p>Adapters normalize their own envelopes and send the facts; the UI calls
+<code>PromptNavigator::accept_reader_presentation</code>. Until then <code>accept_reader</code> uses
+<code>legacy_envelopes</code>, and an unknown normalization is labelled unavailable. This
+keeps provider parsing out of <code>workspace/prompt.rs</code>.</p>
+<hr></hr>
+<h2>9. Remaining gaps</h2>
+<ol>
+<li><strong>No shared dispatch yet.</strong> The navigator is not reachable from the built
+cockpit until the UI-02/UI-03 integration pass adds the fields, focus
+variants, dispatch arms and render hook above. This is the lane boundary, not
+a hidden claim of parity.</li>
+<li><strong>App result lacks typed status/page facts.</strong> <code>prompt_history</code> is ready, but
+<code>WorkResult::Prompts</code> does not carry it. Paging from Tab/Earlier is therefore
+not user-reachable yet.</li>
+<li><strong>Prompt paging is window-local.</strong> The adapter/kernel still returns at most
+256 references with no cursor; &quot;Earlier prompts&quot; cannot go past that window.
+The UI labels the cap honestly rather than claiming a complete transcript.</li>
+<li><strong>Context normalization remains adapter work.</strong> The compatibility heuristic
+is still used for legacy deliveries; unnormalized captures are labelled.</li>
+<li><strong>Copy/export</strong> remains the intentional tighter no-copy policy (P-09); it
+needs explicit acceptance or a grant-aware shared seam.</li>
+<li><strong>Mouse equivalence</strong> (inventory P-24) is not implemented; the lane stays
+keyboard-first and records this as a keyboard-only acceptance candidate.</li>
+<li><strong>Integrated PTY journey</strong> (inspector → Prompts → older request → original →
+Review/Activity → return) was not run because the shared render/dispatch hook
+is not present in this branch. Component state/render tests and the real
+content/investigation fixtures were run.</li>
+<li><strong>Investigation idle policy invalidation</strong> (P-18) is partial: a changed source
+is refused on the next attempted read; results are not proactively cleared
+while idle.</li>
+<li><strong>Activity/MCP/Traces/Review page identity</strong> was not changed; it relies on the
+existing page stack and remains UI-05/shell ownership.</li>
+</ol>
+<hr></hr>
+<h2>10. Pluggable-seam implications</h2>
+<ul>
+<li><strong>Kernel ports / adapters:</strong> the navigator consumes typed request metadata and
+a typed presentation; it does not parse harness files or provider envelopes.
+The only compatibility parser is explicitly named and isolated.</li>
+<li><strong>Grants:</strong> listing, cursor proof and reveal remain in <code>agenturm-content</code>.
+The UI never issues a text read; it carries event/revision/snapshot/history
+identity back to the app. Revocation/expiry clear the body before ACK.</li>
+<li><strong>No provider branches:</strong> request labels, capture policy and worker/main
+relationships arrive as facts. Missing facts are labelled unavailable
+(<code>Readable form unavailable</code>, <code>Metadata only</code>, <code>Prompt history is unavailable</code>).</li>
+<li><strong>Extension panes:</strong> nothing in this lane bypasses ExtensionPlugin/capability/
+pane seams; the navigator is a generic session-evidence view over host-supplied
+facts and is only rendered when the shell owns the Prompts section.</li>
+<li><strong>Scope honesty:</strong> out-of-scope rows are dropped with a visible count, exact
+worker scope never inherits untagged or sibling requests, and main-session
+navigation is offered only from a caller-verified anchor.</li>
+</ul>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

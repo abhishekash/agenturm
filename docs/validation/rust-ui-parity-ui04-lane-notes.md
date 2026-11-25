@@ -1,8 +1,8 @@
 # UI-04 lane notes · prompts, session activity and cross-session history
 
-**Lane:** UI-04 · session evidence UI owner  
-**Worktree:** `/tmp/agenturm-ui04-prompts` · branch `work/ui04-prompts` (from the integrated parity branch)  
-**Reference oracle:** Python **0.2.8** at `2802d79930728bb331db1d4d718d6dea1c9c374d`  
+**Lane:** UI-04 · session evidence UI owner
+**Worktree:** `/tmp/agenturm-ui04-prompts` · branch `work/ui04-prompts` (from the integrated parity branch)
+**Reference oracle:** Python **0.2.8** at `2802d79930728bb331db1d4d718d6dea1c9c374d`
 **Status:** navigator, reader and bounded prompt-history page model implemented and
 tested in the lane; shared dispatch, palette, help and app result wiring are
 listed below for the UI-02/UI-03 integration pass (this lane did not edit those

@@ -2,23 +2,29 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-resume.md">Markdown source ↗</a></nav><h1>Rust UI parity: continuation and integration</h1>
-<p>25 November 2026. <strong>Integration validation in progress; not a full-parity acceptance or release.</strong></p>
+</style></head><body><main><nav><strong>Agenturm / 26 November 2026</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-resume.md">Markdown source ↗</a></nav><h1>Rust UI parity: continuation and integration</h1>
+<p>25 November 2026. <strong>Integration qualification passed; not a full-parity acceptance or release.</strong></p>
 <h2>Latest continuation</h2>
 <p>The second shell and acceptance subagents stopped at a subscription usage limit.
 Their unfinished files were preserved without editing their worktrees. The
 coordinator continued directly, completed the shell correctness fixes and added
-regressions for the independent audit findings. The focused UI run passed 157
-tests; store-backed app regressions passed. The shared overlay tests passed 21
-tests normally and 21 with <code>NO_COLOR=1</code>. See the
+regressions for the independent audit findings. The final frozen runtime
+<code>17206a42ae60709171f9b2f26b7fea0bbd982083</code> passed the locked workspace build,
+991 tests across 96 suites, strict app/UI clippy and 159 fresh-process
+<code>NO_COLOR=1</code> UI tests. Six empty-history and three populated private-prompt PTY
+journeys passed at 120×32, 80×24 and 60×18; the extracted selected-debug QA
+archive passed another six smoke journeys. See the
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-acceptance.md">final qualification and remaining gates</a>,
 <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-shell-integration-notes.md">shell integration note</a>,
 <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-ui07-lane-notes.md">visual lane note</a>, and
 <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-acceptance-prep.md">independent Python acceptance preparation</a>.</p>
 <p>The Python preparation records 47 passing exact-tag tests, 42 reference captures
 and fixed-clock policy checks; it is not Rust acceptance. The coordinator also
-reran the acceptance harness's four self-tests successfully. Workspace build,
-lint and exact-binary terminal qualification are the next gates. No changes have
-been pushed or merged remotely at this point.</p>
+reran the acceptance harness's four self-tests successfully. Final Rust checks
+are coordinator qualification, not independent final acceptance. A subsequent
+documentation-only commit records the results without relabelling its PR head
+as the tested runtime. This integration does not publish a release or change
+the default installation.</p>
 <h2>Recovery and isolation</h2>
 <p>Continues the session exported as
 <code>2026-11-24-200436-use-a-new-worktree-and-not-affect-the-other-agent.txt</code>.
@@ -26,7 +32,7 @@ The earlier implementation merged UI-01 through UI-06 into <code>a633c68</code> 
 the shell-integration agent exhausted its model quota.</p>
 <p>The original shell worktree contained uncommitted changes in 12 files. They
 were copied without modifying the original worktree, preserved as <code>2b162cb</code>,
-and are being corrected and validated rather than assumed complete.
+and were corrected and validated rather than assumed complete.
 The main checkout and pre-existing lane worktrees remain untouched.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -72,7 +78,8 @@ agent's processes were stopped and no global model or billing settings changed.<
 <p>Upstream main was fetched into the dedicated
 <code>refs/agenturm-parity-resume/upstream-main</code> ref, without moving another
 worktree's branch. Its observed head was
-<code>57b75805e3dbbe1222be89332c303def35b766e4</code>.
+<code>1b00428f2625d2e65a27c155321b3b72a2091f7b</code> (#394 OpenCode edit-detail), now
+merged into the tested runtime.
 Merge <code>d7c3eed</code> incorporates the newer native evidence and Claude edit-detail
 work. The plan's add/add conflict retained the user's requirement that missing
 native names receive a human-understandable contextual fallback, never the
@@ -91,18 +98,21 @@ activating the first Review control sent no request.</li>
 </ul>
 <p>Log: <code>/tmp/opencode/agenturm-parity-recovery-tests.log</code>.
 Upstream integration happened during this diagnostic run, so it does <strong>not</strong>
-qualify a frozen source SHA or executable. Both failures need fixes and a
-fresh integrated run. The final installed-candidate gate belongs to the
-independent acceptance lane, not these historical lane test counts.</p>
+qualify a frozen source SHA or executable. Both failures were fixed and
+covered by the final integrated run; this historical failure is retained for
+provenance. The final independent acceptance gate remains open, regardless of
+the coordinator's successful exact-binary qualification.</p>
 <h2>Architecture and acceptance boundaries</h2>
 <p>The shell must consume provider-neutral typed facts and preserve source,
 session, worker, turn, snapshot and version identity. Private readers retain
 the existing grant, active-display, redraw-before-acknowledgement and timeout
 fences. Missing worker proof is unavailability, not permission to relabel
 main-session content. Copy/export must identify the actual selected scope.</p>
-<p>Remaining qualification includes the exact installed binary, the tagged
-Python 0.2.8 oracle, comparable fixtures at 120×32, 80×24 and 60×18, private
-reader revocation, nested navigation and terminal restoration. Mouse parity,
+<p>The tagged Python oracle and selected Rust exact-debug-binary journeys passed,
+including nested navigation, live expiry, post-revocation denial and terminal
+restoration. Remaining qualification includes a full identical-fixture paired
+matrix, release artifacts, live broker revocation in an isolated root-capable
+fixture, and final independent UI-Q sign-off. Mouse parity,
 unsupported provider capabilities and intentional disclosure differences
 cannot be promoted to accepted parity by passing unit tests.</p>
 <h2>Cross-project consistency review</h2>

@@ -1,298 +1,516 @@
-<!doctype html>
-<html lang="en">
-<head>
-<meta charset="utf-8">
-<meta name="viewport" content="width=device-width, initial-scale=1">
-<meta name="color-scheme" content="light dark">
-<title>Rust cockpit shared UI contracts · UI-02</title>
-<style>
-  :root {
-    --canvas: #f6f7f4; --surface: #ffffff; --panel: #edf0e9; --text: #1c231d;
-    --muted: #5b665c; --accent: #4b6300; --accent-soft: #e7efc8;
-    --border: #c9d0c7; --code: #f1f3ee; --warn: #8a4b00; --warn-soft: #fff1dc;
-    --focus: #274a2f; --ok: #1d6039;
-  }
-  @media (prefers-color-scheme: dark) {
-    :root {
-      --canvas: #111612; --surface: #181f19; --panel: #202a21; --text: #e9efe6;
-      --muted: #a9b6a9; --accent: #d6ea6a; --accent-soft: #2a3520;
-      --border: #3a473b; --code: #1d251e; --warn: #ffc46b; --warn-soft: #352b18;
-      --focus: #cfe8ff; --ok: #8ee3b1;
-    }
-  }
-  * { box-sizing: border-box; }
-  html { scroll-behavior: smooth; }
-  body {
-    margin: 0; padding: 0; background: var(--canvas); color: var(--text);
-    font: 16px/1.6 ui-sans-serif, system-ui, -apple-system, "Segoe UI", sans-serif;
-  }
-  header, main, footer { width: min(100% - 2rem, 74rem); margin-inline: auto; }
-  header { padding: 2.5rem 0 1rem; border-bottom: 1px solid var(--border); }
-  h1 { margin: 0 0 .4rem; font-size: clamp(1.55rem, 3vw, 2.35rem); line-height: 1.18; }
-  .kicker { margin: 0 0 .7rem; color: var(--accent); font-weight: 700; letter-spacing: .08em; text-transform: uppercase; font-size: .78rem; }
-  .meta { margin: 0; color: var(--muted); }
-  nav.toc { margin: 1.1rem 0 0; padding: .8rem 1rem; background: var(--panel); border: 1px solid var(--border); border-radius: .6rem; }
-  nav.toc strong { display: block; margin-bottom: .3rem; }
-  nav.toc ol { margin: 0; padding-left: 1.25rem; columns: 2; column-gap: 2rem; }
-  nav.toc a { color: var(--focus); text-decoration: none; }
-  nav.toc a:hover, nav.toc a:focus { text-decoration: underline; }
-  main { padding: 1rem 0 3rem; }
-  section { margin-top: 2.2rem; }
-  h2 { margin: 0 0 .6rem; font-size: 1.3rem; border-bottom: 1px solid var(--border); padding-bottom: .3rem; }
-  h3 { margin: 1.3rem 0 .35rem; font-size: 1.05rem; }
-  p { margin: .55rem 0; }
-  ul, ol { margin: .5rem 0 .8rem; padding-left: 1.4rem; }
-  li { margin: .28rem 0; }
-  code, kbd { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; font-size: .92em; }
-  code { background: var(--code); border: 1px solid var(--border); border-radius: .28rem; padding: .06em .32em; }
-  kbd { display: inline-block; min-width: 1.6em; text-align: center; padding: .06em .4em; border: 1px solid var(--border); border-bottom-width: 2px; border-radius: .3rem; background: var(--surface); }
-  pre { margin: .7rem 0; padding: .9rem 1rem; overflow: auto; background: var(--code); border: 1px solid var(--border); border-radius: .55rem; }
-  pre code { background: none; border: 0; padding: 0; white-space: pre; }
-  .table-wrap { overflow-x: auto; margin: .8rem 0; border: 1px solid var(--border); border-radius: .55rem; }
-  table { width: 100%; border-collapse: collapse; min-width: 36rem; background: var(--surface); }
-  th, td { text-align: left; vertical-align: top; padding: .55rem .7rem; border-bottom: 1px solid var(--border); }
-  thead th { background: var(--panel); font-size: .9rem; position: sticky; top: 0; }
-  tbody tr:last-child td { border-bottom: 0; }
-  .note, .warn { margin: .9rem 0; padding: .75rem .95rem; border-left: .28rem solid var(--accent); background: var(--accent-soft); border-radius: 0 .45rem .45rem 0; }
-  .warn { border-left-color: var(--warn); background: var(--warn-soft); }
-  .grid { display: grid; gap: .8rem; grid-template-columns: repeat(auto-fit, minmax(15rem, 1fr)); }
-  .card { padding: .85rem 1rem; background: var(--surface); border: 1px solid var(--border); border-radius: .6rem; }
-  .card h3 { margin-top: 0; }
-  .pill { display: inline-block; padding: .1rem .5rem; border: 1px solid var(--border); border-radius: 999px; background: var(--panel); font-size: .78rem; color: var(--muted); }
-  .ok { color: var(--ok); font-weight: 700; }
-  .gap { color: var(--warn); font-weight: 700; }
-  footer { padding: 1.2rem 0 3rem; border-top: 1px solid var(--border); color: var(--muted); font-size: .92rem; }
-  a { color: var(--focus); }
-  @media (max-width: 44rem) {
-    nav.toc ol { columns: 1; }
-    header { padding-top: 1.6rem; }
-    body { font-size: 15px; }
-  }
-  @media print {
-    body { background: #fff; color: #000; }
-    nav.toc { display: none; }
-    .table-wrap { overflow: visible; }
-    a { color: inherit; text-decoration: none; }
-  }
-</style>
-</head>
-<body>
-<header>
-  <p class="kicker">Agenturm · Rust cockpit parity</p>
-  <h1>Shared UI contracts</h1>
-  <p class="meta"><strong>Owner:</strong> UI-02 · shared shell, keyboard and navigation ·
-  <strong>Status:</strong> published for UI-03–UI-07 · 23 November 2026</p>
-  <p class="meta">Python oracle <code>v0.2.8</code> · <code>2802d79930728bb331db1d4d718d6dea1c9c374d</code> ·
-  source <code>rust/agenturm-ui/src/{keymap,workspace,workbench,lib,theme,palette,help}.rs</code></p>
-  <nav class="toc" aria-label="Contents">
-    <strong>Contents</strong>
-    <ol>
-      <li><a href="#invariants">Shell invariants</a></li>
-      <li><a href="#navigation">Navigation and clipping</a></li>
-      <li><a href="#inventory">Action inventory</a></li>
-      <li><a href="#focus">Focus and key ownership</a></li>
-      <li><a href="#palette">Command palette</a></li>
-      <li><a href="#help">Contextual help</a></li>
-      <li><a href="#status">Header, footer, themes</a></li>
-      <li><a href="#identity">Identity and late responses</a></li>
-      <li><a href="#lanes">Lane integration</a></li>
-      <li><a href="#tests">Verification</a></li>
-      <li><a href="#gaps">Known gaps</a></li>
-    </ol>
-  </nav>
-</header>
-
-<main>
-<section id="invariants">
-  <h2>1. Shell invariants</h2>
-  <p>The shell owns terminal lifecycle, navigation, focus precedence, the action inventory, the palette, help and the footer. Lane modules own their models, rendering and screen-specific actions. The shell is generic over model data: no provider ID, extension ID or app-level special case appears in shared code.</p>
-  <div class="grid">
-    <div class="card"><h3>One inventory</h3><p><code>keymap::ACTIONS</code> drives footer hints and <code>F1</code>/<code>?</code> help. Each row has a stable id, keys, label, detail, group and contexts.</p></div>
-    <div class="card"><h3>One palette</h3><p><code>Ctrl+P</code> opens <code>palette::Palette</code>. It returns a stable key; it never performs app work itself.</p></div>
-    <div class="card"><h3>No hidden focus</h3><p>Every key has one owner. Unknown keys are inert. A chooser owns Escape before its enclosing form.</p></div>
-    <div class="card"><h3>No destructive help</h3><p>Opening or scrolling help mutates nothing. Drafts, selection, filters, cursor and scroll survive.</p></div>
-    <div class="card"><h3>No late replacement</h3><p>Responses carry a navigation generation. A superseded response is discarded with a visible reason.</p></div>
-    <div class="card"><h3>No invented names</h3><p>Missing titles are derived by the owning screen from title, nickname, provider, role and project; unknown values stay explicit in Details.</p></div>
-  </div>
-</section>
-
-<section id="navigation">
-  <h2>2. Navigation and clipping</h2>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Key</th><th>Destination</th><th>Notes</th></tr></thead>
-      <tbody>
-        <tr><td><kbd>1</kbd></td><td>Agents / command center</td><td>Python root destination</td></tr>
-        <tr><td><kbd>2</kbd></td><td>Activity</td><td>Python root destination</td></tr>
-        <tr><td><kbd>3</kbd></td><td>MCP</td><td>Python root destination</td></tr>
-        <tr><td><kbd>4</kbd></td><td>Traces</td><td>Python root destination</td></tr>
-        <tr><td><kbd>5</kbd></td><td>Host</td><td>Python root destination</td></tr>
-        <tr><td><kbd>6</kbd></td><td>Metrics</td><td>Python root destination</td></tr>
-        <tr><td><kbd>7</kbd></td><td>Findings</td><td>Python root destination</td></tr>
-        <tr><td><kbd>9</kbd></td><td>Operations</td><td>Rust-only retained operation evidence</td></tr>
-        <tr><td><kbd>U</kbd></td><td>Usage</td><td>Rust-only combined retained usage</td></tr>
-        <tr><td><kbd>8</kbd></td><td>Traces alias</td><td>Deliberate Rust compatibility alias</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <p><code>keymap::NAVIGATION</code> keeps <code>1</code>–<code>7</code> fixed. <code>keymap::EXTRA_NAVIGATION</code> holds Operations and Usage. A narrow numbered strip may clip; help and the palette always expose the full set. The command center's <code>F1 more</code> label is a presentation clip, not a removal.</p>
-</section>
-
-<section id="inventory">
-  <h2>3. Action inventory</h2>
-<pre><code>pub(crate) struct Action {
-    pub id: &amp;'static str,        // stable dispatch/palette identifier
-    pub keys: &amp;'static str,      // documented keys, e.g. "Ctrl+P"
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Ui Parity Shared Contracts</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 26 November 2026</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-ui-parity-shared-contracts.md">Markdown source ↗</a></nav><h1>Rust cockpit shared UI contracts</h1>
+<p><strong>Owner:</strong> UI-02 · shared shell, keyboard and navigation
+<strong>Status:</strong> published for UI-03, UI-04, UI-05, UI-06 and UI-07
+<strong>Reference oracle:</strong> Python 0.2.8 at <code>2802d79930728bb331db1d4d718d6dea1c9c374d</code>
+<strong>Implementation:</strong> <code>rust/agenturm-ui/src/{keymap,workspace,workbench,lib,theme,palette,help}.rs</code></p>
+<p>This document is the integration boundary for every lane that renders a cockpit
+screen. The shell owns terminal lifecycle, shared navigation, focus precedence,
+the action inventory, the command palette, contextual help and the footer. Lane
+modules own their models, rendering and screen-specific actions.</p>
+<p>The architecture constraint is unchanged: the shell is generic over
+model data. It never switches on a provider ID, an extension ID or an app-level
+special case. New screens arrive as kernel panes or typed host requests, and new
+actions arrive as inventory rows plus a dispatch arm. Kernel ports, supervised
+source adapters, harness crates and the <code>ExtensionPlugin</code>/capability/pane seams
+are not bypassed.</p>
+<hr></hr>
+<h2>1. Shell invariants</h2>
+<ol>
+<li><strong>One action inventory.</strong> <code>keymap::ACTIONS</code> is the source for footer hints
+and <code>F1</code>/<code>?</code> help. Each row has a stable <code>id</code>, display keys, a label, a
+detail sentence, a group and the contexts where it applies.</li>
+<li><strong>One palette contract.</strong> <code>Ctrl+P</code> opens <code>palette::Palette</code>. It returns a
+stable key and never executes app work itself.</li>
+<li><strong>No hidden focus.</strong> Every key has one owner: private prompt, form, chooser,
+text field, palette, help, workbench, inspector or command center. Unknown
+keys are inert.</li>
+<li><strong>No destructive help.</strong> Opening or scrolling help mutates nothing in the
+underlying view. Drafts, selections, filters, cursor and scroll survive.</li>
+<li><strong>Late data cannot replace a closed view.</strong> Responses carry a navigation
+generation; a superseded generation is discarded with a visible reason.</li>
+<li><strong>Nothing provider-specific in the shell.</strong> Names and identities come from
+data. A missing title is derived by the owning screen; the shell does not
+invent a provider name or a <code>Name unavailable</code> label.</li>
+</ol>
+<hr></hr>
+<h2>2. Root destinations and clipping</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Key</th>
+<th>Destination</th>
+<th>Notes</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>1</code></td>
+<td>Agents / command center</td>
+<td>Python root destination</td>
+</tr>
+<tr>
+<td><code>2</code></td>
+<td>Activity</td>
+<td>Python root destination</td>
+</tr>
+<tr>
+<td><code>3</code></td>
+<td>MCP</td>
+<td>Python root destination</td>
+</tr>
+<tr>
+<td><code>4</code></td>
+<td>Traces</td>
+<td>Python root destination</td>
+</tr>
+<tr>
+<td><code>5</code></td>
+<td>Host</td>
+<td>Python root destination</td>
+</tr>
+<tr>
+<td><code>6</code></td>
+<td>Metrics</td>
+<td>Python root destination</td>
+</tr>
+<tr>
+<td><code>7</code></td>
+<td>Findings</td>
+<td>Python root destination</td>
+</tr>
+<tr>
+<td><code>9</code></td>
+<td>Operations</td>
+<td>Rust-only retained operation evidence</td>
+</tr>
+<tr>
+<td><code>U</code></td>
+<td>Usage</td>
+<td>Rust-only combined retained usage</td>
+</tr>
+<tr>
+<td><code>8</code></td>
+<td>Traces alias</td>
+<td>Deliberate Rust compatibility alias</td>
+</tr>
+</tbody>
+</table></div>
+<p><code>keymap::NAVIGATION</code> keeps <code>1</code>–<code>7</code> fixed. <code>keymap::EXTRA_NAVIGATION</code> holds the
+Rust-only Operations and Usage destinations. Numbered strips may clip at narrow
+widths; help and the palette always expose the full set. The command center may
+show only five destinations in its one-line strip and add <code>F1 more</code>; this is a
+presentation clip, not a removal.</p>
+<p>Palette identifiers: <code>go.agents</code>, <code>go.activity</code>, <code>go.mcp</code>, <code>go.traces</code>,
+<code>go.host</code>, <code>go.metrics</code>, <code>go.findings</code>, <code>go.operations</code>, <code>go.usage</code>.</p>
+<hr></hr>
+<h2>3. Action inventory (<code>keymap.rs</code>)</h2>
+<pre><code class="language-rust">pub(crate) struct Action {
+    pub id: &amp;'static str,        // stable identifier used by dispatch/palette
+    pub keys: &amp;'static str,      // documented keys, e.g. &quot;Ctrl+P&quot; or &quot;F1 / ?&quot;
     pub label: &amp;'static str,     // footer/help/palette label
-    pub detail: &amp;'static str,    // one-sentence explanation
-    pub group: Group,            // VIEWS, SESSION, EVIDENCE, LIVE, ...
+    pub detail: &amp;'static str,    // one-sentence help and palette detail
+    pub group: Group,            // VIEWS, SESSION, EVIDENCE, LIVE, SEARCH, ...
     pub contexts: &amp;'static [Context],
-}</code></pre>
-  <ul>
-    <li><code>Context</code> is <code>CommandCenter</code>, <code>History</code>, <code>Workbench</code>, <code>Investigation</code> or <code>Form</code>.</li>
-    <li><code>keymap::actions(context)</code>, <code>help_sections(context)</code>, <code>hint(&amp;[id, …])</code> and <code>find_action(id)</code> are the public seams.</li>
-    <li><code>keymap::PALETTE_EXCLUDED</code> names keys without an unambiguous palette command (currently only modifier-plus-direction agent-family navigation).</li>
-  </ul>
-  <div class="note"><strong>Adding an action.</strong> Add one id constant, one <code>ACTIONS</code> row with the right contexts/group, and one dispatch arm in <code>Workspace::run_action</code> (send the documented key or call the same typed request). Do not add a second key table or help string. Use <code>keymap::hint</code> for the shared footer portion.</div>
-</section>
-
-<section id="focus">
-  <h2>4. Focus and key ownership</h2>
-  <p><code>keymap::Focus</code> names the current owner; <code>Workspace::focus()</code> derives it from state. No lane stores a second focus object.</p>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Focus</th><th>Owns</th><th>Must not receive</th></tr></thead>
-      <tbody>
-        <tr><td><code>PrivatePrompt</code></td><td>Esc/q dismissal, reveal keys</td><td>Global navigation, palette, help</td></tr>
-        <tr><td><code>ExportForm</code></td><td>Esc, text, Enter submit</td><td>Global navigation</td></tr>
-        <tr><td><code>WorkbenchEditor</code></td><td>Literal text, Ctrl+S, dropdown Escape</td><td>Global single-letter actions</td></tr>
-        <tr><td><code>AgentSearch</code>, <code>HistorySearch</code></td><td>Letters, digits, brackets, <code>?</code>, punctuation, Backspace</td><td>Destination digits, <code>/</code>, <code>?</code> help</td></tr>
-        <tr><td><code>SessionChooser</code>, <code>HistoryChooser</code>, <code>Palette</code></td><td>Escape first, arrows, Enter</td><td>Enclosing form Escape/Back</td></tr>
-        <tr><td><code>Help</code></td><td>Scroll, F1/Esc/<code>?</code> close, q quit</td><td>Underlying view mutations</td></tr>
-        <tr><td><code>EvidenceInspection</code></td><td>Scroll, PgUp/PgDn, Esc</td><td>Selection changes outside the inspector</td></tr>
-        <tr><td><code>HistoryTable</code>, <code>CommandCenter</code>, <code>Workbench</code></td><td>View keys</td><td>Private content reads</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <h3>Ownership rules</h3>
-  <ol>
-    <li><strong>Chooser Escape.</strong> A chooser consumes Escape before an enclosing form or screen. It restores the opening control and changes no data.</li>
-    <li><strong>Literal text.</strong> Text fields keep letters, digits, <code>[</code>, <code>]</code>, <code>/</code>, <code>?</code> and punctuation. <code>F1</code> remains available while editing and returns to the same draft.</li>
-    <li><strong>Question mark.</strong> <code>?</code> opens help outside text entry; in search/editors it is text.</li>
-    <li><strong>Tab order.</strong> Palette/help move through visible choices. The command center keeps Python's status-filter Tab and the inspector keeps pane switching; these are documented screen-local exceptions.</li>
-    <li><strong>Activation.</strong> <code>keymap::activate</code> is Enter or Space. The theme picker applies with either. A dialog activates only a visible control.</li>
-    <li><strong>Ctrl+C.</strong> Public loaded-evidence focus (command center, history table, evidence inspector) copies the loaded metadata view and stays open. Private prompts, text editors, forms, palette and help keep terminal interrupt/quit. <kbd>c</kbd> always copies, <kbd>x</kbd> exports, <kbd>q</kbd> quits.</li>
-    <li><strong>Drafts.</strong> Help, resize and cancel preserve search drafts, export directories, workbench edits and private prompt deadlines/fences. Cancel explicitly restores the prior value.</li>
-  </ol>
-  <p>Precedence: private interrupt → help overlay → palette overlay → <code>Ctrl+P</code> → help shortcut → private prompt → form/investigation → workbench → search filters → history choosers → history keys → command center.</p>
-</section>
-
-<section id="palette">
-  <h2>5. Command palette (<kbd>Ctrl</kbd>+<kbd>P</kbd>)</h2>
-  <p><code>palette::Palette</code> is a data-only overlay; <code>Workspace::open_palette</code> builds entries from the current context.</p>
-<pre><code>Entry {
-    key: String,       // command id or "session|&lt;harness&gt;|&lt;session&gt;"
+}
+</code></pre>
+<ul>
+<li><code>Context</code> is <code>CommandCenter</code>, <code>History</code>, <code>Workbench</code>, <code>Investigation</code> or
+<code>Form</code>.</li>
+<li><code>keymap::actions(context)</code> yields the contextual rows.</li>
+<li><code>keymap::help_sections(context)</code> yields <code>(group, lines)</code> for help.</li>
+<li><code>keymap::hint(&amp;[id, ...])</code> yields deterministic footer text.</li>
+<li><code>keymap::find_action(id)</code> resolves an identifier.</li>
+<li><code>keymap::PALETTE_EXCLUDED</code> names keys that have no unambiguous palette
+equivalent (today only modifier-plus-direction agent-family navigation).</li>
+</ul>
+<p>Current shell identifiers include destinations, <code>cockpit.palette</code>,
+<code>cockpit.themes</code>, <code>cockpit.help</code>, <code>session.choose</code>, <code>session.today</code>,
+<code>session.history</code>, <code>evidence.scope.session</code>, <code>evidence.scope.all</code>,
+<code>live.pause</code>, <code>live.refresh</code>, <code>diagnostics.open</code>, <code>diagnostics.retry</code>,
+<code>history.{paths,commands,instructions,failures,failed-command}</code>,
+<code>view.{review,prompts,traces,older-page,newer-page,latest-page,turn,mcp-payload, file-edits,review-notes,mark-reviewed,copy,export,internal-reviews,workflow, tasks,search,inspect,back}</code> and <code>cockpit.quit</code>.</p>
+<p><strong>Adding an action (UI-03..UI-06).</strong> Add one <code>id</code> constant, one <code>ACTIONS</code> row
+with the correct contexts and group, and one dispatch arm. If it belongs in the
+palette, also teach <code>Workspace::run_action</code> to run it by sending the same key or
+by calling the same typed request. Do not add a second key table, a second help
+string or a provider branch.</p>
+<p>Footer rule: use <code>keymap::hint</code> for the shared portion and append only
+screen-specific state (counts, page position, denied reasons). Do not repeat
+global keys that the inventory already owns.</p>
+<hr></hr>
+<h2>4. Focus and key ownership</h2>
+<p><code>keymap::Focus</code> names the current owner. <code>Workspace::focus()</code> derives it from
+state; no lane stores a second focus object.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Focus</th>
+<th>Owns</th>
+<th>Must not receive</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><code>PrivatePrompt</code></td>
+<td>Esc/q dismissal, its reveal keys</td>
+<td>Global navigation, palette, help</td>
+</tr>
+<tr>
+<td><code>ExportForm</code></td>
+<td>Esc, text, Enter submit</td>
+<td>Global navigation</td>
+</tr>
+<tr>
+<td><code>WorkbenchEditor</code></td>
+<td>literal text, Ctrl+S, its dropdown Escape</td>
+<td>Global single-letter actions</td>
+</tr>
+<tr>
+<td><code>AgentSearch</code>, <code>HistorySearch</code></td>
+<td>literal letters, digits, brackets, <code>?</code>, punctuation, Backspace</td>
+<td>Destination digits, <code>/</code>, <code>?</code> help</td>
+</tr>
+<tr>
+<td><code>SessionChooser</code>, <code>HistoryChooser</code>, <code>Palette</code></td>
+<td>Escape first, arrows, Enter</td>
+<td>Enclosing form Escape, Back</td>
+</tr>
+<tr>
+<td><code>Help</code></td>
+<td>scroll, F1/Esc/<code>?</code> close, q quit</td>
+<td>Underlying view mutations</td>
+</tr>
+<tr>
+<td><code>EvidenceInspection</code></td>
+<td>scroll, PgUp/PgDn, Esc</td>
+<td>Selection changes outside the inspector</td>
+</tr>
+<tr>
+<td><code>HistoryTable</code>, <code>CommandCenter</code>, <code>Workbench</code></td>
+<td>view keys</td>
+<td>Private content reads</td>
+</tr>
+</tbody>
+</table></div>
+<p>Rules:</p>
+<ol>
+<li><strong>Chooser Escape precedence.</strong> A chooser (<code>SessionChooser</code>, <code>HistoryChooser</code>,
+<code>Palette</code>) consumes Escape before any enclosing form or screen. Escape
+restores the control that opened it and changes no data.</li>
+<li><strong>Text fields keep literal text.</strong> Letters, digits, <code>[</code>, <code>]</code>, <code>/</code>, <code>?</code> and
+punctuation are typed into a focused editor. Export forms and workbench
+editors own printable keys. <code>F1</code> remains available while editing and returns
+to the same draft.</li>
+<li><strong><code>?</code> outside text entry opens help.</strong> In search/editors <code>?</code> is text.</li>
+<li><strong>Tab / Shift+Tab.</strong> In palette and help, Tab/Shift+Tab move through the
+visible choices in order. The command center deliberately keeps Python's
+status-filter Tab and inspector sections keep pane switching; both are
+documented screen-local exceptions, not shell-wide Tab semantics.</li>
+<li><strong>Enter / Space activate.</strong> <code>keymap::activate</code> is Enter or Space. The theme
+picker applies with either. Dialogs and forms must activate only their
+visible button/choice, never an off-screen action.</li>
+<li><strong><code>Ctrl+C</code> by focus.</strong> Public loaded-evidence focus (<code>CommandCenter</code>, <code>HistoryTable</code>,
+<code>EvidenceInspection</code>) copies the loaded metadata view and stays open. <code>PrivatePrompt</code>, text editors, forms, palette and help
+keep terminal-interrupt/quit. <code>c</code> always copies, <code>x</code> exports and <code>q</code> quits.</li>
+<li><strong>Drafts survive.</strong> Help, resize and cancel do not clear a search draft,
+export directory, workbench edit or private prompt deadline/fence. Cancel
+explicitly restores the prior value; help never does.</li>
+<li><strong><code>q</code>.</strong> Quits from the cockpit and from help when no private content is
+open. Text fields keep ordinary <code>q</code> typing.</li>
+</ol>
+<p>Focus precedence in <code>Workspace::key</code> is: private interrupt → help overlay →
+palette overlay → <code>Ctrl+P</code> → help shortcut → private prompt → form/investigation
+→ workbench → search filters → history choosers → history keys → command center.</p>
+<hr></hr>
+<h2>5. Command palette (<code>Ctrl+P</code>)</h2>
+<p><code>palette::Palette</code> is a data-only overlay.</p>
+<pre><code class="language-rust">Entry {
+    key: String,       // stable command id or &quot;session|&lt;harness&gt;|&lt;session&gt;&quot;
     label: String,
     detail: String,    // or an explicit unavailable reason
-    group: String,
+    group: String,     // inventory group label
     enabled: bool,
-}</code></pre>
-  <ul>
-    <li><strong>Search.</strong> Typing edits the query in place; digits, brackets, <code>?</code> and punctuation are literal; space is text. Up/Down, Tab/BackTab move; PgUp/PgDn, Home/End jump; Enter runs an enabled row; Esc cancels; Backspace edits; <code>Ctrl+A</code> clears. Empty results stay open with a message.</li>
-    <li><strong>Stable selection.</strong> Filtering retains the selected key while visible; a missing key selects the first deterministic row.</li>
-    <li><strong>Run.</strong> The palette closes before <code>Workspace::run_action</code> executes the same path as the documented key.</li>
-    <li><strong>Session chooser.</strong> <code>Choose agent session</code> freezes the roster in approved newest-first order. <code>session|all</code> clears only the session filter. A chosen identity is re-resolved; if gone, the chooser reports “That session is no longer available. Choose another session.” and changes nothing. Escape cancels before the monitor handles Back.</li>
-    <li><strong>Themes.</strong> <code>Ctrl+P</code> no longer opens appearance. Themes stay on <kbd>F2</kbd> and are a palette row. The picker remains reversible: preview, Enter/Space apply, Esc restore, saved preference.</li>
-    <li><strong>Contents.</strong> Destinations; session chooser; Today/History; evidence scope to the exact session/turn or all sources; pause/resume and refresh/retry; diagnostics; five retained-history investigations; Review, Prompts, Traces, turns, MCP payloads, edits, notes, acknowledgement; page navigation; copy/export; internal reviews; Workflow and saved tasks; search, inspect, back, quit.</li>
-    <li><strong>Unavailable rows.</strong> A row that cannot act stays visible as <code>Unavailable · reason</code>; it does not run and never fabricates a selection.</li>
-    <li><strong>Rendering.</strong> Centred popup with search line, visible count, scrolling list, two-line detail and hint. Usable at 60×18; below 20×6 it shows a resize message and Esc cancel.</li>
-    <li><strong>Privacy.</strong> Entries contain labels, ids and reasons only. The palette never reads captured prompt text.</li>
-  </ul>
-</section>
-
-<section id="help">
-  <h2>6. Contextual help (<kbd>F1</kbd> / <kbd>?</kbd>)</h2>
-  <ul>
-    <li><code>F1</code> opens from every non-private context, including editors, palette and session choosers, forms, history, workbench and investigation. Help over a chooser returns to the frozen chooser state. <code>?</code> opens outside text entry.</li>
-    <li>The first section is the current context; <code>THIS VIEW</code> lines name the exact session/turn, review state, captured text, evaluations, MCP payloads and workflow draft behavior when present.</li>
-    <li>Up/Down, PgUp/PgDn, Home/End scroll. Esc, F1 or <code>?</code> close; <code>q</code> quits when no private content is open.</li>
-    <li>Closing returns to the exact originating control. The shell does not reconstruct the underlying model, so drafts, selection, filter, cursor and scroll are untouched.</li>
-    <li>One border, terminal-cell wrapping and a visible <code>Esc, F1 or ? close help</code> hint. Readable at 60×18.</li>
-    <li>UI-03 should remove the legacy command-center help body when it next edits <code>command_center.rs</code>; the shared overlay already includes every command-center action and the Rust-only destinations. Workbench keeps its private flag only for direct tests.</li>
-  </ul>
-</section>
-
-<section id="status">
-  <h2>7. Header, footer, themes and connection state</h2>
-  <ul>
-    <li>Keep the <code>Agenturm</code> summary, horizontal view strip, active scope and connection state recognizable. “Paused”, “Loading…”, “History reader stopped”, scoped denials and stale/partial notices stay visible.</li>
-    <li>Footer priority: explicit error/message → pending load → current-view hints → <code>keymap::hint</code> inventory hints.</li>
-    <li>Five themes: Observation, Current, Bright, Dark, Solarized. <kbd>F2</kbd> previews; Enter/Space applies; Esc restores. Preference is <code>$XDG_CONFIG_HOME/agenturm-rust/ui.json</code>, owner-only writes; <code>AGENTURM_UI_PREFERENCES=0</code> disables persistence.</li>
-    <li><code>NO_COLOR</code> removes colour, not structure: selection uses reverse/bold and status text stays readable.</li>
-  </ul>
-</section>
-
-<section id="identity">
-  <h2>8. View identity, restoration and late responses</h2>
-  <div class="table-wrap">
-    <table>
-      <thead><tr><th>Context</th><th>Stored identity</th></tr></thead>
-      <tbody>
-        <tr><td>Roster</td><td>Filter, time scope, exact session scope, search, grouping, tree/flat, collapsed identities, selected <code>(harness_id, session_id)</code>, display offset</td></tr>
-        <tr><td>Session inspector</td><td><code>HistorySelection::Session(row, view)</code>: source/session, snapshot incarnation, history identity, review version</td></tr>
-        <tr><td>Review edits</td><td>Exact session, pinned snapshot/history identity, edit operation identity</td></tr>
-        <tr><td>Turn</td><td>Source, session, worker, turn and snapshot</td></tr>
-        <tr><td>MCP search</td><td>Exact scope anchor, query and read snapshot</td></tr>
-        <tr><td>MCP traces</td><td>Source, event, revision and read snapshot</td></tr>
-        <tr><td>History page</td><td>Snapshot id, history identity, selected pane title/id, reading scroll, inherited operation/finding filters</td></tr>
-        <tr><td>Pages</td><td>Full cached newer <code>PageView</code> stack; older cursor bound to the same snapshot id</td></tr>
-      </tbody>
-    </table>
-  </div>
-  <ul>
-    <li><code>AgentList::apply_filters</code> restores the selected session by exact identity; a vanished identity keeps the nearest prior row and sets <code>lost_selection</code> so the caller shows why.</li>
-    <li><code>UiModel::restore_view</code> restores the pane by title and scroll when it still exists; a missing pane keeps the nearest deterministic row and reports “&lt;pane&gt; is no longer in this page · kept the nearest view”.</li>
-    <li>Independent time/session scopes survive refresh. A refresh never silently clears them.</li>
-    <li><code>Workspace::request</code> stamps the in-flight request with <code>generation</code>. Closing a history view, returning to Agents, closing a workbench surface or superseding a review context increments it. <code>Workspace::finish</code> discards mismatched responses with “Discarded a late response for a closed or superseded view”.</li>
-    <li>The single-pending/deferred queue and loader thread remain the backpressure boundary. <code>event::poll(80 ms)</code>, resize and overlay redraws keep the loop responsive.</li>
-  </ul>
-</section>
-
-<section id="lanes">
-  <h2>9. Lane integration</h2>
-  <div class="grid">
-    <div class="card"><h3>UI-03 · command center</h3><p>Consume the shared help sections; wire Today/History to <code>time_scope</code> with the tagged boundary; use the session chooser action; preserve exact selection through title, resize and refresh.</p></div>
-    <div class="card"><h3>UI-04 · prompts</h3><p>Add prompt actions with exact request identity and scope. Escape order: chooser → reader → section → roster. Report retained caps and unavailable private content through the status contract.</p></div>
-    <div class="card"><h3>UI-05 · observability</h3><p>Add filter/detail actions to the inventory. Preserve occurrence identity, filter, page cursor and snapshot; report a missing occurrence and choose the nearest row. Keep <code>/</code> inside focused filters; F1 keeps drafts.</p></div>
-    <div class="card"><h3>UI-06 · review and workflow</h3><p>Add Tab/Shift+Tab button order, Enter/Space activation, chooser-first Escape, dirty-editor confirmation and palette rows for settings, alerts, retry, resume, save and handoff.</p></div>
-    <div class="card"><h3>UI-07 · visual</h3><p>Compare overlays at 120×32, 80×24 and 60×18. One border per region, one selection cue, semantic palette colours, readable <code>NO_COLOR</code> state, focus and draft preserved after resize.</p></div>
-    <div class="card"><h3>All lanes</h3><p>Do not edit the shared shell files except through UI-02. Add one inventory row per action. Never render <code>Name unavailable</code>. Use exact identities and explicit unavailable reasons.</p></div>
-  </div>
-</section>
-
-<section id="tests">
-  <h2>10. Verification in this lane</h2>
-<pre><code>cd rust
-cargo build --offline
-cargo test --offline -p agenturm-ui</code></pre>
-  <p>Focused coverage includes dispatch, focus ownership, palette search and unavailable rows, chooser Escape, help return with drafts and scroll, theme separation, state restoration, late-response discard, Ctrl+C focus split, scopes and 60×18 overlays. See the Markdown contract for the exact test names.</p>
-</section>
-
-<section id="gaps">
-  <h2>11. Known gaps handed to dependent lanes</h2>
-  <ul>
-    <li><span class="gap">Today boundary (UI-03).</span> The shell's provisional rule is UTC day + active/pending. The tagged Python boundary and timezone need the fixed-clock matrix.</li>
-    <li><span class="gap">Evidence row identity (UI-05).</span> Pane, scroll and filter identity are preserved; selected operation/finding/point identity across pagination needs the owner's stable key and a missing-identity notice.</li>
-    <li><span class="gap">Workbench palette coverage (UI-06).</span> Shared rows work over workflow, tasks and investigation; workflow-specific palette rows, button Tab order and dirty-editor confirmation remain with the surface owner.</li>
-    <li><span class="gap">Mouse equivalence.</span> The shell is keyboard-first; any mouse route added by a screen must call the same action id.</li>
-    <li><span class="gap">Visual matrix (UI-07).</span> Overlay spacing, semantic status styles, monochrome cues and CJK/emoji clipping need the paired visual pass.</li>
-  </ul>
-  <div class="warn"><strong>Acceptance requires</strong> the exact installed candidate. Unit checks in this lane do not replace the paired UI-Q matrix against the tagged Python build.</div>
-</section>
-</main>
-
-<footer>
-  <p>Rust cockpit shared UI contracts · UI-02 · 23 November 2026. Self-contained document: embedded CSS, no external assets. Colour scheme follows the viewer's light/dark preference.</p>
-</footer>
-</body>
-</html>
+}
+</code></pre>
+<ul>
+<li><strong>Open:</strong> <code>Ctrl+P</code> outside private content. <code>Workspace::open_palette</code> builds
+entries from <code>keymap::actions(self.context())</code> and marks actions unavailable
+with a reason instead of hiding them when the context cannot use them.</li>
+<li><strong>Search:</strong> typing edits the query in place; digits, brackets, <code>?</code> and
+punctuation are literal. Space is text. Up/Down and Tab/BackTab move;
+PgUp/PgDn, Home/End jump; Enter runs an enabled row; Esc cancels; Backspace
+edits; <code>Ctrl+A</code> clears the query. An empty result stays open with a clear
+message.</li>
+<li><strong>Stable selection:</strong> filtering retains the selected key when it remains
+visible. Missing keys select the first deterministic row.</li>
+<li><strong>Run:</strong> the palette closes before <code>Workspace::run_action</code> executes the key.
+Dispatch then uses the same path as the documented key, so there is one
+behavior, not a parallel implementation.</li>
+<li><strong>Sessions:</strong> <code>Choose agent session</code> switches the palette to
+<code>palette::Kind::Sessions</code>. Entries are frozen when the chooser opens, in the
+roster's approved newest-first order. <code>session|all</code> clears only the session
+filter. A chosen identity is re-resolved against the current roster; if it is
+gone the chooser reports <code>That session is no longer available. Choose another session.</code> and changes nothing. Escape cancels before the monitor handles Back.
+The current scope is selected by stable key.</li>
+<li><strong>Themes:</strong> <code>Ctrl+P</code> no longer opens appearance. Themes remain on <code>F2</code> and are
+an enabled palette row. Selecting it raises <code>Workspace::theme_request</code>; the
+event loop opens the existing reversible picker. Preview, Enter/Space apply,
+Esc restore and saved preference are unchanged.</li>
+<li><strong>Contents:</strong> destinations; session chooser; Today/History; evidence scope to
+the exact session/turn or all sources; live pause/resume and refresh/retry;
+diagnostics; the five retained-history investigations; Review, Prompts,
+Traces, turns, MCP payloads, edits, notes, acknowledgement; page navigation;
+copy/export; internal reviews; Workflow and saved tasks; search, inspect, back
+and quit. Rows that cannot act show <code>Unavailable · &lt;reason&gt;</code>.</li>
+<li><strong>Contexts:</strong> CommandCenter, History, Workbench, Investigation and Form expose
+the shared rows. The palette opens over a workbench editor without changing
+its draft; choosing a row closes the palette before dispatch. UI-06 should add
+workflow/task-specific rows and any guards for a dirty editor.</li>
+<li><strong>Rendering:</strong> centred popup, search line, visible count, scrolling list,
+two-line detail/unavailable reason and <code>Enter / Esc</code> hint. It is usable at
+60×18; below 20×6 it shows a resize message and Esc cancel with no panic.</li>
+<li><strong>Privacy:</strong> entries contain labels, ids and reasons only. The palette never
+reads captured prompt text.</li>
+</ul>
+<hr></hr>
+<h2>6. Contextual help (<code>F1</code> / <code>?</code>)</h2>
+<p><code>help::Help</code> is one persistent, scrollable overlay.</p>
+<ul>
+<li><code>F1</code> opens from every non-private context, including editors, palette and
+session choosers, forms, history, workbench and investigation. Help over a
+chooser returns to the frozen chooser state. <code>?</code> opens outside text entry.</li>
+<li>The first section is the current context. Additional <code>THIS VIEW</code> lines name
+the exact session/turn, review state, available captured text, evaluations,
+MCP payloads and workflow draft behavior when present.</li>
+<li>Up/Down, PgUp/PgDn, Home/End scroll. Esc, F1 or <code>?</code> close; <code>q</code> quits when no
+private content is open.</li>
+<li>Closing returns to the exact originating control. The shell does not replace
+or reconstruct the underlying model, so drafts, selection, filter, cursor and
+scroll are untouched.</li>
+<li>Rendering uses one border, wraps by terminal cell width and shows
+<code>↑↓ / PgUp/PgDn Read</code> plus <code>Esc, F1 or ? close help</code> at 60×18 and above.</li>
+<li>The command center's legacy <code>agents.help</code> field and its direct-render test
+remain for UI-03, but the shell now routes <code>F1</code>/<code>?</code> to this shared overlay.
+UI-03 should delete the duplicated help text when it next edits
+<code>command_center.rs</code>; the shared overlay already includes every command-center
+action and the Rust-only destinations.</li>
+<li>Workbench's private <code>help</code> flag remains for direct <code>Workbench</code> tests; from the
+cockpit, <code>F1</code> is the shared overlay. UI-06 should not add a second help table.</li>
+</ul>
+<hr></hr>
+<h2>7. Header, footer, themes and connection state</h2>
+<ul>
+<li>Keep the <code>Agenturm</code> summary, the horizontal view strip, the active scope and
+the connection state recognizable. “Paused”, “Loading…”, “History reader
+stopped”, scoped denials and stale/partial notices stay visible.</li>
+<li>Footer priority: explicit error/message → pending load → current view hints →
+inventory hints. Use <code>keymap::hint</code> for the last two.</li>
+<li>Themes: five palettes (<code>Observation</code>, <code>Current</code>, <code>Bright</code>, <code>Dark</code>,
+<code>Solarized</code>) remain in <code>theme::PICKER</code>. <code>F2</code> previews; Enter/Space applies;
+Esc restores. Saved preference is <code>$XDG_CONFIG_HOME/agenturm-rust/ui.json</code>
+with owner-only writes; <code>AGENTURM_UI_PREFERENCES=0</code> disables persistence.</li>
+<li><code>NO_COLOR</code> removes colour, not structure: selection uses reverse/bold and
+status text remains readable.</li>
+</ul>
+<hr></hr>
+<h2>8. View identity, restoration and late responses</h2>
+<p>Restoration is by typed identity plus navigation context, never by screen
+position alone.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Context</th>
+<th>Stored identity</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Roster</td>
+<td>filter, time scope, exact session scope, search, grouping, tree/flat, collapsed identities, selected <code>(harness_id, session_id)</code>, display offset</td>
+</tr>
+<tr>
+<td>Session inspector</td>
+<td><code>HistorySelection::Session(row, view)</code> with source/session, snapshot incarnation, history identity, review version</td>
+</tr>
+<tr>
+<td>Review edits</td>
+<td><code>HistorySelection::ReviewEdits(row)</code> plus pinned snapshot/history identity</td>
+</tr>
+<tr>
+<td>Turn</td>
+<td><code>HistorySelection::Turn(turn)</code> with source, session, worker, turn and snapshot</td>
+</tr>
+<tr>
+<td>MCP search</td>
+<td>exact scope anchor, query and read snapshot</td>
+</tr>
+<tr>
+<td>MCP traces</td>
+<td>source, event, revision and read snapshot</td>
+</tr>
+<tr>
+<td>History page</td>
+<td>snapshot id, history identity, selected pane title/id, reading scroll, inherited operation/finding filters</td>
+</tr>
+<tr>
+<td>Pages</td>
+<td>full cached newer <code>PageView</code> stack; older cursor bound to the same snapshot id</td>
+</tr>
+<tr>
+<td>Evidence</td>
+<td>finding/operation filters and the selected occurrence where the owner exposes it</td>
+</tr>
+</tbody>
+</table></div>
+<p>Behavior:</p>
+<ul>
+<li><code>AgentList::apply_filters</code> restores the selected session by exact identity and
+keeps the nearest prior row only when that identity disappeared; it sets
+<code>lost_selection</code> so the caller can show a reason.</li>
+<li><code>UiModel::restore_view</code> restores the pane by title and scroll when it still
+exists. A missing pane keeps the nearest deterministic row and the caller
+reports <code>&quot;&lt;pane&gt; is no longer in this page · kept the nearest view&quot;</code>.</li>
+<li><code>OperationTable::inherit_filters</code> and <code>Findings::set_filter</code> preserve filters
+across page/refresh changes. Evidence-row identity remains UI-05 work.</li>
+<li>A refresh never clears the independent time scope or session scope.</li>
+<li>A <code>Change::LatestHistory</code> keeps the selected pane and scroll; <code>[</code> restores the
+whole cached newer page including its reading position.</li>
+</ul>
+<p>Late responses:</p>
+<ul>
+<li><code>Workspace::request</code> stamps the in-flight request with <code>generation</code>.</li>
+<li>Closing a history view, returning to Agents, closing a workbench surface or
+superseding a review context increments <code>generation</code>.</li>
+<li><code>Workspace::finish</code> discards a response whose stamped generation differs and
+publishes <code>Discarded a late response for a closed or superseded view</code>.</li>
+<li>The single-pending/deferred-request queue and the loader thread remain the
+backpressure boundary. <code>event::poll(80 ms)</code>, resize and overlay redraws keep
+the loop responsive while reads are pending.</li>
+</ul>
+<hr></hr>
+<h2>9. Lane integration</h2>
+<p><strong>All lanes</strong></p>
+<ul>
+<li>Do not edit <code>keymap.rs</code>, <code>workspace.rs</code> (shared dispatch), <code>workbench.rs</code>
+(shared shell), <code>theme.rs</code>, <code>palette.rs</code>, <code>help.rs</code> or <code>lib.rs</code> except through
+the UI-02 owner. Add models in your own module and request integration points
+in the pull request.</li>
+<li>Add a <code>keymap::Action</code> row for every new user-visible action, with one id, one
+context list and the keys you actually dispatch.</li>
+<li>Keep palette entries data-only and use exact identities for sessions, turns,
+evidence and snapshots.</li>
+<li>Never render <code>Name unavailable</code>. Derive a human name from title, native
+nickname, provider, role and project context; keep unknown values explicit in
+Details.</li>
+</ul>
+<p><strong>UI-03 · command center and inspector</strong></p>
+<ul>
+<li>Replace the command-center help body with <code>keymap::help_sections(Context::CommandCenter)</code>.</li>
+<li>Wire Today/History to <code>AgentList::time_scope</code> (the shell default <code>All</code> is
+History). Confirm the tagged day boundary and timezone; the provisional shell
+rule is UTC-day + active/pending.</li>
+<li>Use the existing <code>Choose agent session</code> palette action and keep the scope
+filter independent of search/status/error filters.</li>
+<li>Preserve the selected <code>(harness_id, session_id)</code> through title changes,
+resize, filter and refresh. The shell already does this; keep it that way.</li>
+</ul>
+<p><strong>UI-04 · prompts and retained history</strong></p>
+<ul>
+<li>Add prompt actions to the inventory and palette with exact request identity
+and scope. Help must return to the current prompt navigator or reader without
+moving the request or text position.</li>
+<li>Keep Escape precedence: compact chooser → reader → Prompts section → roster.</li>
+<li>Report retained caps, page limits and unavailable private content through the
+status/footer contract, not by inventing a selection.</li>
+</ul>
+<p><strong>UI-05 · observability screens</strong></p>
+<ul>
+<li>Extend <code>keymap::ACTIONS</code> for Activity/MCP/Traces/Metrics/Usage/Findings/Host
+filters and detail actions; use <code>keymap::hint</code> in their footers.</li>
+<li>Preserve occurrence identity, active filter, page cursor and snapshot across
+drilldown/return. Report a missing occurrence and choose the nearest row by
+the same identity rule.</li>
+<li>Keep <code>/</code> ownership inside the focused filter. <code>F1</code> still opens help with the
+draft intact.</li>
+</ul>
+<p><strong>UI-06 · review, workflow and saved work</strong></p>
+<ul>
+<li>Add form/button navigation with Tab/Shift+Tab order and Enter/Space
+activation. A dropdown consumes Escape before the form.</li>
+<li>Add palette rows for settings, alerts, retry, resume, save task and handoff.
+Use typed request identities and explicit unavailable reasons.</li>
+<li>Preserve unsaved drafts through help, resize and cancel; require explicit
+confirmation before discarding dirty edits.</li>
+</ul>
+<p><strong>UI-07 · visual and responsive acceptance</strong></p>
+<ul>
+<li>Compare the shared help/palette/theme overlays at 120×32, 80×24 and 60×18.</li>
+<li>Keep one border per region, one clear selection cue and readable status text
+with <code>NO_COLOR</code>. Use <code>theme::PALETTE</code> semantic colours; do not hardcode RGB.</li>
+<li>Verify focus returns to the same control and the draft survives after resize.</li>
+</ul>
+<hr></hr>
+<h2>10. Verification in this lane</h2>
+<p>Run from <code>rust/</code>:</p>
+<pre><code class="language-sh">cargo build --offline
+cargo test --offline -p agenturm-ui
+</code></pre>
+<p>Focused tests added in this lane:</p>
+<ul>
+<li><code>keymap::tests::python_root_destinations_stay_one_to_seven_and_extras_are_explicit</code></li>
+<li><code>keymap::tests::every_context_has_help_and_every_action_id_is_unique</code></li>
+<li><code>keymap::tests::focus_rules_keep_text_and_chooser_precedence</code></li>
+<li><code>keymap::tests::footer_hints_come_from_the_inventory</code></li>
+<li><code>palette::tests::*</code> (literal search, disabled rows, Escape ownership, 3 sizes)</li>
+<li><code>help::tests::*</code> (scroll/return, 3 sizes)</li>
+<li><code>theme::tests::preview_cancel_and_saved_selection_are_distinct</code> (F2 only;
+<code>Ctrl+P</code> is not appearance)</li>
+<li><code>workspace::tests::ctrl_p_opens_the_searchable_palette_and_themes_stay_on_f2</code></li>
+<li><code>workspace::tests::session_chooser_keeps_exact_identity_and_owns_escape</code></li>
+<li><code>workspace::tests::help_preserves_text_drafts_scroll_and_returns_to_the_same_control</code></li>
+<li><code>workspace::tests::help_from_a_compact_chooser_and_export_form_returns_with_state_intact</code></li>
+<li><code>workspace::tests::palette_marks_current_view_actions_unavailable_without_a_selection</code></li>
+<li><code>workspace::tests::refreshing_a_pane_keeps_its_scroll_and_reports_a_missing_identity</code></li>
+<li><code>workspace::tests::late_responses_for_a_closed_context_are_discarded</code></li>
+<li><code>workspace::tests::ctrl_c_copies_public_evidence_but_keeps_interrupt_in_text_entry</code></li>
+<li><code>workspace::tests::today_and_session_scope_survive_refresh_without_moving_identity</code></li>
+<li><code>workspace::tests::palette_runs_a_clipped_destination_and_reports_it_in_help</code></li>
+<li><code>workspace::tests::palette_help_and_theme_overlays_stay_usable_at_the_floor</code></li>
+</ul>
+<h2>11. Known gaps handed to dependent lanes</h2>
+<ol>
+<li><strong>Today boundary (UI-03).</strong> The shell's <code>TimeScope::Today</code> is a disclosed
+provisional rule (UTC day + active/pending). The tagged Python boundary and
+timezone need the fixed-clock matrix.</li>
+<li><strong>Evidence row identity (UI-05).</strong> Pane/scroll/filter identity is preserved;
+selected operation/finding/point identity across pagination needs the owner's
+stable key and a missing-identity notice.</li>
+<li><strong>Workbench palette coverage (UI-06).</strong> Shared rows work over workflow,
+tasks and investigation; workflow-specific palette rows, button Tab order and
+dirty-editor confirmation still need the surface owner.</li>
+<li><strong>Mouse equivalence (UI-03..UI-07).</strong> The shell is keyboard-first. Any mouse
+route added by a screen must call the same action id.</li>
+<li><strong>Visual matrix (UI-07).</strong> Overlay spacing, semantic status styles,
+monochrome cues and CJK/emoji clipping need the paired visual pass.</li>
+</ol>
+<h2>12. Acceptance cases owned by this contract</h2>
+<ul>
+<li><code>1</code>–<code>7</code> reach the unchanged Python destinations; <code>9</code>/<code>U</code> stay available in
+help and palette when clipped from a narrow strip.</li>
+<li><code>Ctrl+P</code> searches by label/detail/group; digits, brackets and <code>?</code> stay text;
+Enter runs exactly one enabled command; Esc cancels without side effects.</li>
+<li>The session chooser returns the exact source/session identity or reports a
+disappeared session; Escape belongs to the chooser.</li>
+<li><code>F1</code>/<code>?</code> opens scrollable help from the command center, inspector, chooser,
+workbench and form; Esc/F1/<code>?</code> returns with the same focus, draft and scroll.</li>
+<li><code>Ctrl+C</code> copies in public loaded-evidence focus and remains an interrupt in private
+or editing focus.</li>
+<li>Refresh, page change and resize keep the pane, scroll, filter and exact
+session; a vanished identity shows why and selects deterministically nearby.</li>
+<li>A late response for a closed view never replaces the current screen.</li>
+</ul>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>
