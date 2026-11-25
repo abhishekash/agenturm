@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Core feature development</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-linux-bundle.md">Markdown source ↗</a></nav><h1>Agenturm Rust bundle for Linux</h1>
+</style></head><body><main><nav><strong>Agenturm / 26 November 2026</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-linux-bundle.md">Markdown source ↗</a></nav><h1>Agenturm Rust bundle for Linux</h1>
 <p>The bundle contains the Agenturm CLI and inspector, the process host, the
 Codex, Pi, Claude Code, Kiro, and OpenCode adapters and their
 SHA-256-pinned catalog, the trusted connector driver, and the storage service. The runtime
@@ -171,9 +171,14 @@ partial coverage. Claude mutable-name scans are bounded to 16 MiB per transcript
 and 32 MiB per roster read. A verified first-line workspace can survive that
 limit with a partial-title notice; a two-record snapshot prelude requires a
 fully verified committed prefix before its workspace is shown.</p>
-<p>Press <code>F2</code> or <code>Ctrl+P</code> to preview Observation, Current, Bright, Dark and Solarized.
-Enter saves the selected theme; Escape restores the previous one. The shared
-palette applies to the command center, evidence tables, inspectors and dialogs.</p>
+<p>In the unreleased UI-parity source candidate (tested at <code>17206a4</code>), press <code>F2</code>
+to preview Observation, Current, Bright, Dark and Solarized, or
+choose Themes from the palette. Enter saves the selected theme; Escape restores
+the previous one. <code>Ctrl+P</code> opens the searchable cockpit command palette. The
+shared palette applies to the command center, evidence tables, inspectors and
+dialogs.
+These shortcut changes do not modify published 0.3.8 binaries, where <code>F2</code> or
+<code>Ctrl+P</code> opens the theme preview.</p>
 <p>A newly created default cockpit history uses a 14-day age policy. Existing
 histories retain their current policy; an explicitly selected database can
 receive a policy through the commands below. Active writers check the policy
@@ -198,7 +203,11 @@ the policy while the service is running:</p>
 maintenance identity owns changes and explicit cleanup. Backups preserve the
 policy; a broker owner can disable it before starting a restored history.</p>
 <h3>Keyboard navigation</h3>
-<p>These controls apply to Rust 0.3.9. The previous 0.3.8 controls remain in its <a href="https://github.com/abhishekash/agenturm/blob/rust-v0.3.8/docs/rfcs/rust-linux-bundle.md">tagged guide</a>.</p>
+<p>This section includes <strong>unreleased UI-parity source behavior</strong>, tested at
+<code>17206a4</code> (the debug executable reports 0.3.9). It is not a claim that these
+shortcut changes shipped in a published bundle or earlier qualified 0.3.9
+artifacts. Published 0.3.8 binaries retain the controls in their
+<a href="https://github.com/abhishekash/agenturm/blob/rust-v0.3.8/docs/rfcs/rust-linux-bundle.md">tagged guide</a>.</p>
 <p>Use <code>↑</code> and <code>↓</code> to choose a session, <code>/</code> to search the loaded roster,
 and Enter to open its Overview. The newest roster page refreshes while open.
 Press <code>R</code> in Agents to refresh it immediately. Open selected Activity with <code>s</code> or
@@ -222,7 +231,9 @@ report with <code>--endpoint</code> and <code>--token-file</code> in place of <c
 <code>3</code> for MCP, <code>4</code> for Traces, <code>5</code> for recorded Host, <code>6</code> for Metrics,
 <code>7</code> for Findings, <code>9</code> for Operations, and <code>U</code> for workspace Usage. <code>H</code> opens
 live Host; <code>8</code> remains a trace alias. Press <code>T</code> in a history view to select a
-recorded turn, <code>F1</code> for keyboard help, and <code>q</code> to quit. The available
+recorded turn, <code>F1</code> or <code>?</code> for scrollable contextual help, <code>Ctrl+P</code> for the
+command palette, and <code>q</code> to quit. Clipped numbered destinations stay available
+in both help and the palette. The available
 evidence varies by source. For Codex MCP calls the view includes the server,
 tool, method, duration and outcome when recorded.</p>
 <p>Press <code>m</code> in the MCP pane to choose an exact recorded Codex call. Enter
@@ -268,8 +279,7 @@ in the harness terminal.</p>
 <p>When the cockpit is attached with <code>--endpoint</code> and <code>--token-file</code>, the
 recorded terminal belongs to the receiver host. An explicit authenticated
 host route can be supplied at attach time with
-<code>agenturm cockpit --endpoint http://127.0.0.1:4318 --token-file &lt;file&gt;
---route-file &lt;route.txt&gt;</code>: one command word per line, for example <code>ssh</code> and
+<code>agenturm cockpit --endpoint http://127.0.0.1:4318 --token-file &lt;file&gt; --route-file &lt;route.txt&gt;</code>: one command word per line, for example <code>ssh</code> and
 <code>user@receiver-host</code>. <code>l</code> then runs Agenturm's fixed read-only tmux and
 <code>/proc</code> probes through the route, resolves the unique remote pane whose
 process tree carries the exact recorded resume command, re-verifies the
