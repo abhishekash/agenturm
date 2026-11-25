@@ -81,6 +81,7 @@ jobs:
           AGENTURM_RUNTIME_CODEX_ADAPTER: ${{ github.workspace }}/target/debug/agenturm-codex-harness
           AGENTURM_RUNTIME_CLAUDE_ADAPTER: ${{ github.workspace }}/target/debug/agenturm-claude-harness
           AGENTURM_RUNTIME_KIRO_ADAPTER: ${{ github.workspace }}/target/debug/agenturm-kiro-harness
+          AGENTURM_RUNTIME_OPENCODE_ADAPTER: ${{ github.workspace }}/target/debug/agenturm-opencode-harness
           AGENTURM_RUNTIME_STANDALONE_ADAPTER: ${{ github.workspace }}/rust/agenturm-app/tests/fixtures/standalone_harness/target/debug/standalone-test-harness
       - run: cargo build --locked --bin agenturm-domain-reducer
       - run: cargo build --locked --bin agenturm-domain-query

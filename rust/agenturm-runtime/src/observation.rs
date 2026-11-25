@@ -169,6 +169,14 @@ fn project_record(record: ObservationRecord, source_id: &str) -> Result<Option<R
             }
             ObservationKind::FileEdit(edit)
         }
+        ObservationFact::FileChange(change) => {
+            if !change.is_valid() || !is_file_edit_operation(&identity) {
+                return Err(RuntimeError::new(
+                    "source file change or operation identity is invalid",
+                ));
+            }
+            ObservationKind::FileChange(change)
+        }
         ObservationFact::McpCall(call) => {
             if !is_mcp_operation(&identity)
                 || !is_valid_mcp_metadata(

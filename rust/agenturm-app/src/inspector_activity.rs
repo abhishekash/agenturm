@@ -65,11 +65,11 @@ fn operation_details(snapshot: &Snapshot) -> Vec<OperationDetailEntry> {
 }
 
 fn operation_detail(row: &Observation) -> Option<OperationDetailEntry> {
-    if !row.event_id.starts_with("codex:") || row.identity.worker_id.is_some() {
+    if row.identity.worker_id.is_some() {
         return None;
     }
     let (kind, label) = match &row.kind {
-        ObservationKind::McpCall { server, tool, .. } => (
+        ObservationKind::McpCall { server, tool, .. } if row.event_id.starts_with("codex:") => (
             OperationDetailKind::Mcp,
             format!(
                 "{} · {}",
@@ -77,7 +77,15 @@ fn operation_detail(row: &Observation) -> Option<OperationDetailEntry> {
                 server.as_deref().unwrap_or("server unavailable")
             ),
         ),
-        ObservationKind::FileEdit(_) => (
+        ObservationKind::FileEdit(_)
+            if row.event_id.starts_with("codex:") || row.event_id.starts_with("claude:") =>
+        {
+            (
+                OperationDetailKind::Edit,
+                crate::session_evidence::describe_observation(&row.kind).1,
+            )
+        }
+        ObservationKind::FileChange(_) if row.event_id.starts_with("oc:") => (
             OperationDetailKind::Edit,
             crate::session_evidence::describe_observation(&row.kind).1,
         ),
@@ -142,7 +150,12 @@ pub(super) fn review_edits(
                 .observations
                 .iter()
                 .rev()
-                .filter(|row| matches!(row.kind, ObservationKind::FileEdit(_)))
+                .filter(|row| {
+                    matches!(
+                        row.kind,
+                        ObservationKind::FileEdit(_) | ObservationKind::FileChange(_)
+                    )
+                })
                 .filter_map(operation_detail),
         );
         let next = retained.older_position();
@@ -246,6 +259,56 @@ mod tests {
     };
     use agenturm_store::Store;
     use std::fs;
+
+    #[test]
+    fn provider_edit_pickers_keep_exact_occurrences_without_borrowing_mcp_support() {
+        for (prefix, kind) in [
+            (
+                "codex:fixture",
+                ObservationKind::FileEdit(agenturm_kernel::FileEdit {
+                    updated: 1,
+                    ..Default::default()
+                }),
+            ),
+            (
+                "claude:fixture",
+                ObservationKind::FileEdit(agenturm_kernel::FileEdit {
+                    updated: 1,
+                    ..Default::default()
+                }),
+            ),
+            (
+                "oc:fixture",
+                ObservationKind::FileChange(agenturm_kernel::FileChange {
+                    files: 2,
+                    digest: "a".repeat(64),
+                }),
+            ),
+        ] {
+            let mut row = Observation {
+                harness_id: ExtensionId::parse("harness.fixture").unwrap(),
+                event_id: prefix.into(),
+                revision: 2,
+                identity: ObservationIdentity {
+                    turn_id: Some("exact-turn".into()),
+                    operation_id: Some("exact-operation".into()),
+                    ..ObservationIdentity::session("selected")
+                },
+                observed_at_unix_ns: 1,
+                kind,
+            };
+            let entry = operation_detail(&row).unwrap();
+            assert_eq!(entry.kind, OperationDetailKind::Edit);
+            assert_eq!(entry.event_id, prefix);
+            assert_eq!(entry.revision, 2);
+            assert_eq!(entry.turn_id, "exact-turn");
+            row.identity.worker_id = Some("worker".into());
+            assert!(operation_detail(&row).is_none());
+            row.identity.worker_id = None;
+            row.identity.turn_id = None;
+            assert!(operation_detail(&row).is_none());
+        }
+    }
 
     #[test]
     fn review_edits_page_through_sparse_history_without_crossing_scope_or_version() {

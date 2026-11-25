@@ -234,6 +234,7 @@ pub enum ObservationKind {
         result: String,
     },
     FileEdit(FileEdit),
+    FileChange(FileChange),
     McpCall {
         server: Option<String>,
         tool: Option<String>,
@@ -318,10 +319,10 @@ pub use agenturm_protocol::host::{
 pub use agenturm_protocol::metric;
 pub use agenturm_protocol::metric::{MetricDescriptor, MetricPoint, is_metric_source};
 pub use agenturm_protocol::observation::{
-    FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, NANOUNITS_PER_CURRENCY_UNIT, NativeCostBasis,
-    RelationshipKind, ReportedCost, SpanTokenUsage, TraceProgress, TraceSpan, TraceSpanIdentity,
-    TraceStatus, WorkerLaunch, WorkerSpawn, claude_file_edit_summary, is_github_pull_request,
-    is_valid_mcp_metadata, parse_currency_nanounits,
+    FileChange, FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, NANOUNITS_PER_CURRENCY_UNIT,
+    NativeCostBasis, RelationshipKind, ReportedCost, SpanTokenUsage, TraceProgress, TraceSpan,
+    TraceSpanIdentity, TraceStatus, WorkerLaunch, WorkerSpawn, claude_file_edit_summary,
+    is_github_pull_request, is_valid_mcp_metadata, opencode_patch_change, parse_currency_nanounits,
 };
 
 pub fn is_mcp_operation(identity: &ObservationIdentity) -> bool {
@@ -1603,6 +1604,11 @@ fn validate_raw_observation_slice(
             && (!edit.is_valid() || !is_file_edit_operation(&row.identity))
         {
             return Err("file edit counts or operation identity are invalid".into());
+        }
+        if let ObservationKind::FileChange(change) = &row.kind
+            && (!change.is_valid() || !is_file_edit_operation(&row.identity))
+        {
+            return Err("file change summary or operation identity is invalid".into());
         }
         if let ObservationKind::McpCall {
             server,

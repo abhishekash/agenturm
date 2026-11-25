@@ -102,7 +102,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 23;
+const SCHEMA_VERSION: i64 = 24;
 pub const MAX_HOST_HISTORY_PAGE: usize = 64;
 const MAX_BATCH_EVENTS: usize = 2_048;
 pub const MAX_OTLP_BATCH_SPANS: usize = 1_024;
@@ -125,7 +125,8 @@ const STORE_MARKER_V19: &str = "agenturm.observation-store.v19";
 const STORE_MARKER_V20: &str = "agenturm.observation-store.v20";
 const STORE_MARKER_V21: &str = "agenturm.observation-store.v21";
 const STORE_MARKER_V22: &str = "agenturm.observation-store.v22";
-const STORE_MARKER: &str = "agenturm.observation-store.v23";
+const STORE_MARKER_V23: &str = "agenturm.observation-store.v23";
+const STORE_MARKER: &str = "agenturm.observation-store.v24";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -148,6 +149,7 @@ pub enum ObservationKind {
         result: String,
     },
     FileEdit(agenturm_kernel::FileEdit),
+    FileChange(agenturm_kernel::FileChange),
     McpCall {
         server: Option<String>,
         tool: Option<String>,
@@ -326,6 +328,9 @@ impl ObservationBatch {
                         result: result.clone(),
                     },
                     KernelObservationKind::FileEdit(edit) => ObservationKind::FileEdit(*edit),
+                    KernelObservationKind::FileChange(change) => {
+                        ObservationKind::FileChange(change.clone())
+                    }
                     KernelObservationKind::McpCall {
                         server,
                         tool,
@@ -671,7 +676,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         20 => STORE_MARKER_V20,
         21 => STORE_MARKER_V21,
         22 => STORE_MARKER_V22,
-        23..=SCHEMA_VERSION => STORE_MARKER,
+        23 => STORE_MARKER_V23,
+        24..=SCHEMA_VERSION => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -1497,10 +1503,10 @@ impl Store {
             validate_marked_shape(&transaction, 22)?;
             transaction.commit()?;
         }
-        if (2..23).contains(&schema_version) {
+        if (2..24).contains(&schema_version) {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            content_grant::migrate_grant_schema(&transaction, 23)?;
+            content_grant::migrate_grant_schema(&transaction, 24)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],
@@ -1716,7 +1722,9 @@ impl Store {
                 || matches!(&row.kind, ObservationKind::Tool { category, .. } if category == "shell")
                 || matches!(
                     &row.kind,
-                    ObservationKind::McpCall { .. } | ObservationKind::FileEdit(_)
+                    ObservationKind::McpCall { .. }
+                        | ObservationKind::FileEdit(_)
+                        | ObservationKind::FileChange(_)
                 )
         }) {
             content_grant::record_receipt_proof(
@@ -2215,6 +2223,9 @@ impl Store {
                         KernelObservationKind::Tool { category, result }
                     }
                     ObservationKind::FileEdit(edit) => KernelObservationKind::FileEdit(edit),
+                    ObservationKind::FileChange(change) => {
+                        KernelObservationKind::FileChange(change.clone())
+                    }
                     ObservationKind::McpCall {
                         server,
                         tool,
@@ -2665,6 +2676,16 @@ fn validate_batch(batch: &ObservationBatch) -> Result<()> {
                 "file edit counts or operation identity are invalid",
             ));
         }
+        if let ObservationKind::FileChange(change) = &observation.kind
+            && (!change.is_valid()
+                || observation.identity.scope != StoredScope::Session
+                || observation.identity.turn_id.is_none()
+                || observation.identity.operation_id.is_none())
+        {
+            return Err(StoreError::Invalid(
+                "file change summary or operation identity is invalid",
+            ));
+        }
         if let ObservationKind::Check { category, result } = &observation.kind
             && (!matches!(category.as_str(), "test" | "lint" | "build")
                 || !matches!(result.as_str(), "passed" | "failed" | "unknown"))
@@ -3101,6 +3122,147 @@ mod tests {
                 .unwrap()
                 .epoch(),
             grant.epoch()
+        );
+    }
+
+    #[test]
+    fn opencode_edit_grants_upgrade_from_v23_and_keep_prior_approvals() {
+        let db = TempDb::new();
+        let claude = ContentGrantScope::new(
+            ExtensionId::parse("harness.claude").unwrap(),
+            ContentKind::ClaudeEditDetail,
+            [2; 32],
+        );
+        let opencode = ContentGrantScope::new(
+            ExtensionId::parse("harness.opencode").unwrap(),
+            ContentKind::OpenCodeEditDetail,
+            [3; 32],
+        );
+        let mut store = Store::open(&db.0).unwrap();
+        let grant = store.grant_content(&claude).unwrap();
+        // Rebuild the exact v23 grant table so a pre-upgrade database again
+        // rejects opencode.edit_detail under its narrower CHECK rule.
+        store
+            .connection
+            .execute_batch(
+                "ALTER TABLE agenturm_content_grants RENAME TO agenturm_prior_content_grants;
+                 CREATE TABLE agenturm_content_grants (
+                    source_id TEXT NOT NULL,
+                    kind TEXT NOT NULL CHECK (kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'claude.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')),
+                    source_fingerprint BLOB NOT NULL CHECK (length(source_fingerprint) = 32),
+                    epoch INTEGER NOT NULL CHECK (typeof(epoch) = 'integer' AND epoch > 0),
+                    nonce BLOB NOT NULL CHECK (length(nonce) = 16),
+                    enabled INTEGER NOT NULL CHECK (enabled IN (0, 1)),
+                    PRIMARY KEY (source_id, kind)
+                 );
+                 INSERT INTO agenturm_content_grants
+                    SELECT * FROM agenturm_prior_content_grants;
+                 DROP TABLE agenturm_prior_content_grants;
+                 UPDATE agenturm_store_meta SET value='agenturm.observation-store.v23' WHERE key='format';
+                 PRAGMA user_version=23;",
+            )
+            .unwrap();
+        assert!(store.grant_content(&opencode).is_err());
+        drop(store);
+
+        let mut upgraded = Store::open(&db.0).unwrap();
+        validate_marked_shape(&upgraded.connection, SCHEMA_VERSION).unwrap();
+        upgraded.verify_content_grant(&claude, &grant).unwrap();
+        let renewed = upgraded.grant_content(&opencode).unwrap();
+        upgraded.verify_content_grant(&opencode, &renewed).unwrap();
+        assert_eq!(
+            upgraded
+                .current_content_grant(&claude)
+                .unwrap()
+                .unwrap()
+                .epoch(),
+            grant.epoch()
+        );
+    }
+
+    #[test]
+    fn opencode_file_change_evidence_requires_its_own_grant_kind_and_proofs() {
+        use agenturm_kernel::{
+            FileChange, Observation, ObservationIdentity, ObservationKind, ObservationStore,
+        };
+        let db = TempDb::new();
+        let mut store = Store::open(&db.0).unwrap();
+        let source = ExtensionId::parse("harness.opencode").unwrap();
+        let user_text =
+            ContentGrantScope::new(source.clone(), ContentKind::OpenCodeUserText, [1; 32]);
+        let edit_detail =
+            ContentGrantScope::new(source.clone(), ContentKind::OpenCodeEditDetail, [1; 32]);
+        let grant = store.grant_content(&edit_detail).unwrap();
+        let cursor = format!(
+            "oc5:{}:{}:{}:0:m:0:1:0:1:1:0:1:{}",
+            "a".repeat(64),
+            "b".repeat(64),
+            "c".repeat(64),
+            "d".repeat(64)
+        );
+        let mut identity = ObservationIdentity::session("session-one");
+        identity.turn_id = Some("turn-one".into());
+        identity.operation_id = Some("operation-one".into());
+        let change = Observation {
+            harness_id: source.clone(),
+            event_id: "patch-event".into(),
+            revision: 0,
+            identity,
+            observed_at_unix_ns: 30,
+            kind: ObservationKind::FileChange(FileChange {
+                files: 2,
+                digest: "a".repeat(64),
+            }),
+        };
+        store
+            .commit(
+                source.as_str(),
+                None,
+                &cursor,
+                std::slice::from_ref(&change),
+            )
+            .unwrap();
+        let selection = CodexOperationSelection {
+            session_id: "session-one",
+            event_id: "patch-event",
+            revision: 0,
+            operation_id: "operation-one",
+            turn_id: Some("turn-one"),
+        };
+        let evidence = store
+            .with_user_content_fence(|store| {
+                store.current_codex_operation_evidence(&edit_detail, &grant, &selection)
+            })
+            .unwrap()
+            .unwrap()
+            .unwrap();
+        assert_eq!(evidence.cursor, cursor);
+        assert_eq!(evidence.digest.as_deref(), Some("a".repeat(64).as_str()));
+        assert_eq!(evidence.files, Some(2));
+        // A user-text approval grants no edit-detail access.
+        let text_grant = store.grant_content(&user_text).unwrap();
+        assert!(
+            store
+                .with_user_content_fence(|store| {
+                    store.current_codex_operation_evidence(&user_text, &text_grant, &selection)
+                })
+                .unwrap()
+                .is_err()
+        );
+        // Any newer revision retires the selected occurrence.
+        let mut superseded = change.clone();
+        superseded.revision = 1;
+        store
+            .commit(source.as_str(), Some(&cursor), "newer", &[superseded])
+            .unwrap();
+        assert!(
+            store
+                .with_user_content_fence(|store| {
+                    store.current_codex_operation_evidence(&edit_detail, &grant, &selection)
+                })
+                .unwrap()
+                .unwrap()
+                .is_none()
         );
     }
 

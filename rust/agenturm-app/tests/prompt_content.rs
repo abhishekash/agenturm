@@ -1666,6 +1666,263 @@ fn claude_operation_id(id: &str) -> String {
 }
 
 #[test]
+fn opencode_patch_paths_require_committed_content_and_separate_approval() {
+    let (Some(plugin_host), Some(adapter)) = (
+        std::env::var_os("AGENTURM_RUNTIME_PLUGIN_HOST"),
+        std::env::var_os("AGENTURM_RUNTIME_OPENCODE_ADAPTER"),
+    ) else {
+        eprintln!("set plugin host and OpenCode adapter paths to run the process proof");
+        return;
+    };
+    let scratch = Scratch::new();
+    let adapter = pin_fixture_adapter(&scratch, &adapter);
+    let source = scratch.0.join("native.db");
+    let db = scratch.0.join("history.sqlite");
+    let config = scratch.0.join("sources.json");
+    let catalog = scratch.0.join("catalog.json");
+    let native = rusqlite::Connection::open(&source).unwrap();
+    native.execute_batch(
+        "CREATE TABLE session_v2(id TEXT PRIMARY KEY,time_created INTEGER,time_updated INTEGER);
+         CREATE TABLE session_message(id TEXT,session_id TEXT,type TEXT,seq INTEGER,time_created INTEGER,time_updated INTEGER,data TEXT);
+         CREATE TABLE session_part(message_id TEXT,session_id TEXT,ordinal INTEGER,type TEXT,call_id TEXT,time_created INTEGER,time_updated INTEGER,data TEXT);
+         CREATE TABLE part(id TEXT,message_id TEXT,session_id TEXT,time_created INTEGER,time_updated INTEGER,data TEXT);
+         INSERT INTO session_v2 VALUES('ses_fixture',1,40);
+         INSERT INTO session_message VALUES
+           ('msg_open','ses_fixture','idle',1,1,1,'{\"outcome\":\"succeeded\"}'),
+           ('msg_user','ses_fixture','user',2,10,10,'{\"text\":\"private synthetic prompt\"}'),
+           ('msg_edit','ses_fixture','assistant',3,20,20,'{}'),
+           ('msg_end','ses_fixture','idle',4,30,30,'{\"outcome\":\"succeeded\"}');
+         INSERT INTO part VALUES('prt_edit','msg_edit','ses_fixture',20,20,
+           '{\"type\":\"patch\",\"files\":[\"fixture/private-a.rs\",\"fixture/private-b.rs\"],\"hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}');"
+    ).unwrap();
+    drop(native);
+    fs::write(
+        &catalog,
+        json!({"version":1,"plugins":[{
+            "plugin_id":"example.rust-opencode-harness","adapter":adapter,
+            "sha256":format!("{:x}", Sha256::digest(fs::read(&adapter).unwrap())),
+            "protocol":1,"features":["source-adapter/1","configured-root/1"],
+            "observation_format":"agenturm-observations/1"
+        }]})
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(&config,json!({"version":2,"plugin_host":PathBuf::from(plugin_host),"plugin_catalog":catalog,
+        "sources":[{"plugin_id":"example.rust-opencode-harness","source_id":"harness.opencode","source_root":source}]
+    }).to_string()).unwrap();
+    let (db_arg, config_arg) = (db.to_str().unwrap(), config.to_str().unwrap());
+    let collect = || checked(run(&["collect", "--db", db_arg, "--config", config_arg]));
+    let history =
+        || -> Value { serde_json::from_str(&checked(run(&["query", "--db", db_arg]))).unwrap() };
+    let select_change = |history: &Value| -> Value {
+        history["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["observation"]["kind"] == "file_change")
+            .max_by_key(|row| row["revision"].as_u64())
+            .unwrap()
+            .clone()
+    };
+    collect();
+    let first_history = history();
+    let first = select_change(&first_history);
+    for private in [
+        "fixture/private-a.rs",
+        "fixture/private-b.rs",
+        "private synthetic prompt",
+    ] {
+        assert!(!first_history.to_string().contains(private));
+    }
+    assert_eq!(first["observation"]["files"], 2);
+    assert_eq!(first["observation"]["digest"].as_str().unwrap().len(), 64);
+    let preview = |event: &Value, turn: &str, session: &str| {
+        run(&[
+            "content",
+            "preview",
+            "--kind",
+            "opencode.edit_detail",
+            "--db",
+            db_arg,
+            "--config",
+            config_arg,
+            "--source-id",
+            "harness.opencode",
+            "--session-id",
+            session,
+            "--turn-id",
+            turn,
+            "--operation-id",
+            event["identity"]["operation_id"].as_str().unwrap(),
+            "--event-id",
+            event["event_id"].as_str().unwrap(),
+            "--revision",
+            &event["revision"].to_string(),
+        ])
+    };
+    let reveal = |event: &Value| {
+        preview(
+            event,
+            event["identity"]["turn_id"].as_str().unwrap(),
+            "ses_fixture",
+        )
+    };
+    let grant = |kind: &str| {
+        run(&[
+            "content",
+            "grant",
+            "--kind",
+            kind,
+            "--source-id",
+            "harness.opencode",
+            "--db",
+            db_arg,
+            "--config",
+            config_arg,
+        ])
+    };
+    denied(reveal(&first), "requires approval");
+    checked(grant("opencode.edit_detail"));
+    denied(
+        grant("codex.edit_detail"),
+        "requires its matching pinned harness source",
+    );
+    let expected =
+        json!({"files":["fixture/private-a.rs","fixture/private-b.rs"],"reported_files":2});
+    assert_eq!(
+        serde_json::from_str::<Value>(&checked(reveal(&first))).unwrap(),
+        expected
+    );
+    // Review and broker delivery use this same VerifiedEdit proof shape.
+    let matches = records(run(&[
+        "investigate",
+        "path",
+        "fixture/private-a.rs",
+        "--db",
+        db_arg,
+        "--config",
+        config_arg,
+        "--source-id",
+        "harness.opencode",
+        "--session-id",
+        "ses_fixture",
+    ]));
+    assert_eq!(matches[0]["type"], "match");
+    assert_eq!(matches[0]["event_id"], first["event_id"]);
+    let source_detail = records(run(&[
+        "investigate",
+        "source",
+        first["event_id"].as_str().unwrap(),
+        "--reference",
+        matches[0]["source_reference"].as_str().unwrap(),
+        "--db",
+        db_arg,
+        "--config",
+        config_arg,
+    ]));
+    assert_eq!(
+        source_detail[0]["evidence"],
+        json!({"provider_detail":{"provider":"open_code","detail":expected}})
+    );
+    denied(
+        preview(&first, "different-turn", "ses_fixture"),
+        "no verified detail",
+    );
+    denied(
+        preview(
+            &first,
+            first["identity"]["turn_id"].as_str().unwrap(),
+            "ses_sibling",
+        ),
+        "no verified detail",
+    );
+    // Advance the source cursor WITHOUT re-admitting the selected patch. Its
+    // retained record commitment remains sufficient, independently of prompt proofs.
+    let native = rusqlite::Connection::open(&source).unwrap();
+    native
+        .execute(
+            "INSERT INTO session_message VALUES('msg_later','ses_fixture','user',5,40,40,'{}')",
+            [],
+        )
+        .unwrap();
+    drop(native);
+    collect();
+    let second = select_change(&history());
+    assert_eq!(
+        serde_json::from_str::<Value>(&checked(reveal(&second))).unwrap(),
+        expected
+    );
+    // Neither the native hash nor its timestamp changes in this attack.
+    let native = rusqlite::Connection::open(&source).unwrap();
+    native
+        .execute(
+            "UPDATE part SET data=replace(data,'private-a.rs','rewritten.rs')",
+            [],
+        )
+        .unwrap();
+    drop(native);
+    denied(reveal(&second), "no verified detail");
+    collect();
+    let current = select_change(&history());
+    assert!(current["revision"].as_u64().unwrap() > second["revision"].as_u64().unwrap());
+    denied(reveal(&second), "no verified detail");
+    assert_eq!(
+        serde_json::from_str::<Value>(&checked(reveal(&current))).unwrap(),
+        json!({"files":["fixture/rewritten.rs","fixture/private-b.rs"],"reported_files":2})
+    );
+    let native = rusqlite::Connection::open(&source).unwrap();
+    let long_path = format!("fixture/{}", "x".repeat(1000));
+    native
+        .execute(
+            "UPDATE part SET data=?1",
+            [json!({"type":"patch","files":[long_path],"hash":"a".repeat(40)}).to_string()],
+        )
+        .unwrap();
+    drop(native);
+    collect();
+    let long = select_change(&history());
+    let revealed: Value = serde_json::from_str(&checked(reveal(&long))).unwrap();
+    assert_eq!(revealed["files"][0].as_str().unwrap().len(), 512);
+    assert_eq!(revealed["truncated"], true);
+    let native = rusqlite::Connection::open(&source).unwrap();
+    native
+        .execute(
+            "UPDATE part SET data=?1",
+            [
+                json!({"type":"patch","files":["fixture/unsafe\u{1b}.rs"],"hash":"a".repeat(40)})
+                    .to_string(),
+            ],
+        )
+        .unwrap();
+    drop(native);
+    collect();
+    let unsafe_change = select_change(&history());
+    denied(reveal(&unsafe_change), "no verified detail");
+    checked(run(&[
+        "content",
+        "revoke",
+        "--kind",
+        "opencode.edit_detail",
+        "--source-id",
+        "harness.opencode",
+        "--db",
+        db_arg,
+    ]));
+    denied(reveal(&unsafe_change), "requires approval");
+    checked(run(&[
+        "content",
+        "grant",
+        "--source-id",
+        "harness.opencode",
+        "--db",
+        db_arg,
+        "--config",
+        config_arg,
+    ]));
+    denied(reveal(&unsafe_change), "requires approval");
+}
+
+#[test]
 fn claude_and_kiro_preview_the_exact_native_user_rows() {
     for (kind, session, member, rows) in [
         (

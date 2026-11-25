@@ -132,6 +132,7 @@ impl<'de> Deserialize<'de> for ObservationRecord {
             ReportedCost,
             Tool,
             FileEdit,
+            FileChange,
             McpCall,
             TraceSpan,
             InternalReview,
@@ -162,6 +163,7 @@ impl<'de> Deserialize<'de> for ObservationRecord {
             }
             FactKind::Tool => serde_json::from_str(payload).map(ObservationFact::Tool),
             FactKind::FileEdit => serde_json::from_str(payload).map(ObservationFact::FileEdit),
+            FactKind::FileChange => serde_json::from_str(payload).map(ObservationFact::FileChange),
             FactKind::McpCall => serde_json::from_str(payload).map(ObservationFact::McpCall),
             FactKind::TraceSpan => serde_json::from_str(payload).map(ObservationFact::TraceSpan),
             FactKind::InternalReview => {
@@ -246,6 +248,7 @@ pub enum ObservationFact {
     ReportedCost(ReportedCost),
     Tool(Tool),
     FileEdit(FileEdit),
+    FileChange(FileChange),
     McpCall(McpCall),
     TraceSpan(TraceSpan),
     InternalReview(crate::native_review::InternalReview),
@@ -326,6 +329,83 @@ impl FileEdit {
             + self.moved as usize;
         (1..=Self::MAX_CHANGES).contains(&total)
     }
+}
+
+/// Bounded file-change summary for a native patch record that lists edited
+/// paths without per-file add/delete counts. A SHA-256 commitment to the
+/// canonical native patch record binds the private path list; paths and diff
+/// bodies stay in the source and are disclosed only through a content grant.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileChange {
+    /// Number of distinct files named by the patch, at least one.
+    pub files: u16,
+    /// SHA-256 of the canonical native patch record, not its opaque Git hash.
+    pub digest: String,
+}
+
+impl FileChange {
+    pub const MAX_FILES: usize = FileEdit::MAX_CHANGES;
+
+    pub fn is_valid(&self) -> bool {
+        (1..=Self::MAX_FILES).contains(&usize::from(self.files))
+            && self.digest.len() == 64
+            && self
+                .digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+}
+
+/// Recognizes the native producer's opaque 40-character lowercase hex hash.
+pub fn is_patch_digest(digest: &str) -> bool {
+    digest.len() == 40
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Derives the bounded change summary for one native OpenCode patch part.
+/// Adapters emit the resulting `file_change` fact, and the private detail
+/// reveal re-recognizes the exact same shape before any disclosure. The
+/// native part carries only an edited-path list and a producer digest, so no
+/// per-file add/delete counts exist and none are invented; the paths stay in
+/// the source database and only the count and digest cross the adapter.
+///
+/// A patch with no files, more than `FileChange::MAX_FILES` files, a
+/// non-string entry, or a digest that is not 40 lowercase hex is malformed
+/// and yields `None`.
+pub fn opencode_patch_change(part: &serde_json::Value) -> Option<FileChange> {
+    use sha2::{Digest, Sha256};
+    if part.get("type").and_then(serde_json::Value::as_str) != Some("patch") {
+        return None;
+    }
+    let files = part.get("files")?.as_array()?;
+    if !(1..=FileChange::MAX_FILES).contains(&files.len()) {
+        return None;
+    }
+    if !files
+        .iter()
+        .all(|file| file.as_str().is_some_and(|path| !path.is_empty()))
+    {
+        return None;
+    }
+    let distinct: std::collections::BTreeSet<_> =
+        files.iter().filter_map(serde_json::Value::as_str).collect();
+    if distinct.len() != files.len() {
+        return None;
+    }
+    let digest = part.get("hash")?.as_str()?;
+    if !is_patch_digest(digest) {
+        return None;
+    }
+    Some(FileChange {
+        files: u16::try_from(files.len()).ok()?,
+        // The producer's hash may describe a Git snapshot, not the path list.
+        // Bind every native field ourselves so a same-count path rewrite with
+        // the same producer hash cannot authorize disclosure of new content.
+        digest: format!("{:x}", Sha256::digest(serde_json::to_vec(part).ok()?)),
+    })
 }
 
 /// Derives the edit-count summary for one recognized Claude Code file-edit

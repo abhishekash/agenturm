@@ -561,6 +561,7 @@ fn kind_name(kind: &ObservationKind) -> &'static str {
         ObservationKind::Activity { .. } => "activity",
         ObservationKind::Tool { .. } => "tool",
         ObservationKind::FileEdit(_) => "file-edit",
+        ObservationKind::FileChange(_) => "file-change",
         ObservationKind::McpCall { .. } => "mcp-call",
         ObservationKind::TraceSpan(_) => "trace-span",
         ObservationKind::InternalReview(_) => "internal-review",

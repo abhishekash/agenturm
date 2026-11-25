@@ -32,6 +32,7 @@ time = { version = "0.3", features = ["parsing", "local-offset"] }
 
 [dev-dependencies]
 agenturm-lifecycle-extension-example = { path = "../../examples/rust_lifecycle_extension" }
+rusqlite = { version = "0.37", features = ["bundled"] }
 
 [lib]
 name = "agenturm_app"
