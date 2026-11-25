@@ -71,9 +71,12 @@ ordinary harness session IDs, and the stored metric facts have no typed session
 link. Existing Usage remains the true session-filtered view; linked OTLP Metrics
 remains open until the typed contract can prove that relationship. Offline locked app compile passes; no tests have
 run for this branch. The [delegated test plan](../validation/rust-core-feature-test-plan.md#ui-05-follow-up-handoff--not-run)
-assigns UI05-A/B/C to the separate test owner. Remaining UI-05/UI-06 work and
-UI-Q stay open. Keep provider details in adapter/app proof contracts and keep
-screens provider-neutral.
+assigns UI05-A/B to the separate test owner; UI05-C contextual navigation
+passed in a 100×26 PTY on `b57af26`. True session-linked OTLP Metrics remains
+unimplemented because no typed harness-session/source link exists. PR #397's
+bundle PTY CI is blocked by the stale project-copy assertion described above.
+Remaining UI-05/UI-06 work and UI-Q stay open. Keep provider details in
+adapter/app proof contracts and keep screens provider-neutral.
 
 ## Review of the existing plan
 

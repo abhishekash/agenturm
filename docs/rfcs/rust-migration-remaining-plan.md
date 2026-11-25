@@ -37,8 +37,11 @@ Neither merge completes parity, release qualification, or default cutover.
   use `otlp.*` IDs distinct from ordinary `harness.*` session IDs, and the
   stored metric facts have no typed session link. True session-filtered Metrics
   remains open; session-scoped Usage is still the truthful session totals view. The [delegated test plan](../validation/rust-core-feature-test-plan.md#ui-05-follow-up-handoff--not-run)
-  assigns UI05-A/B/C to the separate test owner. Continue UI-05/UI-06 feature
-  work while preserving typed contracts and adapter/capability seams.
+  records UI05-C contextual K/palette navigation as passed in a real 100×26
+  PTY on `b57af26`; UI05-A/B remain with the separate test owner. The route
+  does not claim session linkage. True per-session OTLP Metrics remains open.
+  Continue UI-05/UI-06 feature work while preserving typed contracts and
+  adapter/capability seams.
 - **Release/cutover:** no new public release and no default switch were made.
   The one-release-per-24-hours limit remains in force.
 
