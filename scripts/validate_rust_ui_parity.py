@@ -63,6 +63,10 @@ class AcceptanceCockpit(Cockpit):
         return result
 
     def resize(self, width, height):
+        if (width, height) == (self.screen.columns, self.screen.rows):
+            # No actual terminal resize occurred. Ratatui correctly need not
+            # repaint its whole frame; keep the existing cell parser state.
+            return
         # Drain the old frame before replacing the cell model. SIGWINCH is sent
         # only to this harness-owned child, never to an external tmux session.
         while self.read(0):
