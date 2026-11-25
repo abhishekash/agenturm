@@ -44,7 +44,7 @@ impl PromptPresentation {
     pub(crate) fn legacy_envelopes(text: String) -> Self {
         let (readable, hidden_context) = readable_request(&text);
         Self {
-            readable: (hidden_context != 0).then(|| readable.to_owned()),
+            readable: Some(readable.to_owned()),
             original: text,
             hidden_context,
             truncated: false,
@@ -70,11 +70,7 @@ impl PromptPresentation {
     }
 
     pub(crate) fn readable_text(&self) -> Option<&str> {
-        if self.hidden_context == 0 {
-            Some(&self.original)
-        } else {
-            self.readable.as_deref()
-        }
+        self.readable.as_deref()
     }
 
     pub(crate) fn hidden_context(&self) -> usize {
@@ -319,6 +315,7 @@ pub(crate) struct PromptScreen {
     caption: Option<String>,
     pub(crate) acknowledge: Option<mpsc::Sender<()>>,
     pub(crate) active: Arc<Mutex<bool>>,
+    guarded_active: Arc<AtomicBool>,
     expires: Instant,
 }
 
@@ -337,12 +334,13 @@ impl PromptScreen {
             caption: None,
             acknowledge: Some(receiver.acknowledgement),
             active: receiver.active,
+            guarded_active: receiver.guarded_active,
             expires: now + DISPLAY_LIFETIME,
         }
     }
 
     pub(crate) fn expired(&self, now: Instant) -> bool {
-        now >= self.expires
+        now >= self.expires || !self.guarded_active.load(Ordering::Acquire)
     }
 
     pub(crate) fn expires_at(&self) -> Instant {
@@ -614,7 +612,7 @@ impl PromptStatus {
                 if *limited
                     && let Some(cap) = retained_cap
                 {
-                    return format!("{cap} retained · older history in Activity");
+                    return format!("Retained window cap {cap} · older history in Activity");
                 }
                 let mut message = format!("{loaded} loaded · oldest first");
                 if *earlier_available {
@@ -744,6 +742,10 @@ impl PromptNavigator {
         &self.scope
     }
 
+    pub(crate) fn set_capture(&mut self, capture: PromptCapture) {
+        self.scope.capture = capture;
+    }
+
     pub(crate) fn focus(&self) -> PromptFocus {
         self.focus
     }
@@ -806,10 +808,25 @@ impl PromptNavigator {
         self.begin_load()
     }
 
+    pub(crate) fn retry_available(&self) -> bool {
+        matches!(
+            self.status,
+            PromptStatus::Denied(_)
+                | PromptStatus::Unavailable(_)
+                | PromptStatus::Error(_)
+                | PromptStatus::MissingIdentity
+        )
+    }
+
     fn in_scope(&self, request: &PromptRequest) -> bool {
         request.anchor.source == self.scope.source
             && request.anchor.session == self.scope.session
             && request.anchor.worker == self.scope.worker
+            && self
+                .scope
+                .turn
+                .as_ref()
+                .is_none_or(|turn| request.anchor.turn.as_ref() == Some(turn))
     }
 
     fn merge(&mut self, mut incoming: Vec<PromptRequest>, older: bool) {
@@ -888,10 +905,12 @@ impl PromptNavigator {
     }
 
     pub(crate) fn deny(&mut self, reason: impl Into<String>) {
+        self.loading_older = false;
         self.status = PromptStatus::Denied(reason.into());
     }
 
     pub(crate) fn unavailable(&mut self, reason: impl Into<String>) {
+        self.loading_older = false;
         self.status = PromptStatus::Unavailable(reason.into());
     }
 
@@ -912,6 +931,7 @@ impl PromptNavigator {
     }
 
     pub(crate) fn stale(&mut self, reason: impl Into<String>) {
+        self.loading_older = false;
         self.status = PromptStatus::Stale(reason.into());
     }
 
@@ -980,6 +1000,9 @@ impl PromptNavigator {
     }
 
     fn read(&mut self, original: bool) -> PromptInput {
+        if self.scope.capture != PromptCapture::Enabled {
+            return PromptInput::NoRequests;
+        }
         let Some(request) = self.selected_request() else {
             return PromptInput::NoRequests;
         };
@@ -1056,6 +1079,13 @@ impl PromptNavigator {
     /// Routes one key while the prompt navigator, chooser or reader owns focus.
     /// The shell must not send this key to the history-page actions.
     pub(crate) fn key(&mut self, code: KeyCode) -> PromptInput {
+        if self.focus != PromptFocus::Reader && !self.chooser.open {
+            match code {
+                KeyCode::PageUp if self.earlier_available => return PromptInput::LoadEarlier,
+                KeyCode::Char('R') if self.retry_available() => return PromptInput::Retry,
+                _ => {}
+            }
+        }
         if code == KeyCode::Char('m') && self.scope.worker.is_some() {
             if let Some(main) = &self.scope.main_session {
                 return PromptInput::MainSession(main.clone());
@@ -1235,8 +1265,16 @@ impl PromptNavigator {
         self.reading
     }
 
+    pub(crate) fn pending_identity(&self, epoch: u64, key: &(String, u32)) -> bool {
+        self.reading && self.reader_epoch == epoch && self.current_key().as_ref() == Some(key)
+    }
+
     pub(crate) fn reader(&mut self) -> Option<&mut PromptScreen> {
         self.reader.as_mut()
+    }
+
+    pub(crate) fn reader_ref(&self) -> Option<&PromptScreen> {
+        self.reader.as_ref()
     }
 
     /// Removes the granted body. The caller must redraw before acknowledging
@@ -1267,7 +1305,7 @@ impl PromptNavigator {
         self.accept_reader_presentation(
             epoch,
             key,
-            PromptPresentation::legacy_envelopes(text),
+            PromptPresentation::normalized(text, None, 0, false),
             receiver,
             now,
         )
@@ -1292,7 +1330,6 @@ impl PromptNavigator {
                 Some("Discarded a prompt delivery that is outside the selected request.".into());
             return PromptAccepted::Late(PromptLate::OutOfScope);
         }
-        let title = presentation.title();
         let hidden = presentation.hidden_context();
         let truncated = presentation.truncated();
         let original = self.preferred_original(&key);
@@ -1305,9 +1342,7 @@ impl PromptNavigator {
             age(self.requests[self.selected].observed_at_unix_ns)
         )));
         if let Some(request) = self.requests.get_mut(self.selected) {
-            if request.title.is_none() {
-                request.title = title;
-            }
+            // Public labels must never retain text derived from a granted body.
             request.hidden_context = hidden;
             request.truncated = truncated;
         }
@@ -1329,6 +1364,10 @@ impl PromptNavigator {
             self.status = PromptStatus::Expired;
         }
         expired
+    }
+
+    pub(crate) fn expired_status(&mut self) {
+        self.status = PromptStatus::Expired;
     }
 
     pub(crate) fn revoke(&mut self, reason: impl Into<String>) {
@@ -1843,7 +1882,13 @@ mod tests {
     fn granted(navigator: &mut PromptNavigator, epoch: u64, text: String) -> PromptAccepted {
         let key = navigator.current_key().unwrap();
         let (_delivery, receiver) = prompt_channel(PromptKind::User);
-        navigator.accept_reader(epoch, key, text, receiver, Instant::now())
+        navigator.accept_reader_presentation(
+            epoch,
+            key,
+            PromptPresentation::normalized(text.clone(), Some(text), 0, false),
+            receiver,
+            Instant::now(),
+        )
     }
 
     #[test]
@@ -2050,7 +2095,7 @@ mod tests {
         ));
         assert_eq!(navigator.selected_ordinal(), Some(4));
         assert_eq!(navigator.requests().len(), 5);
-        assert!(navigator.status_line().contains("256 retained"));
+        assert!(navigator.status_line().contains("Retained window cap 256"));
         assert!(
             navigator
                 .status_line()

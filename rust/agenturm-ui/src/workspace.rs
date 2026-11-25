@@ -874,6 +874,9 @@ enum Change {
     ReviewVisibility,
     MarkReviewed(RecordedSession),
     Work(Option<WorkAnchor>),
+    ReviewCopy,
+    ReviewExport(String),
+    PromptPage(u64),
     WorkflowResume(Box<RequestEntry>),
     WorkflowRetry {
         authority: WorkflowNotificationAuthority,
@@ -891,7 +894,12 @@ impl Change {
     fn is_work(&self) -> bool {
         matches!(
             self,
-            Self::Work(_) | Self::WorkflowResume(_) | Self::WorkflowRetry { .. }
+            Self::Work(_)
+                | Self::ReviewCopy
+                | Self::ReviewExport(_)
+                | Self::PromptPage(_)
+                | Self::WorkflowResume(_)
+                | Self::WorkflowRetry { .. }
         )
     }
 }
@@ -910,8 +918,11 @@ struct Workspace {
     queued_prompt: Option<PromptEntry>,
     prompt: Option<PromptScreen>,
     prompt_nav: Option<prompt::PromptNavigator>,
+    prompt_cursor: Option<crate::workbench::PromptHistoryCursor>,
+    prompt_retry_cursor: Option<crate::workbench::PromptHistoryCursor>,
     prompt_read_epoch: Option<u64>,
     prompt_read_key: Option<(String, u32)>,
+    deferred_prompt_read: Option<(PromptEntry, u64)>,
     redact_then_acknowledge: Option<mpsc::Sender<()>>,
     pending: Option<Change>,
     deferred_request: Option<(WorkspaceRequest, Change)>,
@@ -942,8 +953,11 @@ impl Workspace {
             queued_prompt: None,
             prompt: None,
             prompt_nav: None,
+            prompt_cursor: None,
+            prompt_retry_cursor: None,
             prompt_read_epoch: None,
             prompt_read_key: None,
+            deferred_prompt_read: None,
             redact_then_acknowledge: None,
             pending: None,
             deferred_request: None,
@@ -1011,6 +1025,9 @@ impl Workspace {
         match (change, result) {
             (_, Err(error)) => {
                 self.prompt_receiver = None;
+                if let Some(form) = &mut self.view_io.review_form {
+                    form.message = Some(error.clone());
+                }
                 self.message = Some(error);
             }
             (
@@ -1086,6 +1103,9 @@ impl Workspace {
                     let previous_scroll = view.page.ui.scroll;
                     let previous_index = view.page.ui.selected;
                     let mut next = HistoryView::make_page(&view.selection, page);
+                    if matches!(change, Change::OlderHistory) {
+                        next.review_before = view.page.ui.older_cursor().cloned();
+                    }
                     let metrics = previous_title.as_deref() == Some("Metrics")
                         && matches!(
                             view.selection,
@@ -1238,31 +1258,34 @@ impl Workspace {
                 );
             }
             (
-                Change::Work(_),
+                Change::ReviewCopy,
                 Ok(WorkspaceResponse::Work(WorkResult::ReviewDocument { text, scope, .. })),
-            ) => {
-                if let Some(form) = self.view_io.review_form.take() {
+            ) => match crate::loaded_view::clipboard_request(&text) {
+                Ok(request) => {
+                    self.view_io.clipboard = Some(request);
                     self.message = Some(format!(
-                        "Saved review.md, review.html and review.json to {} · {scope}",
-                        form.directory
+                        "Review receipt copied · {scope} · terminal permission/support required"
                     ));
-                } else {
-                    match crate::loaded_view::clipboard_request(&text) {
-                        Ok(request) => {
-                            self.view_io.clipboard = Some(request);
-                            self.message = Some(format!(
-                                "Review receipt copied · {scope} · terminal permission/support required"
-                            ));
-                        }
-                        Err(error) => self.message = Some(error),
-                    }
                 }
+                Err(error) => self.message = Some(error),
+            },
+            (
+                Change::ReviewExport(directory),
+                Ok(WorkspaceResponse::Work(WorkResult::ReviewDocument { scope, .. })),
+            ) => {
+                self.view_io.review_form = None;
+                self.message = Some(format!(
+                    "Saved review.md, review.html and review.json to {directory} · {scope}"
+                ));
             }
             (
                 Change::Work(Some(anchor)),
                 Ok(WorkspaceResponse::Work(WorkResult::Prompts(entries))),
             ) => {
-                let scope = prompt::PromptScope::session(&anchor, prompt::PromptCapture::Enabled);
+                // Compatibility metadata-only result: no availability or page
+                // proof was supplied, so do not offer a captured-text read.
+                let scope =
+                    prompt::PromptScope::session(&anchor, prompt::PromptCapture::MetadataOnly);
                 let mut nav = prompt::PromptNavigator::new(scope);
                 let token = nav.begin_load();
                 let requests = entries
@@ -1270,10 +1293,37 @@ impl Workspace {
                     .map(prompt::PromptRequest::from)
                     .collect::<Vec<_>>();
                 nav.accept_page(token, requests, prompt::PromptPageMeta::default());
+                nav.unavailable(
+                    "This reader did not supply prompt capability or retained-page facts",
+                );
                 self.prompt_nav = Some(nav);
                 self.prompt_read_epoch = None;
                 self.work = None;
                 self.message = None;
+            }
+            (Change::Work(_), Ok(WorkspaceResponse::Work(WorkResult::PromptHistory(page)))) => {
+                let capture = if page.availability == crate::workbench::PromptAvailability::Granted
+                {
+                    prompt::PromptCapture::Enabled
+                } else {
+                    prompt::PromptCapture::MetadataOnly
+                };
+                let mut nav = prompt::PromptNavigator::new(prompt::PromptScope::session(
+                    &page.anchor,
+                    capture,
+                ));
+                let token = nav.begin_load();
+                self.prompt_nav = Some(nav);
+                self.prompt_cursor = None;
+                self.prompt_retry_cursor = None;
+                self.accept_prompt_page(token, page);
+                self.work = None;
+            }
+            (
+                Change::PromptPage(token),
+                Ok(WorkspaceResponse::Work(WorkResult::PromptHistory(page))),
+            ) => {
+                self.accept_prompt_page(token, page);
             }
             (Change::Work(target), Ok(WorkspaceResponse::Work(data))) => {
                 if let Some(work) = &mut self.work {
@@ -1579,10 +1629,19 @@ impl Workspace {
         sender: &mpsc::Sender<WorkspaceRequest>,
         key: event::KeyEvent,
     ) -> bool {
+        let code = keymap::plain(key).unwrap_or(KeyCode::Null);
+        // The navigator may drop/replace its body on these keys. Extract its
+        // redaction acknowledgement BEFORE it mutates, and send only after the
+        // next flushed public frame.
+        if matches!(
+            code,
+            KeyCode::Left | KeyCode::Esc | KeyCode::Char('[' | ']' | 'l' | 'm')
+        ) {
+            self.redact_prompt_nav(false);
+        }
         let Some(nav) = &mut self.prompt_nav else {
             return false;
         };
-        let code = keymap::plain(key).unwrap_or(KeyCode::Null);
         match nav.key(code) {
             prompt::PromptInput::Ignored | prompt::PromptInput::Handled => true,
             prompt::PromptInput::NoRequests => {
@@ -1590,12 +1649,14 @@ impl Workspace {
                 true
             }
             prompt::PromptInput::ReaderClosed => {
+                self.deferred_prompt_read = None;
                 self.prompt_read_epoch = None;
                 self.prompt_read_key = None;
                 self.prompt_receiver = None;
                 true
             }
             prompt::PromptInput::Back => {
+                self.deferred_prompt_read = None;
                 self.prompt_nav = None;
                 self.prompt_read_epoch = None;
                 self.prompt_read_key = None;
@@ -1605,27 +1666,11 @@ impl Workspace {
                 true
             }
             prompt::PromptInput::LoadEarlier => {
-                self.message =
-                    Some("Earlier prompts are page-local within the retained window".into());
+                self.load_prompt_page(sender, true);
                 true
             }
             prompt::PromptInput::Retry => {
-                let Some(nav) = &self.prompt_nav else {
-                    return true;
-                };
-                let scope = nav.scope();
-                let anchor = WorkAnchor {
-                    source: scope.source.clone(),
-                    session: scope.session.clone(),
-                    worker: scope.worker.clone(),
-                    turn: scope.turn.clone(),
-                };
-                self.prompt_nav = None;
-                self.request(
-                    sender,
-                    WorkspaceRequest::Work(WorkCommand::Prompts(anchor.clone())),
-                    Change::Work(Some(anchor)),
-                );
+                self.load_prompt_page(sender, false);
                 true
             }
             prompt::PromptInput::MainSession(anchor) => {
@@ -1655,7 +1700,8 @@ impl Workspace {
                 original,
                 epoch,
             } => {
-                if self.pending.is_some() || self.prompt_receiver.is_some() {
+                if self.pending.is_some() {
+                    self.deferred_prompt_read = Some((entry, epoch));
                     return true;
                 }
                 let key = (entry.event_id.clone(), entry.revision);
@@ -1674,6 +1720,105 @@ impl Workspace {
         }
     }
 
+    fn accept_prompt_page(&mut self, token: u64, page: crate::workbench::PromptHistoryPage) {
+        use crate::workbench::PromptAvailability;
+        let Some(nav) = &mut self.prompt_nav else {
+            return;
+        };
+        let scope = nav.scope();
+        if page.anchor.source != scope.source
+            || page.anchor.session != scope.session
+            || page.anchor.worker != scope.worker
+            || page.anchor.turn != scope.turn
+        {
+            nav.out_of_scope("The prompt page returned a different scope");
+            return;
+        }
+        match page.availability {
+            PromptAvailability::Granted => {
+                nav.set_capture(prompt::PromptCapture::Enabled);
+                let accepted = nav.accept_page(
+                    token,
+                    page.entries
+                        .iter()
+                        .map(prompt::PromptRequest::from)
+                        .collect(),
+                    prompt::PromptPageMeta {
+                        retained_cap: Some(page.retained_cap),
+                        earlier_available: page.older.is_some(),
+                        limited: page.limited,
+                    },
+                );
+                if accepted {
+                    self.prompt_cursor = page.older;
+                }
+            }
+            PromptAvailability::MissingIdentity => nav.missing_identity(),
+            PromptAvailability::Denied(reason) => nav.deny(reason),
+            PromptAvailability::Unavailable(reason) => nav.unavailable(reason),
+            PromptAvailability::Stale(reason) => nav.stale(reason),
+        }
+        self.message = None;
+    }
+
+    fn start_deferred_prompt_read(&mut self, sender: &mpsc::Sender<WorkspaceRequest>) {
+        let Some((entry, epoch)) = self.deferred_prompt_read.take() else {
+            return;
+        };
+        let key = (entry.event_id.clone(), entry.revision);
+        if !self
+            .prompt_nav
+            .as_ref()
+            .is_some_and(|nav| nav.pending_identity(epoch, &key))
+        {
+            return;
+        }
+        let (delivery, receiver) = prompt_channel(PromptKind::User);
+        self.request(
+            sender,
+            WorkspaceRequest::Work(WorkCommand::RevealPrompt(Box::new(entry), delivery)),
+            Change::Work(None),
+        );
+        self.prompt_receiver = Some(receiver);
+        self.prompt_read_epoch = Some(epoch);
+        self.prompt_read_key = Some(key);
+    }
+
+    fn load_prompt_page(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, older: bool) {
+        if self.pending.is_some() {
+            return;
+        }
+        let Some(nav) = &mut self.prompt_nav else {
+            return;
+        };
+        let before = if older {
+            self.prompt_cursor.clone()
+        } else {
+            self.prompt_retry_cursor.clone()
+        };
+        let token = if before.is_some() {
+            let Some(token) = nav.begin_older() else {
+                return;
+            };
+            token
+        } else {
+            nav.begin_retry()
+        };
+        let scope = nav.scope();
+        let anchor = WorkAnchor {
+            source: scope.source.clone(),
+            session: scope.session.clone(),
+            worker: scope.worker.clone(),
+            turn: scope.turn.clone(),
+        };
+        self.prompt_retry_cursor = before.clone();
+        self.request(
+            sender,
+            WorkspaceRequest::Work(WorkCommand::PromptPage { anchor, before }),
+            Change::PromptPage(token),
+        );
+    }
+
     fn dismiss_prompt(&mut self) -> bool {
         let Some(mut prompt) = self.prompt.take() else {
             return false;
@@ -1690,9 +1835,55 @@ impl Workspace {
     }
 
     fn expire_prompt_nav(&mut self, now: Instant) -> bool {
-        self.prompt_nav
-            .as_mut()
-            .is_some_and(|navigator| navigator.expire(now))
+        let expired = self
+            .prompt_nav
+            .as_ref()
+            .and_then(|nav| nav.reader_ref())
+            .is_some_and(|reader| reader.expired(now));
+        if expired {
+            self.redact_prompt_nav(true);
+            if let Some(nav) = &mut self.prompt_nav {
+                nav.expired_status();
+            }
+        }
+        expired
+    }
+
+    fn private_display_gate(&self) -> Option<Arc<Mutex<bool>>> {
+        self.prompt
+            .as_ref()
+            .or_else(|| self.prompt_nav.as_ref().and_then(|nav| nav.reader_ref()))
+            .filter(|reader| reader.acknowledge.is_some())
+            .map(|reader| Arc::clone(&reader.active))
+    }
+
+    fn enforce_private_display_gate(&mut self, authorized: bool) {
+        if !authorized {
+            self.dismiss_prompt();
+            self.redact_prompt_nav(true);
+            self.message = Some("Content authorization expired before display".into());
+        }
+    }
+
+    fn redact_prompt_nav(&mut self, close: bool) -> bool {
+        let Some(nav) = &mut self.prompt_nav else {
+            return false;
+        };
+        let reader = if close {
+            nav.close_reader()
+        } else {
+            // Do not invalidate a pending read when no body is present.
+            if !nav.reader_open() {
+                return false;
+            }
+            nav.take_reader()
+        };
+        if let Some(mut reader) = reader {
+            self.redact_then_acknowledge = reader.acknowledge.take();
+            true
+        } else {
+            false
+        }
     }
 
     fn acknowledge_redaction(&mut self) {
@@ -1786,10 +1977,7 @@ impl Workspace {
 
     fn key(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, key: event::KeyEvent) -> bool {
         if keymap::interrupt(key) {
-            if self.focus().prompt_reader()
-                || self.help.is_open()
-                || self.palette.is_open()
-            {
+            if self.focus().prompt_reader() || self.help.is_open() || self.palette.is_open() {
                 return true;
             }
             // Public evidence focus copies; editors and private content keep
@@ -1802,6 +1990,19 @@ impl Workspace {
                 return false;
             }
             return true;
+        }
+        // Granted and pending inline readers own keys before help, palette,
+        // export, filtering and navigation, just like the full-screen reader.
+        if self
+            .prompt_nav
+            .as_ref()
+            .is_some_and(|nav| nav.focus() == prompt::PromptFocus::Reader)
+        {
+            if keymap::plain(key) == Some(KeyCode::Char('q')) {
+                return true;
+            }
+            self.prompt_nav_key(sender, key);
+            return false;
         }
         if self.help.is_open() {
             if keymap::plain(key) == Some(KeyCode::Char('q')) && self.prompt.is_none() {
@@ -1835,6 +2036,13 @@ impl Workspace {
             return false;
         }
         let code = keymap::plain(key).unwrap_or(KeyCode::Null);
+        if self.prompt.is_none() && self.prompt_nav.is_some() {
+            if code == KeyCode::Char('q') {
+                return true;
+            }
+            self.prompt_nav_key(sender, key);
+            return false;
+        }
         if self.prompt.is_none()
             && let Some(Change::FindingSource { cancelled }) = &mut self.pending
         {
@@ -1933,10 +2141,7 @@ impl Workspace {
                 }
                 return false;
             }
-            let save_edit = work.editing()
-                && key.code == KeyCode::Char('s')
-                && key.modifiers == KeyModifiers::CONTROL;
-            if code == KeyCode::Null && !save_edit {
+            if code == KeyCode::Null && !work.editing() {
                 return false;
             }
             match work.key(key) {
@@ -2257,18 +2462,15 @@ impl Workspace {
         }
         let view = self.history.last_mut().expect("history exists");
         if keymap::back(key) {
-            if self.pending.is_none() {
-                self.history.pop();
-                self.generation = self.generation.wrapping_add(1);
-                self.message = None;
-            }
+            self.history.pop();
+            self.generation = self.generation.wrapping_add(1);
+            self.message = None;
             return false;
         }
         if keymap::review(key) {
             match &view.selection {
                 HistorySelection::Session(session, _) => {
-                    let selection =
-                        HistorySelection::Session(session.clone(), SessionView::Review);
+                    let selection = HistorySelection::Session(session.clone(), SessionView::Review);
                     self.open(sender, selection);
                 }
                 HistorySelection::Turn(turn) => {
@@ -2366,7 +2568,9 @@ impl Workspace {
         }
         if let Some(table) = view.page.operation_table.active(&view.page.ui) {
             if code == KeyCode::Char('t')
-                && table.selected_row().is_some_and(|row| row.mcp_event.is_some())
+                && table
+                    .selected_row()
+                    .is_some_and(|row| row.mcp_event.is_some())
             {
                 if self.pending.is_none() {
                     if let Some((source, event_id, revision)) =
@@ -2480,12 +2684,11 @@ impl Workspace {
             return false;
         }
         match code {
-            KeyCode::Esc if self.pending.is_none() => {
+            KeyCode::Esc => {
                 self.history.pop();
                 self.generation = self.generation.wrapping_add(1);
                 self.message = None;
             }
-            KeyCode::Esc => {}
             KeyCode::Char('p') => self.toggle_pause(),
             KeyCode::Char('b' | 'P') => {
                 if code == KeyCode::Char('P') {
@@ -2513,11 +2716,7 @@ impl Workspace {
                 let command = if code == KeyCode::Char('b') {
                     Some(WorkCommand::Tasks(None))
                 } else {
-                    target.clone().map(|mut anchor| {
-                        anchor.worker = None;
-                        anchor.turn = None;
-                        WorkCommand::Prompts(anchor)
-                    })
+                    target.clone().map(WorkCommand::Prompts)
                 };
                 if let Some(command) = command {
                     self.request(
@@ -2692,7 +2891,7 @@ impl Workspace {
                 prompt::PromptFocus::Navigator => keymap::Focus::PromptNavigator,
             };
         }
-        if self.view_io.form.is_some() {
+        if self.view_io.form.is_some() || self.view_io.review_form.is_some() {
             return keymap::Focus::ExportForm;
         }
         if let Some(work) = &self.work {
@@ -2794,10 +2993,31 @@ impl Workspace {
         }
     }
 
+    fn pinned_review_query(&self) -> Option<crate::workbench::PinnedReviewQuery> {
+        let view = self.history.last()?;
+        let anchor = self.review_anchor()?;
+        Some(crate::workbench::PinnedReviewQuery {
+            all_workers: matches!(
+                view.selection,
+                HistorySelection::Session(_, SessionView::Review)
+            ),
+            anchor,
+            snapshot_id: view.page.snapshot_id,
+            history_identity: view.page.history_identity.clone()?,
+            version: match &view.selection {
+                HistorySelection::Session(row, _) => Some(row.review_version),
+                _ => None,
+            },
+            before: view.page.review_before.clone(),
+            include_reviews: self.include_reviews,
+            events: view.page.review_events.clone(),
+        })
+    }
+
     fn review_controls_focused(&self) -> bool {
-        self.history
-            .last()
-            .is_some_and(|view| view.page.reviewing() || matches!(view.selection, HistorySelection::TurnReview(_)))
+        self.history.last().is_some_and(|view| {
+            view.page.reviewing() || matches!(view.selection, HistorySelection::TurnReview(_))
+        })
     }
 
     fn review_control_count(&self) -> usize {
@@ -2833,18 +3053,26 @@ impl Workspace {
             return false;
         };
         let key = REVIEW_CONTROLS.get(index).map(|(_, key)| *key);
-        eprintln!("activate review control {index} key {key:?}");
+        let depth = self.history.len();
         self.history
             .last_mut()
             .expect("history exists")
             .page
             .review_control = None;
-        match key {
+        let quit = match key {
             Some(']') => self.send_key(sender, plain_code(keymap::OLDER)),
             Some('\u{0}') => self.send_key(sender, plain_code(KeyCode::Esc)),
             Some(key) => self.send_key(sender, plain_key(key)),
             None => false,
+        };
+        // Activating a button does not move focus into the evidence body.
+        // Keep the originating control available after a read or nested form.
+        if key != Some('\u{0}') && self.history.len() == depth {
+            if let Some(view) = self.history.last_mut() {
+                view.page.review_control = Some(index);
+            }
         }
+        quit
     }
 
     fn help_available(&mut self, key: event::KeyEvent) -> bool {
@@ -3001,6 +3229,14 @@ impl Workspace {
     }
 
     fn action_unavailable(&mut self, id: &str) -> Option<&'static str> {
+        if self.work.as_ref().is_some_and(Workbench::editing)
+            && !matches!(
+                id,
+                keymap::id::HELP | keymap::id::THEMES | keymap::id::PALETTE
+            )
+        {
+            return Some("Finish or explicitly cancel the active editor first");
+        }
         let catalog_ready = self
             .agents
             .catalog
@@ -3036,10 +3272,12 @@ impl Workspace {
             | keymap::id::HISTORY_FAILED_COMMAND => {
                 (!anchor).then_some("Private phrase search needs a selected session or turn")
             }
-            keymap::id::REVIEW
-            | keymap::id::PROMPTS
-            | keymap::id::REVIEW_NOTES
-            | keymap::id::MARK_REVIEWED => (!session).then_some("Select an exact session first"),
+            keymap::id::REVIEW | keymap::id::PROMPTS => {
+                (!anchor).then_some("Select an exact session or turn first")
+            }
+            keymap::id::REVIEW_NOTES | keymap::id::MARK_REVIEWED => {
+                (!session).then_some("Select an exact session first")
+            }
             keymap::id::TRACES => (!session
                 && !matches!(
                     self.history.last().map(|view| &view.selection),
@@ -3120,42 +3358,58 @@ impl Workspace {
             | keymap::id::REVIEW_EXCERPT
             | keymap::id::REVIEW_DRAFT
             | keymap::id::REVIEW_GIT
-            | keymap::id::REVIEW_MAP => (!self.review_controls_focused())
-                .then_some("Open a session or turn Review first"),
+            | keymap::id::REVIEW_MAP => {
+                (!self.review_controls_focused()).then_some("Open a session or turn Review first")
+            }
             keymap::id::WORKFLOW_INCIDENTS => None,
             keymap::id::WORKFLOW_SEEN
             | keymap::id::WORKFLOW_LOCATE
             | keymap::id::WORKFLOW_RESUME
             | keymap::id::WORKFLOW_RETRY
-            | keymap::id::WORKFLOW_SETTINGS => (!self
+            | keymap::id::WORKFLOW_SETTINGS => {
+                (!self.work.as_ref().is_some_and(Workbench::workflow_visible))
+                    .then_some("Open the Workflow inbox first")
+            }
+            keymap::id::TASK_DECISION_ADD | keymap::id::TASK_DECISION_SUPERSEDE => {
+                (!self.work.as_ref().is_some_and(Workbench::decisions_visible))
+                    .then_some("Open the task Decisions chooser first")
+            }
+            keymap::id::TASK_BRIEF | keymap::id::TASK_DECISIONS => {
+                (!self.work.as_ref().is_some_and(Workbench::tasks_visible))
+                    .then_some("Open Saved tasks first")
+            }
+            keymap::id::HANDOFF_COPY => (!self
                 .work
                 .as_ref()
-                .is_some_and(Workbench::workflow_visible))
-            .then_some("Open the Workflow inbox first"),
-            keymap::id::TASK_BRIEF
-            | keymap::id::TASK_DECISIONS
-            | keymap::id::TASK_DECISION_ADD
-            | keymap::id::TASK_DECISION_SUPERSEDE => (!self
-                .work
-                .as_ref()
-                .is_some_and(Workbench::tasks_visible))
-            .then_some("Open Saved tasks first"),
-            keymap::id::HANDOFF_PREVIEW | keymap::id::HANDOFF_COPY => (!self
-                .work
-                .as_ref()
-                .is_some_and(Workbench::handoffs_visible))
-            .then_some("Open Handoffs first"),
+                .is_some_and(Workbench::handoff_preview_visible))
+            .then_some("Open a Handoff preview first"),
+            keymap::id::HANDOFF_PREVIEW => {
+                (!self.work.as_ref().is_some_and(Workbench::handoffs_visible))
+                    .then_some("Open Handoffs first")
+            }
             keymap::id::TASK_SEARCH => None,
+            keymap::id::PROMPT_EARLIER_PAGE => self
+                .prompt_cursor
+                .is_none()
+                .then_some("No earlier requests in the retained window"),
+            keymap::id::PROMPT_MAIN_SESSION => self
+                .prompt_nav
+                .as_ref()
+                .is_none_or(|nav| nav.scope().main_session.is_none())
+                .then_some("No verified main-session navigation capability"),
+            keymap::id::PROMPT_RETRY => self
+                .prompt_nav
+                .as_ref()
+                .is_none_or(|nav| !nav.retry_available())
+                .then_some("No failed prompt load to retry"),
             keymap::id::PROMPT_READ
             | keymap::id::PROMPT_OLDER
             | keymap::id::PROMPT_NEWER
             | keymap::id::PROMPT_LATEST
             | keymap::id::PROMPT_PRESENTATION
-            | keymap::id::PROMPT_BACK
-            | keymap::id::PROMPT_MAIN_SESSION
-            | keymap::id::PROMPT_EARLIER_PAGE
-            | keymap::id::PROMPT_RETRY => (self.prompt_nav.is_none())
-                .then_some("Open the inspector Prompts section first"),
+            | keymap::id::PROMPT_BACK => {
+                (self.prompt_nav.is_none()).then_some("Open the inspector Prompts section first")
+            }
             keymap::id::EVIDENCE_FILTER
             | keymap::id::EVIDENCE_HOME_END
             | keymap::id::EVIDENCE_PAGE => {
@@ -3419,6 +3673,10 @@ impl Workspace {
 
     fn run_action(&mut self, sender: &mpsc::Sender<WorkspaceRequest>, id: &str) -> bool {
         self.palette.close();
+        if let Some(reason) = self.action_unavailable(id) {
+            self.message = Some(reason.into());
+            return false;
+        }
         if let Some(choice) = id.strip_prefix("session|") {
             self.choose_session(&format!("session|{choice}"));
             return false;
@@ -3522,9 +3780,13 @@ impl Workspace {
             keymap::id::TASK_DECISION_SUPERSEDE => return self.send_key(sender, plain_key('s')),
             keymap::id::HANDOFF_PREVIEW => return self.send_key(sender, plain_key('x')),
             keymap::id::HANDOFF_COPY => return self.send_key(sender, plain_key('c')),
-            keymap::id::EVIDENCE_FILTER
-            | keymap::id::EVIDENCE_HOME_END
-            | keymap::id::EVIDENCE_PAGE => return self.send_key(sender, plain_key('/')),
+            keymap::id::EVIDENCE_FILTER => return self.send_key(sender, plain_key('/')),
+            keymap::id::EVIDENCE_HOME_END => {
+                return self.send_key(sender, plain_code(KeyCode::Home));
+            }
+            keymap::id::EVIDENCE_PAGE => {
+                return self.send_key(sender, plain_code(KeyCode::PageDown));
+            }
             keymap::id::PROMPT_READ => {
                 return self.send_key(sender, plain_code(KeyCode::Enter));
             }
@@ -3539,7 +3801,7 @@ impl Workspace {
             keymap::id::PROMPT_BACK => return self.send_key(sender, plain_code(KeyCode::Esc)),
             keymap::id::PROMPT_MAIN_SESSION => return self.send_key(sender, plain_key('m')),
             keymap::id::PROMPT_EARLIER_PAGE => {
-                return self.send_key(sender, plain_code(KeyCode::Tab));
+                return self.send_key(sender, plain_code(KeyCode::PageUp));
             }
             keymap::id::PROMPT_RETRY => return self.send_key(sender, plain_key('R')),
             keymap::id::PROMPTS => return self.send_key(sender, plain_key('P')),
@@ -3872,6 +4134,9 @@ pub fn run_workspace_with_stop(
                 }
                 if let Ok(result) = results.try_recv() {
                     workspace.finish(result);
+                    if workspace.pending.is_none() {
+                        workspace.start_deferred_prompt_read(&request);
+                    }
                     if let Some((next, change)) = workspace.deferred_request.take() {
                         workspace.request(&request, next, change);
                     }
@@ -3917,20 +4182,21 @@ pub fn run_workspace_with_stop(
                 dirty |= workspace.expire_prompt(Instant::now());
                 dirty |= workspace.expire_prompt_nav(Instant::now());
                 if dirty {
-                    let active = workspace
-                        .prompt
-                        .as_ref()
-                        .filter(|prompt| prompt.acknowledge.is_some())
-                        .map(|prompt| Arc::clone(&prompt.active));
+                    let active = workspace.private_display_gate();
                     let gate = active.as_ref().and_then(|active| active.lock().ok());
-                    if active.is_some() && !gate.as_deref().copied().unwrap_or(false) {
-                        workspace.prompt = None;
-                        workspace.message =
-                            Some("Content authorization expired before display".into());
+                    if active.is_some() {
+                        workspace.enforce_private_display_gate(
+                            gate.as_deref().copied().unwrap_or(false),
+                        );
                     }
                     terminal.draw(|frame| {
                         draw_workspace(frame, &mut workspace);
-                        if workspace.prompt.is_none() {
+                        if workspace.prompt.is_none()
+                            && !workspace
+                                .prompt_nav
+                                .as_ref()
+                                .is_some_and(|nav| nav.reader_open())
+                        {
                             appearance.draw(frame);
                         }
                     })?;
@@ -3941,6 +4207,10 @@ pub fn run_workspace_with_stop(
                 // Async work can queue a public resume command without a
                 // further key event. Flush only after public redraw/ACK.
                 if workspace.prompt.is_none()
+                    && !workspace
+                        .prompt_nav
+                        .as_ref()
+                        .is_some_and(|nav| nav.reader_open())
                     && workspace.prompt_receiver.is_none()
                     && workspace.redact_then_acknowledge.is_none()
                     && let Some(bytes) = workspace.view_io.clipboard.take()
@@ -3955,7 +4225,13 @@ pub fn run_workspace_with_stop(
                         Event::Key(key)
                             if matches!(key.kind, KeyEventKind::Press | KeyEventKind::Repeat) =>
                         {
-                            if workspace.prompt.is_none() && appearance.key(key) {
+                            if workspace.prompt.is_none()
+                                && !workspace
+                                    .prompt_nav
+                                    .as_ref()
+                                    .is_some_and(|nav| nav.reader_open() || nav.read_pending())
+                                && appearance.key(key)
+                            {
                                 dirty = true;
                                 continue;
                             }
@@ -3967,7 +4243,10 @@ pub fn run_workspace_with_stop(
                                 stop.store(true, Ordering::Release);
                                 // Keep the proof fence until a flushed non-private
                                 // frame replaces the modal, including q and Ctrl-C.
-                                if workspace.dismiss_prompt()
+                                let redacted = workspace.dismiss_prompt();
+                                let inline_redacted = workspace.redact_prompt_nav(true);
+                                if redacted
+                                    || inline_redacted
                                     || workspace.redact_then_acknowledge.is_some()
                                 {
                                     terminal.draw(|frame| {
@@ -4173,6 +4452,33 @@ fn draw_workspace_base(frame: &mut Frame, workspace: &mut Workspace) {
         return;
     }
     let area = frame.area();
+    if let Some(navigator) = &mut workspace.prompt_nav {
+        if let Some(HistoryView {
+            selection: HistorySelection::Session(session, _),
+            ..
+        }) = workspace.history.last()
+        {
+            inspector::draw_prompts(
+                frame,
+                session,
+                workspace.inspector,
+                navigator,
+                workspace.pending.is_some(),
+                workspace.message.as_deref(),
+            );
+        } else {
+            let [body, status, keys] = Layout::vertical([
+                Constraint::Min(1),
+                Constraint::Length(1),
+                Constraint::Length(1),
+            ])
+            .areas(area);
+            navigator.draw(frame, body);
+            frame.render_widget(Paragraph::new(navigator.status_line()), status);
+            frame.render_widget(Paragraph::new(navigator.hints_for(area.width)), keys);
+        }
+        return;
+    }
     if workspace.history.is_empty()
         && frame.area().width >= MIN_WIDTH
         && frame.area().height >= MIN_HEIGHT
@@ -7700,6 +8006,8 @@ mod tests {
     fn review_page() -> HistoryPage {
         let id = agenturm_kernel::ExtensionId::parse("app.session-review").unwrap();
         let mut page = session_history_page(&[]);
+        page.history_identity = Some("review-history".into());
+        page.snapshot.history_snapshot_id = 9.into();
         page.snapshot.panes.insert(
             id.clone(),
             agenturm_kernel::PaneModel {
@@ -7730,8 +8038,8 @@ mod tests {
         else {
             panic!("expected review receipt copy")
         };
-        assert_eq!(request.anchor.source, "harness.codex");
-        assert_eq!(request.anchor.session, "review-me");
+        assert_eq!(request.query.anchor.source, "harness.codex");
+        assert_eq!(request.query.anchor.session, "review-me");
         assert_eq!(request.format, crate::workbench::ReviewFormat::Text);
         assert!(request.directory.is_none());
         assert!(matches!(
@@ -7745,7 +8053,13 @@ mod tests {
             scope: "harness.codex / review-me".into(),
         })));
         assert!(workspace.view_io.clipboard.is_some());
-        assert!(workspace.message.as_deref().unwrap_or_default().contains("copied"));
+        assert!(
+            workspace
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("copied")
+        );
         assert!(matches!(
             workspace.history.last().map(|view| &view.selection),
             Some(HistorySelection::Session(_, SessionView::Review))
@@ -7753,7 +8067,7 @@ mod tests {
 
         assert!(!press(&mut workspace, &sender, KeyCode::Char('x')));
         let form = workspace.view_io.review_form.as_ref().unwrap();
-        assert_eq!(form.anchor.session, "review-me");
+        assert_eq!(form.query.anchor.session, "review-me");
         for ch in "/tmp/review-export".chars() {
             press(&mut workspace, &sender, KeyCode::Char(ch));
         }
@@ -7774,7 +8088,9 @@ mod tests {
             "a collision keeps the destination form open"
         );
         assert!(!press(&mut workspace, &sender, KeyCode::Enter));
-        let _retry = requests.try_recv().expect("the form retries the same directory");
+        let _retry = requests
+            .try_recv()
+            .expect("the form retries the same directory");
         workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::ReviewDocument {
             title: "Review receipt".into(),
             text: "receipt".into(),
@@ -7789,7 +8105,13 @@ mod tests {
                 if anchor.session == "review-me"
         ));
         assert!(!press(&mut workspace, &sender, KeyCode::Char('g')));
-        assert!(workspace.message.as_deref().unwrap_or_default().contains("workspace mapping"));
+        assert!(
+            workspace
+                .message
+                .as_deref()
+                .unwrap_or_default()
+                .contains("workspace mapping")
+        );
         assert!(matches!(
             workspace.history.last().map(|view| &view.selection),
             Some(HistorySelection::Session(_, SessionView::Review))
@@ -7800,9 +8122,18 @@ mod tests {
     fn review_control_order_is_deterministic_and_escape_returns_to_review() {
         let row = session("harness.codex", "controls", "completed", None);
         let mut workspace = Workspace::new();
+        let mut page = review_page();
+        page.snapshot.observations_truncated = true;
+        page.features.continuation = Some(Box::new(ObservationPosition {
+            observed_at_unix_ns: 7,
+            harness_id: "harness.codex".into(),
+            event_id: "prior-page".into(),
+            revision: 0,
+            snapshot_id: row.snapshot_id,
+        }));
         workspace.history.push(HistoryView::new(
             HistorySelection::Session(row, SessionView::Review),
-            review_page(),
+            page,
         ));
         let (sender, requests) = mpsc::channel();
         assert!(!press(&mut workspace, &sender, KeyCode::Tab));
@@ -7833,7 +8164,15 @@ mod tests {
             _ => panic!("review control did not request the same Review page"),
         }
         assert!(!press(&mut workspace, &sender, KeyCode::Esc));
-        assert!(workspace.history.last().unwrap().page.review_control.is_none());
+        assert!(
+            workspace
+                .history
+                .last()
+                .unwrap()
+                .page
+                .review_control
+                .is_none()
+        );
         assert_eq!(workspace.history.len(), 1);
     }
 
@@ -7894,26 +8233,36 @@ mod tests {
             Ok(WorkspaceRequest::Work(WorkCommand::Prompts(anchor)))
                 if anchor.session == "prompt-session"
         ));
-        workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::Prompts(vec![
-            PromptEntry {
+        workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::PromptHistory(
+            crate::workbench::PromptHistoryPage {
                 anchor: WorkAnchor {
                     source: "harness.codex".into(),
                     session: "prompt-session".into(),
                     worker: None,
-                    turn: Some("turn-1".into()),
+                    turn: None,
                 },
-                event_id: "event-1".into(),
-                revision: 0,
-                timestamp: 1,
-                snapshot_id: None,
-                history_identity: None,
+                retained: 1,
+                retained_cap: 256,
+                limited: false,
+                older: None,
+                availability: crate::workbench::PromptAvailability::Granted,
+                entries: vec![PromptEntry {
+                    anchor: WorkAnchor {
+                        source: "harness.codex".into(),
+                        session: "prompt-session".into(),
+                        worker: None,
+                        turn: Some("turn-1".into()),
+                    },
+                    event_id: "event-1".into(),
+                    revision: 0,
+                    timestamp: 1,
+                    snapshot_id: None,
+                    history_identity: None,
+                }],
             },
-        ]))));
+        ))));
         let navigator = workspace.prompt_nav.as_ref().unwrap();
-        assert_eq!(
-            navigator.status_line(),
-            "1 loaded · oldest first"
-        );
+        assert_eq!(navigator.status_line(), "1 loaded · oldest first");
         assert_eq!(workspace.focus(), keymap::Focus::PromptNavigator);
         assert!(!press(&mut workspace, &sender, KeyCode::Enter));
         assert!(matches!(
@@ -7933,7 +8282,10 @@ mod tests {
             Some(HistorySelection::Session(_, SessionView::Overview))
         ));
         assert!(!press(&mut workspace, &sender, KeyCode::Esc));
-        assert!(workspace.history.is_empty(), "the next Esc returns to the roster");
+        assert!(
+            workspace.history.is_empty(),
+            "the next Esc returns to the roster"
+        );
     }
 
     #[test]
@@ -7989,7 +8341,13 @@ mod tests {
         assert!(!press(&mut workspace, &sender, KeyCode::Enter));
         let view = workspace.history.last().unwrap();
         assert_eq!(view.page.ui.evidence_visible(), vec![1]);
-        assert!(view.page.ui.evidence_filter_label().unwrap().contains("write"));
+        assert!(
+            view.page
+                .ui
+                .evidence_filter_label()
+                .unwrap()
+                .contains("write")
+        );
         // A new page of the same pane keeps the committed filter.
         let mut next = session_history_page(&[]);
         next.snapshot.panes.insert(
@@ -8051,5 +8409,273 @@ mod tests {
         ] {
             assert!(labels.contains(&expected), "missing {expected}: {labels:?}");
         }
+    }
+
+    fn prompt_page(anchor: WorkAnchor) -> crate::workbench::PromptHistoryPage {
+        crate::workbench::PromptHistoryPage {
+            entries: vec![PromptEntry {
+                anchor: WorkAnchor {
+                    turn: Some(anchor.turn.clone().unwrap_or("turn-1".into())),
+                    ..anchor.clone()
+                },
+                event_id: "prompt-event".into(),
+                revision: 0,
+                timestamp: 1,
+                snapshot_id: Some(9.into()),
+                history_identity: Some("history".into()),
+            }],
+            anchor,
+            retained: 1,
+            retained_cap: 256,
+            limited: false,
+            older: None,
+            availability: crate::workbench::PromptAvailability::Granted,
+        }
+    }
+
+    fn workspace_text(workspace: &mut Workspace, width: u16, height: u16) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| draw_workspace(frame, workspace))
+            .unwrap();
+        terminal.backend().to_string()
+    }
+
+    fn inline_private_fixture() -> (Workspace, mpsc::Receiver<()>, Arc<AtomicBool>) {
+        let anchor = WorkAnchor {
+            source: "harness.fixture".into(),
+            session: "private-session".into(),
+            worker: None,
+            turn: None,
+        };
+        let page = prompt_page(anchor.clone());
+        let mut nav = prompt::PromptNavigator::new(prompt::PromptScope::session(
+            &anchor,
+            prompt::PromptCapture::Enabled,
+        ));
+        let token = nav.begin_load();
+        nav.accept_page(
+            token,
+            page.entries
+                .iter()
+                .map(prompt::PromptRequest::from)
+                .collect(),
+            prompt::PromptPageMeta::default(),
+        );
+        let prompt::PromptInput::Read { epoch, entry, .. } = nav.key(KeyCode::Right) else {
+            panic!("read requested");
+        };
+        let (_frames, received) = mpsc::channel();
+        let (acknowledgement, ack) = mpsc::channel();
+        let guarded = Arc::new(AtomicBool::new(true));
+        let receiver = PromptReceiver {
+            frames: received,
+            acknowledgement,
+            active: Arc::new(Mutex::new(true)),
+            guarded_active: Arc::clone(&guarded),
+            kind: PromptKind::User,
+        };
+        assert_eq!(
+            nav.accept_reader_presentation(
+                epoch,
+                (entry.event_id, entry.revision),
+                prompt::PromptPresentation::normalized(
+                    "PRIVATE_FIRST_LINE_MARKER".into(),
+                    Some("PRIVATE_FIRST_LINE_MARKER".into()),
+                    0,
+                    false
+                ),
+                receiver,
+                Instant::now()
+            ),
+            prompt::PromptAccepted::Accepted
+        );
+        let mut workspace = Workspace::new();
+        workspace.prompt_nav = Some(nav);
+        (workspace, ack, guarded)
+    }
+
+    #[test]
+    fn inline_private_reader_redacts_before_ack_and_never_caches_a_captured_label() {
+        for action in 0..5 {
+            let (mut workspace, ack, guarded) = inline_private_fixture();
+            let (sender, _requests) = mpsc::channel();
+            for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+                assert!(
+                    workspace_text(&mut workspace, width, height)
+                        .contains("PRIVATE_FIRST_LINE_MARKER")
+                );
+            }
+            workspace.key(
+                &sender,
+                event::KeyEvent::new(KeyCode::Char('p'), KeyModifiers::CONTROL),
+            );
+            press(&mut workspace, &sender, KeyCode::F(1));
+            assert!(!workspace.palette.is_open() && !workspace.help.is_open());
+            match action {
+                0 => {
+                    press(&mut workspace, &sender, KeyCode::Esc);
+                }
+                1 => {
+                    press(&mut workspace, &sender, KeyCode::Char('['));
+                }
+                2 => {
+                    assert!(workspace.expire_prompt_nav(Instant::now() + Duration::from_secs(26)));
+                }
+                3 => {
+                    guarded.store(false, Ordering::Release);
+                    assert!(workspace.expire_prompt_nav(Instant::now()));
+                }
+                _ => {
+                    assert!(workspace.key(
+                        &sender,
+                        event::KeyEvent::new(KeyCode::Char('c'), KeyModifiers::CONTROL)
+                    ));
+                    assert!(workspace.redact_prompt_nav(true));
+                }
+            }
+            assert!(
+                matches!(ack.try_recv(), Err(mpsc::TryRecvError::Empty)),
+                "ACK must stay connected until redraw"
+            );
+            for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+                assert!(
+                    !workspace_text(&mut workspace, width, height)
+                        .contains("PRIVATE_FIRST_LINE_MARKER")
+                );
+            }
+            workspace.acknowledge_redaction();
+            assert_eq!(ack.try_recv(), Ok(()));
+        }
+    }
+
+    #[test]
+    fn inline_private_reader_checks_the_same_locked_display_gate_as_fullscreen() {
+        let (mut workspace, ack, _guarded) = inline_private_fixture();
+        let active = workspace.private_display_gate().unwrap();
+        *active.lock().unwrap() = false;
+        let gate = active.lock().unwrap();
+        workspace.enforce_private_display_gate(*gate);
+        assert!(!workspace_text(&mut workspace, 80, 24).contains("PRIVATE_FIRST_LINE_MARKER"));
+        assert!(matches!(ack.try_recv(), Err(mpsc::TryRecvError::Empty)));
+        workspace.acknowledge_redaction();
+        assert_eq!(ack.try_recv(), Ok(()));
+    }
+
+    #[test]
+    fn cancelled_review_export_cannot_copy_or_consume_a_replacement_form() {
+        let mut workspace = Workspace::new();
+        workspace.history.push(HistoryView::new(
+            HistorySelection::Session(
+                session("harness.fixture", "review", "completed", None),
+                SessionView::Review,
+            ),
+            review_page(),
+        ));
+        let (sender, requests) = mpsc::channel();
+        press(&mut workspace, &sender, KeyCode::Char('x'));
+        for ch in "/original".chars() {
+            press(&mut workspace, &sender, KeyCode::Char(ch));
+        }
+        press(&mut workspace, &sender, KeyCode::Enter);
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::Work(WorkCommand::ReviewReceipt(_)))
+        ));
+        press(&mut workspace, &sender, KeyCode::Esc);
+        press(&mut workspace, &sender, KeyCode::Char('x'));
+        workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::ReviewDocument {
+            title: "Review".into(),
+            text: "OLD_EXPORT_MUST_NOT_COPY".into(),
+            scope: "original".into(),
+        })));
+        assert!(workspace.view_io.clipboard.is_none());
+        assert_eq!(
+            workspace.view_io.review_form.as_ref().unwrap().directory,
+            ""
+        );
+        assert!(workspace.message.as_ref().unwrap().contains("Discarded"));
+    }
+
+    #[test]
+    fn roster_and_exact_turn_prompt_routes_render_and_restore_their_origin() {
+        for from_turn in [false, true] {
+            let mut workspace = Workspace::new();
+            let row = session("harness.fixture", "scoped", "running", None);
+            workspace.agents.update(catalog(vec![row.clone()]));
+            if from_turn {
+                let turn = RecordedTurn {
+                    harness_id: row.harness_id.clone(),
+                    session_id: row.session_id.clone(),
+                    worker_id: None,
+                    turn_id: "exact-turn".into(),
+                    snapshot_id: row.snapshot_id,
+                    lifecycle: None,
+                };
+                workspace.history.push(HistoryView::new(
+                    HistorySelection::Turn(turn),
+                    session_history_page(&["Turn"]),
+                ));
+            }
+            let (sender, requests) = mpsc::channel();
+            press(&mut workspace, &sender, KeyCode::Char('P'));
+            let WorkspaceRequest::Work(WorkCommand::Prompts(anchor)) = requests.try_recv().unwrap()
+            else {
+                panic!("prompt route");
+            };
+            assert_eq!(anchor.turn.as_deref(), from_turn.then_some("exact-turn"));
+            workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::PromptHistory(
+                prompt_page(anchor),
+            ))));
+            for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+                assert!(workspace_text(&mut workspace, width, height).contains("Request"));
+            }
+            press(&mut workspace, &sender, KeyCode::Esc);
+            assert!(workspace.prompt_nav.is_none());
+            assert_eq!(workspace.history.len(), usize::from(from_turn));
+            assert_eq!(workspace.agents.current(), Some(&row));
+        }
+    }
+
+    #[test]
+    fn palette_actions_use_their_real_context_instead_of_conflicting_letters() {
+        let mut workspace = Workspace::new();
+        let (sender, requests) = mpsc::channel();
+        workspace.work = Some(Workbench::new(
+            WorkResult::Tasks {
+                items: vec![],
+                older: None,
+            },
+            None,
+        ));
+        workspace.run_action(&sender, keymap::id::TASK_DECISION_ADD);
+        assert!(requests.try_recv().is_err());
+        assert!(!workspace.work.as_ref().unwrap().editing());
+        assert!(workspace.message.as_ref().unwrap().contains("Decisions"));
+        workspace.work = None;
+        let anchor = WorkAnchor {
+            source: "harness.fixture".into(),
+            session: "prompt".into(),
+            worker: None,
+            turn: None,
+        };
+        workspace.request(
+            &sender,
+            WorkspaceRequest::Work(WorkCommand::Prompts(anchor.clone())),
+            Change::Work(Some(anchor.clone())),
+        );
+        requests.try_recv().unwrap();
+        let mut page = prompt_page(anchor.clone());
+        page.older = Some(crate::workbench::PromptHistoryCursor {
+            timestamp: 1,
+            event_id: "prompt-event".into(),
+            snapshot_id: 9.into(),
+            history_identity: "history".into(),
+        });
+        workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::PromptHistory(page))));
+        workspace.run_action(&sender, keymap::id::PROMPT_EARLIER_PAGE);
+        assert!(
+            matches!(requests.try_recv(), Ok(WorkspaceRequest::Work(WorkCommand::PromptPage { anchor: selected, before: Some(_) })) if selected == anchor)
+        );
     }
 }

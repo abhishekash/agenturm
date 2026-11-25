@@ -292,12 +292,7 @@ impl EvidenceTable {
                     if self.spec.columns.get(column).is_some_and(|(name, _)| {
                         matches!(
                             *name,
-                            "Result"
-                                | "Severity"
-                                | "Root result"
-                                | "State"
-                                | "Status"
-                                | "Coverage"
+                            "Result" | "Severity" | "Root result" | "State" | "Status" | "Coverage"
                         )
                     }) {
                         cell.style(theme::status(value))

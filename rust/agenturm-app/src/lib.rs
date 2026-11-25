@@ -2951,13 +2951,24 @@ pub fn execute_selected_review(
 pub(crate) fn review_receipt_for_scope(
     store: &impl HistoryReader,
     db: &std::path::Path,
-    harness_id: &str,
-    session_id: &str,
-    turn_id: Option<&str>,
-    worker_id: Option<&str>,
+    pinned: &agenturm_ui::PinnedReviewQuery,
     format: &str,
     directory: Option<&str>,
 ) -> Result<String, String> {
+    if store.workspace_history_identity().as_deref() != Some(&pinned.history_identity) {
+        return Err("The loaded Review belongs to a different history; reopen Review".into());
+    }
+    if pinned
+        .before
+        .as_ref()
+        .is_some_and(|cursor| cursor.snapshot_id != pinned.snapshot_id)
+    {
+        return Err("Review cursor belongs to a different snapshot".into());
+    }
+    let harness_id = pinned.anchor.source.as_str();
+    let session_id = pinned.anchor.session.as_str();
+    let turn_id = pinned.anchor.turn.as_deref();
+    let worker_id = pinned.anchor.worker.as_deref();
     let output = ReviewOutput {
         format: Some(review_receipt::ReviewFormat::parse(format)?),
         directory: directory.map(PathBuf::from),
@@ -2966,34 +2977,70 @@ pub(crate) fn review_receipt_for_scope(
         db: db.to_path_buf(),
         harness_id: Some(harness_id.to_owned()),
         session_id: Some(session_id.to_owned()),
-        before: None,
-        snapshot_id: None,
+        before: pinned.before.clone(),
+        snapshot_id: Some(pinned.snapshot_id),
         limit: INSPECT_PAGE_SIZE,
     };
-    if let Some(turn_id) = turn_id {
-        let selection = ReviewSelection {
-            anchor: ReviewAnchor::Turn {
-                turn_id: turn_id.to_owned(),
-                worker_id: worker_id.map(str::to_owned),
-            },
-            linked_traces: false,
-        };
-        return review_from_store(store, &options, &selection, &output);
+    if turn_id.is_none() && (!pinned.all_workers || worker_id.is_some()) {
+        return Err("Exact worker session Review is unavailable; choose an exact turn".into());
     }
-    let page = store
-        .query_observations(&options.observation_query())
-        .map_err(|error| format!("Read review evidence failed: {error}"))?;
+    let query = options.observation_query();
+    let mut page = if let Some(turn) = turn_id {
+        store.query_worker_turn_observations(&query, turn, worker_id)
+    } else {
+        store.query_observations(&query)
+    }
+    .map_err(|error| format!("Read review evidence failed: {error}"))?;
+    if page.snapshot_id != pinned.snapshot_id
+        || store.workspace_history_identity().as_deref() != Some(&pinned.history_identity)
+    {
+        return Err("Review history changed during the read; reopen Review".into());
+    }
+    if turn_id.is_none() {
+        page.observations.retain(|row| {
+            !matches!(row.kind, ObservationKind::TraceSpanSummary(_))
+                && (pinned.include_reviews
+                    || !agenturm_kernel::native_review::is_codex_review_source(
+                        row.harness_id.as_str(),
+                    ))
+        });
+    }
+    let events: Vec<_> = page
+        .observations
+        .iter()
+        .map(|row| ObservationPosition {
+            observed_at_unix_ns: row.observed_at_unix_ns,
+            harness_id: row.harness_id.as_str().into(),
+            event_id: row.event_id.clone(),
+            revision: row.revision,
+            snapshot_id: page.snapshot_id,
+        })
+        .collect();
+    if events != pinned.events {
+        return Err("The loaded Review page changed or was pruned; reopen Review before copying or exporting".into());
+    }
     let snapshot = page.snapshot_id;
     let mut data = history_page_data(page);
     if let Some(identity) = store.workspace_history_identity() {
         data["history_identity"] = serde_json::json!(identity);
     }
+    data["review_version"] = pinned
+        .version
+        .map(|version| {
+            serde_json::json!({
+                "receipt_sequence": version.receipt_sequence,
+                "retained_observations": version.retained_observations,
+            })
+        })
+        .unwrap_or(serde_json::Value::Null);
+    data["page_before"] =
+        serde_json::to_value(&pinned.before).map_err(|_| "Cannot encode Review cursor")?;
     review_receipt::render(
         data,
         review_receipt::ReviewScope {
             harness_id,
             session_id,
-            turn_id: None,
+            turn_id,
             trace_id: None,
             worker_id,
         },

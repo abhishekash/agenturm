@@ -1,0 +1,153 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Ui Parity Shell Integration Notes</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-shell-integration-notes.md">Markdown source ↗</a></nav><h1>Rust UI parity: recovered shell integration</h1>
+<p>25 November 2026. <strong>Implementation and focused regression checks; not full UI parity or release acceptance.</strong></p>
+<p>Continues <code>a633c68</code> through recovery snapshot <code>2b162cb</code>. The first shell agent
+stopped at a model quota; its successor also hit a usage limit. Both original
+worktrees were preserved. The coordinator recovered the second patch into
+<code>work/ui-parity-resume</code>, completed the fixes, and reran the tests directly.</p>
+<h2>Reachable integration</h2>
+<ul>
+<li>The inspector and roster/turn <code>P</code> routes render the same prompt navigator.
+Wide and compact layouts preserve exact source/session/turn identity.
+Unsupported worker listing is explicitly unavailable: main-session prompts
+are never relabelled with a requested worker identity.</li>
+<li>Prompt results now carry availability, retained-window/cap information and
+proof-bound older-page cursors. Earlier-page and retry palette actions issue
+typed app requests. The adapter's 256-reference window remains a real limit;
+a changed retained window is refused rather than silently replacing history.</li>
+<li>Inline granted readers use the existing active-display lock and timeout
+fence. Help, themes and palette cannot overlay the private reader. Close,
+replacement, expiry, revocation and quit extract the acknowledgement before
+dropping the body; the event loop redraws before sending it. Public request
+labels do not retain a captured first line.</li>
+<li>Review copy/export/excerpts carry the loaded snapshot, history identity,
+cursor, version, exact scope and event identities. The app rechecks the pinned
+page and refuses changed, replaced or pruned evidence. A write has explicit
+export intent; canceling its form cannot turn a late response into a clipboard
+request or consume a replacement form. Cancellation does not undo a write.</li>
+<li>Review control focus survives button activation; Tab/Shift+Tab and one-layer
+Escape return predictably. Turn Review queries exact turn/worker evidence.</li>
+<li>Excerpt/Review task drafts remain unpersisted until Save and replace their
+chooser visibly. Brief and decision writes keep expected revisions. Decision
+fields accept ordinary <code>a</code>/<code>r</code>; <code>Ctrl+K</code> changes kind. Unsaved text or kind
+changes require explicit discard, and a successful save reconciles the new
+revision before another edit.</li>
+<li>Handoff previews/exports resolve saved handoff IDs, not numeric saved-task
+IDs. Destination forms render above the preview, retain collision errors and
+refuse overwrite. Unsupported preview formats are rejected.</li>
+<li>Evidence filters stay pane-local; selection-scoped metadata copy/export uses
+the selected evidence. Task filters restore selection in the filtered index.
+Palette commands use context guards instead of sending conflicting letters
+into unrelated editors or lists.</li>
+</ul>
+<h2>Audit disposition and regression evidence</h2>
+<p>The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-shell-audit.md">independent audit</a> concerns the <strong>original
+recovery snapshot</strong>, not the corrected candidate. Its findings were not erased
+or retrospectively marked passed. The following is coordinator verification,
+not a second independent review.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Finding</th>
+<th>Corrective seam</th>
+<th>Focused evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>F1–F2: private gate/ACK and retained captured labels</td>
+<td>Shared reader lifecycle; metadata labels remain separate from granted bodies</td>
+<td><code>inline_private_reader_redacts_before_ack_and_never_caches_a_captured_label</code>; <code>inline_private_reader_checks_the_same_locked_display_gate_as_fullscreen</code></td>
+</tr>
+<tr>
+<td>F3: handoff/task ID confusion</td>
+<td>Exact saved-handoff lookup and renderer</td>
+<td><code>saved_handoff_preview_and_export_never_resolve_a_colliding_task_id</code></td>
+</tr>
+<tr>
+<td>F4: latest instead of loaded Review</td>
+<td><code>PinnedReviewQuery</code> through the existing app reader</td>
+<td><code>review_receipt_preserves_older_page_snapshot_and_rejects_changed_proofs</code></td>
+</tr>
+<tr>
+<td>F5: late export becomes clipboard copy</td>
+<td>Explicit pending copy/export intents and navigation generation</td>
+<td><code>cancelled_review_export_cannot_copy_or_consume_a_replacement_form</code></td>
+</tr>
+<tr>
+<td>F6: invisible destination form</td>
+<td>Aligned input/render precedence</td>
+<td><code>handoff_destination_and_collision_are_visible_instead_of_the_preview</code> at 120×32, 80×24, 60×18</td>
+</tr>
+<tr>
+<td>F7: excerpt editor hidden/repeated persistence</td>
+<td>Unpersisted task draft replaces chooser</td>
+<td><code>excerpt_draft_replaces_the_chooser_without_persisting_or_repeating_creation</code></td>
+</tr>
+<tr>
+<td>F8–F9: stolen letters, dirty discard, stale revision</td>
+<td>Literal editor keys, explicit discard, response reconciliation</td>
+<td><code>decision_fields_keep_literal_words_and_success_rebases_to_the_saved_revision</code>; <code>task_brief_and_decisions_carry_the_read_revision_and_guard_dirty_drafts</code></td>
+</tr>
+<tr>
+<td>F10: invisible roster/turn prompt routes</td>
+<td>Explicit navigator rendering before underlying history panes</td>
+<td><code>roster_and_exact_turn_prompt_routes_render_and_restore_their_origin</code> at all three sizes</td>
+</tr>
+<tr>
+<td>F11: conflicting palette dispatch</td>
+<td>Guarded availability and meaningful dispatch</td>
+<td><code>palette_actions_use_their_real_context_instead_of_conflicting_letters</code>; existing palette/dispatch tests</td>
+</tr>
+</tbody>
+</table></div>
+<p>Additional evidence: <code>worker_prompt_scope_without_worker_listing_proof_is_explicitly_unavailable</code>,
+<code>review_control_order_is_deterministic_and_escape_returns_to_review</code>,
+<code>review_copy_export_and_save_use_the_exact_anchor_and_keep_review_selected</code>,
+and the evidence-filter regression in <code>workspace::tests</code>.</p>
+<p>Executed focused checks:</p>
+<pre><code class="language-sh">cargo test --locked -p agenturm-ui --lib -j 1 -- --test-threads=1
+cargo test --locked -p agenturm-app --lib -j 1 cockpit_workflows::tests -- --test-threads=1
+</code></pre>
+<p>The UI run passed <strong>157 tests</strong>. The app workflow subset passed, including the
+new store-backed handoff/snapshot/scope cases. Logs are
+<code>/tmp/opencode/agenturm-parity-ui-regressions.log</code> and
+<code>/tmp/opencode/agenturm-parity-app-regressions.log</code>.
+The initial diagnostic failures and intermediate failures remain in separate
+logs; they are not counted as successful candidate runs.</p>
+<h2>Limits still requiring qualification</h2>
+<ul>
+<li>This is not the full paired screen/state/theme matrix against an installed
+Python wheel. The Python preparation uses exact tagged source and locked
+dependencies; the Rust empty-history PTY smoke cannot establish populated
+prompt, provider, attached-receiver, clipboard or private-redraw behavior.</li>
+<li>Headless buffer assertions exercise the shared lifecycle but do not prove a
+particular terminal emulator's flush, clipboard or color behavior. The final
+build/test/PTY ledger must identify the binary actually used.</li>
+<li>Worker prompt listing without retained worker proof remains unavailable.
+Older prompt paging cannot exceed the adapter window. Raw deliveries without
+adapter normalization label Readable unavailable; Original remains granted.
+Private-body copy/export remains disabled pending explicit policy acceptance.</li>
+<li>Review Git/Map reports unavailable without verified workspace binding.
+Provider-specific private-detail breadth remains FD2 work behind its existing
+proofs and grants. Incident acknowledgement persistence needs a ledger API;
+no local-only reviewed badge is invented.</li>
+<li>Full mouse equivalence, a whole-application compact/state matrix and all
+original inventory gaps are not closed by this integration. The older
+inventory is a baseline, not a current acceptance score.</li>
+<li>The independent preparation flagged the pre-existing provider command planner
+in <code>workbench/workflow_resume.rs</code>. This integration adds no new provider branch;
+moving that older planner behind an adapter capability remains architectural
+follow-up, not a silently accepted difference.</li>
+</ul>
+<h2>Pluggable boundaries</h2>
+<p>The UI carries typed request, page and proof facts; it does not open provider
+records or infer a worker from a main-session response. Store/grant enforcement,
+receipt composition, task CAS and collision-safe exports remain in their owning
+app/store seams. Theme/help/palette visual code remains independent and semantic.
+No model, provider billing setting, global installation or release default was
+changed by this continuation.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

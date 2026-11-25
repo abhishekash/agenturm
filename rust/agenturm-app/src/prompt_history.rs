@@ -7,10 +7,6 @@
 //! transcript. Grant proof remains in `agenturm-content`; no reference here is
 //! readable until `content_preview::reveal_user_prompt` rechecks the grant.
 
-// The typed page request is wired by the shared shell integration pass; its
-// windowing and identity rules are covered by this module's tests.
-#![allow(dead_code)]
-
 use crate::content_preview::PromptReference;
 use agenturm_kernel::ExtensionId;
 use agenturm_store::Store;
@@ -55,6 +51,7 @@ pub(crate) struct PromptPage {
     pub(crate) older: Option<PromptCursor>,
 }
 
+#[cfg(test)]
 impl PromptPage {
     pub(crate) fn earlier_available(&self) -> bool {
         self.older.is_some()
@@ -143,6 +140,7 @@ pub(crate) fn load_page(
     config: &Path,
     source: &ExtensionId,
     session: &str,
+    turn: Option<&str>,
     before: Option<&PromptCursor>,
     page: usize,
     writer: Option<&Store>,
@@ -155,16 +153,23 @@ pub(crate) fn load_page(
         let references =
             crate::content_preview::list_user_prompts(db, config, source, session, writer)
                 .map_err(PromptHistoryError::Denied)?;
-        Ok(window(
+        let limited = references.len() >= agenturm_store::MAX_PROMPT_REFERENCES;
+        let references = references
+            .into_iter()
+            .filter(|reference| turn.is_none_or(|turn| reference.turn_id == turn))
+            .collect();
+        let mut result = window(
             references,
             before,
             page,
             agenturm_store::MAX_PROMPT_REFERENCES,
-        ))
+        );
+        result.limited = limited;
+        Ok(result)
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (db, config, source, session, before, page, writer);
+        let _ = (db, config, source, session, turn, before, page, writer);
         Err(PromptHistoryError::Unavailable(
             "Prompt history is available on Linux".into(),
         ))
@@ -287,6 +292,7 @@ mod tests {
             Path::new("/nonexistent"),
             &ExtensionId::parse("harness.fixture").unwrap(),
             " ",
+            None,
             None,
             DEFAULT_PROMPT_PAGE,
             None,

@@ -19,16 +19,16 @@ pub(super) struct ExportForm {
 /// collision so the operator can choose a new directory without losing the
 /// selected review scope.
 pub(super) struct ReviewExportForm {
-    pub(super) anchor: WorkAnchor,
+    pub(super) query: crate::workbench::PinnedReviewQuery,
     pub(super) format: ReviewFormat,
     pub(super) directory: String,
     pub(super) message: Option<String>,
 }
 
 impl ReviewExportForm {
-    pub(super) fn new(anchor: WorkAnchor) -> Self {
+    pub(super) fn new(query: crate::workbench::PinnedReviewQuery) -> Self {
         Self {
-            anchor,
+            query,
             format: ReviewFormat::Markdown,
             directory: String::new(),
             message: None,
@@ -58,20 +58,26 @@ impl Workspace {
         }
         if let Some(form) = &mut self.view_io.review_form {
             match key.code {
-                KeyCode::Esc => self.view_io.review_form = None,
+                KeyCode::Esc => {
+                    self.view_io.review_form = None;
+                    self.generation = self.generation.wrapping_add(1);
+                }
+                _ if self.pending.is_some() => {
+                    form.message = Some(
+                        "Export pending · Esc closes this form; a completed write is not undone"
+                            .into(),
+                    );
+                }
                 KeyCode::Tab | KeyCode::BackTab => form.cycle_format(),
                 KeyCode::Backspace => {
                     form.directory.pop();
-                }
-                KeyCode::Enter if self.pending.is_some() => {
-                    form.message = Some("Wait for the current read before exporting".into());
                 }
                 KeyCode::Enter if form.directory.trim().is_empty() => {
                     form.message = Some("Enter a new export directory".into());
                 }
                 KeyCode::Enter => {
                     let request = ReviewDocumentRequest {
-                        anchor: form.anchor.clone(),
+                        query: form.query.clone(),
                         format: form.format,
                         directory: Some(form.directory.clone()),
                     };
@@ -79,10 +85,11 @@ impl Workspace {
                         "Writing review.md, review.html and review.json; a collision leaves this form open"
                             .into(),
                     );
+                    let directory = request.directory.clone().expect("export directory");
                     self.request(
                         sender,
                         WorkspaceRequest::Work(WorkCommand::ReviewReceipt(Box::new(request))),
-                        Change::Work(None),
+                        Change::ReviewExport(directory),
                     );
                 }
                 KeyCode::Char('f') if key.modifiers == KeyModifiers::CONTROL => {
@@ -115,20 +122,33 @@ impl Workspace {
         }
         match key.code {
             KeyCode::Char('c') => {
+                let Some(query) = self.pinned_review_query() else {
+                    self.message = Some(
+                        "Review receipt unavailable · loaded history identity is missing".into(),
+                    );
+                    return Some(false);
+                };
                 let request = ReviewDocumentRequest {
-                    anchor,
+                    query,
                     format: ReviewFormat::Text,
                     directory: None,
                 };
                 self.request(
                     sender,
                     WorkspaceRequest::Work(WorkCommand::ReviewReceipt(Box::new(request))),
-                    Change::Work(None),
+                    Change::ReviewCopy,
                 );
                 Some(false)
             }
             KeyCode::Char('x') => {
-                self.view_io.review_form = Some(ReviewExportForm::new(anchor));
+                if let Some(query) = self.pinned_review_query() {
+                    self.view_io.review_form = Some(ReviewExportForm::new(query));
+                } else {
+                    self.message = Some(
+                        "Review export unavailable · loaded history identity is missing".into(),
+                    );
+                    return Some(false);
+                }
                 self.message = None;
                 Some(false)
             }
@@ -161,9 +181,15 @@ impl Workspace {
                 Some(false)
             }
             KeyCode::Char('o') => {
+                let Some(query) = self.pinned_review_query() else {
+                    self.message = Some(
+                        "Review excerpts unavailable · loaded history identity is missing".into(),
+                    );
+                    return Some(false);
+                };
                 self.request(
                     sender,
-                    WorkspaceRequest::Work(WorkCommand::ReviewExcerpts(anchor)),
+                    WorkspaceRequest::Work(WorkCommand::ReviewExcerpts(query)),
                     Change::Work(None),
                 );
                 Some(false)
@@ -424,8 +450,8 @@ pub(super) fn draw_review_export(
         Line::styled("Export review receipt", heading_style()),
         Line::from(format!(
             "Scope  {} / {}",
-            visible_text(&form.anchor.source),
-            visible_text(&form.anchor.session)
+            visible_text(&form.query.anchor.source),
+            visible_text(&form.query.anchor.session)
         )),
         Line::from(format!(
             "Format {} · Tab / Ctrl+F cycle",
@@ -437,6 +463,20 @@ pub(super) fn draw_review_export(
         Line::from(""),
         Line::from("Saves review.md, review.html and review.json."),
         Line::from("Bounded to this exact history scope · partial pages stay labelled."),
+        Line::from(format!(
+            "Snapshot {} · worker {} · turn {}",
+            form.query.snapshot_id,
+            form.query
+                .anchor
+                .worker
+                .as_deref()
+                .unwrap_or(if form.query.all_workers {
+                    "all recorded"
+                } else {
+                    "workerless"
+                }),
+            form.query.anchor.turn.as_deref().unwrap_or("all recorded")
+        )),
         Line::from(
             form.message
                 .as_deref()
@@ -463,6 +503,7 @@ pub(super) fn draw(frame: &mut Frame, form: &ExportForm, message: Option<&str>) 
     let lines = vec![
         Line::styled("Export loaded view", heading_style()),
         Line::from(visible_text(&form.document.title)),
+        Line::from(visible_text(&form.document.scope)),
         Line::from(""),
         Line::from("New directory:"),
         Line::from(visible_text(&form.directory)),

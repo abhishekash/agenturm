@@ -110,7 +110,7 @@ pub(super) fn render(
     }
     page["scope"]["worker_scope"] = json!(if scope.worker_id.is_some() {
         "exact"
-    } else if scope.trace_id.is_some() && scope.turn_id.is_none() {
+    } else if scope.turn_id.is_none() {
         "all_recorded"
     } else {
         "workerless"
@@ -144,7 +144,7 @@ pub(super) fn render(
     }
     let worker = scope.worker_id.map_or_else(
         || {
-            if scope.trace_id.is_some() && scope.turn_id.is_none() {
+            if scope.turn_id.is_none() {
                 "All recorded workers".into()
             } else {
                 "Workerless".into()

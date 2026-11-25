@@ -57,6 +57,20 @@ pub(super) fn render_task(handoff: &TaskHandoff, history: bool, html: bool) -> S
     }
 }
 
+pub(super) fn render_saved(handoff: &SavedHandoff, html: bool) -> String {
+    let title = format!("Handoff {}", handoff.id);
+    let sections = [
+        ("From", anchor_text(&handoff.from)),
+        ("To", anchor_text(&handoff.to)),
+        ("Note", handoff.note.clone()),
+    ];
+    if html {
+        html_sections(&title, &sections)
+    } else {
+        markdown_sections(&title, &sections)
+    }
+}
+
 fn write_export(db: &Path, handoff: &SavedHandoff) -> io::Result<PathBuf> {
     let db = db.canonicalize()?;
     if !db.is_file() {

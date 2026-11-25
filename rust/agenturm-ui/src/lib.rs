@@ -45,11 +45,11 @@ pub use workbench::workflow_resume::{ResumeRuntime, WorkflowResume};
 
 pub use agenturm_kernel::workflow_notifications::WorkflowDelivery;
 pub use workbench::{
-    CurrentHostSample, HandoffEntry, OperationDetailEntry, OperationDetailKind, PromptDelivery,
-    PromptEntry, RequestEntry, RequestProof, ReviewDocumentRequest, ReviewEditSelection,
-    ReviewExcerpt, ReviewFormat, ReviewNoteEntry, TaskDecisionEntry, TaskEntry,
-    TelemetryLogEntry, TelemetrySpanEntry, WorkAnchor, WorkCommand, WorkResult,
-    WorkflowAlertInbox,
+    CurrentHostSample, HandoffEntry, OperationDetailEntry, OperationDetailKind, PinnedReviewQuery,
+    PromptAvailability, PromptDelivery, PromptEntry, PromptHistoryCursor, PromptHistoryPage,
+    RequestEntry, RequestProof, ReviewDocumentRequest, ReviewEditSelection, ReviewExcerpt,
+    ReviewFormat, ReviewNoteEntry, TaskDecisionEntry, TaskEntry, TelemetryLogEntry,
+    TelemetrySpanEntry, WorkAnchor, WorkCommand, WorkResult, WorkflowAlertInbox,
 };
 
 pub use workspace::{
@@ -330,7 +330,9 @@ impl UiModel {
                     .collect::<Vec<_>>();
                 let position = previous_actual
                     .and_then(|actual| visible.iter().position(|index| *index == actual))
-                    .unwrap_or_else(|| pane_filter::selection(&visible, previous_actual).unwrap_or(0));
+                    .unwrap_or_else(|| {
+                        pane_filter::selection(&visible, previous_actual).unwrap_or(0)
+                    });
                 self.scroll = position;
                 self.update_scroll_limit();
                 self.evidence_inspection = None;
@@ -345,8 +347,7 @@ impl UiModel {
     fn inherit_evidence_filters(&mut self, previous: &Self) {
         for (id, filter) in &previous.evidence_filter {
             if self.evidence.contains_key(id) {
-                self.evidence_filter
-                    .insert(id.clone(), filter.committed());
+                self.evidence_filter.insert(id.clone(), filter.committed());
             }
         }
         if let Some(table) = self.selected_evidence() {
@@ -371,8 +372,6 @@ impl UiModel {
             visible.len(),
         ))
     }
-
-
 
     /// Routes input to the active metadata inspector before regular history keys.
     fn evidence_key(&mut self, key: KeyCode) -> bool {
@@ -539,6 +538,8 @@ pub struct HistoryPage {
 
 struct PageView {
     snapshot_id: ReadSnapshot,
+    review_before: Option<ObservationPosition>,
+    review_events: Vec<ObservationPosition>,
     history_identity: Option<String>,
     ui: UiModel,
     turns: Vec<RecordedTurn>,
@@ -581,6 +582,18 @@ impl PageView {
         };
         let evaluation_traces = workbench::evaluation::trace_entries(&page.snapshot);
         let snapshot_id = page.snapshot.history_snapshot_id;
+        let review_events = page
+            .snapshot
+            .observations
+            .iter()
+            .map(|row| ObservationPosition {
+                observed_at_unix_ns: row.observed_at_unix_ns,
+                harness_id: row.harness_id.as_str().into(),
+                event_id: row.event_id.clone(),
+                revision: row.revision,
+                snapshot_id,
+            })
+            .collect();
         let mut ui = UiModel::from_snapshot(page.snapshot);
         if ui.truncated
             && let Some(continuation) = page.features.continuation
@@ -596,6 +609,8 @@ impl PageView {
         ui.turn_available = !in_turn && !page.turns.is_empty();
         Self {
             snapshot_id,
+            review_before: None,
+            review_events,
             history_identity: page.history_identity,
             ui,
             turns: page.turns,

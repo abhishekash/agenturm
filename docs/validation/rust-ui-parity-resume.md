@@ -1,6 +1,24 @@
 # Rust UI parity: continuation and integration
 
-24 November 2026. **In progress; not a full-parity acceptance or release.**
+25 November 2026. **Integration validation in progress; not a full-parity acceptance or release.**
+
+## Latest continuation
+
+The second shell and acceptance subagents stopped at a subscription usage limit.
+Their unfinished files were preserved without editing their worktrees. The
+coordinator continued directly, completed the shell correctness fixes and added
+regressions for the independent audit findings. The focused UI run passed 157
+tests; store-backed app regressions passed. The shared overlay tests passed 21
+tests normally and 21 with `NO_COLOR=1`. See the
+[shell integration note](rust-ui-parity-shell-integration-notes.md),
+[visual lane note](rust-ui-parity-ui07-lane-notes.md), and
+[independent Python acceptance preparation](rust-ui-parity-acceptance-prep.md).
+
+The Python preparation records 47 passing exact-tag tests, 42 reference captures
+and fixed-clock policy checks; it is not Rust acceptance. The coordinator also
+reran the acceptance harness's four self-tests successfully. Workspace build,
+lint and exact-binary terminal qualification are the next gates. No changes have
+been pushed or merged remotely at this point.
 
 ## Recovery and isolation
 
