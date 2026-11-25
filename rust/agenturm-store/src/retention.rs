@@ -319,7 +319,7 @@ pub(super) fn prune_in(
                 SELECT request_id FROM agenturm_observations
                 WHERE (json_extract(kind_json, '$.kind') = 'message'
                        AND json_extract(kind_json, '$.role') = 'user')
-                   OR json_extract(kind_json, '$.kind') IN ('mcp_call', 'file_edit')
+                   OR json_extract(kind_json, '$.kind') IN ('mcp_call', 'file_edit', 'file_change')
                    OR (json_extract(kind_json, '$.kind') = 'tool'
                        AND json_extract(kind_json, '$.category') = 'shell')
              )",

@@ -351,13 +351,19 @@ fn review_rows(evidence: &[&Observation], turn_endings: &TurnEndings<'_>) -> Vec
     let mut tools = Vec::new();
     let recorded_edits: BTreeSet<_> = evidence
         .iter()
-        .filter(|row| matches!(row.kind, ObservationKind::FileEdit(_)))
+        .filter(|row| {
+            matches!(
+                row.kind,
+                ObservationKind::FileEdit(_) | ObservationKind::FileChange(_)
+            )
+        })
         .filter_map(|row| operation_occurrence(row, "succeeded"))
         .collect();
     for row in evidence {
         let (group, label) = match &row.kind {
             ObservationKind::PullRequestRaised { .. } => (&mut work_results, "Work result"),
             ObservationKind::FileEdit(_) => (&mut edits, "File edit"),
+            ObservationKind::FileChange(_) => (&mut edits, "File change"),
             ObservationKind::Check { .. } => (&mut checks, "Check"),
             ObservationKind::Diagnostic { severity, .. } if severity == "error" => {
                 (&mut errors, "Error")
@@ -913,6 +919,10 @@ pub(super) fn describe_observation(kind: &ObservationKind) -> (&'static str, Str
             .join(" · ");
             ("File edit", summary)
         }
+        ObservationKind::FileChange(change) => (
+            "File change",
+            format!("{} files · digest {}", change.files, change.digest),
+        ),
         ObservationKind::McpCall {
             server,
             tool,

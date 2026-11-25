@@ -79,9 +79,25 @@ pub struct VerifiedPrompt {
 #[serde(deny_unknown_fields)]
 pub struct VerifiedEdit {
     pub changes: Vec<EditChange>,
+    /// Provider-specific evidence is never coerced into Codex add/update/delete
+    /// diffs. The optional field preserves the existing Codex proof shape.
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub provider_detail: Option<ProviderEditDetail>,
     pub turn_id: String,
     pub observed_at_unix_ns: u64,
     pub grant_binding: [u8; 32],
+}
+
+#[derive(Serialize, Deserialize)]
+#[serde(
+    tag = "provider",
+    content = "detail",
+    rename_all = "snake_case",
+    deny_unknown_fields
+)]
+pub enum ProviderEditDetail {
+    Claude(ClaudeEditDetail),
+    OpenCode(OpenCodeEditDetail),
 }
 
 #[derive(Serialize, Deserialize)]
@@ -113,15 +129,26 @@ impl RecordedInvocation {
 impl VerifiedEdit {
     /// Compare recorded paths literally, including the destination of a move.
     pub fn contains_path(&self, path: &str) -> bool {
-        self.changes
-            .iter()
-            .any(|change| change.path == path || change.edit.move_path.as_deref() == Some(path))
+        match &self.provider_detail {
+            Some(ProviderEditDetail::Claude(detail)) => detail.file_path == path,
+            Some(ProviderEditDetail::OpenCode(detail)) => {
+                !detail.truncated && detail.files.iter().any(|file| file == path)
+            }
+            None => self.changes.iter().any(|change| {
+                change.path == path || change.edit.move_path.as_deref() == Some(path)
+            }),
+        }
     }
 
     /// Deliver the verified edit using the private terminal preview format.
     pub fn write_terminal(&self, output: &mut dyn Write) -> Result<(), String> {
-        let mut text = serde_json::to_string(&display_edit_changes(&self.changes))
-            .map_err(|_| "Cannot encode the verified file edit")?;
+        let display = match &self.provider_detail {
+            Some(ProviderEditDetail::Claude(detail)) => detail.display(),
+            Some(ProviderEditDetail::OpenCode(detail)) => detail.display(),
+            None => display_edit_changes(&self.changes),
+        };
+        let mut text =
+            serde_json::to_string(&display).map_err(|_| "Cannot encode the verified file edit")?;
         text.push('\n');
         write_output(output, text.as_bytes())
     }
@@ -240,7 +267,24 @@ fn operation_definition(
         (Harness::Claude, OperationDetailKind::Command) => {
             Err("Command detail preview requires a supported pinned Codex source".into())
         }
-        _ => Err("Operation details require a supported pinned Codex or Claude source".into()),
+        (Harness::OpenCode, OperationDetailKind::Edit) => Ok(OperationDefinition {
+            grant: ContentKind::OpenCodeEditDetail,
+            fingerprint_domain: b"agenturm.opencode-edit-detail/1",
+            event_suffix: ":file-change",
+            native_kind: "patch",
+            description: "file edit",
+            unavailable: "The selected OpenCode file change has no verified detail",
+            label: "OpenCode",
+        }),
+        (Harness::OpenCode, OperationDetailKind::Mcp) => {
+            Err("MCP payload preview requires a supported pinned Codex source".into())
+        }
+        (Harness::OpenCode, OperationDetailKind::Command) => {
+            Err("Command detail preview requires a supported pinned Codex source".into())
+        }
+        _ => Err(
+            "Operation details require a supported pinned Codex, Claude, or OpenCode source".into(),
+        ),
     }
 }
 
@@ -406,7 +450,9 @@ pub fn reveal_operation_fenced(
     )
 }
 
-/// Uses one exact retained Codex edit while its approval and evidence are fenced.
+/// Uses one exact retained edit while its provider-specific approval and
+/// evidence are fenced. Path-only patches and tool inputs retain their own
+/// shape instead of being promoted to Codex diffs.
 pub fn with_verified_edit<T>(
     store: &Store,
     resolver: &SourceResolver<'_>,
@@ -422,11 +468,19 @@ pub fn with_verified_edit<T>(
         selection,
         |operation, payload, evidence, grant_binding| {
             payload.encode(false).map_err(|_| operation.unavailable)?;
-            let OperationPayload::Edit { changes } = payload else {
-                return Err(operation.unavailable.into());
+            let (changes, provider_detail) = match payload {
+                OperationPayload::Edit { changes } => (changes, None),
+                OperationPayload::ClaudeEdit(detail) => {
+                    (Vec::new(), Some(ProviderEditDetail::Claude(detail)))
+                }
+                OperationPayload::OpenCodeEdit(detail) => {
+                    (Vec::new(), Some(ProviderEditDetail::OpenCode(detail)))
+                }
+                _ => return Err(operation.unavailable.into()),
             };
             Ok(consume(&VerifiedEdit {
                 changes,
+                provider_detail,
                 turn_id: evidence.turn_id,
                 observed_at_unix_ns: evidence.observed_at_unix_ns,
                 grant_binding,
@@ -531,11 +585,18 @@ fn with_verified_operation<T>(
                     .ok_or_else(|| operation.unavailable.to_owned())
             };
             let evidence = select(&source.scope)?;
-            let prefix = source.verified_prefix(&evidence.cursor)?;
-            let payload = prefix.operation_payload(kind, &operation, selection, &evidence)?;
+            let payload = if source.harness == Harness::OpenCode {
+                source.opencode_edit_payload(&operation, selection, &evidence)?
+            } else {
+                let prefix = source.verified_prefix(&evidence.cursor)?;
+                prefix.operation_payload(kind, &operation, selection, &evidence)?
+            };
             let fresh = source.recheck(resolver, source_id)?;
             if select(&fresh.scope)? != evidence {
                 return Err("The selected operation changed".into());
+            }
+            if source.harness == Harness::OpenCode {
+                source.verify_additional_checkpoint()?;
             }
             consume(&operation, payload, evidence, grant.binding_fingerprint())
         })
@@ -695,9 +756,15 @@ impl BoundSource {
                 return Err("Prompt preview requires a supported pinned source".into());
             }
         };
-        if operation_kind.is_some() && !matches!(harness, Harness::Codex | Harness::Claude) {
+        if operation_kind.is_some()
+            && !matches!(
+                harness,
+                Harness::Codex | Harness::Claude | Harness::OpenCode
+            )
+        {
             return Err(
-                "Operation details require a supported pinned Codex or Claude source".into(),
+                "Operation details require a supported pinned Codex, Claude, or OpenCode source"
+                    .into(),
             );
         }
         let artifact = source
@@ -835,6 +902,89 @@ impl BoundSource {
         kind: OperationDetailKind,
     ) -> Result<OperationDefinition, String> {
         operation_definition(self.harness, kind)
+    }
+
+    /// Verifies the exact native OpenCode patch part behind the selected
+    /// file-change occurrence and extracts its bounded edited-path list. The
+    /// pinned database is re-read in a read-only transaction; the part and
+    /// message identity, the observed timestamp, the canonical record digest, and the
+    /// file count must all match the retained observation exactly before any
+    /// path is disclosed. Paths are truncated to the shared edit-text bound
+    /// and screened; unsafe text withholds the entire payload.
+    fn opencode_edit_payload(
+        &mut self,
+        operation: &OperationDefinition,
+        selection: &CodexOperationSelection<'_>,
+        evidence: &CodexOperationEvidence,
+    ) -> Result<OperationPayload, String> {
+        let unavailable = operation.unavailable;
+        let (Some(digest), Some(files)) = (evidence.digest.as_deref(), evidence.files) else {
+            return Err(unavailable.into());
+        };
+        let proven = agenturm_opencode_harness::prove_patch_part(
+            &self.source_path,
+            &evidence.cursor,
+            &agenturm_opencode_harness::PatchPartEvidence {
+                event_id: selection.event_id,
+                operation_id: selection.operation_id,
+                turn_id: &evidence.turn_id,
+                session_id: selection.session_id,
+                observed_at_unix_ns: evidence.observed_at_unix_ns,
+                digest,
+                files,
+            },
+        )
+        .map_err(|error| {
+            // The harness reports a changed pinned source with its own exact
+            // message; every other failure is an unavailable detail.
+            if error.to_string()
+                == "OpenCode edit source changed or no longer matches the committed checkpoint"
+            {
+                SOURCE_CHANGED.to_owned()
+            } else {
+                unavailable.to_owned()
+            }
+        })?;
+        self.opencode_stamp = Some(proven.stamp);
+        // Each native path is truncated to the shared 512-byte edit-path
+        // bound on a character boundary; any path that is still unsafe
+        // withholds the entire payload rather than disclosing a neighbor.
+        const MAX_PATH_BYTES: usize = 512;
+        let mut paths = Vec::new();
+        let mut truncated = false;
+        let mut bytes = 0usize;
+        for path in proven.files {
+            let (prefix, cut) = if path.len() <= MAX_PATH_BYTES {
+                (path.as_str(), false)
+            } else {
+                let mut end = MAX_PATH_BYTES;
+                while end > 0 && !path.is_char_boundary(end) {
+                    end -= 1;
+                }
+                (&path[..end], true)
+            };
+            if !edit_path(prefix) {
+                return Err(unavailable.into());
+            }
+            let encoded_bytes = serde_json::to_string(prefix)
+                .map_err(|_| unavailable)?
+                .len()
+                + 1;
+            // Reserve object keys, count, and the truncation marker as well as
+            // the JSON escaping cost of each displayed path.
+            if bytes + encoded_bytes + 256 > MAX_ROW {
+                truncated = true;
+                break;
+            }
+            bytes += encoded_bytes;
+            truncated |= cut;
+            paths.push(prefix.to_owned());
+        }
+        Ok(OperationPayload::OpenCodeEdit(OpenCodeEditDetail {
+            files: paths,
+            reported_files: files,
+            truncated,
+        }))
     }
 
     fn verify_additional_checkpoint(&self) -> Result<(), String> {
@@ -1577,6 +1727,7 @@ enum OperationPayload {
         confirmed_failure: bool,
     },
     ClaudeEdit(ClaudeEditDetail),
+    OpenCodeEdit(OpenCodeEditDetail),
 }
 
 impl OperationPayload {
@@ -1596,6 +1747,7 @@ impl OperationPayload {
                 ..
             } => serde_json::to_string(recorded_invocation).map_err(|_| ())?,
             Self::ClaudeEdit(edit) => edit.display(),
+            Self::OpenCodeEdit(edit) => edit.display(),
         };
         serde_json::to_string(&display).map_err(|_| ())
     }
@@ -1607,7 +1759,7 @@ impl OperationPayload {
 /// otherwise unsafe text withholds the entire payload.
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
-struct ClaudeEditDetail {
+pub struct ClaudeEditDetail {
     tool: String,
     file_path: String,
     #[serde(skip_serializing_if = "Option::is_none")]
@@ -1655,6 +1807,36 @@ impl ClaudeEditDetail {
         }
         if self.truncated {
             text.push_str("\n(edited detail was truncated)");
+        }
+        text
+    }
+}
+
+/// One verified native OpenCode patch, bounded for disclosure. Each revealed
+/// path is a truncated prefix of at most 512 bytes with an
+/// explicit marker; credential-shaped or otherwise unsafe text withholds the
+/// entire payload.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenCodeEditDetail {
+    files: Vec<String>,
+    reported_files: u16,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    truncated: bool,
+}
+
+impl OpenCodeEditDetail {
+    fn display(&self) -> String {
+        let mut text = format!(
+            "Recorded {} changed paths (diffs and add/delete counts unavailable)",
+            self.reported_files
+        );
+        for path in &self.files {
+            text.push('\n');
+            text.push_str(path);
+        }
+        if self.truncated {
+            text.push_str("\n(file list was truncated)");
         }
         text
     }

@@ -2,7 +2,7 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / Delegated current-source tests</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md">Markdown source ↗</a></nav><h1>Core feature development: delegated test plan</h1>
+</style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md">Markdown source ↗</a></nav><h1>Core feature development: delegated test plan</h1>
 <p>Updated 23 November 2026. The user assigned this implementation session to
 <strong>core feature development</strong> and a separate agent to test execution. This plan
 is the handoff contract. It supplements Q1–Q10 in the
@@ -104,6 +104,12 @@ baselines, not results for the new feature slices. Every new row starts
 <td>Implemented: Claude async launch attribution — a <code>worker_launch { child_worker_id }</code> fact from the real <code>isAsync</code>/<code>async_launched</code> record shape, with no completion claim and the checkpoint wire format unchanged.</td>
 <td>Development branch (see PR)</td>
 <td>Separate test agent; not run on new source.</td>
+</tr>
+<tr>
+<td>CF10</td>
+<td>Implemented: OpenCode patch-path evidence and independent schema-24 edit grants; canonical content commitment, provider-shaped local/broker proof and Review/turn selection. No invented diffs or add/delete counts.</td>
+<td><code>feature/opencode-edit-detail</code></td>
+<td>Installed/paired qualification remains with the separate test owner.</td>
 </tr>
 </tbody>
 </table></div>
@@ -435,19 +441,57 @@ revision correction, and older-receiver pages without the combined block),
 76 UI lib tests with the new default Combined chart mode, joined workspace
 all-target strict Clippy and fmt passed on the development branch. These are
 developer checks, not installed qualification.</p>
-<table>
-<thead><tr><th>Scenario</th><th>Required observation</th><th>Status</th></tr></thead>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Required observation</th>
+<th>Status</th>
+</tr>
+</thead>
 <tbody>
-<tr><td>Native plus attributed telemetry at one source/session/day</td><td>Both sides excluded and counted; combined tokens exclude both; all cohort views unchanged.</td><td>Not run</td></tr>
-<tr><td>Attributed telemetry without same-day native rows for the claimed identity</td><td>Contributes its deduplicated tokens; no exclusion is recorded.</td><td>Not run</td></tr>
-<tr><td>Unattributed telemetry and native-only days</td><td>Combined equals the nonduplicated evidence; no speculative cross-layer deduction or hidden merging.</td><td>Not run</td></tr>
-<tr><td>Combined costs</td><td>Trace and log-only costs merged per currency; fork-copyable native-origin records excluded; distinct currencies never converted.</td><td>Not run</td></tr>
-<tr><td>Terminal disclosure at 120×32, 80×24 and 60×18</td><td>Combined mode renders first; <code>n</code> reaches excluded-overlapping counts and per-currency combined cost; <code>s</code> returns to the unchanged native/span/trace/log views.</td><td>Not run</td></tr>
-<tr><td>Snapshot, revision and retention</td><td>A pinned snapshot keeps its combined block; a native revision correction reclassifies only at the newer watermark; retention/scan flags keep marking partial days.</td><td>Not run</td></tr>
-<tr><td>Older attached-receiver page</td><td>A usage page without the combined block deserializes with the block absent; every existing view keeps working.</td><td>Not run</td></tr>
-<tr><td>Scan/cohort limits</td><td>Days beyond trace-cohort or raw-scan bounds keep their existing partial flags; combined never claims coverage the cohort did not read.</td><td>Not run</td></tr>
+<tr>
+<td>Native plus attributed telemetry at one source/session/day</td>
+<td>Both sides excluded and counted; combined tokens exclude both; all cohort views unchanged.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Attributed telemetry without same-day native rows for the claimed identity</td>
+<td>Contributes its deduplicated tokens; no exclusion is recorded.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Unattributed telemetry and native-only days</td>
+<td>Combined equals the nonduplicated evidence; no speculative cross-layer deduction or hidden merging.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Combined costs</td>
+<td>Trace and log-only costs merged per currency; fork-copyable native-origin records excluded; distinct currencies never converted.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Terminal disclosure at 120×32, 80×24 and 60×18</td>
+<td>Combined mode renders first; <code>n</code> reaches excluded-overlapping counts and per-currency combined cost; <code>s</code> returns to the unchanged native/span/trace/log views.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Snapshot, revision and retention</td>
+<td>A pinned snapshot keeps its combined block; a native revision correction reclassifies only at the newer watermark; retention/scan flags keep marking partial days.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Older attached-receiver page</td>
+<td>A usage page without the combined block deserializes with the block absent; every existing view keeps working.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Scan/cohort limits</td>
+<td>Days beyond trace-cohort or raw-scan bounds keep their existing partial flags; combined never claims coverage the cohort did not read.</td>
+<td>Not run</td>
+</tr>
 </tbody>
-</table>
+</table></div>
 <p>All CF6 scenarios are <strong>not run</strong> until the test owner records actual results
 on the frozen integrated head.</p>
 <h2>CF7 — cross-host terminal routing</h2>
@@ -466,18 +510,52 @@ snapshot rejection, stale pane rejection, base64 round-trip, route-file
 validation — plus the attach-option parse test, workspace all-target strict
 Clippy and fmt. These are developer checks against synthetic routes, not a
 qualification of any real transport.</p>
-<table>
-<thead><tr><th>Scenario</th><th>Required observation</th><th>Status</th></tr></thead>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Required observation</th>
+<th>Status</th>
+</tr>
+</thead>
 <tbody>
-<tr><td>Attached cockpit with a real route to a receiver host</td><td>One unique verified pane resolves; the presented attach command opens the exact recorded owner's terminal.</td><td>Not run</td></tr>
-<tr><td>Route semantics</td><td>A route that does not join arguments the way <code>ssh</code> does fails closed with unavailable, never a guessed target.</td><td>Not run</td></tr>
-<tr><td>Ambiguous, stale or missing remote state</td><td>Two candidate panes, a changed pane process between probes, or no matching process report unavailable with the request selection preserved.</td><td>Not run</td></tr>
-<tr><td>Worker/unsupported provider/missing configuration</td><td>Worker requests, non-Codex/Claude/Kiro sources, unsafe session identifiers and absent route files fail closed with exact reasons.</td><td>Not run</td></tr>
-<tr><td>Probe hygiene</td><td>Probes are read-only, bounded in output and time, carry no session bytes in script text, and leave no temporary files behind on the receiver host.</td><td>Not run</td></tr>
-<tr><td>Return selection at all three sizes</td><td>120×32, 80×24 and 60×18 preserve the Workflow selection after routing results and errors.</td><td>Not run</td></tr>
-<tr><td>Python receiver protocol</td><td><code>--route-file</code> with <code>--receiver-protocol python-v0.2.8</code> is rejected at parse time.</td><td>Not run</td></tr>
+<tr>
+<td>Attached cockpit with a real route to a receiver host</td>
+<td>One unique verified pane resolves; the presented attach command opens the exact recorded owner's terminal.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Route semantics</td>
+<td>A route that does not join arguments the way <code>ssh</code> does fails closed with unavailable, never a guessed target.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Ambiguous, stale or missing remote state</td>
+<td>Two candidate panes, a changed pane process between probes, or no matching process report unavailable with the request selection preserved.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Worker/unsupported provider/missing configuration</td>
+<td>Worker requests, non-Codex/Claude/Kiro sources, unsafe session identifiers and absent route files fail closed with exact reasons.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Probe hygiene</td>
+<td>Probes are read-only, bounded in output and time, carry no session bytes in script text, and leave no temporary files behind on the receiver host.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Return selection at all three sizes</td>
+<td>120×32, 80×24 and 60×18 preserve the Workflow selection after routing results and errors.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Python receiver protocol</td>
+<td><code>--route-file</code> with <code>--receiver-protocol python-v0.2.8</code> is rejected at parse time.</td>
+<td>Not run</td>
+</tr>
 </tbody>
-</table>
+</table></div>
 <p>All CF7 scenarios are <strong>not run</strong> until the test owner records actual results
 on the frozen integrated head.</p>
 <h2>CF8 — Claude private edit detail</h2>
@@ -500,29 +578,59 @@ covering grant requirement, bounded reveals, 3 KiB→2 KiB truncation,
 wrong-turn/wrong-operation/malformed denials, cross-kind denial,
 changed-source denial and revoke — all green alongside every pre-existing
 Codex/Pi/Kiro content test. Workspace strict Clippy and fmt clean.</p>
-<table>
-<thead><tr><th>Scenario</th><th>Required observation</th><th>Status</th></tr></thead>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Required observation</th>
+<th>Status</th>
+</tr>
+</thead>
 <tbody>
-<tr><td>Installed binary + real Claude adapter against a real transcript</td><td>Grant-gated bounded reveal of exact edits; no content in query output.</td><td>Not run</td></tr>
-<tr><td>Schema upgrade on a live database</td><td>v22→v23 keeps prior approvals; <code>claude.edit_detail</code> grants become accepted; older kinds unchanged.</td><td>Not run</td></tr>
-<tr><td>Truncation and screening</td><td>Long content truncates at 2 KiB on a char boundary with the flag; credential-shaped or bidi text withholds the payload.</td><td>Not run</td></tr>
-<tr><td>Cross-kind and revoked grants</td><td><code>codex.edit_detail</code> on a Claude source (and vice versa) denies; revoke denies; changed source bytes deny.</td><td>Not run</td></tr>
-<tr><td>Dense lines and malformed shapes</td><td>Dense batches keep the 256-record/64 KiB budget; missing input, non-file tools and out-of-range MultiEdit withhold without failing the line.</td><td>Not run</td></tr>
-<tr><td>Terminal reveal at all three sizes</td><td>120×32, 80×24 and 60×18 render the bounded edit payload with selection preserved.</td><td>Not run</td></tr>
+<tr>
+<td>Installed binary + real Claude adapter against a real transcript</td>
+<td>Grant-gated bounded reveal of exact edits; no content in query output.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Schema upgrade on a live database</td>
+<td>v22→v23 keeps prior approvals; <code>claude.edit_detail</code> grants become accepted; older kinds unchanged.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Truncation and screening</td>
+<td>Long content truncates at 2 KiB on a char boundary with the flag; credential-shaped or bidi text withholds the payload.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Cross-kind and revoked grants</td>
+<td><code>codex.edit_detail</code> on a Claude source (and vice versa) denies; revoke denies; changed source bytes deny.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Dense lines and malformed shapes</td>
+<td>Dense batches keep the 256-record/64 KiB budget; missing input, non-file tools and out-of-range MultiEdit withhold without failing the line.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Terminal reveal at all three sizes</td>
+<td>120×32, 80×24 and 60×18 render the bounded edit payload with selection preserved.</td>
+<td>Not run</td>
+</tr>
 </tbody>
-</table>
+</table></div>
 <p>All CF8 scenarios are <strong>not run</strong> until the test owner records actual results
 on the frozen integrated head.</p>
 <h2>CF9 — Claude async launch attribution</h2>
 <p>Implemented with the FD1 Claude-async slice, licensed by the
 <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-fd1-native-evidence.md">native evidence record</a>. A <code>worker_launch</code> fact
 correlates an assistant <code>Agent</code> tool_use declaration to its structured
-<code>toolUseResult {isAsync: true, status: "async_launched", agentId}</code> through the
+<code>toolUseResult {isAsync: true, status: &quot;async_launched&quot;, agentId}</code> through the
 same declaration tracking, first-consumer-wins consumption and turn-ownership
 fences as the completed-spawn proof. It claims a child identity and a
 launched state only — no completion, no resolution, no liveness. The
-checkpoint wire format is unchanged; evidence presentation says "launched"
-without completion wording, and the "Declared child workers on page" count
+checkpoint wire format is unchanged; evidence presentation says &quot;launched&quot;
+without completion wording, and the &quot;Declared child workers on page&quot; count
 still counts completed spawns only — a disclosed difference, not a silent
 semantic change.</p>
 <p><strong>Developer handoff:</strong> worker_spawns unit tests with the real record shape
@@ -532,18 +640,52 @@ wrong assistant), a line-level adapter test (launch fact emitted, no spawn
 fact, no private-text leak), store round-trip and admission tests with the
 deny-unknown-fields case, and a presentation test asserting no completion
 wording — all green on the rebased head with workspace strict Clippy and fmt.</p>
-<table>
-<thead><tr><th>Scenario</th><th>Required observation</th><th>Status</th></tr></thead>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Required observation</th>
+<th>Status</th>
+</tr>
+</thead>
 <tbody>
-<tr><td>Real async launch in an actual Claude transcript</td><td>One launch fact with the exact child agentId and parent operation; no completion wording anywhere.</td><td>Not run</td></tr>
-<tr><td>Declaration consumption and ambiguity</td><td>A later result for the same declaration never double-claims; duplicates and errors stay withheld.</td><td>Not run</td></tr>
-<tr><td>Checkpoint continuity</td><td>The declaration checkpoint format round-trips unchanged across restart; older cursors stay readable.</td><td>Not run</td></tr>
-<tr><td>Relationships projection and roster</td><td>Launches appear in the relationships projection without claiming completed parentage or roster recency.</td><td>Not run</td></tr>
-<tr><td>Declared-child count disclosure</td><td>The "Declared child workers on page" count stays spawn-only and the launched rows are visibly separate.</td><td>Not run</td></tr>
+<tr>
+<td>Real async launch in an actual Claude transcript</td>
+<td>One launch fact with the exact child agentId and parent operation; no completion wording anywhere.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Declaration consumption and ambiguity</td>
+<td>A later result for the same declaration never double-claims; duplicates and errors stay withheld.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Checkpoint continuity</td>
+<td>The declaration checkpoint format round-trips unchanged across restart; older cursors stay readable.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Relationships projection and roster</td>
+<td>Launches appear in the relationships projection without claiming completed parentage or roster recency.</td>
+<td>Not run</td>
+</tr>
+<tr>
+<td>Declared-child count disclosure</td>
+<td>The &quot;Declared child workers on page&quot; count stays spawn-only and the launched rows are visibly separate.</td>
+<td>Not run</td>
+</tr>
 </tbody>
-</table>
+</table></div>
 <p>All CF9 scenarios are <strong>not run</strong> until the test owner records actual results
 on the frozen integrated head.</p>
+<h2>CF10 — OpenCode patch-path detail</h2>
+<p>The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-opencode-edit-detail.md">implementation and acceptance handoff</a>
+defines the source inventory, canonical content commitment, <code>oc5</code> sweep,
+schema-24 independent grant, provider-shaped edit proof, bounded path-only
+reveal and separate installed/paired acceptance matrix. It does not claim
+native diffs, add/delete counts, exact first-turn attribution or worker linkage.
+All installed/paired CF10 scenarios remain <strong>not run</strong> until the test owner
+records results against the final integrated source and artifact.</p>
 <h2>Related Review identity fixes — delegated regression</h2>
 <p>Typed broker Review receipts now pin the authenticated history identity for
 <code>--format</code> and directory export as well as linked traces. In the existing

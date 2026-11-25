@@ -56,6 +56,7 @@ baselines, not results for the new feature slices. Every new row starts
 | CF7 | Implemented: cross-host terminal routing through an explicit operator-authored attach-time route file; fixed read-only tmux and `/proc` probes resolve one exact remote pane or report unavailable. | Development branch (see PR) | Separate test agent; not run on new source. |
 | CF8 | Implemented: Claude private edit detail through the harness-generic operation contract — adapter `file_edit` summaries, schema-23 grants with a v22 upgrade path, bounded credential-screened reveal under a Claude fingerprint domain, cross-kind grant denial. | Development branch (see PR) | Separate test agent; not run on new source. |
 | CF9 | Implemented: Claude async launch attribution — a `worker_launch { child_worker_id }` fact from the real `isAsync`/`async_launched` record shape, with no completion claim and the checkpoint wire format unchanged. | Development branch (see PR) | Separate test agent; not run on new source. |
+| CF10 | Implemented: OpenCode patch-path evidence and independent schema-24 edit grants; canonical content commitment, provider-shaped local/broker proof and Review/turn selection. No invented diffs or add/delete counts. | `feature/opencode-edit-detail` | Installed/paired qualification remains with the separate test owner. |
 
 Worktree paths identify current ownership, not release artifacts. The developer
 must supply the final integrated commit before the test owner freezes a binary.
@@ -342,6 +343,16 @@ wording — all green on the rebased head with workspace strict Clippy and fmt.
 
 All CF9 scenarios are **not run** until the test owner records actual results
 on the frozen integrated head.
+
+## CF10 — OpenCode patch-path detail
+
+The [implementation and acceptance handoff](rust-opencode-edit-detail.md)
+defines the source inventory, canonical content commitment, `oc5` sweep,
+schema-24 independent grant, provider-shaped edit proof, bounded path-only
+reveal and separate installed/paired acceptance matrix. It does not claim
+native diffs, add/delete counts, exact first-turn attribution or worker linkage.
+All installed/paired CF10 scenarios remain **not run** until the test owner
+records results against the final integrated source and artifact.
 
 ## Related Review identity fixes — delegated regression
 
