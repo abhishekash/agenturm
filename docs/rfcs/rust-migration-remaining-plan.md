@@ -29,11 +29,11 @@ Neither merge completes parity, release qualification, or default cutover.
   ARM64 bundle PTY checks failed to confirm a requested roster filter; the
   separate test owner owns reproduction and correction.
 - **Feature work resumed:** branch `feature/ui05-session-metrics` in
-  `/tmp/agenturm-ui05-session-metrics` adds a session-entry route to the
-  source-filtered OTLP Metrics catalog. Offline locked app compile and rustfmt
-  pass; no tests were run. OTLP metric facts currently have source scope only,
-  so true per-session metric filtering remains open; session-scoped Usage is
-  still the truthful session totals view. The [delegated test plan](../validation/rust-core-feature-test-plan.md#ui-05-follow-up-handoff--not-run)
+  `/tmp/agenturm-ui05-session-metrics` adds a contextual jump from a session to the global OTLP Metrics catalog.
+  Offline locked app compile and rustfmt pass; no tests were run. OTLP sources
+  use `otlp.*` IDs distinct from ordinary `harness.*` session IDs, and the
+  stored metric facts have no typed session link. True session-filtered Metrics
+  remains open; session-scoped Usage is still the truthful session totals view. The [delegated test plan](../validation/rust-core-feature-test-plan.md#ui-05-follow-up-handoff--not-run)
   assigns UI05-A/B/C to the separate test owner. Continue UI-05/UI-06 feature
   work while preserving typed contracts and adapter/capability seams.
 - **Release/cutover:** no new public release and no default switch were made.

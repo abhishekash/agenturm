@@ -14,10 +14,10 @@ to `main`. Candidate evidence remains limited to its recorded scope: 991 tests
 across 96 suites, strict app/UI Clippy, 159 fresh-process `NO_COLOR=1` UI
 tests, selected empty and populated PTY journeys at 120×32, 80×24 and 60×18,
 and a selected debug QA archive smoke. This is not full Python parity or final
-release qualification. The current unmerged feature branch adds a route from a
-selected session to that source's metric catalog; metric records themselves
-remain source-scoped, so per-session OTLP Metrics still requires a session
-identity in the typed metric contract. See the [qualification report](../validation/rust-ui-parity-acceptance.md)
+release qualification. The current unmerged feature branch adds a contextual entry from a
+selected session to the global Metrics catalog. This is navigation only: metric
+records use `otlp.*` source IDs and currently have no typed link to ordinary
+`harness.*` sessions, so true per-session OTLP Metrics remains open. See the [qualification report](../validation/rust-ui-parity-acceptance.md)
 and [continuation record](../validation/rust-ui-parity-resume.md) for exact
 scope and limits.
 
@@ -27,7 +27,7 @@ scope and limits.
 | UI-02 Shared shell | Shared key/action dispatch, contextual help, command palette and theme routing integrated in the candidate. | Complete the full binding/control journey comparison, including forms, clipboard, mouse and all compact/error states. |
 | UI-03 Command center and inspector | Today/History, chooser, named roster behavior, inspector Overview/Prompts/Details and nested navigation are implemented in the candidate. | Pin primary-event identity through linked Activity; add inspector Locate/acknowledge/dismiss with distinct dismissed-error semantics; add subtree evidence queries when the kernel exposes them; catalog capture policy. |
 | UI-04 Prompts and history | Integrated navigator/reader, wide and compact modes, exact grant behavior, paging and late-response fencing are implemented. | Add cursor-backed paging beyond the adapter’s bounded window; resolve no-copy policy differences; proactively clear on idle-policy changes; qualify attached/provider journeys. |
-| UI-05 Evidence and observability screens | PR #396 merged page-local evidence filters, typed MCP-call trace navigation, selection-scoped copy/export, Activity prompt-only filter over typed NativeRequest rows and explicit “Unreported” worker detail. Current feature branch adds a session-entry route to source-filtered Metrics; offline locked app compile passes. | Trace tree and linked-evidence traversal; typed MCP aggregate metric cohort; true session-filtered OTLP Metrics needs a typed session identity in metric facts; diagnostics/health/reconnect/retry integration. UI05-A/B/C and UI-Q acceptance remain open. |
+| UI-05 Evidence and observability screens | PR #396 merged page-local evidence filters, typed MCP-call trace navigation, selection-scoped copy/export, Activity prompt-only filter over typed NativeRequest rows and explicit “Unreported” worker detail. Current feature branch adds a contextual entry into the global Metrics catalog; offline locked app compile passes. | Trace tree and linked-evidence traversal; typed MCP aggregate metric cohort; session-filtered OTLP Metrics needs a typed link from metric facts to session identity; diagnostics/health/reconnect/retry integration. UI05-A/B/C and UI-Q acceptance remain open. |
 | UI-06 Review and workflow | Review receipts, incident state/owner and safe retry, settings draft confirmation, resume-unavailable reason, task search CLI and handoff collision checks are implemented in the candidate. | Review copy/export/save-task/excerpt/draft/Git/map actions; turn-scoped Review; persistent incident acknowledgment; cockpit task search and Decisions/Brief/version selector; handoff preview/copy; provider private detail remains coordinated with FD2. |
 | UI-07 Themes and visual system | Five palettes, semantic styles, help and palette fallback geometry are integrated. | Run the paired visual matrix; review the documented Solarized muted-on-panel contrast result (4.23:1); verify overlays and history at compact sizes. |
 | UI-Q Installed parity | Selected coordinator qualification passed on the candidate and an extracted selected-debug archive. | Independent full identical-fixture matrix, exact release artifact and ARM64, live broker revocation in an isolated root-capable fixture, and final independent sign-off remain open. |

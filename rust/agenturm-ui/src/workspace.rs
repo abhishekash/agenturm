@@ -4332,7 +4332,7 @@ fn pending_evidence_titles(selection: &HistorySelection) -> Option<(&'static str
         HistorySelection::All(WorkspaceView::Usage)
         | HistorySelection::Session(_, SessionView::Usage) => Some(("Usage", "Metric inspector")),
         HistorySelection::Session(_, SessionView::Metrics) => {
-            Some(("Metrics", "Source-scoped metric catalog"))
+            Some(("Metrics", "All authorized OTLP sources"))
         }
         HistorySelection::All(WorkspaceView::Traces)
         | HistorySelection::Session(_, SessionView::Traces)

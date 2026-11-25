@@ -21,14 +21,7 @@ impl HistoryAnalytics {
                 {
                     return None;
                 }
-                let source_id = match selection {
-                    HistorySelection::Session(session, SessionView::Metrics) => {
-                        Some(agenturm_kernel::ExtensionId::parse(session.harness_id.clone()).ok()?)
-                    }
-                    _ => None,
-                };
-                MetricBrowser::scoped(*series, source_id)
-                    .map(|browser| Self::Metrics(Box::new(browser)))
+                MetricBrowser::new(*series).map(|browser| Self::Metrics(Box::new(browser)))
             }
             HistorySelection::All(WorkspaceView::Usage)
             | HistorySelection::Session(_, SessionView::Usage) => {

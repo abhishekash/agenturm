@@ -13,10 +13,10 @@ to <code>main</code>. Candidate evidence remains limited to its recorded scope: 
 across 96 suites, strict app/UI Clippy, 159 fresh-process <code>NO_COLOR=1</code> UI
 tests, selected empty and populated PTY journeys at 120×32, 80×24 and 60×18,
 and a selected debug QA archive smoke. This is not full Python parity or final
-release qualification. The current unmerged feature branch adds a route from a
-selected session to that source's metric catalog; metric records themselves
-remain source-scoped, so per-session OTLP Metrics still requires a session
-identity in the typed metric contract. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-acceptance.md">qualification report</a>
+release qualification. The current unmerged feature branch adds a contextual entry from a
+selected session to the global Metrics catalog. This is navigation only: metric
+records use <code>otlp.*</code> source IDs and currently have no typed link to ordinary
+<code>harness.*</code> sessions, so true per-session OTLP Metrics remains open. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-acceptance.md">qualification report</a>
 and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-resume.md">continuation record</a> for exact
 scope and limits.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
@@ -50,8 +50,8 @@ scope and limits.</p>
 </tr>
 <tr>
 <td>UI-05 Evidence and observability screens</td>
-<td>PR #396 merged page-local evidence filters, typed MCP-call trace navigation, selection-scoped copy/export, Activity prompt-only filter over typed NativeRequest rows and explicit “Unreported” worker detail. Current feature branch adds a session-entry route to source-filtered Metrics; offline locked app compile passes.</td>
-<td>Trace tree and linked-evidence traversal; typed MCP aggregate metric cohort; true session-filtered OTLP Metrics needs a typed session identity in metric facts; diagnostics/health/reconnect/retry integration. UI05-A/B/C and UI-Q acceptance remain open.</td>
+<td>PR #396 merged page-local evidence filters, typed MCP-call trace navigation, selection-scoped copy/export, Activity prompt-only filter over typed NativeRequest rows and explicit “Unreported” worker detail. Current feature branch adds a contextual entry into the global Metrics catalog; offline locked app compile passes.</td>
+<td>Trace tree and linked-evidence traversal; typed MCP aggregate metric cohort; session-filtered OTLP Metrics needs a typed link from metric facts to session identity; diagnostics/health/reconnect/retry integration. UI05-A/B/C and UI-Q acceptance remain open.</td>
 </tr>
 <tr>
 <td>UI-06 Review and workflow</td>

@@ -2778,12 +2778,10 @@ fn load_workspace_history(
                 )?));
             }
             if matches!(view, SessionView::Metrics) {
-                let source_id = ExtensionId::parse(session.harness_id.clone())
-                    .map_err(|error| error.to_string())?;
                 page.features.metric_history = Some(Box::new(metric_history::initial(
                     store,
                     page.snapshot.history_snapshot_id,
-                    Some(source_id),
+                    None,
                 )?));
             }
             page.initial_pane = Some(select_pane(panes));

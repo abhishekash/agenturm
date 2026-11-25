@@ -65,10 +65,11 @@ The [UI parity plan](rust-ui-parity-plan.md) tracks the current integrated
 source and gaps. PR #396 (`afbdbdc`) merged the UI implementation candidate and
 Activity prompt-only filter, but the release remains unpublished and parity is
 not complete. The current feature branch adds `SessionView::Metrics`, entered
-from a selected session with `K`; it constrains the catalog to the session's
-harness/source. Stored OTLP metric facts have source scope and no session ID,
-so this does not claim per-session metric values. Existing Usage remains the
-true session-filtered view. Offline locked app compile passes; no tests have
+from a selected session with `K`, as a contextual jump into the global Metrics
+catalog. This is navigation only: OTLP metric source IDs are distinct from
+ordinary harness session IDs, and the stored metric facts have no typed session
+link. Existing Usage remains the true session-filtered view; linked OTLP Metrics
+remains open until the typed contract can prove that relationship. Offline locked app compile passes; no tests have
 run for this branch. The [delegated test plan](../validation/rust-core-feature-test-plan.md#ui-05-follow-up-handoff--not-run)
 assigns UI05-A/B/C to the separate test owner. Remaining UI-05/UI-06 work and
 UI-Q stay open. Keep provider details in adapter/app proof contracts and keep

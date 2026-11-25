@@ -124,8 +124,8 @@ Do not build different sources concurrently into one Cargo target directory.</p>
 <h2>UI-05 follow-up handoff — not run</h2>
 <p>PR #396 (<code>afbdbdc</code>) merged the integrated UI candidate and Activity evidence
 filter to <code>main</code>. The current unmerged branch
-<code>feature/ui05-session-metrics</code> adds a session-entry route to source-filtered
-Metrics. Do not count the prior 991-test and PTY evidence as qualification for
+<code>feature/ui05-session-metrics</code> adds contextual session-to-Metrics navigation
+into the global catalog. Do not count the prior 991-test and PTY evidence as qualification for
 these follow-up changes.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -151,9 +151,9 @@ these follow-up changes.</p>
 </tr>
 <tr>
 <td>UI05-C</td>
-<td>Session-entry Metrics route and honest source scope</td>
-<td>From roster and inspector, press <code>K</code> and open Metrics. Verify catalog requests carry the selected session harness as <code>source_id</code>, paging/search/series detail/exemplar requests stay bound to that source and pinned snapshot, and Escape returns to the same session. Confirm the screen says source-scoped Metrics and does not imply per-session series totals; compare session-filtered totals in Usage separately. Include invalid/unavailable source and empty catalog.</td>
-<td>Not run; development branch <code>feature/ui05-session-metrics</code>; offline locked app compile only.</td>
+<td>Session-to-Metrics navigation and honest scope</td>
+<td>From roster and inspector, press <code>K</code> and open the global Metrics catalog. Verify its query is unscoped (<code>source_id=None</code>), all authorized OTLP sources remain visible, and Escape returns to the same session selection. Confirm UI/help does not imply these series belong to the selected session; session-filtered totals remain in Usage. Record that current <code>otlp.*</code> source IDs do not link to ordinary <code>harness.*</code> session IDs, so true per-session Metrics is still pending typed linkage.</td>
+<td>Not run; development branch <code>feature/ui05-session-metrics</code>; offline locked app compile only. True per-session metric linkage remains open.</td>
 </tr>
 </tbody>
 </table></div>

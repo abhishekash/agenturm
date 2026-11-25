@@ -953,8 +953,8 @@ pub(crate) const ACTIONS: &[Action] = &[
     action(
         id::SESSION_METRICS,
         "K",
-        "Session source metrics",
-        "Open the selected session's source-filtered OTLP metric catalog",
+        "Browse metrics",
+        "Open the retained OTLP metric catalog; metrics are not session-linked",
         Group::Review,
         &[Context::CommandCenter, Context::History],
     ),
