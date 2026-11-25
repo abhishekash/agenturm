@@ -65,7 +65,7 @@ The [UI parity plan](rust-ui-parity-plan.md) tracks the current integrated
 source and gaps. PR #396 (`afbdbdc`) merged the UI implementation candidate and
 Activity prompt-only filter, but the release remains unpublished and parity is
 not complete. The current feature branch adds `SessionView::Metrics`, entered
-from a selected session with `M`; it constrains the catalog to the session's
+from a selected session with `K`; it constrains the catalog to the session's
 harness/source. Stored OTLP metric facts have source scope and no session ID,
 so this does not claim per-session metric values. Existing Usage remains the
 true session-filtered view. Offline locked app compile passes; no tests have

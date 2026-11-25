@@ -213,6 +213,7 @@ pub(super) fn draw(
                 keymap::id::REVIEW,
                 keymap::id::TRACES,
                 keymap::id::SESSION_USAGE,
+                keymap::id::SESSION_METRICS,
                 keymap::id::BACK,
                 keymap::id::HELP,
             ])

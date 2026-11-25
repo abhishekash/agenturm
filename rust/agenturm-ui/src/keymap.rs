@@ -145,6 +145,7 @@ pub(crate) mod id {
     pub(crate) const OVERVIEW: &str = "session.overview";
     pub(crate) const SESSION_ACTIVITY: &str = "session.activity";
     pub(crate) const SESSION_USAGE: &str = "session.usage";
+    pub(crate) const SESSION_METRICS: &str = "session.metrics";
     pub(crate) const HOST_NOW: &str = "host.now";
     pub(crate) const INSPECTOR_MODE: &str = "session.inspector-mode";
     pub(crate) const INSPECTOR_SECTIONS: &str = "session.sections";
@@ -948,6 +949,14 @@ pub(crate) const ACTIONS: &[Action] = &[
         "Open retained usage for the exact selected session",
         Group::Review,
         &[Context::CommandCenter],
+    ),
+    action(
+        id::SESSION_METRICS,
+        "K",
+        "Session source metrics",
+        "Open the selected session's source-filtered OTLP metric catalog",
+        Group::Review,
+        &[Context::CommandCenter, Context::History],
     ),
     action(
         id::HOST_NOW,

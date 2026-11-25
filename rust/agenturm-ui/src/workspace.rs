@@ -1560,7 +1560,7 @@ impl Workspace {
         }
         let control = key.modifiers == KeyModifiers::CONTROL;
         let code = keymap::plain(key).unwrap_or(KeyCode::Null);
-        if code == KeyCode::Char('M') {
+        if code == KeyCode::Char('K') {
             self.open_inspector_metrics(sender);
             return true;
         }
@@ -3166,7 +3166,7 @@ impl Workspace {
                         self.inspector.tab.label()
                     ));
                     current.push(
-                        "Overview links: s Activity · Ctrl+R Review · t Traces · u Usage · M Metrics · P Prompts"
+                        "Overview links: s Activity · Ctrl+R Review · t Traces · u Usage · K Metrics · P Prompts"
                             .into(),
                     );
                     current.push(
@@ -3378,9 +3378,10 @@ impl Workspace {
             | keymap::id::TREE
             | keymap::id::RESET
             | keymap::id::HOST_NOW => (!catalog_ready).then_some("No session page is loaded"),
-            keymap::id::OVERVIEW | keymap::id::SESSION_ACTIVITY | keymap::id::SESSION_USAGE => {
-                (!session).then_some("Select an exact session first")
-            }
+            keymap::id::OVERVIEW
+            | keymap::id::SESSION_ACTIVITY
+            | keymap::id::SESSION_USAGE
+            | keymap::id::SESSION_METRICS => (!session).then_some("Select an exact session first"),
             keymap::id::INSPECTOR_MODE => (!matches!(
                 self.history.last().map(|view| &view.selection),
                 Some(HistorySelection::Session(_, _))
@@ -3875,6 +3876,7 @@ impl Workspace {
                 }
             }
             keymap::id::SESSION_USAGE => return self.send_key(sender, plain_key('u')),
+            keymap::id::SESSION_METRICS => return self.send_key(sender, plain_key('K')),
             keymap::id::HOST_NOW => return self.send_key(sender, plain_key('H')),
             keymap::id::INSPECTOR_MODE => return self.send_key(sender, plain_key('m')),
             keymap::id::INSPECTOR_SECTIONS => self.focus_inspector_tabs(),
@@ -4029,13 +4031,13 @@ impl Workspace {
                     );
                 }
             }
-            KeyCode::Enter | KeyCode::Char('e' | 'm' | 'A' | 's' | 'V' | 'u' | 'M' | 't') => {
+            KeyCode::Enter | KeyCode::Char('e' | 'm' | 'A' | 's' | 'V' | 'u' | 'K' | 't') => {
                 if let Some(session) = self.agents.current().cloned() {
                     let view = match key {
                         KeyCode::Char('A' | 's') => SessionView::Activity,
                         KeyCode::Char('V') => SessionView::Review,
                         KeyCode::Char('u') => SessionView::Usage,
-                        KeyCode::Char('M') => SessionView::Metrics,
+                        KeyCode::Char('K') => SessionView::Metrics,
                         KeyCode::Char('t') => SessionView::Traces,
                         _ => SessionView::Overview,
                     };
