@@ -2,8 +2,8 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md">Markdown source ↗</a></nav><h1>Core feature development: delegated test plan</h1>
-<p>Updated 23 November 2026. The user assigned this implementation session to
+</style></head><body><main><nav><strong>Agenturm / 26 November 2026</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md">Markdown source ↗</a></nav><h1>Core feature development: delegated test plan</h1>
+<p>Updated 26 November 2026. The user assigned this implementation session to
 <strong>core feature development</strong> and a separate agent to test execution. This plan
 is the handoff contract. It supplements Q1–Q10 in the
 <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md">remaining-work plan</a>.</p>
@@ -17,7 +17,12 @@ passes are preserved and reviewed, but do not qualify the newer CF1–CF5 source
 scoped Store lib/test Clippy and a genuine metric-point identity upgrade
 regression pass. The reference Review fixture's <code>--help</code> now documents and can
 show the required import-path setup without loading the reference first.</p>
-<p>For the next broad execution use the corrective PR's merged head, record its
+<p>The PR #394 standalone-fixture <code>--locked</code> failure was caused by a stale fixture
+lockfile. PR #395 merged the offline lockfile correction as <code>6c9ec8e</code>; the exact
+fixture build passes locally with <code>--offline --locked</code>, and fresh merged CI is
+running. The full PR #395 coordinator status remains separate from this plan's
+delegated source and artifact tests.</p>
+<p>For the next core broad execution use the current integrated main head, record its
 exact SHA and freeze artifacts. Keep this matrix pending until those actual
 CF1–CF5 and related Review identity scenarios run. Add an explicit shell loop
 (<code>for script in scripts/*.sh; do bash -n &quot;$script&quot; || exit; done</code>) rather than
@@ -116,6 +121,38 @@ baselines, not results for the new feature slices. Every new row starts
 <p>Worktree paths identify current ownership, not release artifacts. The developer
 must supply the final integrated commit before the test owner freezes a binary.
 Do not build different sources concurrently into one Cargo target directory.</p>
+<h2>UI-05 follow-up handoff — not run</h2>
+<p>The separate UI implementation candidate <code>17206a4</code> was coordinator-qualified
+for its recorded scope, but this follow-up changes Activity evidence behavior.
+Use commit <code>81c7357</code> on branch <code>feature/ui-parity-next</code> after it is integrated;
+the prior 991-test and PTY results do not qualify these changes.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>ID</th>
+<th>Required test</th>
+<th>Acceptance</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>UI05-A</td>
+<td>Activity prompt-only filter and page query</td>
+<td>At 120×32, 80×24 and 60×18, toggle <code>F</code> and the palette command. Only typed <code>Native request</code> events remain; prompt text is not read or inferred. Combine <code>/</code> search with the toggle, handle an empty prompt set, preserve the selected event when it remains visible, preserve mode across older/newer page replacement, and restore all events on the second toggle. Verify another pane and MCP <code>f</code> server filtering are unaffected. Compare the tagged Python <code>Prompts</code> button journey.</td>
+<td>Not run; implementation <code>81c7357</code>.</td>
+</tr>
+<tr>
+<td>UI05-B</td>
+<td>Activity worker attribution</td>
+<td>Inspect ordinary activity with a recorded worker, no worker, WorkerSpawn and WorkerLaunch. Show exact worker, <code>Worker: Unreported</code>, or separately named <code>Parent worker: Unreported</code> as appropriate. Verify the same rows at all three sizes; do not infer a parent or child ID.</td>
+<td>Not run; implementation <code>81c7357</code>.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Run these against a frozen integrated source and binary. Keep UI-Q's paired
+screen matrix, live broker/private grant cases, release archive and independent
+sign-off as separate gates.</p>
 <h2>CF1 — native session presence</h2>
 <p><strong>Developer handoff:</strong> Claude/Pi implementation integrated in the development
 branch. Forty-one focused adapter tests and scoped strict Clippy passed. The composed app lib/bin compile check passed with all four slices and schema

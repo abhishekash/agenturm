@@ -163,38 +163,26 @@ cargo test --offline --locked -p agenturm-app --lib usage_history
 </ul>
 <p>Not run here: full workspace tests, PTY/tmux acceptance, paired Python frames, installed-candidate acceptance and the final optimized release gate. Those remain UI-Q.</p>
 <h2>Remaining gaps and ownership</h2>
+<p>The list below was written before the UI-02 shell integration and should be read
+against source candidate <code>17206a4</code> plus the current follow-up branch. The earlier
+shell hooks for evidence filtering, generic Operations trace navigation, and
+selection-scoped copy/export are now present in the integrated source.</p>
 <ol>
-<li><strong>Activity page-local filter and prompt-only view.</strong> The Activity body is an <code>EvidenceTable</code> stored in the shared <code>UiModel</code>; there is no per-table filter field and <code>lib.rs</code> owns <code>evidence_key</code>. Needs hook 1.</li>
-<li><strong>Trace tree/list navigation, parent/child focus and linked-evidence traversal.</strong> Trace rows are built and drawn by <code>workspace.rs</code> and <code>rust/agenturm-app/src/session_evidence/table.rs</code>, outside this lane. The current detail already carries parent span, target source, status and duration; missing is tree navigation and a stable return identity across Activity ⇄ call ⇄ exemplar ⇄ trace.</li>
-<li><strong>Generic Operations related-evidence key.</strong> The shell only accepts <code>t</code> when the operation table <code>is_mcp()</code>, although an Operations row can carry the same typed <code>mcp_event</code>. The detail panel now renders the exact call; the key remains shell-gated (hook 2).</li>
-<li><strong>Selection-scoped copy/export.</strong> <code>workspace/view_io.rs</code> still exports pane metadata. The new <code>LoadedView::selected_evidence</code> helper is ready for the shell to prefer a selected evidence row and disclose the scope (hook 3).</li>
+<li><strong>Activity prompt-only view.</strong> The current follow-up adds the Python-style <code>F</code> toggle, palette action, and persistent footer label. It filters only typed <code>Native request</code> rows, combines with the ordinary page query, and preserves the selection when possible. Compile and paired acceptance remain pending; the generic text filter is still a separate control.</li>
+<li><strong>Trace tree/list navigation, parent/child focus and linked-evidence traversal.</strong> Trace rows are built and drawn by <code>workspace.rs</code> and <code>rust/agenturm-app/src/session_evidence/table.rs</code>. Current detail carries parent span, target source, status and duration; missing are tree navigation and a stable return identity across Activity ⇄ call ⇄ exemplar ⇄ trace.</li>
 <li><strong>MCP aggregate metric calls.</strong> Python shows aggregate metric-only MCP calls (e.g. Cursor). The Rust UI has no typed fact for that cohort, so the inventory deliberately shows loaded-call counts only and says so. Provider-specific payload viewing remains behind FD2 grants.</li>
 <li><strong>Session-scoped Metrics.</strong> <code>MetricBrowser::scoped</code> and source-filtered queries exist, but the app starts the catalog unscoped and there is no session Metrics view. Needs app/shared routing; not changed here.</li>
 <li><strong>Diagnostics, health, reconnect and receiver-retry copy.</strong> These surfaces are not in this lane's files. Findings retry/policy text is likewise not a Finding action.</li>
-<li><strong>Activity worker attribution.</strong> The Activity row details are built by <code>session_evidence/table.rs</code>; an absent worker is omitted there rather than rendered as Unreported. Operations now do this explicitly (hook 4 if Activity should match exactly).</li>
+<li><strong>Activity worker attribution.</strong> The current follow-up adds an explicit <code>Worker: Unreported</code> detail when a row has no typed worker identity. Parent worker remains separately labeled for WorkerSpawn/WorkerLaunch. Focused and paired acceptance remains delegated to UI-Q.</li>
 </ol>
-<h2>Shared-shell hooks for UI-02</h2>
-<p>These are the exact integration points. None of them requires a provider branch.</p>
-<ol>
-<li><strong>Evidence-table local filter (Activity, Traces, Usage, Findings tables).</strong>
+<h2>Remaining implementation seams</h2>
 <ul>
-<li>Add per-pane filter state to the shared model, e.g. <code>evidence_filter: BTreeMap&lt;ExtensionId, pane_filter::Filter&gt;</code> alongside <code>evidence</code> in <code>rust/agenturm-ui/src/lib.rs</code>.</li>
-<li>In <code>metadata_filter_key</code> (<code>workspace.rs</code>), when the selected pane has an <code>EvidenceTable</code>, route <code>/</code> and subsequent editing keys exactly like <code>OperationList::search_key</code>'s local branch: apply <code>Filter::matches</code> to <code>cells</code> plus every <code>MetricRow</code> label/value, remap selection with <code>pane_filter::selection</code>, show <code>Filter page: …</code>, clear on <code>Esc</code>, and carry the committed filter in <code>HistoryView::inherit_filters</code> so history pages preserve it.</li>
-<li>The visibility count and <code>Page</code> wording should distinguish page-local rows from scope counts.</li>
+<li>Keep filters and focus in the UI model; keep source/session/worker/turn and snapshot identity in the request contract.</li>
+<li>Build tree navigation from typed parent/child span IDs and retain the selected node in the back-stack identity.</li>
+<li>Request a typed kernel fact for aggregate metric-only MCP cohorts before rendering that count; do not infer this cohort from provider names or untyped payloads.</li>
+<li>Add session Metrics routing through the shared query/app path, not a provider-specific screen shortcut.</li>
+<li>Route diagnostics, health and receiver retry through existing app services and explicit capability outcomes.</li>
 </ul>
-</li>
-<li><strong>Operation related evidence.</strong> In the <code>workspace.rs</code> operation block, replace the <code>code == 't' &amp;&amp; table.is_mcp()</code> guard with a check for a selected row's typed <code>mcp_event</code> (<code>table.selected_row().and_then(|row| row.mcp_event.as_ref())</code>). Keep the existing <code>OperationDetailKind::Mcp</code> matcher; it already compares source, event and revision. Then the detail line <code>t opens the linked retained trace</code> is true for Operations as well.</li>
-<li><strong>Selection-scoped copy/export.</strong> In <code>workspace/view_io.rs::loaded_view</code>, before the pane fallback:
-<ul>
-<li>if an <code>EvidenceTable</code> is selected and <code>open_inspection(selected)</code> is possible, return <code>LoadedView::selected_evidence(pane.title, scope, row, selected, table.rows.len())</code>;</li>
-<li>if an <code>OperationList</code> row is selected, export that row's <code>evidence</code> with a scope naming the operation, source and page;</li>
-<li>keep the loaded-page pane document as the fallback and show the returned <code>scope</code> in the export form so format/destination still name what is written.</li>
-</ul>
-</li>
-<li><strong>Contextual help and footer.</strong> Add <code>Home/End</code> to the global metrics help, <code>v</code> to Usage (done locally in <code>HistoryAnalytics::help</code>), <code>PgUp/PgDn</code> to the <code>Ctrl+F</code> help line, and <code>/ filter · Esc clear</code> to the Activity/Operations help. Host help should keep the <code>/</code> and history-paging hints.</li>
-<li><strong>Trace navigation.</strong> When trace work is scheduled, add the tree state in <code>workspace.rs</code> and typed child/parent navigation over <code>TraceSpan.parent_span_id</code>; carry <code>HistorySelection</code> identity plus selected span/trace so return restores the same tree node. No new provider grant is needed.</li>
-<li><strong>Activity attribution parity.</strong> If Activity should state absent workers explicitly, add <code>(&quot;Worker&quot;, &quot;Unreported&quot;)</code> in <code>session_evidence/table.rs</code> rather than inferring from the UI.</li>
-</ol>
 <h2>Pluggable-seam notes</h2>
 <ul>
 <li><strong>Inventory</strong> is joined only by the typed <code>ConfiguredMcpServer.name</code> and <code>OperationRow.server</code>, with <code>enabled: Option&lt;bool&gt;</code> from the explicit configuration reader. Counts remain page-local; no MCP client is special-cased. Aggregate metric-only calls are deliberately not inferred.</li>

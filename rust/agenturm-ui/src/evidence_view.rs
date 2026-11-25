@@ -133,9 +133,20 @@ impl EvidenceTable {
     }
 
     pub(super) fn inspection_limit(&self, selected: usize, width: u16, page: usize) -> usize {
-        detail_lines(self.details(selected), width.saturating_sub(2).max(1))
-            .count()
+        self.detail_view(selected, width.saturating_sub(2).max(1))
+            .len()
             .saturating_sub(page)
+    }
+
+    fn detail_view(&self, selected: usize, width: u16) -> Vec<Line<'static>> {
+        let mut lines = Vec::new();
+        if !self.context.is_empty() {
+            lines.extend(detail_lines(self.context.iter(), width));
+        }
+        if let Some(row) = self.rows.get(selected) {
+            lines.extend(detail_lines(row.details.iter(), width));
+        }
+        lines
     }
 
     pub(super) fn draw_expanded(
@@ -145,9 +156,23 @@ impl EvidenceTable {
         selected: usize,
         inspection: &Inspection,
     ) {
+        self.draw_expanded_filtered(frame, area, None, selected, inspection);
+    }
+
+    pub(super) fn draw_expanded_filtered(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        visible: Option<&[usize]>,
+        selected_position: usize,
+        inspection: &Inspection,
+    ) {
+        let selected = visible
+            .and_then(|rows| rows.get(selected_position).copied())
+            .unwrap_or(selected_position);
         let width = area.width.saturating_sub(2).max(1);
         let height = usize::from(area.height.saturating_sub(2));
-        let lines = detail_lines(self.details(selected), width).collect::<Vec<_>>();
+        let lines = self.detail_view(selected, width);
         let offset = inspection.offset.min(lines.len().saturating_sub(height));
         frame.render_widget(
             Paragraph::new(
@@ -173,24 +198,45 @@ impl EvidenceTable {
         selected: usize,
         expandable: bool,
     ) {
+        self.draw_with_inspector_filtered(frame, area, None, selected, expandable);
+    }
+
+    pub(super) fn draw_with_inspector_filtered(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        visible: Option<&[usize]>,
+        selected_position: usize,
+        expandable: bool,
+    ) {
+        let selected = visible
+            .and_then(|rows| rows.get(selected_position).copied())
+            .unwrap_or(selected_position);
         let (list, inspector) = panes(area);
-        self.draw_list(frame, list, selected);
+        self.draw_list_filtered(frame, list, visible, selected_position);
         let width = inspector.width.saturating_sub(2).max(1);
         let height = usize::from(inspector.height.saturating_sub(2));
         let mut lines = if self.has_detail(selected) {
-            detail_lines(self.details(selected), width)
+            self.detail_view(selected, width)
+                .into_iter()
                 .take(height.saturating_add(1))
                 .collect::<Vec<_>>()
         } else {
-            vec![Line::from("No selected evidence")]
+            vec![
+                Line::from("No recorded detail for this selected row."),
+                Line::styled(
+                    "Select another row or press Enter for the recorded evidence.",
+                    theme::muted(),
+                ),
+            ]
         };
         if lines.len() > height {
             lines.truncate(height);
             if let Some(last) = lines.last_mut() {
                 let hint = if expandable {
-                    "… Enter to read more"
+                    "… Enter to read the full detail"
                 } else {
-                    "… more detail at a larger size"
+                    "… widen the terminal for more detail"
                 };
                 *last = Line::from(hint)
                     .style(surface(theme::palette().canvas).add_modifier(Modifier::DIM));
@@ -202,12 +248,30 @@ impl EvidenceTable {
         );
     }
 
+    #[allow(dead_code)]
     fn draw_list(&self, frame: &mut Frame, area: Rect, selected: usize) {
-        if self.rows.is_empty() {
+        self.draw_list_filtered(frame, area, None, selected);
+    }
+
+    fn draw_list_filtered(
+        &self,
+        frame: &mut Frame,
+        area: Rect,
+        visible: Option<&[usize]>,
+        selected: usize,
+    ) {
+        let rows_source: Vec<usize> = visible
+            .map(<[usize]>::to_vec)
+            .unwrap_or_else(|| (0..self.rows.len()).collect());
+        if rows_source.is_empty() {
             frame.render_widget(
-                Paragraph::new(self.spec.empty)
-                    .wrap(ratatui::widgets::Wrap { trim: true })
-                    .block(panel(self.spec.title)),
+                Paragraph::new(if visible.is_some() {
+                    "No loaded row matches this page filter · Esc clears"
+                } else {
+                    self.spec.empty
+                })
+                .wrap(ratatui::widgets::Wrap { trim: true })
+                .block(panel(self.spec.title)),
                 area,
             );
             return;
@@ -220,20 +284,25 @@ impl EvidenceTable {
             .map(|&(_, weight)| Constraint::Fill(weight));
         let header =
             Row::new(self.spec.columns.iter().map(|&(title, _)| title)).style(heading_style());
-        let rows =
-            self.rows.iter().enumerate().map(|(index, row)| {
+        let rows = rows_source.iter().filter_map(|index| {
+            let row = self.rows.get(*index)?;
+            Some(
                 Row::new(row.cells.iter().enumerate().map(|(column, value)| {
                     let cell = Cell::from(visible_text(value));
                     if self.spec.columns.get(column).is_some_and(|(name, _)| {
-                        matches!(*name, "Result" | "Severity" | "Root result")
+                        matches!(
+                            *name,
+                            "Result" | "Severity" | "Root result" | "State" | "Status" | "Coverage"
+                        )
                     }) {
                         cell.style(theme::status(value))
                     } else {
                         cell
                     }
                 }))
-                .style(theme::row(index))
-            });
+                .style(theme::row(*index)),
+            )
+        });
         let mut cursor = TableState::default().with_selected(Some(selected));
         let table = Table::new(rows, columns)
             .block(panel(self.spec.title))
@@ -268,4 +337,137 @@ fn detail_lines<'a>(
                 }
             })
     })
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    const SPEC: EvidenceSpec = EvidenceSpec {
+        title: "Activity",
+        inspector: "Event detail",
+        columns: &[("Time", 3), ("Type", 2), ("Result", 2), ("Action", 4)],
+        empty: "No recorded activity.",
+    };
+
+    fn table(details: Vec<MetricRow>) -> EvidenceTable {
+        let mut table = SPEC.table(vec![EvidenceRow {
+            cells: vec![
+                "12:00:00".into(),
+                "Tool".into(),
+                "failed".into(),
+                "shell".into(),
+            ],
+            details,
+        }]);
+        table.context = vec![
+            MetricRow {
+                label: "Source".into(),
+                value: "harness.fixture".into(),
+            },
+            MetricRow {
+                label: "Session".into(),
+                value: "session-1".into(),
+            },
+        ];
+        table
+    }
+
+    fn render(table: &EvidenceTable, width: u16, height: u16, selected: usize) -> String {
+        let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+        terminal
+            .draw(|frame| table.draw_with_inspector(frame, frame.area(), selected, true))
+            .unwrap();
+        terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect()
+    }
+
+    #[test]
+    fn selected_evidence_separates_page_context_from_row_attribution() {
+        let table = table(vec![MetricRow {
+            label: "Result".into(),
+            value: "failed · recorded at the exact event".into(),
+        }]);
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let text = render(&table, width, height, 0);
+            for marker in [
+                "Source",
+                "harness.fixture",
+                "Result",
+                "recorded at the exact event",
+            ] {
+                assert!(text.contains(marker), "{width}×{height}: {marker}\n{text}");
+            }
+            // Page context precedes the selected row's own attribution.
+            let context = text.find("harness.fixture");
+            let selected = text.find("recorded at the exact event");
+            assert!(
+                context
+                    .zip(selected)
+                    .is_some_and(|(context, selected)| context < selected),
+                "{width}×{height}: {text}"
+            );
+        }
+        let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
+        terminal
+            .draw(|frame| table.draw_expanded(frame, frame.area(), 0, &Inspection::default()))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Source") && text.contains("Result"));
+        assert!(table.open_inspection(0).is_some());
+        assert!(table.inspection_limit(0, 80, 1) > 0);
+    }
+
+    #[test]
+    fn rows_without_detail_say_so_and_do_not_open_an_inspector() {
+        let mut table = table(Vec::new());
+        table.context.clear();
+        assert!(table.open_inspection(0).is_none());
+        let text = render(&table, 80, 24, 0);
+        assert!(
+            text.contains("No recorded detail for this selected row"),
+            "{text}"
+        );
+    }
+
+    #[test]
+    fn a_long_selected_detail_points_to_the_expanded_reader() {
+        let table = table(
+            (0..12)
+                .map(|index| MetricRow {
+                    label: format!("Field {index}"),
+                    value: "recorded value".into(),
+                })
+                .collect(),
+        );
+        let text = render(&table, 80, 24, 0);
+        assert!(text.contains("Enter to read the full detail"), "{text}");
+        let mut terminal = Terminal::new(TestBackend::new(60, 18)).unwrap();
+        terminal
+            .draw(|frame| table.draw_with_inspector(frame, frame.area(), 0, false))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(
+            text.contains("widen the terminal for more detail"),
+            "{text}"
+        );
+    }
 }

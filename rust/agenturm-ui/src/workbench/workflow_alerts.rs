@@ -18,6 +18,7 @@ pub(super) struct Alerts {
     selected: Option<usize>,
     detail: Option<Inspection>,
     scroll_bounds: (usize, usize),
+    notice: Option<&'static str>,
 }
 
 impl Alerts {
@@ -28,12 +29,14 @@ impl Alerts {
             selected,
             detail: None,
             scroll_bounds: (1, 0),
+            notice: None,
         }
     }
 
     pub(super) fn apply(&mut self, inbox: Box<WorkflowAlertInbox>) {
         let same_history = inbox.page.history_identity == self.inbox.page.history_identity
             && inbox.page.snapshot_id.incarnation() == self.inbox.page.snapshot_id.incarnation();
+        let requested = self.selected.is_some();
         let selected = self
             .selected
             .and_then(|index| self.inbox.page.alerts.get(index))
@@ -48,6 +51,13 @@ impl Alerts {
         if selected.is_none() {
             self.detail = None;
         }
+        self.notice = if !same_history && !inbox.page.alerts.is_empty() {
+            Some("Incident history changed · showing the latest page")
+        } else if requested && selected.is_none() && !inbox.page.alerts.is_empty() {
+            Some("Selected incident is no longer established · nearest incident selected")
+        } else {
+            None
+        };
         self.selected = selected.or_else(|| (!inbox.page.alerts.is_empty()).then_some(0));
         self.inbox = inbox;
     }
@@ -127,6 +137,7 @@ impl Alerts {
                     .map_or("Unrecorded", |delivery| delivery_label(delivery.state));
                 let label = kind(&alert.kind);
                 let mut details = vec![
+                    value("Observed owner", observed_owner(alert)),
                     value("Incident", label),
                     value("Source", alert.scope.source_id.as_str()),
                     value("Session", &alert.scope.session_id),
@@ -146,8 +157,18 @@ impl Alerts {
                             WorkflowAlertCoverage::ReportedLowerBound => "Reported lower bound",
                         },
                     ),
+                    value("Recorded approval state", approval_state(&alert.kind)),
                     value("Delivery", delivery),
                 ];
+                if let Some(delivery) = self.delivery(alert) {
+                    details.push(value(
+                        "Delivery attempt",
+                        format!(
+                            "#{} · policy revision {}",
+                            delivery.attempt, delivery.policy_revision
+                        ),
+                    ));
+                }
                 let clock = match alert.evidence.clock {
                     WorkflowAlertClock::SourceReported => "Source reported",
                     WorkflowAlertClock::ReceiverReceipt => "Receiver receipt",
@@ -191,6 +212,7 @@ impl Alerts {
     }
 
     pub(super) fn draw(&mut self, frame: &mut Frame, pending: bool, status: Option<&str>) {
+        let status = status.or(self.notice);
         let [header, body, foot] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(1),
@@ -219,6 +241,34 @@ impl Alerts {
             }
         };
         draw_footer(frame, foot, keys, pending, status);
+    }
+}
+
+fn observed_owner(alert: &WorkflowAlert) -> String {
+    let owner = match alert.scope.worker_id.as_deref() {
+        Some(worker) => format!("worker {worker} · session {}", alert.scope.session_id),
+        None => format!("main session {}", alert.scope.session_id),
+    };
+    format!(
+        "{} · {} · turn {}",
+        alert.scope.source_id.as_str(),
+        owner,
+        alert.scope.turn_id
+    )
+}
+
+fn approval_state(value: &WorkflowAlertKind) -> &'static str {
+    match value {
+        WorkflowAlertKind::Failure => "Recorded failure · response stays in the native terminal",
+        WorkflowAlertKind::Interruption => {
+            "Recorded interruption · response stays in the native terminal"
+        }
+        WorkflowAlertKind::Completion => {
+            "Recorded completion · not a correctness verdict; review acknowledges locally"
+        }
+        WorkflowAlertKind::Tokens | WorkflowAlertKind::UsdCost | WorkflowAlertKind::Elapsed => {
+            "Running threshold · request remains pending"
+        }
     }
 }
 
@@ -326,6 +376,9 @@ mod tests {
                 .draw(|frame| browser.draw(frame, false, None))
                 .unwrap();
             let text = terminal.backend().to_string();
+            assert!(text.contains("Observed owner"));
+            assert!(text.contains("worker worker-a"));
+            assert!(text.contains("Recorded approval state"));
             assert!(text.contains("worker-a"));
             assert!(!text.contains("worker-b"));
             browser.key(KeyCode::Esc);
@@ -346,6 +399,26 @@ mod tests {
             assert_eq!(browser.selected_alert(), Some(&chosen));
             assert!(!browser.accept_delivery(&updated));
             assert!(browser.retry().is_none());
+
+            let mut replaced = page.clone();
+            replaced.snapshot_id = agenturm_kernel::ReadSnapshot::new(
+                25,
+                Some("00112233445566778899aabbccddeeff".parse().unwrap()),
+            );
+            browser.apply(Box::new(WorkflowAlertInbox {
+                page: replaced,
+                deliveries: vec![(chosen.id.clone(), delivery.clone())],
+            }));
+            assert_eq!(browser.selected_alert(), page.alerts.first());
+            terminal
+                .draw(|frame| browser.draw(frame, false, None))
+                .unwrap();
+            assert!(
+                terminal
+                    .backend()
+                    .to_string()
+                    .contains("Incident history changed")
+            );
         }
     }
 }

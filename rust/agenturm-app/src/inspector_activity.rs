@@ -234,6 +234,21 @@ pub(super) fn turn_page(mut snapshot: Snapshot, turn: &RecordedTurn) -> HistoryP
     }
 }
 
+/// Turn-scoped Review: the same exact turn query, with Review rows selected.
+pub(super) fn turn_review_page(snapshot: Snapshot, turn: &RecordedTurn) -> HistoryPage {
+    let mut page = turn_page(snapshot, turn);
+    let rows = crate::session_evidence::turn_review_rows(&page.snapshot);
+    let pane = crate::session_evidence::insert_pane(
+        &mut page.snapshot,
+        "app.turn-review",
+        "Review · exact turn",
+        rows,
+    );
+    page.review_pane = Some(pane.clone());
+    page.initial_pane = Some(pane);
+    page
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -373,6 +388,7 @@ mod tests {
             },
             reviewed: false,
             history_identity: Some(store.history_identity().unwrap()),
+            worker_id: None,
             pending_requests: Vec::new(),
         };
         let query = ObservationQuery {

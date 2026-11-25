@@ -56,6 +56,64 @@ fn task_backup_publishes_a_private_file_and_refuses_existing_destinations() {
 }
 
 #[test]
+fn task_search_is_page_local_and_matches_exact_linked_run_identity() {
+    let scratch = Scratch::new();
+    let database = scratch.0.join("history.sqlite");
+    let mut writer = Store::open(&database).unwrap();
+    let codex = seed(&mut writer, "harness.codex");
+    let cli = json(
+        &database,
+        &[
+            "add",
+            "--title",
+            "Retain the public API",
+            "--notes",
+            "Keep the deprecation window",
+        ],
+    );
+    let id = cli["id"].as_u64().unwrap().to_string();
+    json(&database, &["add", "--title", "Unrelated cleanup"]);
+    let search = json(&database, &["list", "--search", "api"]);
+    assert_eq!(search["page_local"], true);
+    assert_eq!(search["items"].as_array().unwrap().len(), 1);
+    assert_eq!(search["items"][0]["id"], cli["id"]);
+    // Notes and linked run identity are searched without reading captured text.
+    assert_eq!(
+        json(&database, &["list", "--search", "deprecation"])["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let link_args = [
+        "link",
+        id.as_str(),
+        "--source-id",
+        codex.harness_id.as_str(),
+        "--session-id",
+        codex.session_id.as_str(),
+        "--turn-id",
+        codex.turn_id.as_deref().unwrap(),
+        "--worker-id",
+        codex.worker_id.as_deref().unwrap(),
+    ];
+    json(&database, &link_args);
+    assert_eq!(
+        json(&database, &["list", "--search", codex.session_id.as_str()])["items"]
+            .as_array()
+            .unwrap()
+            .len(),
+        1
+    );
+    let absent = json(&database, &["list", "--search", "definitely-absent"]);
+    assert!(absent["items"].as_array().unwrap().is_empty());
+    // Empty search text is treated as no filter and does not claim page-local scope.
+    let unfiltered = json(&database, &["list", "--search", "  "]);
+    assert_eq!(unfiltered["page_local"], false);
+    assert_eq!(unfiltered["items"].as_array().unwrap().len(), 2);
+}
+
+#[test]
 fn tasks_share_the_cockpit_ledger_and_validate_exact_history_links() {
     let scratch = Scratch::new();
     let database = scratch.0.join("history.sqlite");

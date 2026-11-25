@@ -43,13 +43,14 @@ impl HistoryAnalytics {
         match self {
             Self::Metrics(_) => concat!(
                 "/ Search retained catalog · d Series details\n",
-                "↑/↓ Select or scroll · Enter Open selected row\n",
+                "↑/↓ Select or scroll · Home/End First / last · Enter Open selected row\n",
                 "[ / ] Previous / next retained page\n",
                 "e Next exemplar · Enter Open exact trace span\n",
                 "B Capability metrics · R Refresh snapshot\n",
                 "c Copy · x Export · Esc Back · q Quit",
             ),
             Self::Usage(_) => concat!(
+                "v Chart / list view\n",
                 "s Combined / native / span / trace / log reports\n",
                 "t Token counters · n Totals · C Cost currency\n",
                 "B Usage evidence · R Refresh snapshot\n",
@@ -67,7 +68,7 @@ impl HistoryAnalytics {
                 chart.draw(frame, body);
                 frame.render_widget(
                     Paragraph::new(vec![
-                        Line::from("B evidence · c copy · x export · Esc back · q quit")
+                        Line::from("B evidence · v list · c copy · x export · Esc back · q quit")
                             .style(label_style()),
                         Line::from(message.map_or_else(
                             || {

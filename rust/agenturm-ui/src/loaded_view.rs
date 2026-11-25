@@ -13,17 +13,41 @@ pub struct LoadedView {
 }
 
 impl LoadedView {
+    /// A single selected evidence row, explicitly separate from its loaded
+    /// page. The UI shell decides which of these two documents a copy/export
+    /// action targets.
+    pub fn selected_evidence(
+        title: impl Into<String>,
+        scope: impl Into<String>,
+        row: &crate::EvidenceRow,
+        position: usize,
+        total: usize,
+    ) -> Self {
+        Self {
+            title: title.into(),
+            scope: format!(
+                "{} · selected row {} of {} · loaded page only",
+                scope.into(),
+                position.saturating_add(1),
+                total
+            ),
+            rows: row.details.clone(),
+            truncated: false,
+        }
+    }
+
     /// This describes the displayed metadata, never an admission receipt.
     pub fn plain_text(&self) -> Result<String, String> {
         let mut text = format!(
-            "{}\n{}\nLoaded metadata view; not an evidence receipt.\n{}\n\n",
+            "{}\n{}\nLoaded metadata view; not an evidence receipt.\nCoverage: {} · rows: {}\n\n",
             visible_text(&self.title),
             visible_text(&self.scope),
             if self.truncated {
-                "Coverage: the loaded page is partial."
+                "the loaded page is partial"
             } else {
-                "Coverage: the loaded page only."
-            }
+                "the loaded page only"
+            },
+            self.rows.len()
         );
         if text.len() > MAX_VIEW_EXPORT_BYTES {
             return Err("Loaded view exceeds the export limit".into());
@@ -84,6 +108,39 @@ mod tests {
         assert_eq!(clipboard_request("foo").unwrap(), b"\x1b]52;c;Zm9v\x07");
         assert_eq!(clipboard_request("猫").unwrap(), b"\x1b]52;c;54yr\x07");
         assert!(clipboard_request(&"a".repeat(MAX_CLIPBOARD_BYTES + 1)).is_err());
+    }
+
+    #[test]
+    fn selected_evidence_export_discloses_its_row_and_page_scope() {
+        let row = crate::EvidenceRow {
+            cells: vec!["tool".into()],
+            details: vec![
+                MetricRow {
+                    label: "Source".into(),
+                    value: "harness.fixture".into(),
+                },
+                MetricRow {
+                    label: "Result".into(),
+                    value: "failed\x1b[2J".into(),
+                },
+            ],
+        };
+        let view = LoadedView::selected_evidence(
+            "Activity · selected evidence",
+            "harness.fixture / session",
+            &row,
+            1,
+            4,
+        );
+        assert_eq!(view.rows.len(), 2);
+        assert!(view.scope.contains("selected row 2 of 4"));
+        assert!(view.scope.contains("loaded page only"));
+        let text = view.plain_text().unwrap();
+        assert!(text.contains("rows: 2"));
+        assert!(text.contains("Source: harness.fixture"));
+        assert!(text.contains("Result: failed"));
+        assert!(!text.contains('\x1b'));
+        assert!(text.contains("not an evidence receipt"));
     }
 
     #[test]

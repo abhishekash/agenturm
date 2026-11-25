@@ -127,13 +127,15 @@ for new assignments. The older A–E IDs retain their original acceptance criter
 </tbody>
 </table></div>
 <h2>UI parity workstream snapshot</h2>
-<p>The current implementation and open UI features are tracked separately in the
-<a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-ui-parity-plan.md">UI parity plan</a>. The candidate at <code>17206a4</code> contains
-integrated UI-01–UI-07 work, but sits on an unreleased branch. The next feature
-slice should use that candidate as its base after CI repair, then take the
-explicit UI-05/UI-06 gaps in the plan. UI-Q remains separately owned by the test
-agent. Keep provider details in adapter/app proof contracts and keep screens
-provider-neutral.</p>
+<p>The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-ui-parity-plan.md">UI parity plan</a> tracks the current candidate and
+gaps. Candidate <code>17206a4</code> contains integrated UI-01–UI-07 work, but remains
+unreleased and is not full parity. Follow-up commit <code>81c7357</code> on
+<code>feature/ui-parity-next</code> adds Activity's <code>F</code>/palette prompt-only filter over
+typed NativeRequest rows and explicit <code>Worker: Unreported</code> details. App compile check passes; no tests have
+run for this follow-up. The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md#ui-05-follow-up-handoff--not-run">delegated test plan</a>
+assigns UI05-A/UI05-B to the separate test owner. Remaining UI-05/UI-06 work
+and UI-Q stay open. Keep provider details in adapter/app proof contracts and
+keep screens provider-neutral.</p>
 <h2>Review of the existing plan</h2>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>

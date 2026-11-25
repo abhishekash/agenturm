@@ -174,7 +174,7 @@ fn identity(row: &Observation) -> impl Iterator<Item = MetricRow> + '_ {
     ) {
         ("Parent worker", Some(worker.unwrap_or("Unreported")))
     } else {
-        ("Worker", worker)
+        ("Worker", Some(worker.unwrap_or("Unreported")))
     };
     [
         ("Source", Some(row.harness_id.as_str())),

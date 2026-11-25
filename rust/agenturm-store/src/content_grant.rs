@@ -7,7 +7,9 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
-const MAX_REFERENCES: usize = 256;
+/// Bounded retained user-prompt references returned by one listing.
+/// The UI reports this as the retained cap; older history stays in Activity.
+pub const MAX_PROMPT_REFERENCES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ContentKind {
@@ -634,7 +636,7 @@ impl Store {
                 event_id,
                 revision,
                 session_id,
-                MAX_REFERENCES,
+                MAX_PROMPT_REFERENCES,
                 opencode,
                 watermark,
             ],

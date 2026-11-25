@@ -65,10 +65,10 @@ mod linux {
     use std::thread;
     use std::time::{Duration, Instant};
 
-    const NO_ROUTE: &str =
-        "No unique live tmux pane was verified. Open this session in its native terminal.";
-    const REMOTE_NO_ROUTE: &str = "No unique live tmux pane was verified on the receiver host. Open this session in its native terminal.";
-    const REMOTE_UNAVAILABLE: &str = "The configured host route did not answer with the expected bounded output. Verify the route command and its authentication.";
+    const NO_ROUTE: &str = "No unique live tmux pane was verified. Open this session in its native terminal. If the execution is on a receiver host, configure an authenticated host route with --route-file and reopen the cockpit.";
+    const INVALID_RESUME: &str = "This request has no verifiable native resume command for its provider or session identifier.";
+    const REMOTE_NO_ROUTE: &str = "No unique live tmux pane was verified on the receiver host through the configured route. Open this session in its native terminal there.";
+    const REMOTE_UNAVAILABLE: &str = "The configured host route did not answer with the expected bounded output. Verify the route command and its authentication; this cockpit never guesses or selects a remote pane.";
     const MAX_PROCESS_ENTRIES: usize = 4096;
     const MAX_ANCESTORS: usize = 64;
     const MAX_ROUTE_WORDS: usize = 32;
@@ -92,20 +92,20 @@ mod linux {
         let kind = source
             .strip_prefix("harness.")
             .and_then(|tail| tail.split('.').next())
-            .ok_or(NO_ROUTE)?;
+            .ok_or(INVALID_RESUME)?;
         if session.is_empty()
             || session.len() > 200
             || !session
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
         {
-            return Err(NO_ROUTE.into());
+            return Err(INVALID_RESUME.into());
         }
         match kind {
             "codex" => Ok(("codex", &["resume"])),
             "claude" => Ok(("claude", &["--resume"])),
             "kiro" if session.starts_with("sess_") => Ok(("kiro-cli", &["chat", "--resume-id"])),
-            _ => Err(NO_ROUTE.into()),
+            _ => Err(INVALID_RESUME.into()),
         }
     }
 
@@ -641,6 +641,16 @@ exit 0",
             assert!(expected_resume("harness.codex", "").is_err());
             assert!(expected_resume("harness.codex", "bad session").is_err());
             assert!(expected_resume("harness.codex", &"x".repeat(201)).is_err());
+        }
+
+        #[test]
+        fn unavailable_route_guidance_is_explicit_and_never_guesses_a_target() {
+            assert!(NO_ROUTE.contains("--route-file"));
+            assert!(NO_ROUTE.contains("native terminal"));
+            assert!(REMOTE_NO_ROUTE.contains("configured route"));
+            assert!(REMOTE_UNAVAILABLE.contains("never guesses or selects a remote pane"));
+            assert!(INVALID_RESUME.contains("provider or session identifier"));
+            assert!(!INVALID_RESUME.contains("route-file"));
         }
 
         #[test]

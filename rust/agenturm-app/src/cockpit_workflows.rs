@@ -1,10 +1,11 @@
 use agenturm_kernel::{ExtensionId, Observation, ObservationKind, ObservationQuery, ReadSnapshot};
 use agenturm_store::{
-    ReviewKey, ReviewVersion as StoredReviewVersion, Store, WorkspaceAnchor, WorkspaceLedger,
+    ReviewKey, ReviewVersion as StoredReviewVersion, Store, TaskBriefUpdate, TaskDecisionInput,
+    TaskDecisionKind, WorkspaceAnchor, WorkspaceLedger,
 };
 use agenturm_ui::{
     HandoffEntry, PromptEntry, RecordedSession, RequestEntry, RequestProof, ReviewNoteEntry,
-    ReviewVersion, TaskEntry, WorkAnchor, WorkCommand, WorkResult,
+    ReviewVersion, TaskDecisionEntry, TaskEntry, WorkAnchor, WorkCommand, WorkResult,
 };
 use std::collections::HashMap;
 use std::path::{Path, PathBuf};
@@ -100,6 +101,67 @@ pub(super) fn execute(
         WorkCommand::SaveReviewNote { session, note } => {
             review_notes(store, db, session, Some(&note))
         }
+        WorkCommand::ReviewReceipt(request) => {
+            let text = crate::review_receipt_for_scope(
+                store,
+                db,
+                &request.query,
+                request.format.as_str(),
+                request.directory.as_deref(),
+            )?;
+            let mut scope = format!(
+                "{} / {}",
+                request.query.anchor.source, request.query.anchor.session
+            );
+            if let Some(turn) = &request.query.anchor.turn {
+                scope.push_str(&format!(" / turn {turn}"));
+            }
+            if let Some(worker) = &request.query.anchor.worker {
+                scope.push_str(&format!(" / worker {worker}"));
+            }
+            if let Some(directory) = &request.directory {
+                scope.push_str(&format!(" / exported to {directory}"));
+            } else {
+                scope.push_str(" / loaded review evidence");
+            }
+            Ok(WorkResult::ReviewDocument {
+                title: "Review receipt".into(),
+                text,
+                scope,
+            })
+        }
+        WorkCommand::ReviewExcerpts(query) => {
+            let text = crate::review_receipt_for_scope(store, db, &query, "json", None)?;
+            let value: serde_json::Value =
+                serde_json::from_str(&text).map_err(|_| "Cannot read the review excerpt index")?;
+            let items = value["excerpts"]
+                .as_array()
+                .into_iter()
+                .flatten()
+                .filter_map(|item| {
+                    Some(agenturm_ui::ReviewExcerpt {
+                        kind: item["kind"].as_str()?.to_owned(),
+                        label: item["label"].as_str()?.to_owned(),
+                        source: item["source"].as_str()?.to_owned(),
+                    })
+                })
+                .collect();
+            Ok(WorkResult::ReviewExcerpts {
+                anchor: query.anchor,
+                items,
+            })
+        }
+        WorkCommand::DraftReviewTask {
+            anchor,
+            title,
+            note,
+        } => Ok(WorkResult::TaskDraft {
+            id: None,
+            revision: None,
+            anchor: Some(anchor),
+            title,
+            note,
+        }),
         WorkCommand::Tasks(before) => tasks(&store.workspace_ledger(db)?, before),
         WorkCommand::Handoffs(before) => handoffs(&store.workspace_ledger(db)?, before),
         WorkCommand::SaveTask {
@@ -155,6 +217,97 @@ pub(super) fn execute(
             handoffs(&ledger, None)
         }
         WorkCommand::TaskLinks(id) => task_links(&store.workspace_ledger(db)?, id),
+        WorkCommand::TaskBrief(id) => task_brief(&store.workspace_ledger(db)?, id),
+        WorkCommand::SaveTaskBrief {
+            id,
+            expected_revision,
+            intent,
+            acceptance_criteria,
+            constraints,
+            open_questions,
+            next_action,
+        } => {
+            let ledger = store.workspace_ledger(db)?;
+            ledger
+                .update_task_brief(
+                    id,
+                    &TaskBriefUpdate {
+                        intent: Some(intent),
+                        acceptance_criteria: Some(acceptance_criteria),
+                        constraints: Some(constraints),
+                        open_questions: Some(open_questions),
+                        next_action: Some(next_action),
+                    },
+                    expected_revision,
+                )
+                .map_err(string)?
+                .ok_or("That task is no longer available")?;
+            task_brief(&ledger, id)
+        }
+        WorkCommand::TaskDecisions(id) => task_decisions(&store.workspace_ledger(db)?, id),
+        WorkCommand::AddTaskDecision {
+            id,
+            expected_revision,
+            kind,
+            text,
+            rationale,
+            scope,
+            supersedes_id,
+        } => {
+            let ledger = store.workspace_ledger(db)?;
+            let kind = match kind.as_str() {
+                "accepted" => TaskDecisionKind::Accepted,
+                "rejected" => TaskDecisionKind::Rejected,
+                _ => return Err("Choose accepted or rejected".into()),
+            };
+            ledger
+                .add_task_decision(
+                    id,
+                    &TaskDecisionInput {
+                        kind,
+                        text,
+                        rationale,
+                        scope,
+                        supersedes_id,
+                    },
+                    expected_revision,
+                )
+                .map_err(string)?
+                .ok_or("That task is no longer available")?;
+            task_decisions(&ledger, id)
+        }
+        WorkCommand::PreviewHandoff { id, format } => {
+            if !matches!(format.as_str(), "markdown" | "html") {
+                return Err("Choose Markdown or HTML for a saved handoff".into());
+            }
+            let ledger = store.workspace_ledger(db)?;
+            let handoff = saved_handoff(&ledger, id)?;
+            let html = format == "html";
+            let text = super::handoff_export::render_saved(&handoff, html);
+            Ok(WorkResult::HandoffPreview { id, format, text })
+        }
+        WorkCommand::ExportHandoffAs { id, directory } => {
+            let ledger = store.workspace_ledger(db)?;
+            let handoff = saved_handoff(&ledger, id)?;
+            let destination = super::handoff_export::export_documents(
+                Path::new(&directory),
+                &[
+                    (
+                        "handoff.md",
+                        &super::handoff_export::render_saved(&handoff, false),
+                    ),
+                    (
+                        "handoff.html",
+                        &super::handoff_export::render_saved(&handoff, true),
+                    ),
+                ],
+            )
+            .map_err(string)?;
+            Ok(WorkResult::Status(format!(
+                "Saved Markdown and HTML to {}",
+                destination.display()
+            )))
+        }
         WorkCommand::LinkTask { id, anchor } => {
             let ledger = store.workspace_ledger(db)?;
             ledger.link_task(id, &to_store(anchor)?).map_err(string)?;
@@ -318,6 +471,7 @@ pub(super) fn is_prompt_command(command: &WorkCommand) -> bool {
     matches!(
         command,
         WorkCommand::Prompts(_)
+            | WorkCommand::PromptPage { .. }
             | WorkCommand::RevealPrompt(_, _)
             | WorkCommand::RevealOperation(_, _)
             | WorkCommand::RevealReviewEdit(_, _)
@@ -327,6 +481,146 @@ pub(super) fn is_prompt_command(command: &WorkCommand) -> bool {
             | WorkCommand::RevealFailedEvalFinding { .. }
             | WorkCommand::RevealInvestigation { .. }
     ) || matches!(command, WorkCommand::Investigate(request) if request.kind.is_private())
+}
+
+fn saved_handoff(
+    ledger: &WorkspaceLedger,
+    id: u64,
+) -> Result<agenturm_store::SavedHandoff, String> {
+    let upper = id.checked_add(1).ok_or("Invalid handoff ID")?;
+    ledger
+        .list_handoffs(1, Some(upper))
+        .map_err(string)?
+        .items
+        .into_iter()
+        .next()
+        .filter(|row| row.id == id)
+        .ok_or_else(|| "That handoff is no longer available".into())
+}
+
+fn prompt_history_page(
+    db: &Path,
+    writer: Option<&Store>,
+    owner: WorkAnchor,
+    before: Option<agenturm_ui::PromptHistoryCursor>,
+) -> Result<WorkResult, String> {
+    Ok(prompt_history_with(owner, before, |owner, cursor| {
+        let config =
+            prompt_config(db).map_err(crate::prompt_history::PromptHistoryError::Unavailable)?;
+        let source = ExtensionId::parse(&owner.source)
+            .map_err(|_| crate::prompt_history::PromptHistoryError::MissingIdentity)?;
+        crate::prompt_history::load_page(
+            db,
+            &config,
+            crate::prompt_history::PromptReadScope {
+                source: &source,
+                session: &owner.session,
+                turn: owner.turn.as_deref(),
+            },
+            cursor,
+            crate::prompt_history::DEFAULT_PROMPT_PAGE,
+            writer,
+        )
+    }))
+}
+
+/// Shared local/broker page policy. Transport readers supply only their
+/// existing grant-checked references; scope and cursor proofs stay identical.
+pub(super) fn prompt_history_with(
+    owner: WorkAnchor,
+    before: Option<agenturm_ui::PromptHistoryCursor>,
+    read: impl FnOnce(
+        &WorkAnchor,
+        Option<&crate::prompt_history::PromptCursor>,
+    ) -> Result<
+        crate::prompt_history::PromptPage,
+        crate::prompt_history::PromptHistoryError,
+    >,
+) -> WorkResult {
+    use agenturm_ui::{PromptAvailability as Availability, PromptHistoryPage};
+    let mut result = PromptHistoryPage {
+        anchor: owner.clone(),
+        entries: Vec::new(),
+        retained: 0,
+        retained_cap: agenturm_store::MAX_PROMPT_REFERENCES,
+        limited: false,
+        older: None,
+        availability: Availability::Granted,
+    };
+    if owner.session.trim().is_empty() {
+        result.availability = Availability::MissingIdentity;
+        return WorkResult::PromptHistory(result);
+    }
+    // The listing proof currently has no worker field. Never relabel main-
+    // session references with an unproven requested worker identity.
+    if owner.worker.is_some() {
+        result.availability = Availability::Unavailable(
+            "This prompt capability cannot prove exact worker scope; use exact worker Activity"
+                .into(),
+        );
+        return WorkResult::PromptHistory(result);
+    }
+    let cursor = before
+        .as_ref()
+        .map(|cursor| crate::prompt_history::PromptCursor {
+            observed_at_unix_ns: cursor.timestamp,
+            event_id: cursor.event_id.clone(),
+        });
+    let page = read(&owner, cursor.as_ref());
+    match page {
+        Ok(page) => {
+            if let Some(before) = &before
+                && (page.requests.is_empty()
+                    || page.requests.iter().any(|entry| {
+                        entry.snapshot_id != Some(before.snapshot_id)
+                            || entry.history_identity.as_deref() != Some(&before.history_identity)
+                    }))
+            {
+                result.availability = Availability::Stale(
+                    "The retained prompt window changed; reopen Prompts".into(),
+                );
+                return WorkResult::PromptHistory(result);
+            }
+            result.retained = page.retained;
+            result.limited = page.limited;
+            result.retained_cap = page.retained_cap;
+            result.older = page.older.and_then(|cursor| {
+                let proof = page.requests.last()?;
+                Some(agenturm_ui::PromptHistoryCursor {
+                    timestamp: cursor.observed_at_unix_ns,
+                    event_id: cursor.event_id,
+                    snapshot_id: proof.snapshot_id?,
+                    history_identity: proof.history_identity.clone()?,
+                })
+            });
+            result.entries = page
+                .requests
+                .into_iter()
+                .map(|prompt| {
+                    let mut anchor = owner.clone();
+                    anchor.turn = Some(prompt.turn_id);
+                    PromptEntry {
+                        anchor,
+                        event_id: prompt.event_id,
+                        revision: prompt.revision,
+                        timestamp: prompt.observed_at_unix_ns,
+                        snapshot_id: prompt.snapshot_id,
+                        history_identity: prompt.history_identity,
+                    }
+                })
+                .collect();
+        }
+        Err(crate::prompt_history::PromptHistoryError::MissingIdentity) => {
+            result.availability = Availability::MissingIdentity
+        }
+        Err(crate::prompt_history::PromptHistoryError::Denied(reason)) => {
+            result.availability = Availability::Denied(reason)
+        }
+        Err(crate::prompt_history::PromptHistoryError::Unavailable(reason)) => {
+            result.availability = Availability::Unavailable(reason)
+        }
+    }
+    WorkResult::PromptHistory(result)
 }
 
 pub(super) fn execute_prompt(
@@ -343,33 +637,9 @@ pub(super) fn execute_prompt(
         WorkCommand::Investigate(_) | WorkCommand::RevealInvestigation { .. } => {
             Err("Retained investigations require Linux".into())
         }
-        WorkCommand::Prompts(owner) => {
-            let config = prompt_config(db)?;
-            let source = ExtensionId::parse(&owner.source).map_err(string)?;
-            let prompts = super::content_preview::list_user_prompts(
-                db,
-                &config,
-                &source,
-                &owner.session,
-                writer,
-            )?;
-            Ok(WorkResult::Prompts(
-                prompts
-                    .into_iter()
-                    .map(|prompt| {
-                        let mut anchor = owner.clone();
-                        anchor.turn = Some(prompt.turn_id);
-                        PromptEntry {
-                            anchor,
-                            event_id: prompt.event_id,
-                            revision: prompt.revision,
-                            timestamp: prompt.observed_at_unix_ns,
-                            snapshot_id: prompt.snapshot_id,
-                            history_identity: prompt.history_identity,
-                        }
-                    })
-                    .collect(),
-            ))
+        WorkCommand::Prompts(owner) => prompt_history_page(db, writer, owner, None),
+        WorkCommand::PromptPage { anchor, before } => {
+            prompt_history_page(db, writer, anchor, before)
         }
         WorkCommand::RevealPrompt(prompt, mut delivery) => {
             let config = prompt_config(db)?;
@@ -536,6 +806,44 @@ fn tasks(ledger: &WorkspaceLedger, before: Option<u64>) -> Result<WorkResult, St
             })
             .collect(),
         older: page.next_before,
+    })
+}
+
+fn task_brief(ledger: &WorkspaceLedger, id: u64) -> Result<WorkResult, String> {
+    let (task, brief) = ledger
+        .task_brief(id)
+        .map_err(string)?
+        .ok_or("That task is no longer available")?;
+    Ok(WorkResult::TaskBrief {
+        id: task.id,
+        revision: Some(task.revision),
+        intent: brief.intent,
+        acceptance_criteria: brief.acceptance_criteria,
+        constraints: brief.constraints,
+        open_questions: brief.open_questions,
+        next_action: brief.next_action,
+    })
+}
+
+fn task_decisions(ledger: &WorkspaceLedger, id: u64) -> Result<WorkResult, String> {
+    let (task, decisions) = ledger
+        .task_decisions(id)
+        .map_err(string)?
+        .ok_or("That task is no longer available")?;
+    Ok(WorkResult::TaskDecisions {
+        id: task.id,
+        revision: Some(task.revision),
+        items: decisions
+            .into_iter()
+            .map(|item| TaskDecisionEntry {
+                id: item.id,
+                kind: item.decision.kind.as_str().to_owned(),
+                text: item.decision.text,
+                rationale: item.decision.rationale,
+                scope: item.decision.scope,
+                supersedes: item.decision.supersedes_id,
+            })
+            .collect(),
     })
 }
 
@@ -941,6 +1249,7 @@ fn event_position(event_id: &str) -> (&str, u64, &str) {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::HistoryReader;
     use agenturm_kernel::ObservationIdentity;
 
     fn execute(
@@ -954,6 +1263,316 @@ mod tests {
             command,
             &std::sync::atomic::AtomicBool::new(false),
         )
+    }
+
+    fn scratch(name: &str) -> PathBuf {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "agenturm-parity-{name}-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&directory).unwrap();
+        directory
+    }
+
+    #[test]
+    fn saved_handoff_preview_and_export_never_resolve_a_colliding_task_id() {
+        use agenturm_kernel::ObservationStore;
+        let directory = scratch("handoff-identity");
+        let db = directory.join("history.sqlite");
+        let mut store = Store::open_collector(&db).unwrap();
+        let observation = |session: &str| Observation {
+            harness_id: ExtensionId::parse("harness.fixture").unwrap(),
+            event_id: session.into(),
+            revision: 0,
+            identity: ObservationIdentity::session(session),
+            observed_at_unix_ns: 1,
+            kind: ObservationKind::Message {
+                role: "user".into(),
+            },
+        };
+        store
+            .commit(
+                "harness.fixture",
+                None,
+                "seed",
+                &[observation("from-session"), observation("to-session")],
+            )
+            .unwrap();
+        let ledger = store.workspace_ledger(&db).unwrap();
+        let task = ledger
+            .create_task(None, "UNRELATED_TASK_MARKER", "UNRELATED_TASK_NOTE")
+            .unwrap();
+        let from = WorkspaceAnchor {
+            harness_id: ExtensionId::parse("harness.fixture").unwrap(),
+            session_id: "from-session".into(),
+            worker_id: None,
+            turn_id: None,
+        };
+        let to = WorkspaceAnchor {
+            session_id: "to-session".into(),
+            ..from.clone()
+        };
+        let handoff = ledger
+            .create_handoff(&from, &to, "SELECTED_HANDOFF_MARKER")
+            .unwrap();
+        assert_eq!(
+            task.id, handoff.id,
+            "independent numeric namespaces must actually collide in this regression"
+        );
+        let WorkResult::HandoffPreview { text, .. } = execute(
+            &store,
+            &db,
+            WorkCommand::PreviewHandoff {
+                id: handoff.id,
+                format: "markdown".into(),
+            },
+        )
+        .unwrap() else {
+            panic!("preview");
+        };
+        assert!(
+            text.contains("SELECTED_HANDOFF_MARKER")
+                && text.contains("from-session")
+                && text.contains("to-session")
+        );
+        assert!(!text.contains("UNRELATED_TASK"));
+        let destination = directory.join("export");
+        execute(
+            &store,
+            &db,
+            WorkCommand::ExportHandoffAs {
+                id: handoff.id,
+                directory: destination.display().to_string(),
+            },
+        )
+        .unwrap();
+        for name in ["handoff.md", "handoff.html"] {
+            let text = std::fs::read_to_string(destination.join(name)).unwrap();
+            assert!(text.contains("SELECTED_HANDOFF_MARKER"));
+            assert!(!text.contains("UNRELATED_TASK"));
+        }
+        assert!(
+            execute(
+                &store,
+                &db,
+                WorkCommand::ExportHandoffAs {
+                    id: handoff.id,
+                    directory: destination.display().to_string()
+                }
+            )
+            .is_err()
+        );
+        ledger.delete_handoff(handoff.id).unwrap();
+        assert!(
+            execute(
+                &store,
+                &db,
+                WorkCommand::PreviewHandoff {
+                    id: handoff.id,
+                    format: "markdown".into()
+                }
+            )
+            .is_err()
+        );
+        assert!(ledger.task(task.id).unwrap().is_some());
+        drop(ledger);
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn review_receipt_preserves_older_page_snapshot_and_rejects_changed_proofs() {
+        use agenturm_kernel::ObservationStore;
+        let directory = scratch("review-proof");
+        let db = directory.join("history.sqlite");
+        let mut store = Store::open_collector(&db).unwrap();
+        let observation = |id: usize| Observation {
+            harness_id: ExtensionId::parse("harness.fixture").unwrap(),
+            event_id: format!("event-{id:04}"),
+            revision: 0,
+            identity: ObservationIdentity::session("review-session"),
+            observed_at_unix_ns: id as u64,
+            kind: ObservationKind::Message {
+                role: "user".into(),
+            },
+        };
+        let rows = (1..=503).map(observation).collect::<Vec<_>>();
+        store
+            .commit("harness.fixture", None, "seed", &rows)
+            .unwrap();
+        let mut query = ObservationQuery {
+            harness_id: Some("harness.fixture".into()),
+            session_id: Some("review-session".into()),
+            ..ObservationQuery::latest(crate::INSPECT_PAGE_SIZE)
+        };
+        let first = store.query_observations(&query).unwrap();
+        query.before = first.older_position();
+        query.snapshot_id = Some(first.snapshot_id);
+        let older = store.query_observations(&query).unwrap();
+        assert_eq!(older.observations.len(), 3);
+        let pinned = agenturm_ui::PinnedReviewQuery {
+            anchor: WorkAnchor {
+                source: "harness.fixture".into(),
+                session: "review-session".into(),
+                worker: None,
+                turn: None,
+            },
+            snapshot_id: older.snapshot_id,
+            history_identity: store.workspace_history_identity().unwrap(),
+            version: None,
+            before: query.before,
+            include_reviews: false,
+            all_workers: true,
+            events: older
+                .observations
+                .iter()
+                .map(|row| agenturm_kernel::ObservationPosition {
+                    observed_at_unix_ns: row.observed_at_unix_ns,
+                    harness_id: row.harness_id.as_str().into(),
+                    event_id: row.event_id.clone(),
+                    revision: row.revision,
+                    snapshot_id: older.snapshot_id,
+                })
+                .collect(),
+        };
+        store
+            .commit("harness.fixture", Some("seed"), "new", &[observation(504)])
+            .unwrap();
+        let text = crate::review_receipt_for_scope(&store, &db, &pinned, "json", None).unwrap();
+        let value: serde_json::Value = serde_json::from_str(&text).unwrap();
+        assert_eq!(value["observations"].as_array().unwrap().len(), 3);
+        assert!(
+            text.contains("event-0001")
+                && !text.contains("event-0504")
+                && !text.contains("event-0503")
+        );
+        let mut stale = pinned.clone();
+        stale.history_identity = "replaced-history".into();
+        assert!(crate::review_receipt_for_scope(&store, &db, &stale, "json", None).is_err());
+        let mut wrong_page = pinned.clone();
+        wrong_page.before = None;
+        assert!(crate::review_receipt_for_scope(&store, &db, &wrong_page, "json", None).is_err());
+        let mut forged = pinned.clone();
+        forged.events[0].revision += 1;
+        assert!(crate::review_receipt_for_scope(&store, &db, &forged, "json", None).is_err());
+        drop(store);
+        std::fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn worker_prompt_scope_without_worker_listing_proof_is_explicitly_unavailable() {
+        let result = prompt_history_page(
+            Path::new("/nonexistent"),
+            None,
+            WorkAnchor {
+                source: "harness.fixture".into(),
+                session: "main-session".into(),
+                worker: Some("worker-a".into()),
+                turn: Some("turn-a".into()),
+            },
+            None,
+        )
+        .unwrap();
+        let WorkResult::PromptHistory(page) = result else {
+            panic!("typed prompt result");
+        };
+        assert!(page.entries.is_empty());
+        assert!(
+            matches!(page.availability, agenturm_ui::PromptAvailability::Unavailable(reason) if reason.contains("cannot prove exact worker"))
+        );
+    }
+
+    #[test]
+    fn local_and_broker_prompt_policy_share_exact_turn_cap_cursor_and_stale_checks() {
+        let anchor = WorkAnchor {
+            source: "harness.fixture".into(),
+            session: "session".into(),
+            worker: None,
+            turn: Some("exact-turn".into()),
+        };
+        let references = |snapshot: u64| {
+            (0..256)
+                .map(|index| crate::content_preview::PromptReference {
+                    event_id: format!("event-{index:04}"),
+                    revision: 0,
+                    turn_id: if index < 200 {
+                        "exact-turn"
+                    } else {
+                        "other-turn"
+                    }
+                    .into(),
+                    observed_at_unix_ns: index,
+                    snapshot_id: Some(snapshot.into()),
+                    history_identity: Some("history".into()),
+                })
+                .collect()
+        };
+        let load =
+            |snapshot, owner: &WorkAnchor, cursor: Option<&crate::prompt_history::PromptCursor>| {
+                Ok(crate::prompt_history::scoped_window(
+                    references(snapshot),
+                    owner.turn.as_deref(),
+                    cursor,
+                    100,
+                ))
+            };
+        let WorkResult::PromptHistory(first) =
+            prompt_history_with(anchor.clone(), None, |owner, cursor| load(9, owner, cursor))
+        else {
+            panic!("page");
+        };
+        assert_eq!(first.entries.len(), 100);
+        assert_eq!(first.retained, 200);
+        assert!(first.limited);
+        assert!(
+            first
+                .entries
+                .iter()
+                .all(|row| row.anchor.turn.as_deref() == Some("exact-turn"))
+        );
+        let before = first.older.unwrap();
+        let WorkResult::PromptHistory(second) =
+            prompt_history_with(anchor.clone(), Some(before.clone()), |owner, cursor| {
+                load(9, owner, cursor)
+            })
+        else {
+            panic!("page");
+        };
+        assert_eq!(second.entries.len(), 100);
+        assert!(second.older.is_none());
+        assert!(second.entries.iter().all(|row| {
+            !first
+                .entries
+                .iter()
+                .any(|prior| prior.event_id == row.event_id)
+        }));
+        let WorkResult::PromptHistory(stale) =
+            prompt_history_with(anchor.clone(), Some(before), |owner, cursor| {
+                load(10, owner, cursor)
+            })
+        else {
+            panic!("page");
+        };
+        assert!(matches!(
+            stale.availability,
+            agenturm_ui::PromptAvailability::Stale(_)
+        ));
+        assert!(stale.entries.is_empty());
+        let WorkResult::PromptHistory(denied) = prompt_history_with(anchor, None, |_, _| {
+            Err(crate::prompt_history::PromptHistoryError::Denied(
+                "Grant revoked".into(),
+            ))
+        }) else {
+            panic!("page");
+        };
+        assert!(matches!(
+            denied.availability,
+            agenturm_ui::PromptAvailability::Denied(_)
+        ));
     }
 
     #[test]
@@ -1187,6 +1806,96 @@ mod tests {
                 .any(|item| item.owner.source == main && item.event_id == "approval-a")
         );
         drop(restored);
+        drop(store);
+        std::fs::remove_dir_all(dir).unwrap();
+    }
+
+    #[test]
+    fn review_decision_notes_are_bound_to_the_exact_evidence_version() {
+        use agenturm_kernel::ObservationStore;
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let dir = std::env::temp_dir().join(format!(
+            "agenturm-review-notes-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir(&dir).unwrap();
+        let db = dir.join("history.sqlite");
+        let mut store = Store::open_collector(&db).unwrap();
+        let mut identity = ObservationIdentity::session("same-session");
+        identity.turn_id = Some("recorded-turn".into());
+        let observation = |event: &str, at: u64| Observation {
+            harness_id: ExtensionId::parse("harness.codex").unwrap(),
+            event_id: event.into(),
+            revision: 0,
+            identity: identity.clone(),
+            observed_at_unix_ns: at,
+            kind: ObservationKind::Message {
+                role: "user".into(),
+            },
+        };
+        store
+            .commit("harness.codex", None, "one", &[observation("check", 10)])
+            .unwrap();
+        let catalog = super::super::load_session_catalog(&store, &db, None).unwrap();
+        let session = catalog
+            .sessions
+            .into_iter()
+            .find(|row| row.session_id == "same-session")
+            .unwrap();
+        let WorkResult::ReviewNotes { items, .. } =
+            execute(&store, &db, WorkCommand::ReviewNotes(session.clone())).unwrap()
+        else {
+            panic!("review notes page")
+        };
+        assert!(items.is_empty());
+        let WorkResult::ReviewNotes {
+            items,
+            session: saved,
+        } = execute(
+            &store,
+            &db,
+            WorkCommand::SaveReviewNote {
+                session: session.clone(),
+                note: "Checks pass on the recorded evidence".into(),
+            },
+        )
+        .unwrap()
+        else {
+            panic!("saved review notes page")
+        };
+        assert_eq!(saved.review_version, session.review_version);
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].version, session.review_version);
+        assert_eq!(items[0].note, "Checks pass on the recorded evidence");
+
+        // A later admitted event changes the receipt version for the session.
+        store
+            .commit(
+                "harness.codex",
+                Some("one"),
+                "two",
+                &[observation("later-check", 11)],
+            )
+            .unwrap();
+        let catalog = super::super::load_session_catalog(&store, &db, None).unwrap();
+        let newer = catalog
+            .sessions
+            .into_iter()
+            .find(|row| row.session_id == "same-session")
+            .unwrap();
+        assert_ne!(newer.review_version, session.review_version);
+        let newer_version = newer.review_version;
+        let WorkResult::ReviewNotes { items, .. } =
+            execute(&store, &db, WorkCommand::ReviewNotes(newer)).unwrap()
+        else {
+            panic!("review notes page")
+        };
+        assert_eq!(items.len(), 1);
+        assert_eq!(items[0].version, session.review_version);
+        assert_ne!(items[0].version, newer_version);
         drop(store);
         std::fs::remove_dir_all(dir).unwrap();
     }

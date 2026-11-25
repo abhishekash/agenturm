@@ -8,11 +8,13 @@
 
 mod evidence_view;
 mod findings;
+mod help;
 mod keymap;
 mod live_receiver;
 mod loaded_view;
 pub mod metric_history;
 mod operation_table;
+mod palette;
 mod pane_filter;
 mod theme;
 pub mod usage_chart;
@@ -43,9 +45,11 @@ pub use workbench::workflow_resume::{ResumeRuntime, WorkflowResume};
 
 pub use agenturm_kernel::workflow_notifications::WorkflowDelivery;
 pub use workbench::{
-    CurrentHostSample, HandoffEntry, OperationDetailEntry, OperationDetailKind, PromptDelivery,
-    PromptEntry, RequestEntry, RequestProof, ReviewEditSelection, ReviewNoteEntry, TaskEntry,
-    TelemetryLogEntry, TelemetrySpanEntry, WorkAnchor, WorkCommand, WorkResult, WorkflowAlertInbox,
+    CurrentHostSample, HandoffEntry, OperationDetailEntry, OperationDetailKind, PinnedReviewQuery,
+    PromptAvailability, PromptDelivery, PromptEntry, PromptHistoryCursor, PromptHistoryPage,
+    RequestEntry, RequestProof, ReviewDocumentRequest, ReviewEditSelection, ReviewExcerpt,
+    ReviewFormat, ReviewNoteEntry, TaskDecisionEntry, TaskEntry, TelemetryLogEntry,
+    TelemetrySpanEntry, WorkAnchor, WorkCommand, WorkResult, WorkflowAlertInbox,
 };
 
 pub use workspace::{
@@ -62,6 +66,7 @@ use ratatui::layout::{Constraint, Direction, Layout, Rect};
 use ratatui::style::{Color, Modifier, Style};
 use ratatui::text::{Line, Span, Text};
 use ratatui::widgets::{Block, Borders, List, ListItem, ListState, Paragraph, Wrap};
+use std::collections::BTreeMap;
 use std::io;
 use unicode_width::UnicodeWidthChar;
 
@@ -80,6 +85,12 @@ struct Pane {
 pub struct UiModel {
     panes: Vec<Pane>,
     evidence: EvidenceTables,
+    /// Page-local filter per selected evidence pane. The committed query moves
+    /// with the pane across older/newer pages; the draft only lives here.
+    evidence_filter: BTreeMap<ExtensionId, pane_filter::Filter>,
+    /// Python's Activity Prompts control, projected from typed NativeRequest
+    /// rows and retained while moving among evidence panes.
+    activity_prompts_only: bool,
     evidence_inspection: Option<evidence_view::Inspection>,
     selected: usize,
     scroll: usize,
@@ -152,6 +163,8 @@ impl UiModel {
         Self {
             panes,
             evidence: EvidenceTables::new(),
+            evidence_filter: BTreeMap::new(),
+            activity_prompts_only: false,
             evidence_inspection: None,
             selected: 0,
             scroll: 0,
@@ -177,12 +190,26 @@ impl UiModel {
             .map(|pane| pane.title.as_str())
     }
 
-    fn select_title(&mut self, title: &str) {
-        if let Some(index) = self.panes.iter().position(|pane| pane.title == title) {
-            self.selected = index;
-            self.evidence_inspection = None;
+    /// Restores a pane by its stable identity and keeps the reading position
+    /// when the same pane still exists. A missing identity falls back to the
+    /// nearest deterministic row and reports that the prior pane is gone.
+    pub(crate) fn restore_view(&mut self, title: Option<&str>, scroll: usize) -> bool {
+        self.evidence_inspection = None;
+        let Some(title) = title else {
             self.scroll = 0;
             self.update_scroll_limit();
+            return false;
+        };
+        if let Some(index) = self.panes.iter().position(|pane| pane.title == title) {
+            self.selected = index;
+            self.scroll = scroll;
+            self.update_scroll_limit();
+            true
+        } else {
+            self.selected = self.selected.min(self.panes.len().saturating_sub(1));
+            self.scroll = 0;
+            self.update_scroll_limit();
+            false
         }
     }
 
@@ -222,16 +249,189 @@ impl UiModel {
         self.evidence.get(id)
     }
 
+    fn selected_evidence_id(&self) -> Option<ExtensionId> {
+        self.panes.get(self.selected)?.id.clone()
+    }
+
+    fn evidence_matches(table: &EvidenceTable, filter: &pane_filter::Filter, index: usize) -> bool {
+        let Some(row) = table.rows.get(index) else {
+            return false;
+        };
+        filter.matches(
+            row.cells
+                .iter()
+                .map(String::as_str)
+                .chain(
+                    row.details
+                        .iter()
+                        .flat_map(|detail| [detail.label.as_str(), detail.value.as_str()]),
+                )
+                .chain(
+                    table
+                        .context
+                        .iter()
+                        .flat_map(|detail| [detail.label.as_str(), detail.value.as_str()]),
+                ),
+        )
+    }
+
+    /// Actual row indices in the selected evidence table after its page-local
+    /// filter. The returned order is the rendered order.
+    fn evidence_visible(&self) -> Vec<usize> {
+        let Some(table) = self.selected_evidence() else {
+            return Vec::new();
+        };
+        let prompts_only = self.activity_prompts_only && self.selected_title() == Some("Activity");
+        let filter = self
+            .selected_evidence_id()
+            .and_then(|id| self.evidence_filter.get(&id));
+        (0..table.rows.len())
+            .filter(|index| {
+                let row = &table.rows[*index];
+                (!prompts_only
+                    || row
+                        .cells
+                        .get(1)
+                        .is_some_and(|kind| kind == "Native request"))
+                    && filter.is_none_or(|filter| Self::evidence_matches(table, filter, *index))
+            })
+            .collect()
+    }
+
+    pub(crate) fn activity_prompts_only(&self) -> bool {
+        self.activity_prompts_only && self.selected_title() == Some("Activity")
+    }
+
+    pub(crate) fn activity_prompts_available(&self) -> bool {
+        self.selected_title() == Some("Activity")
+            && self.selected_evidence().is_some()
+            && self.evidence_inspection.is_none()
+            && !self.evidence_filter_editing()
+    }
+
+    /// Toggles the Activity-only projection. Prompt membership comes from the
+    /// provider-neutral NativeRequest row kind, never from prompt text.
+    pub(crate) fn toggle_activity_prompts(&mut self) -> Option<bool> {
+        if !self.activity_prompts_available() {
+            return None;
+        }
+        let previous = self.evidence_actual_row();
+        self.activity_prompts_only = !self.activity_prompts_only;
+        let visible = self.evidence_visible();
+        self.scroll = previous
+            .and_then(|actual| visible.iter().position(|index| *index == actual))
+            .unwrap_or(0);
+        self.update_scroll_limit();
+        Some(self.activity_prompts_only)
+    }
+
+    fn evidence_actual_row(&self) -> Option<usize> {
+        let visible = self.evidence_visible();
+        visible.get(self.scroll).copied()
+    }
+
+    pub(crate) fn evidence_filter_editing(&self) -> bool {
+        self.selected_evidence_id()
+            .and_then(|id| self.evidence_filter.get(&id))
+            .is_some_and(pane_filter::Filter::editing)
+    }
+
+    pub(crate) fn evidence_filter_label(&self) -> Option<String> {
+        let search = self
+            .selected_evidence_id()
+            .and_then(|id| self.evidence_filter.get(&id))
+            .and_then(pane_filter::Filter::label);
+        match (self.activity_prompts_only(), search) {
+            (true, Some(search)) => Some(format!("User prompts only · {search}")),
+            (true, None) => Some("User prompts only · F all activity".into()),
+            (false, search) => search,
+        }
+    }
+
+    fn evidence_filter_active(&self) -> bool {
+        self.activity_prompts_only()
+            || self
+                .selected_evidence_id()
+                .and_then(|id| self.evidence_filter.get(&id))
+                .is_some_and(pane_filter::Filter::active)
+    }
+
+    /// Applies `/`, editing keys and Esc-clear to the selected evidence pane.
+    pub(crate) fn evidence_filter_key(&mut self, key: KeyCode) -> bool {
+        let Some(id) = self.selected_evidence_id() else {
+            return false;
+        };
+        let table = match self.evidence.get(&id) {
+            Some(table) => table,
+            None => return false,
+        };
+        let previous_actual = self.evidence_actual_row();
+        let filter = self.evidence_filter.entry(id.clone()).or_default();
+        match filter.key(key) {
+            pane_filter::FilterKey::Ignored => false,
+            pane_filter::FilterKey::Handled => true,
+            pane_filter::FilterKey::Changed => {
+                let visible = (0..table.rows.len())
+                    .filter(|index| Self::evidence_matches(table, filter, *index))
+                    .collect::<Vec<_>>();
+                let position = previous_actual
+                    .and_then(|actual| visible.iter().position(|index| *index == actual))
+                    .unwrap_or_else(|| {
+                        pane_filter::selection(&visible, previous_actual).unwrap_or(0)
+                    });
+                self.scroll = position;
+                self.update_scroll_limit();
+                self.evidence_inspection = None;
+                true
+            }
+        }
+    }
+
+    /// Adopts the committed filters of the previous page for panes that still
+    /// exist. A draft is deliberately not carried: only an applied query is
+    /// part of the retained page identity.
+    fn inherit_evidence_filters(&mut self, previous: &Self) {
+        self.activity_prompts_only = previous.activity_prompts_only;
+        for (id, filter) in &previous.evidence_filter {
+            if self.evidence.contains_key(id) {
+                self.evidence_filter.insert(id.clone(), filter.committed());
+            }
+        }
+        if let Some(table) = self.selected_evidence() {
+            let visible = self.evidence_visible();
+            let _ = table;
+            self.scroll = self.scroll.min(visible.len().saturating_sub(1));
+        }
+        self.update_scroll_limit();
+    }
+
+    /// Export target for the selected evidence row: pane title, row, visible
+    /// position and total visible rows.
+    pub(crate) fn selected_evidence_export(&self) -> Option<(&str, &EvidenceRow, usize, usize)> {
+        let table = self.selected_evidence()?;
+        let pane = self.panes.get(self.selected)?;
+        let visible = self.evidence_visible();
+        let actual = *visible.get(self.scroll)?;
+        Some((
+            pane.title.as_str(),
+            table.rows.get(actual)?,
+            self.scroll,
+            visible.len(),
+        ))
+    }
+
     /// Routes input to the active metadata inspector before regular history keys.
     fn evidence_key(&mut self, key: KeyCode) -> bool {
         if self.help {
             return false;
         }
         if self.evidence_inspection.is_none() {
-            if key == KeyCode::Enter {
+            if key == KeyCode::Enter
+                && let Some(actual) = self.evidence_actual_row()
+            {
                 self.evidence_inspection = self
                     .selected_evidence()
-                    .and_then(|table| table.open_inspection(self.scroll));
+                    .and_then(|table| table.open_inspection(actual));
             }
             return self.evidence_inspection.is_some();
         }
@@ -250,15 +450,17 @@ impl UiModel {
 
     fn evidence_inspection_bounds(&self) -> (usize, usize) {
         let page = usize::from(self.viewport_height.saturating_sub(6).max(1));
+        let actual = self.evidence_actual_row().unwrap_or_default();
         let limit = self.selected_evidence().map_or(0, |table| {
-            table.inspection_limit(self.scroll, self.viewport_width, page)
+            table.inspection_limit(actual, self.viewport_width, page)
         });
         (page, limit)
     }
 
     fn update_scroll_limit(&mut self) {
-        if let Some(table) = self.selected_evidence() {
-            self.scroll_limit = table.rows.len().saturating_sub(1);
+        if self.selected_evidence().is_some() {
+            let visible = self.evidence_visible().len();
+            self.scroll_limit = visible.saturating_sub(1);
             self.scroll = self.scroll.min(self.scroll_limit);
             return;
         }
@@ -327,6 +529,14 @@ impl UiModel {
                 self.scroll_up();
                 false
             }
+            KeyCode::Home => {
+                self.scroll = 0;
+                false
+            }
+            KeyCode::End => {
+                self.scroll = self.scroll_limit;
+                false
+            }
             _ => false,
         }
     }
@@ -375,6 +585,8 @@ pub struct HistoryPage {
 
 struct PageView {
     snapshot_id: ReadSnapshot,
+    review_before: Option<ObservationPosition>,
+    review_events: Vec<ObservationPosition>,
     history_identity: Option<String>,
     ui: UiModel,
     turns: Vec<RecordedTurn>,
@@ -385,6 +597,9 @@ struct PageView {
     findings: Option<(ExtensionId, findings::Browser)>,
     operation_picker: Option<(OperationDetailKind, ListState)>,
     review_edit_preview: bool,
+    /// Tab-focus position across the Review control strip. The list is fixed
+    /// so focus order is deterministic at every width.
+    review_control: Option<usize>,
     telemetry_spans: Vec<TelemetrySpanEntry>,
     evaluation_traces: Vec<TraceEvaluationEntry>,
     evaluation_picker: Option<ListState>,
@@ -414,6 +629,18 @@ impl PageView {
         };
         let evaluation_traces = workbench::evaluation::trace_entries(&page.snapshot);
         let snapshot_id = page.snapshot.history_snapshot_id;
+        let review_events = page
+            .snapshot
+            .observations
+            .iter()
+            .map(|row| ObservationPosition {
+                observed_at_unix_ns: row.observed_at_unix_ns,
+                harness_id: row.harness_id.as_str().into(),
+                event_id: row.event_id.clone(),
+                revision: row.revision,
+                snapshot_id,
+            })
+            .collect();
         let mut ui = UiModel::from_snapshot(page.snapshot);
         if ui.truncated
             && let Some(continuation) = page.features.continuation
@@ -429,6 +656,8 @@ impl PageView {
         ui.turn_available = !in_turn && !page.turns.is_empty();
         Self {
             snapshot_id,
+            review_before: None,
+            review_events,
             history_identity: page.history_identity,
             ui,
             turns: page.turns,
@@ -445,6 +674,7 @@ impl PageView {
                 .map(|(id, data)| (id, findings::Browser::new(data))),
             operation_picker: None,
             review_edit_preview: page.features.review_edit_preview,
+            review_control: None,
             telemetry_spans,
             evaluation_traces,
             evaluation_picker: None,
@@ -453,6 +683,7 @@ impl PageView {
     fn inherit_filters(&mut self, previous: &Self) {
         self.operation_table
             .inherit_filters(&previous.operation_table);
+        self.ui.inherit_evidence_filters(&previous.ui);
         if let (Some((id, next)), Some((previous_id, prior))) =
             (&mut self.findings, &previous.findings)
             && id == previous_id
@@ -618,7 +849,7 @@ pub fn run_with_turn_activity(
                         if let Some(latest) = load_page(active_turn.as_ref(), None)? {
                             let mut next = PageView::new(latest, active_turn.is_some());
                             if let Some(title) = page.ui.selected_title() {
-                                next.ui.select_title(title);
+                                next.ui.restore_view(Some(title), page.ui.scroll);
                             }
                             page = next;
                             newer_pages.clear();
@@ -680,13 +911,22 @@ fn draw(
             area,
         );
         evidence_view::header(frame, model, head);
+        let visible = model.evidence_visible();
+        let filtered = model.evidence_filter_active();
+        let rows = filtered.then_some(visible.as_slice());
         let keys = if let Some(inspection) = &model.evidence_inspection {
-            table.draw_expanded(frame, body, model.scroll, inspection);
+            table.draw_expanded_filtered(frame, body, rows, model.scroll, inspection);
             "↑↓ scroll · PgUp/PgDn page · Esc back"
+        } else if table.spec.title == "Activity" {
+            table.draw_with_inspector_filtered(frame, body, rows, model.scroll, true);
+            "↑↓ select · Enter inspect · / filter · F prompts only · ←/→ panes · ? help"
         } else {
-            table.draw_with_inspector(frame, body, model.scroll, true);
-            "↑↓ select · Enter inspect · ←/→ panes · ? help"
+            table.draw_with_inspector_filtered(frame, body, rows, model.scroll, true);
+            "↑↓ select · Enter inspect · / filter · ←/→ panes · ? help"
         };
+        let keys = model
+            .evidence_filter_label()
+            .map_or_else(|| keys.to_owned(), |label| format!("{label} · {keys}"));
         frame.render_widget(Paragraph::new(keys), foot);
         return;
     }
@@ -737,7 +977,7 @@ fn draw(
     }
 
     let footer = if picking_turn {
-        "↑/↓ select · Enter open · Esc back"
+        "↑/↓ select · Enter open · Esc back".to_owned()
     } else {
         history_keys(model, has_newer_page)
     };
@@ -747,18 +987,18 @@ fn draw(
     );
 }
 
-fn history_keys(model: &UiModel, has_newer_page: bool) -> &'static str {
+fn history_keys(model: &UiModel, has_newer_page: bool) -> String {
     if model.help {
-        HELP_CLOSE_HINT
-    } else if model.older_cursor.is_some() && has_newer_page {
-        " ←/→ panes · ↑/↓ scroll · ] older · [ newer · F2 themes · ? help · q quit "
-    } else if model.older_cursor.is_some() {
-        " ←/→ panes · ↑/↓ scroll · ] older · F2 themes · ? help · q quit "
-    } else if has_newer_page {
-        " ←/→ panes · ↑/↓ scroll · [ newer · F2 themes · ? help · q quit "
-    } else {
-        " ←/→ or Tab switch panes · ↑/↓ scroll · F2 themes · ? help · q quit "
+        return HELP_CLOSE_HINT.to_owned();
     }
+    let mut ids = vec![keymap::id::THEMES, keymap::id::HELP, keymap::id::QUIT];
+    if model.older_cursor.is_some() {
+        ids.insert(0, keymap::id::OLDER_PAGE);
+    }
+    if has_newer_page {
+        ids.insert(0, keymap::id::NEWER_PAGE);
+    }
+    format!(" ←/→ or Tab panes · ↑↓ scroll · {} ", keymap::hint(&ids))
 }
 
 fn render_turn_picker(
@@ -825,8 +1065,16 @@ fn draw_view_bar(frame: &mut Frame, model: &UiModel, area: Rect) {
     frame.render_widget(Paragraph::new(Line::from(tabs)), area);
 }
 
-fn render_selected_pane(frame: &mut Frame, model: &UiModel, area: Rect) {
-    let pane = &model.panes[model.selected];
+pub(crate) fn render_selected_pane(frame: &mut Frame, model: &UiModel, area: Rect) {
+    let Some(pane) = model.panes.get(model.selected) else {
+        frame.render_widget(
+            Paragraph::new("No section content is available for this session.")
+                .wrap(Wrap { trim: true })
+                .block(panel("Session inspector")),
+            area,
+        );
+        return;
+    };
     let content_width = area.width.saturating_sub(2);
     frame.render_widget(
         Paragraph::new(pane_lines(pane, content_width))
@@ -1016,6 +1264,32 @@ mod tests {
         assert!(!model.handle_key(KeyCode::Down));
         assert_eq!(model.scroll, 0, "one-row pane cannot scroll");
         assert!(model.handle_key(KeyCode::Char('q')));
+    }
+
+    #[test]
+    fn pane_identity_restore_keeps_scroll_and_falls_back_deterministically() {
+        let mut snapshot = snapshot_with_panes();
+        for id in ["pane.activity", "pane.usage"] {
+            snapshot
+                .panes
+                .get_mut(&ExtensionId::parse(id).unwrap())
+                .unwrap()
+                .rows = (0..40)
+                .map(|index| MetricRow {
+                    label: format!("Row {index}"),
+                    value: index.to_string(),
+                })
+                .collect();
+        }
+        let mut model = UiModel::from_snapshot(snapshot);
+        model.set_viewport(60, 18);
+        assert!(model.restore_view(Some("Usage"), 7));
+        assert_eq!(model.selected_title(), Some("Usage"));
+        assert_eq!(model.scroll, 7);
+        assert!(!model.restore_view(Some("Removed"), 3));
+        assert_eq!(model.selected_title(), Some("Usage"));
+        assert_eq!(model.scroll, 0);
+        assert!(!model.restore_view(None, 0));
     }
 
     #[test]

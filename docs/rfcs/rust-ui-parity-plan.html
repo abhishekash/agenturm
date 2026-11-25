@@ -49,8 +49,8 @@ scope and limits.</p>
 </tr>
 <tr>
 <td>UI-05 Evidence and observability screens</td>
-<td>Interaction/rendering updates exist for Activity, Operations, Findings, Metrics, Usage, Host, Investigations and evidence export.</td>
-<td>Activity page-local/prompt-only filters; trace tree and linked-evidence traversal; general Operation-to-evidence links; selected-row copy/export shell integration; typed MCP aggregate metric cohort; session-scoped Metrics route; diagnostics/health/reconnect/retry integration; explicit Unreported worker in Activity.</td>
+<td>Candidate <code>17206a4</code> has page-local evidence filters, typed MCP-call trace navigation from Operations and selection-scoped copy/export. Follow-up commit <code>81c7357</code> adds a prompt-only Activity filter over typed NativeRequest rows and explicit “Unreported” worker detail; offline locked app compile and rustfmt pass.</td>
+<td>Trace tree and linked-evidence traversal; typed MCP aggregate metric cohort; session-scoped Metrics route; diagnostics/health/reconnect/retry integration. The new follow-up has not yet been tested; UI-Q acceptance remains open.</td>
 </tr>
 <tr>
 <td>UI-06 Review and workflow</td>
@@ -158,7 +158,11 @@ default cutover gate open.</p>
 <h2>UI-03 · Command center and the session inspector</h2>
 <h3>Command center and session history</h3>
 <ol>
-<li>Retain project headings, counts, human-readable native task titles with agent nickname fallback, and Updated ↓. Keep exact identities in Details. Group and row order follow recency with deterministic ties, and refresh, paging, filtering and resize preserve selection by identity.</li>
+<li>Retain project headings, counts, human-readable native task titles with agent nickname fallback, and Updated ↓. Keep exact identities in Details. Group and row order follow recency with deterministic ties, and refresh, paging, filtering and resize preserve selection by identity.
+<ul>
+<li><strong>Never render a literal <code>Name unavailable</code> label.</strong> When neither a task title nor a native nickname exists, derive a concise, human-understandable name from available provider, role, project and session context (for example <code>Codex session · payments-api</code>, <code>Claude Code worker · agenturm</code>). Keep the missing metadata and exact IDs explicit in Details and the inspector, where unknown values stay labelled as unknown. Apply the same rule to the palette session chooser, inspector headers, workflow incidents, and saved-task run lists. Verify titled sessions, nickname-only subagents, duplicates and genuinely unnamed sessions.</li>
+</ul>
+</li>
 <li>Provide <strong>Today</strong> and <strong>History</strong> as explicit time scopes alongside the approved status filters. Today includes active work and pending input that started earlier, plus qualifying outcomes according to the tagged behavior. History includes earlier retained work, including unreviewed completions and dismissed failures. Verify the Python boundary with a fixed clock and timezone. Keep time scope, search, error filtering and session selection independently discoverable. Mark counts as page or scope counts according to their actual coverage.</li>
 <li>Expose a searchable <strong>Choose agent session</strong> control and palette action. Search title, project, provider, session and worker identity. Keep empty results, cancel, clear and confirm usable at 60×18. Preserve exact source identity when titles or native IDs collide.</li>
 <li>Preserve confirmed tree/flat presentation, expand/collapse, parent/child and descendant-attention paths, and exact-agent versus evidence-backed subtree scope where the reference offers it. Keep unsupported worker relationships explicit. A recorded lifecycle state never establishes current OS process liveness.</li>
