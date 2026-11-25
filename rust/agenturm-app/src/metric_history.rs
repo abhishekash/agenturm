@@ -7,9 +7,10 @@ use agenturm_kernel::retained_history::{MetricHistoryPage, MetricHistoryQuery};
 pub(crate) fn initial(
     store: &impl HistoryReader,
     snapshot_id: ReadSnapshot,
+    source_id: Option<agenturm_kernel::ExtensionId>,
 ) -> Result<MetricHistoryPage, String> {
     store.query_metric_history(&MetricHistoryQuery::Series {
-        source_id: None,
+        source_id,
         snapshot_id: Some(snapshot_id),
         after: None,
         search: None,

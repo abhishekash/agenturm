@@ -7,15 +7,16 @@
 <p>Build the full Python 0.2.8 cockpit experience into the Rust terminal app. A user must be able to discover work, choose an exact session, read its latest progress and earlier requests, investigate history, review the result, and resume follow-up work with the same evidence, discoverable controls, and predictable back navigation.</p>
 <p>The approved Agenturm command center remains the landing screen: full-width project groups, named tasks, selectable status counts, newest updated first, and Enter to open the inspector. Preserve the Rust evidence and permission model. Match Python's visual hierarchy, layout quality, density, focus, and workflow outcomes elsewhere. Record any layout, key, or policy difference for explicit acceptance.</p>
 <h2>Implementation status — 26 November 2026</h2>
-<p>The paused UI lanes were reconciled from the Claude/OpenCode session record and
-the isolated integration candidate. The current UI candidate is
-<code>17206a42ae60709171f9b2f26b7fea0bbd982083</code> on
-<code>work/ui-parity-resume</code>; it includes upstream main through PR #394, but has not
-been merged to <code>main</code>, published, or accepted as full Python parity. Its
-coordinator qualification passed a locked workspace build, 991 tests across 96
-suites, strict app/UI Clippy, 159 fresh-process <code>NO_COLOR=1</code> UI tests, selected
-empty and populated PTY journeys at 120×32, 80×24 and 60×18, and a selected
-debug QA archive smoke. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-acceptance.md">qualification report</a>
+<p>The interrupted UI and core migration records were consolidated. PR #396
+(<code>afbdbdc</code>) merged the integrated UI candidate and Activity prompt-only filter
+to <code>main</code>. Candidate evidence remains limited to its recorded scope: 991 tests
+across 96 suites, strict app/UI Clippy, 159 fresh-process <code>NO_COLOR=1</code> UI
+tests, selected empty and populated PTY journeys at 120×32, 80×24 and 60×18,
+and a selected debug QA archive smoke. This is not full Python parity or final
+release qualification. The current unmerged feature branch adds a route from a
+selected session to that source's metric catalog; metric records themselves
+remain source-scoped, so per-session OTLP Metrics still requires a session
+identity in the typed metric contract. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-acceptance.md">qualification report</a>
 and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-resume.md">continuation record</a> for exact
 scope and limits.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
@@ -49,8 +50,8 @@ scope and limits.</p>
 </tr>
 <tr>
 <td>UI-05 Evidence and observability screens</td>
-<td>Candidate <code>17206a4</code> has page-local evidence filters, typed MCP-call trace navigation from Operations and selection-scoped copy/export. Follow-up commit <code>81c7357</code> adds a prompt-only Activity filter over typed NativeRequest rows and explicit “Unreported” worker detail; offline locked app compile and rustfmt pass.</td>
-<td>Trace tree and linked-evidence traversal; typed MCP aggregate metric cohort; session-scoped Metrics route; diagnostics/health/reconnect/retry integration. The new follow-up has not yet been tested; UI-Q acceptance remains open.</td>
+<td>PR #396 merged page-local evidence filters, typed MCP-call trace navigation, selection-scoped copy/export, Activity prompt-only filter over typed NativeRequest rows and explicit “Unreported” worker detail. Current feature branch adds a session-entry route to source-filtered Metrics; offline locked app compile passes.</td>
+<td>Trace tree and linked-evidence traversal; typed MCP aggregate metric cohort; true session-filtered OTLP Metrics needs a typed session identity in metric facts; diagnostics/health/reconnect/retry integration. UI05-A/B/C and UI-Q acceptance remain open.</td>
 </tr>
 <tr>
 <td>UI-06 Review and workflow</td>

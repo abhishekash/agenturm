@@ -1,13 +1,13 @@
 # Rust-only execution tasks
 
-Progress updated 26 November 2026. This board reconciles core migration through PR #394 and the separate UI candidate `17206a4`; neither UI parity nor cutover is complete. See the [detailed remaining-work plan](rust-migration-remaining-plan.md): **F = feature development, I = integration, Q = tests/qualification**. The status column below supersedes old scheduling labels such as “Start now”; dependencies and original acceptance criteria remain for traceability.
+Progress updated 26 November 2026. This board reconciles core migration through PR #395 and UI integration through PR #396; neither UI parity nor cutover is complete. The current feature branch is `feature/ui05-session-metrics` in `/tmp/agenturm-ui05-session-metrics`. See the [detailed remaining-work plan](rust-migration-remaining-plan.md): **F = feature development, I = integration, Q = tests/qualification**. The status column below supersedes old scheduling labels such as “Start now”; dependencies and original acceptance criteria remain for traceability.
 
 - **Merged native baseline:** 813 tests / 96 suites, strict Clippy, exact optimized archive install/upgrade and 12 separate-UID KVM cases passed.
 - **Findings follow-up:** 819 tests / 96 suites, actual tagged development/optimized journeys and all applicable PR CI passed; PR #380 merged as `39474dd`; final joined-artifact regression remains.
 - **Host/Metrics joined baseline:** 833 tests / 96 suites, strict Clippy and all binaries; real metric HTTP and three-size terminal checks passed. The final Host refresh/context correction passed its 14 focused tests and the joined 833-test / 96-suite run with strict workspace Clippy/all binaries; the updated separate-UID Host KVM/three-size fixture also passed. Final optimized artifact qualification remains.
 - **Full migration:** incomplete. Do not add successive test totals or equate implemented code with final artifact acceptance. Default cutover and one-release-per-24-hours rules remain in force.
-- **PR #394 CI follow-up:** `cargo build --locked` failed because the standalone fixture lockfile omitted the new `sha2` dependency graph; dependent SDK jobs were skipped. The fixture lockfile is refreshed offline on the current follow-up branch, and `cargo build --offline --locked` passes. Fresh remote CI remains pending.
-- **UI candidate:** `17206a42ae60709171f9b2f26b7fea0bbd982083` passed coordinator qualification (991 tests / 96 suites, strict app/UI Clippy, 159 `NO_COLOR=1` UI tests, selected PTY journeys and a selected-debug archive smoke). It is not merged, published or independently accepted as full parity. See the [UI status and gaps](rust-ui-parity-plan.md#implementation-status--26-november-2026).
+- **PR #395/#396 CI:** merged PR checks exposed a stale lockfile in `examples/rust_prompt_signals_extension` and Linux x86_64/ARM64 bundle PTY failures where the roster did not confirm the requested filter. This branch refreshed the extension lockfile offline; its `--offline --locked` build passes. The PTY issue remains delegated for reproduction and correction.
+- **UI candidate:** PR #396 (`afbdbdc`) merged the candidate and Activity prompt filter. Prior coordinator evidence is limited to its recorded 991 tests / 96 suites, strict app/UI Clippy, 159 `NO_COLOR=1` UI tests, selected PTY journeys and selected-debug archive smoke. It is not full parity or final release acceptance. See the [UI status and gaps](rust-ui-parity-plan.md#implementation-status--26-november-2026).
 
 ## Synchronized test progress
 
@@ -61,15 +61,18 @@ for new assignments. The older A–E IDs retain their original acceptance criter
 
 ## UI parity workstream snapshot
 
-The [UI parity plan](rust-ui-parity-plan.md) tracks the current candidate and
-gaps. Candidate `17206a4` contains integrated UI-01–UI-07 work, but remains
-unreleased and is not full parity. Follow-up commit `81c7357` on
-`feature/ui-parity-next` adds Activity's `F`/palette prompt-only filter over
-typed NativeRequest rows and explicit `Worker: Unreported` details. App compile check passes; no tests have
-run for this follow-up. The [delegated test plan](../validation/rust-core-feature-test-plan.md#ui-05-follow-up-handoff--not-run)
-assigns UI05-A/UI05-B to the separate test owner. Remaining UI-05/UI-06 work
-and UI-Q stay open. Keep provider details in adapter/app proof contracts and
-keep screens provider-neutral.
+The [UI parity plan](rust-ui-parity-plan.md) tracks the current integrated
+source and gaps. PR #396 (`afbdbdc`) merged the UI implementation candidate and
+Activity prompt-only filter, but the release remains unpublished and parity is
+not complete. The current feature branch adds `SessionView::Metrics`, entered
+from a selected session with `M`; it constrains the catalog to the session's
+harness/source. Stored OTLP metric facts have source scope and no session ID,
+so this does not claim per-session metric values. Existing Usage remains the
+true session-filtered view. Offline locked app compile passes; no tests have
+run for this branch. The [delegated test plan](../validation/rust-core-feature-test-plan.md#ui-05-follow-up-handoff--not-run)
+assigns UI05-A/B/C to the separate test owner. Remaining UI-05/UI-06 work and
+UI-Q stay open. Keep provider details in adapter/app proof contracts and keep
+screens provider-neutral.
 
 ## Review of the existing plan
 

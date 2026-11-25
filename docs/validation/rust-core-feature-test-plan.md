@@ -70,15 +70,17 @@ Do not build different sources concurrently into one Cargo target directory.
 
 ## UI-05 follow-up handoff — not run
 
-The separate UI implementation candidate `17206a4` was coordinator-qualified
-for its recorded scope, but this follow-up changes Activity evidence behavior.
-Use commit `81c7357` on branch `feature/ui-parity-next` after it is integrated;
-the prior 991-test and PTY results do not qualify these changes.
+PR #396 (`afbdbdc`) merged the integrated UI candidate and Activity evidence
+filter to `main`. The current unmerged branch
+`feature/ui05-session-metrics` adds a session-entry route to source-filtered
+Metrics. Do not count the prior 991-test and PTY evidence as qualification for
+these follow-up changes.
 
 | ID | Required test | Acceptance | Status |
 | --- | --- | --- | --- |
 | UI05-A | Activity prompt-only filter and page query | At 120×32, 80×24 and 60×18, toggle `F` and the palette command. Only typed `Native request` events remain; prompt text is not read or inferred. Combine `/` search with the toggle, handle an empty prompt set, preserve the selected event when it remains visible, preserve mode across older/newer page replacement, and restore all events on the second toggle. Verify another pane and MCP `f` server filtering are unaffected. Compare the tagged Python `Prompts` button journey. | Not run; implementation `81c7357`. |
 | UI05-B | Activity worker attribution | Inspect ordinary activity with a recorded worker, no worker, WorkerSpawn and WorkerLaunch. Show exact worker, `Worker: Unreported`, or separately named `Parent worker: Unreported` as appropriate. Verify the same rows at all three sizes; do not infer a parent or child ID. | Not run; implementation `81c7357`. |
+| UI05-C | Session-entry Metrics route and honest source scope | From roster and inspector, press `M` and open Metrics. Verify catalog requests carry the selected session harness as `source_id`, paging/search/series detail/exemplar requests stay bound to that source and pinned snapshot, and Escape returns to the same session. Confirm the screen says source-scoped Metrics and does not imply per-session series totals; compare session-filtered totals in Usage separately. Include invalid/unavailable source and empty catalog. | Not run; development branch `feature/ui05-session-metrics`; offline locked app compile only. |
 
 Run these against a frozen integrated source and binary. Keep UI-Q's paired
 screen matrix, live broker/private grant cases, release archive and independent

@@ -2727,6 +2727,7 @@ fn load_workspace_history(
                 SessionView::Details => |ids| ids.details,
                 SessionView::Activity => |ids| ids.activity,
                 SessionView::Review => |ids| ids.review,
+                SessionView::Metrics => |ids| ids.overview,
                 SessionView::Usage => |ids| ids.usage,
                 SessionView::Traces => {
                     let page = if session.harness_id.starts_with("otlp.") {
@@ -2776,6 +2777,15 @@ fn load_workspace_history(
                     page.snapshot.history_snapshot_id,
                 )?));
             }
+            if matches!(view, SessionView::Metrics) {
+                let source_id = ExtensionId::parse(session.harness_id.clone())
+                    .map_err(|error| error.to_string())?;
+                page.features.metric_history = Some(Box::new(metric_history::initial(
+                    store,
+                    page.snapshot.history_snapshot_id,
+                    Some(source_id),
+                )?));
+            }
             page.initial_pane = Some(select_pane(panes));
             Ok(page)
         }
@@ -2796,6 +2806,7 @@ fn load_workspace_history(
                 page.features.metric_history = Some(Box::new(metric_history::initial(
                     store,
                     page.snapshot.history_snapshot_id,
+                    None,
                 )?));
             }
             if view == WorkspaceView::Usage {

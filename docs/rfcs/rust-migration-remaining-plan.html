@@ -11,28 +11,32 @@ The migration is <strong>not complete</strong>, and the default distribution has
 <h2>Reconciled progress — 26 November 2026</h2>
 <p>This status consolidates the two interrupted session records supplied by the
 user: the isolated Python 0.2.8 UI-parity work and the core migration work that
-ended at PR #394. Preserve the paused agents' worktrees; their work is reflected
-here without overwriting their branches.</p>
+ended at PR #394. PR #395 merged the fixture-lockfile correction as
+<code>6c9ec8e</code>; PR #396 merged the integrated UI and prompt filter as <code>afbdbdc</code>.
+Neither merge completes parity, release qualification, or default cutover.</p>
 <ul>
-<li><strong>Core migration:</strong> PR #394 (<code>1b00428</code>) added OpenCode patch-path detail with
-separate grants and exact retained-source proof. Its local focused checks
-passed. CI is <strong>not green</strong>: the standalone harness fixture's independent
-<code>Cargo.lock</code> is stale, so <code>cargo build --locked</code> fails and five dependent SDK
-jobs were skipped. The lockfile was regenerated offline in the current
-follow-up branch and the fixture's <code>--offline --locked</code> build passes there;
-this corrective commit still needs review/merge and fresh CI.</li>
-<li><strong>UI parity:</strong> the isolated candidate at
-<code>17206a42ae60709171f9b2f26b7fea0bbd982083</code> includes PR #394 and passed its
-coordinator qualification. It has not been merged or released and is not
-full parity. The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-ui-parity-plan.md#implementation-status--26-november-2026">UI plan</a>
-now separates delivered candidate work, implementation gaps, and UI-Q gates.</li>
-<li><strong>Feature work resumed:</strong> commit <code>81c7357</code> on <code>feature/ui-parity-next</code> is based
-on the qualified candidate plus merged main. It adds the Activity prompt-only
-toggle over typed NativeRequest rows and explicit “Unreported” Activity worker detail;
-<code>cargo check --offline --locked -p agenturm-app</code> passes. Broad and paired
-acceptance is not run. The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md#ui-05-follow-up-handoff--not-run">delegated test plan</a>
-assigns UI05-A/UI05-B to the separate test owner. Continue one UI-05/UI-06
-feature at a time, preserving typed contracts and adapter/capability seams.</li>
+<li><strong>Core migration:</strong> PR #394 OpenCode patch-path detail remains integrated
+with separate grants and exact retained-source proof. PR #395 refreshed the
+standalone harness fixture lockfile offline, and the exact fixture build
+passes with <code>--offline --locked</code>. Its merged CI then exposed a second stale
+lockfile at <code>examples/rust_prompt_signals_extension/Cargo.lock</code>; the current
+feature branch refreshes it offline and its exact <code>--offline --locked</code> build
+passes.</li>
+<li><strong>UI parity:</strong> PR #396 merged UI-01–UI-07 candidate work and the Activity
+prompt-only filter. Coordinator evidence remains limited to the recorded
+991-test/96-suite, strict app/UI Clippy, 159 fresh <code>NO_COLOR</code> UI tests,
+selected PTY journeys, and selected-debug archive smoke. It is not full
+Python parity or final release qualification. The merged Linux x86_64 and
+ARM64 bundle PTY checks failed to confirm a requested roster filter; the
+separate test owner owns reproduction and correction.</li>
+<li><strong>Feature work resumed:</strong> branch <code>feature/ui05-session-metrics</code> in
+<code>/tmp/agenturm-ui05-session-metrics</code> adds a session-entry route to the
+source-filtered OTLP Metrics catalog. Offline locked app compile and rustfmt
+pass; no tests were run. OTLP metric facts currently have source scope only,
+so true per-session metric filtering remains open; session-scoped Usage is
+still the truthful session totals view. The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md#ui-05-follow-up-handoff--not-run">delegated test plan</a>
+assigns UI05-A/B/C to the separate test owner. Continue UI-05/UI-06 feature
+work while preserving typed contracts and adapter/capability seams.</li>
 <li><strong>Release/cutover:</strong> no new public release and no default switch were made.
 The one-release-per-24-hours limit remains in force.</li>
 </ul>

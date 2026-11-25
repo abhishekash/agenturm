@@ -152,6 +152,7 @@ pub enum SessionView {
     Details,
     Activity,
     Review,
+    Metrics,
     Usage,
     Traces,
 }
@@ -824,7 +825,11 @@ impl HistoryView {
     fn new(selection: HistorySelection, mut page: HistoryPage) -> Self {
         let analytics = analytics::HistoryAnalytics::take(&selection, &mut page);
         let mut page = Self::make_page(&selection, page);
-        if matches!(selection, HistorySelection::All(WorkspaceView::Metrics)) {
+        if matches!(
+            selection,
+            HistorySelection::All(WorkspaceView::Metrics)
+                | HistorySelection::Session(_, SessionView::Metrics)
+        ) {
             page.ui.select_metrics();
         }
         if let HistorySelection::McpSearch { query, .. } = &selection {
@@ -1110,6 +1115,7 @@ impl Workspace {
                         && matches!(
                             view.selection,
                             HistorySelection::All(WorkspaceView::Metrics)
+                                | HistorySelection::Session(_, SessionView::Metrics)
                         );
                     let restored = if metrics {
                         next.ui.select_metrics();
@@ -1531,6 +1537,16 @@ impl Workspace {
         );
     }
 
+    fn open_inspector_metrics(&mut self, sender: &mpsc::Sender<WorkspaceRequest>) {
+        let Some((session, _)) = self.inspector_session() else {
+            return;
+        };
+        self.open(
+            sender,
+            HistorySelection::Session(session, SessionView::Metrics),
+        );
+    }
+
     /// Inspector key handling. The tab strip is one focus stop; content owns
     /// scrolling. Ctrl+Left/Right and `m` switch sections from content, and
     /// plain Left/Right never steals a reader's horizontal keys.
@@ -1544,6 +1560,10 @@ impl Workspace {
         }
         let control = key.modifiers == KeyModifiers::CONTROL;
         let code = keymap::plain(key).unwrap_or(KeyCode::Null);
+        if code == KeyCode::Char('M') {
+            self.open_inspector_metrics(sender);
+            return true;
+        }
         if control && matches!(key.code, KeyCode::Left | KeyCode::Right) {
             self.move_inspector_tab(
                 sender,
@@ -3146,7 +3166,7 @@ impl Workspace {
                         self.inspector.tab.label()
                     ));
                     current.push(
-                        "Overview links: s Activity · Ctrl+R Review · t Traces · u Usage · P Prompts"
+                        "Overview links: s Activity · Ctrl+R Review · t Traces · u Usage · M Metrics · P Prompts"
                             .into(),
                     );
                     current.push(
@@ -4009,12 +4029,13 @@ impl Workspace {
                     );
                 }
             }
-            KeyCode::Enter | KeyCode::Char('e' | 'm' | 'A' | 's' | 'V' | 'u' | 't') => {
+            KeyCode::Enter | KeyCode::Char('e' | 'm' | 'A' | 's' | 'V' | 'u' | 'M' | 't') => {
                 if let Some(session) = self.agents.current().cloned() {
                     let view = match key {
                         KeyCode::Char('A' | 's') => SessionView::Activity,
                         KeyCode::Char('V') => SessionView::Review,
                         KeyCode::Char('u') => SessionView::Usage,
+                        KeyCode::Char('M') => SessionView::Metrics,
                         KeyCode::Char('t') => SessionView::Traces,
                         _ => SessionView::Overview,
                     };
@@ -4308,6 +4329,9 @@ fn pending_evidence_titles(selection: &HistorySelection) -> Option<(&'static str
         HistorySelection::All(WorkspaceView::Host) => Some(("Host now", "Collection status")),
         HistorySelection::All(WorkspaceView::Usage)
         | HistorySelection::Session(_, SessionView::Usage) => Some(("Usage", "Metric inspector")),
+        HistorySelection::Session(_, SessionView::Metrics) => {
+            Some(("Metrics", "Source-scoped metric catalog"))
+        }
         HistorySelection::All(WorkspaceView::Traces)
         | HistorySelection::Session(_, SessionView::Traces)
         | HistorySelection::McpTraces { .. } => Some(("Traces", "Execution tree")),
