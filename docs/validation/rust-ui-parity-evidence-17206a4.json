@@ -1,0 +1,90 @@
+{
+  "classification": "coordinator qualification; not full parity acceptance or release",
+  "source_sha": "17206a42ae60709171f9b2f26b7fea0bbd982083",
+  "executable_sha256": "30ee1cb918bb32f7c1c6c50429718cd4a72ca1595cbcc128ee8f9cd50430baa9",
+  "workspace": {
+    "locked_build": "passed",
+    "locked_tests": {
+      "passed": 991,
+      "suites": 96,
+      "failed": 0,
+      "ignored": 0
+    },
+    "strict_app_ui_clippy": "passed",
+    "no_color_ui_tests": 159
+  },
+  "empty_history_pty": {
+    "status": "passed-smoke-only",
+    "sizes": [
+      [
+        120,
+        32
+      ],
+      [
+        80,
+        24
+      ],
+      [
+        60,
+        18
+      ]
+    ],
+    "journeys": 6,
+    "termios_restored": true,
+    "limitations": [
+      "not installed release",
+      "not paired with identical Python data",
+      "not clipboard or terminal-emulator color QA"
+    ]
+  },
+  "populated_private_prompt_pty": {
+    "status": "passed-local-private-pty-only",
+    "sizes": [
+      [
+        120,
+        32
+      ],
+      [
+        80,
+        24
+      ],
+      [
+        60,
+        18
+      ]
+    ],
+    "frames_per_size": 19,
+    "journeys": 3,
+    "limitations": [
+      "not broker or attached receiver qualification",
+      "not installed release",
+      "not paired with identical Python data",
+      "not clipboard or terminal-emulator color QA"
+    ]
+  },
+  "selected_debug_qa_archive": {
+    "status": "passed-extracted-smoke",
+    "sha256": "507fb728122e58834f1d0dc295fe784a934fb5ad9767d57be0fc12111ef86225",
+    "executable_hashes_match": true,
+    "limitations": [
+      "not published installer bundle",
+      "not reproducible-build proof",
+      "no release or default promotion"
+    ]
+  },
+  "python_oracle": {
+    "tag": "v0.2.8",
+    "tests_passed": 47,
+    "captures": 42,
+    "day_boundary_checks": 15,
+    "today_bucket_assertions": 105,
+    "scope": "reference preparation; not Rust acceptance"
+  },
+  "artifact_locations": {
+    "builder_manifest": "/tmp/opencode/agenturm-parity-17206a4-builder.json",
+    "validation_log": "/tmp/opencode/agenturm-parity-17206a4-validation.log",
+    "empty_history_results": "/tmp/opencode/uiq-rust-parity-smoke-17206a4/results.json",
+    "populated_results": "/tmp/opencode/uiq-rust-inline-17206a4/results.json",
+    "archive_manifest": "/tmp/opencode/agenturm-ui-parity-qa-archive-17206a4/manifest.json"
+  }
+}

@@ -164,9 +164,14 @@ and 32 MiB per roster read. A verified first-line workspace can survive that
 limit with a partial-title notice; a two-record snapshot prelude requires a
 fully verified committed prefix before its workspace is shown.
 
-Press `F2` or `Ctrl+P` to preview Observation, Current, Bright, Dark and Solarized.
-Enter saves the selected theme; Escape restores the previous one. The shared
-palette applies to the command center, evidence tables, inspectors and dialogs.
+In the unreleased UI-parity source candidate (tested at `17206a4`), press `F2`
+to preview Observation, Current, Bright, Dark and Solarized, or
+choose Themes from the palette. Enter saves the selected theme; Escape restores
+the previous one. `Ctrl+P` opens the searchable cockpit command palette. The
+shared palette applies to the command center, evidence tables, inspectors and
+dialogs.
+These shortcut changes do not modify published 0.3.8 binaries, where `F2` or
+`Ctrl+P` opens the theme preview.
 
 A newly created default cockpit history uses a 14-day age policy. Existing
 histories retain their current policy; an explicitly selected database can
@@ -200,7 +205,11 @@ policy; a broker owner can disable it before starting a restored history.
 
 ### Keyboard navigation
 
-These controls apply to Rust 0.3.9. The previous 0.3.8 controls remain in its [tagged guide](https://github.com/abhishekash/agenturm/blob/rust-v0.3.8/docs/rfcs/rust-linux-bundle.md).
+This section includes **unreleased UI-parity source behavior**, tested at
+`17206a4` (the debug executable reports 0.3.9). It is not a claim that these
+shortcut changes shipped in a published bundle or earlier qualified 0.3.9
+artifacts. Published 0.3.8 binaries retain the controls in their
+[tagged guide](https://github.com/abhishekash/agenturm/blob/rust-v0.3.8/docs/rfcs/rust-linux-bundle.md).
 
 Use `↑` and `↓` to choose a session, `/` to search the loaded roster,
 and Enter to open its Overview. The newest roster page refreshes while open.
@@ -230,7 +239,9 @@ From Agents, `g` opens the cross-source Overview. Use `2` for Activity,
 `3` for MCP, `4` for Traces, `5` for recorded Host, `6` for Metrics,
 `7` for Findings, `9` for Operations, and `U` for workspace Usage. `H` opens
 live Host; `8` remains a trace alias. Press `T` in a history view to select a
-recorded turn, `F1` for keyboard help, and `q` to quit. The available
+recorded turn, `F1` or `?` for scrollable contextual help, `Ctrl+P` for the
+command palette, and `q` to quit. Clipped numbered destinations stay available
+in both help and the palette. The available
 evidence varies by source. For Codex MCP calls the view includes the server,
 tool, method, duration and outcome when recorded.
 

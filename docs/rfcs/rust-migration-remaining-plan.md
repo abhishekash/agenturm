@@ -1,10 +1,36 @@
 # Rust migration: remaining development and validation
 
-Updated 23 November 2026. This is the detailed remaining-work plan for the
+Updated 26 November 2026. This is the detailed remaining-work plan for the
 [Rust execution plan](rust-only-execution-plan.md) and
 [task board](rust-only-execution-tasks.md). It separates unfinished features,
 completed code awaiting integration, and tests still needed for acceptance.
 The migration is **not complete**, and the default distribution has not switched.
+
+## Reconciled progress — 26 November 2026
+
+This status consolidates the two interrupted session records supplied by the
+user: the isolated Python 0.2.8 UI-parity work and the core migration work that
+ended at PR #394. Preserve the paused agents' worktrees; their work is reflected
+here without overwriting their branches.
+
+- **Core migration:** PR #394 (`1b00428`) added OpenCode patch-path detail with
+  separate grants and exact retained-source proof. Its local focused checks
+  passed. CI is **not green**: the standalone harness fixture's independent
+  `Cargo.lock` is stale, so `cargo build --locked` fails and five dependent SDK
+  jobs were skipped. The lockfile was regenerated offline in the current
+  follow-up branch and the fixture's `--offline --locked` build passes there;
+  this corrective commit still needs review/merge and fresh CI.
+- **UI parity:** the isolated candidate at
+  `17206a42ae60709171f9b2f26b7fea0bbd982083` includes PR #394 and passed its
+  coordinator qualification. It has not been merged or released and is not
+  full parity. The [UI plan](rust-ui-parity-plan.md#implementation-status--26-november-2026)
+  now separates delivered candidate work, implementation gaps, and UI-Q gates.
+- **Next feature work:** after the lockfile correction lands, continue from the
+  integrated UI candidate and close one UI-05/UI-06 feature at a time, retaining
+  provider-neutral typed contracts and the adapter/capability plugin seams.
+  Broad testing remains assigned to the separate test owner.
+- **Release/cutover:** no new public release and no default switch were made.
+  The one-release-per-24-hours limit remains in force.
 
 ## Development and test ownership — current user direction
 

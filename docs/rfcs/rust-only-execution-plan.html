@@ -2,9 +2,9 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md">Markdown source ↗</a></nav><h1>Rust-only Agenturm execution plan</h1>
-<p>Status updated 23 November 2026. <strong>Migration and feature development remain incomplete; default cutover is gated.</strong> The Rust-only product decision dates from 21 November. This document supersedes the Python-bridge, compatibility, and migration portions of <code>rust-plugin-kernel-plan.md</code> for future implementation.</p>
-<h2>Current progress — 23 November 2026</h2>
+</style></head><body><main><nav><strong>Agenturm / 26 November 2026</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md">Markdown source ↗</a></nav><h1>Rust-only Agenturm execution plan</h1>
+<p>Status updated 26 November 2026. <strong>Migration and feature development remain incomplete; default cutover is gated.</strong> The Rust-only product decision dates from 21 November. This document supersedes the Python-bridge, compatibility, and migration portions of <code>rust-plugin-kernel-plan.md</code> for future implementation.</p>
+<h2>Current progress — 26 November 2026</h2>
 <p>Use this status and the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md">detailed remaining-work plan</a> for current scheduling. That separate plan distinguishes <strong>feature development (F1–F5)</strong>, <strong>integration (I1–I3)</strong> and <strong>tests/qualification (Q1–Q10)</strong>. Early milestone paragraphs below describe implementation history and must not override this progress record.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -46,13 +46,23 @@
 <td>Use the FD registry below; AP1 resolves SDK/CLI audit items. Tests remain delegated. No workflow is retired implicitly.</td>
 </tr>
 <tr>
+<td>OpenCode private edit detail</td>
+<td>PR <a href="https://github.com/abhishekash/agenturm/pull/394">#394</a> merged as <code>1b00428</code>; exact patch-path proof and independent grants implemented.</td>
+<td>PR CI needs a fixture-lockfile correction: its standalone harness <code>cargo build --locked</code> failed; five dependent SDK jobs were skipped. The refreshed lockfile passes an offline locked fixture build on the corrective branch; fresh CI remains pending.</td>
+</tr>
+<tr>
+<td>Python 0.2.8 UI parity</td>
+<td>Isolated candidate <code>17206a4</code> integrates UI-01–UI-07 implementation and passed coordinator qualification.</td>
+<td>Not merged, released or accepted as full parity. Continue the concrete UI-05/UI-06 gaps and complete independent UI-Q; see the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-ui-parity-plan.md">UI plan</a>.</td>
+</tr>
+<tr>
 <td>Release/default switch</td>
 <td>Rust 0.3.8 remains the latest public opt-in Linux release. No 0.3.9 publication or default change.</td>
 <td>Final selected workflow acceptance and immutable-artifact checks. At most one public release per rolling 24 hours.</td>
 </tr>
 </tbody>
 </table></div>
-<p>The 813, 819 and 833 test counts belong to successive source baselines and are <strong>not additive</strong>. The 833-test baseline includes the final Host chooser correction and predates CF1–CF5/schema 22. No completion percentage is asserted while required workflow acceptance remains open. A real Kiro transcript and an approved production connector endpoint remain external inputs; macOS needs native runners and its D2-Mac checks. Comparative benchmarks remain deferred.</p>
+<p>The 813, 819 and 833 test counts belong to successive source baselines and are <strong>not additive</strong>. The 833-test baseline includes the final Host chooser correction and predates CF1–CF5/schema 22; the separate UI-candidate count belongs to <code>17206a4</code>. No completion percentage is asserted while required workflow acceptance remains open. A real Kiro transcript and an approved production connector endpoint remain external inputs; macOS needs native runners and its D2-Mac checks. Comparative benchmarks remain deferred.</p>
 <h2>Remaining feature development — current scheduling</h2>
 <p>The five CF1–CF5 slices are implemented and merged in PR #382 (<code>3135060</code>);
 PR #383 (<code>2fea865</code>) synchronizes baseline test evidence and fixes the reported
