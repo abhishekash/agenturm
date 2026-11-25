@@ -152,11 +152,17 @@ these follow-up changes.</p>
 <tr>
 <td>UI05-C</td>
 <td>Session-to-Metrics navigation and honest scope</td>
-<td>From roster and inspector, press <code>K</code> and open the global Metrics catalog. Verify its query is unscoped (<code>source_id=None</code>), all authorized OTLP sources remain visible, and Escape returns to the same session selection. Confirm UI/help does not imply these series belong to the selected session; session-filtered totals remain in Usage. Record that current <code>otlp.*</code> source IDs do not link to ordinary <code>harness.*</code> session IDs, so true per-session Metrics is still pending typed linkage.</td>
-<td>Not run; development branch <code>feature/ui05-session-metrics</code>; offline locked app compile only. True per-session metric linkage remains open.</td>
+<td>From roster and inspector, press <code>K</code> or invoke the palette action and open the global Metrics catalog. Verify its query is unscoped (<code>source_id=None</code>), the UI does not imply these series belong to the selected session, and Escape returns to the same session selection. Record that current <code>otlp.*</code> source IDs do not link to ordinary <code>harness.*</code> session IDs, so true per-session Metrics is still pending typed linkage.</td>
+<td>Not run; latest implementation <code>b57af26</code>; route is contextual navigation only. True per-session metric linkage remains open.</td>
 </tr>
 </tbody>
 </table></div>
+<p>The merged bundle PTY failure is a stale test expectation in
+<code>scripts/validate_rust_default_cockpit.py</code>: it checks for <code>Project unavailable 1</code>
+but the latest command center copy is <code>No recorded project 1</code>. The evidence
+shows the requested search and selected row. The test owner updates and reruns
+that assertion against the frozen source; this implementation branch does not
+edit the test script.</p>
 <p>Run these against a frozen integrated source and binary. Keep UI-Q's paired
 screen matrix, live broker/private grant cases, release archive and independent
 sign-off as separate gates.</p>

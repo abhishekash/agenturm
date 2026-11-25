@@ -26,8 +26,11 @@ Neither merge completes parity, release qualification, or default cutover.
   991-test/96-suite, strict app/UI Clippy, 159 fresh `NO_COLOR` UI tests,
   selected PTY journeys, and selected-debug archive smoke. It is not full
   Python parity or final release qualification. The merged Linux x86_64 and
-  ARM64 bundle PTY checks failed to confirm a requested roster filter; the
-  separate test owner owns reproduction and correction.
+  ARM64 bundle PTY checks tripped a stale assertion in
+  `scripts/validate_rust_default_cockpit.py`: it expects `Project unavailable 1`,
+  while the filtered UI correctly shows `No recorded project 1`. The separate
+  test owner owns the acceptance-script correction; this feature branch leaves
+  that script untouched.
 - **Feature work resumed:** branch `feature/ui05-session-metrics` in
   `/tmp/agenturm-ui05-session-metrics` adds a contextual jump from a session to the global OTLP Metrics catalog.
   Offline locked app compile and rustfmt pass; no tests were run. OTLP sources

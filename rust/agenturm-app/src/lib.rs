@@ -2781,7 +2781,6 @@ fn load_workspace_history(
                 page.features.metric_history = Some(Box::new(metric_history::initial(
                     store,
                     page.snapshot.history_snapshot_id,
-                    None,
                 )?));
             }
             page.initial_pane = Some(select_pane(panes));
@@ -2804,7 +2803,6 @@ fn load_workspace_history(
                 page.features.metric_history = Some(Box::new(metric_history::initial(
                     store,
                     page.snapshot.history_snapshot_id,
-                    None,
                 )?));
             }
             if view == WorkspaceView::Usage {
