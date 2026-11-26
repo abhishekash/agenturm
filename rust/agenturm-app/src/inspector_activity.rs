@@ -85,10 +85,14 @@ fn operation_detail(row: &Observation) -> Option<OperationDetailEntry> {
                 crate::session_evidence::describe_observation(&row.kind).1,
             )
         }
-        ObservationKind::FileChange(_) if row.event_id.starts_with("oc:") => (
-            OperationDetailKind::Edit,
-            crate::session_evidence::describe_observation(&row.kind).1,
-        ),
+        ObservationKind::FileChange(_)
+            if row.event_id.starts_with("pi:") || row.event_id.starts_with("oc:") =>
+        {
+            (
+                OperationDetailKind::Edit,
+                crate::session_evidence::describe_observation(&row.kind).1,
+            )
+        }
         _ => return None,
     };
     let session = row.identity.session_id.as_ref()?;
