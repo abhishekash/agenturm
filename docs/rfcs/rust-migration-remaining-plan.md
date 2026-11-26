@@ -283,6 +283,11 @@ The candidate is not public macOS support: Developer ID signing/notarization
 credentials, native clean-host installation and runtime acceptance, and Q10
 remain open. Do not bypass Gatekeeper.
 
+The unsigned native candidate built and passed its focused Apple Silicon
+runtime/navigation check on 26 November 2026 in
+[run 45868463836](../validation/rust-macos-candidate.md). This does not close
+the signed install/upgrade/uninstall gate or Q10.
+
 **Development complete when:** the selected macOS artifact, path, installer,
 service and signing configuration is implemented for each intended target.
 Native acceptance is separately owned by Q10. macOS remains unsupported until
