@@ -2503,7 +2503,7 @@ impl Workbench {
         if self.help {
             frame.render_widget(Paragraph::new(" Workbench keys"), header);
             frame.render_widget(
-                Paragraph::new("Tasks · n new linked · N blank · e edit · c done · / search page\nl link selected session or turn · r links · p brief · v decisions\nG capture Git · g saved Git · h new handoff · o handoffs\nHandoffs · e edit · x preview · c copy · export from the preview\nWorkflow · r seen · l locate · c copy resume · R refresh\nTab incidents · S settings (dirty draft arms a discard) · T retry delivery\nIncident detail · observed owner · approval state · delivery attempt\nPrompts · Enter reveal · m activity details · Esc close\nHost history · Enter drill down · ] older · Esc back")
+                Paragraph::new("Tasks · n new linked · N blank · e edit · c done · / search page\nl link selected session or turn · r links · p brief · v decisions\nG capture Git · g saved Git · h new handoff · o handoffs\nHandoffs · e edit · x preview · c copy · export from the preview\nWorkflow · r seen · l locate · c copy resume · R refresh\nTab incidents · h older completions · S settings (dirty draft arms a discard) · T retry delivery\nIncident detail · observed owner · approval state · delivery attempt\nPrompts · Enter reveal · m activity details · Esc close\nHost history · Enter drill down · ] older · Esc back")
                     .wrap(Wrap { trim: false }).block(panel("")),
                 body,
             );
