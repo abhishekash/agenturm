@@ -8,7 +8,7 @@ use serde::Serialize;
 use std::io::Write;
 use std::path::{Path, PathBuf};
 
-const USAGE: &str = "Usage: agenturm content binding --config <path> --source-id <id> [--kind codex.mcp_payload|claude.mcp_payload|codex.edit_detail|pi.edit_detail|claude.edit_detail|opencode.edit_detail|codex.command_detail]\n       agenturm content grant --db <path> --config <path> --source-id <id> [--kind codex.mcp_payload|claude.mcp_payload|codex.edit_detail|pi.edit_detail|claude.edit_detail|opencode.edit_detail|codex.command_detail]\n       agenturm content revoke --db <path> --source-id <id> [--kind codex.mcp_payload|claude.mcp_payload|codex.edit_detail|pi.edit_detail|claude.edit_detail|opencode.edit_detail|codex.command_detail]\n       agenturm content list --db <path> --config <path> --source-id <id> --session-id <id>\n       agenturm content preview --db <path> --config <path> --source-id <id> [--session-id <id>] --event-id <id> --revision <revision>\n       agenturm content preview --kind codex.mcp_payload|claude.mcp_payload --db <path> --config <path> --source-id <id> --session-id <id> --operation-id <id> --event-id <id> --revision <revision>\n       agenturm content preview --kind codex.edit_detail|pi.edit_detail|claude.edit_detail|opencode.edit_detail|codex.command_detail --db <path> --config <path> --source-id <id> --session-id <id> --turn-id <id> --operation-id <id> --event-id <id> --revision <revision>";
+const USAGE: &str = "Usage: agenturm content binding|grant|revoke --kind pi.mcp_payload|codex.mcp_payload|claude.mcp_payload|...\n       agenturm content preview --kind pi.mcp_payload|codex.mcp_payload|claude.mcp_payload --db <path> --config <path> --source-id <id> --session-id <id> --turn-id <id> --operation-id <id> --event-id <id> --revision <revision>";
 
 /// Proof-eligible metadata for a single retained user prompt. The selection
 /// grants no authority and is checked anew before any text is delivered.
@@ -35,6 +35,7 @@ pub struct ContentOptions {
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 enum ContentOperationKind {
     Mcp,
+    PiMcp,
     ClaudeMcp,
     Edit,
     PiEdit,
@@ -104,6 +105,7 @@ pub(crate) fn parse(args: &[String]) -> Result<ContentOptions, String> {
     let kind = match values.remove("--kind") {
         None => None,
         Some("codex.mcp_payload") => Some(ContentOperationKind::Mcp),
+        Some("pi.mcp_payload") => Some(ContentOperationKind::PiMcp),
         Some("claude.mcp_payload") => Some(ContentOperationKind::ClaudeMcp),
         Some("codex.edit_detail") => Some(ContentOperationKind::Edit),
         Some("pi.edit_detail") => Some(ContentOperationKind::PiEdit),
@@ -140,7 +142,9 @@ pub(crate) fn parse(args: &[String]) -> Result<ContentOptions, String> {
                 let turn_id = values.remove("--turn-id");
                 if !matches!(
                     kind,
-                    ContentOperationKind::Mcp | ContentOperationKind::ClaudeMcp
+                    ContentOperationKind::Mcp
+                        | ContentOperationKind::PiMcp
+                        | ContentOperationKind::ClaudeMcp
                 ) && turn_id.is_none()
                 {
                     return Err(USAGE.into());
@@ -446,6 +450,7 @@ mod linux {
                 let mut store = open_store(&options.db)?;
                 let grant = match kind {
                     ContentOperationKind::Mcp => ContentKind::CodexMcpPayload,
+                    ContentOperationKind::PiMcp => ContentKind::PiMcpDetail,
                     ContentOperationKind::ClaudeMcp => ContentKind::ClaudeMcpPayload,
                     ContentOperationKind::Edit => ContentKind::CodexEditDetail,
                     ContentOperationKind::PiEdit => ContentKind::PiEditDetail,
@@ -537,6 +542,7 @@ mod linux {
     fn content_kind(kind: ContentOperationKind) -> agenturm_content::OperationDetailKind {
         match kind {
             ContentOperationKind::Mcp => agenturm_content::OperationDetailKind::Mcp,
+            ContentOperationKind::PiMcp => agenturm_content::OperationDetailKind::PiMcp,
             ContentOperationKind::ClaudeMcp => agenturm_content::OperationDetailKind::Mcp,
             // The edit detail kind is shared across harnesses: the pinned
             // source's plugin decides which provider contract applies.
@@ -560,6 +566,7 @@ mod linux {
         };
         let expected = match kind {
             ContentOperationKind::Mcp => ContentKind::CodexMcpPayload,
+            ContentOperationKind::PiMcp => ContentKind::PiMcpDetail,
             ContentOperationKind::ClaudeMcp => ContentKind::ClaudeMcpPayload,
             ContentOperationKind::Edit => ContentKind::CodexEditDetail,
             ContentOperationKind::PiEdit => ContentKind::PiEditDetail,
@@ -579,6 +586,7 @@ mod linux {
     fn operation_description(kind: ContentOperationKind) -> &'static str {
         match kind {
             ContentOperationKind::Mcp => "MCP payload",
+            ContentOperationKind::PiMcp => "MCP payload",
             ContentOperationKind::ClaudeMcp => "MCP payload",
             ContentOperationKind::Edit
             | ContentOperationKind::PiEdit
@@ -591,6 +599,7 @@ mod linux {
     fn revoke_label(kind: ContentOperationKind) -> &'static str {
         match kind {
             ContentOperationKind::ClaudeMcp => "Claude Code",
+            ContentOperationKind::PiMcp => "Pi",
             ContentOperationKind::Mcp
             | ContentOperationKind::Edit
             | ContentOperationKind::Command => "Codex",
@@ -656,11 +665,20 @@ mod linux {
         output: &mut dyn Write,
         terminal: bool,
     ) -> Result<(), String> {
+        let provider_kind = if kind == OperationDetailKind::Mcp
+            && (selection.event_id.starts_with("pi:")
+                || source.as_str() == "harness.pi"
+                || source.as_str().starts_with("harness.pi."))
+        {
+            agenturm_content::OperationDetailKind::PiMcp
+        } else {
+            shared_kind(kind)
+        };
         agenturm_content::reveal_operation_fenced(
             store,
             &resolver(config),
             source,
-            shared_kind(kind),
+            provider_kind,
             selection,
             output,
             terminal,

@@ -55,6 +55,10 @@ pub enum PrivateEvidenceKind {
         turn_id: String,
         operation_id: String,
     },
+    PiMcpPayload {
+        turn_id: String,
+        operation_id: String,
+    },
     CodexEditDetail {
         turn_id: String,
         operation_id: String,
@@ -77,6 +81,10 @@ impl PrivateEvidenceSelection {
                 turn_id,
                 operation_id,
             } => (OperationDetailKind::Mcp, turn_id, operation_id),
+            PrivateEvidenceKind::PiMcpPayload {
+                turn_id,
+                operation_id,
+            } => (OperationDetailKind::PiMcp, turn_id, operation_id),
             PrivateEvidenceKind::CodexEditDetail {
                 turn_id,
                 operation_id,
@@ -440,7 +448,20 @@ pub(crate) fn verify_operation(
                 },
             )
         }
-        OperationDetailKind::Mcp => return Err(PrivateEvidenceFailure::Unavailable),
+        OperationDetailKind::Mcp => agenturm_content::with_verified_mcp(
+            store,
+            &resolver,
+            &selection.source_id,
+            &operation,
+            |payload| Ok(output.publish_proof(store, Some(snapshot_id), occurrence, payload)),
+        ),
+        OperationDetailKind::PiMcp => agenturm_content::with_verified_pi_mcp(
+            store,
+            &resolver,
+            &selection.source_id,
+            &operation,
+            |payload| Ok(output.publish_proof(store, Some(snapshot_id), occurrence, payload)),
+        ),
     }
     .map_err(|_| PrivateEvidenceFailure::Unavailable)?
 }
