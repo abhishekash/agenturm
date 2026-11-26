@@ -3,7 +3,9 @@
 mod worker_spawns;
 
 use agenturm_jsonl_source::Result;
-use agenturm_protocol::observation::{McpCall, McpMethod, is_mcp_identifier, mcp_tool_labels};
+use agenturm_protocol::observation::{
+    McpCall, McpMethod, claude_file_edit_summary, is_mcp_identifier, mcp_tool_labels,
+};
 use serde::{Deserialize, de::IgnoredAny};
 use serde_json::{Map, Value, json};
 use sha2::{Digest, Sha256};
@@ -704,7 +706,7 @@ pub(crate) fn translate_line(
     let content = message.get("content").unwrap_or(&Value::Null);
     let blocks = blocks(content)?;
     let mut facts = Vec::new();
-    let mut mcp_details = Vec::new();
+    let mut details = Vec::new();
     if kind == "user" {
         let tool_results: Vec<_> = blocks
             .iter()
@@ -775,7 +777,7 @@ pub(crate) fn translate_line(
                 json!({"category":if labels.is_some() { "mcp" } else { "other" }, "result":result}),
             ));
             if let Some(labels) = labels {
-                mcp_details.push(fact(
+                details.push(fact(
                     format!("{base}:mcp-result-{index}"),
                     revision,
                     "mcp_call",
@@ -854,7 +856,7 @@ pub(crate) fn translate_line(
                 json!({"category":category(name),"result":"started"}),
             ));
             if let Some(labels) = labels {
-                mcp_details.push(fact(
+                details.push(fact(
                     format!("{base}:mcp-use-{index}"),
                     revision,
                     "mcp_call",
@@ -862,6 +864,24 @@ pub(crate) fn translate_line(
                     &next,
                     Some(&operation),
                     mcp_payload(labels, "started"),
+                ));
+            }
+            // A recognized file-edit tool_use also reports its edit-count
+            // summary. The input's paths and content stay in the transcript;
+            // a malformed input withholds the summary without failing the
+            // line, and a summary outside an active turn cannot satisfy the
+            // operation identity the host requires of file edits.
+            if !next.turn_id.is_empty()
+                && let Some(edit) = claude_file_edit_summary(name, block.get("input"))
+            {
+                details.push(fact(
+                    format!("{base}:file-edit-{index}"),
+                    revision,
+                    "file_edit",
+                    &time_ns,
+                    &next,
+                    Some(&operation),
+                    json!(edit),
                 ));
             }
         }
@@ -913,7 +933,7 @@ pub(crate) fn translate_line(
             );
         }
     }
-    append_bounded_details(&mut facts, mcp_details)?;
+    append_bounded_details(&mut facts, details)?;
     if !next.legacy_admission && !next.turn_id.is_empty() {
         if kind == "assistant"
             && blocks.iter().any(|block| {
@@ -928,19 +948,30 @@ pub(crate) fn translate_line(
             && next.worker_spawns.is_tracking()
             && row["toolUseResult"].is_object()
             && blocks.len() == 1
-            && let Some((operation, spawn)) =
+            && let Some((operation, outcome)) =
                 next.worker_spawns
                     .take_result(raw, &next.session_id, &next.worker_id)
         {
-            let detail = fact(
-                format!("{base}:worker-spawn"),
-                revision,
-                "worker_spawn",
-                &time_ns,
-                &next,
-                Some(&operation),
-                json!(spawn),
-            );
+            let detail = match outcome {
+                worker_spawns::WorkerOutcome::Spawned(spawn) => fact(
+                    format!("{base}:worker-spawn"),
+                    revision,
+                    "worker_spawn",
+                    &time_ns,
+                    &next,
+                    Some(&operation),
+                    json!(spawn),
+                ),
+                worker_spawns::WorkerOutcome::Launched(launch) => fact(
+                    format!("{base}:worker-launch"),
+                    revision,
+                    "worker_launch",
+                    &time_ns,
+                    &next,
+                    Some(&operation),
+                    json!(launch),
+                ),
+            };
             append_bounded_details(&mut facts, vec![detail])?;
         }
         if next.worker_spawns.has_turn_owner() {
@@ -958,6 +989,7 @@ mod tests {
     const NATIVE_WORKER_PROMPT: &[u8] = br#"{"type":"user","sessionId":"session","agentId":"parent","uuid":"turn","timestamp":"2026-10-24T12:00:00Z","message":{"role":"user","content":"private prompt"}}"#;
     const NATIVE_WORKER_DECLARATION: &[u8] = br#"{"type":"assistant","sessionId":"session","agentId":"parent","uuid":"declaration","timestamp":"2026-10-24T12:00:01Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Agent","id":"toolu_agent1","input":{"prompt":"private launch"}}]}}"#;
     const NATIVE_WORKER_RESULT: &str = r#"{"type":"user","sessionId":"session","agentId":"parent","uuid":"completion","sourceToolAssistantUUID":"declaration","timestamp":"2026-10-24T12:00:02Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_agent1","content":"private result"}]},"toolUseResult":{"status":"completed","agentId":"child","content":"private evidence"}}"#;
+    const NATIVE_WORKER_ASYNC_RESULT: &str = r#"{"type":"user","sessionId":"session","agentId":"parent","uuid":"launch","sourceToolAssistantUUID":"declaration","timestamp":"2026-10-24T12:00:02Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_agent1","content":"private result"}]},"toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"child","description":"side quest","resolvedModel":"claude-sonnet","prompt":"private prompt","outputFile":"/tmp/claude/child-output","canReadOutputFile":true,"canContinueAgent":true}}"#;
 
     fn worker_prompt() -> Context {
         let header = header_identity(NATIVE_WORKER_PROMPT).unwrap();
@@ -1005,6 +1037,54 @@ mod tests {
         let repeated =
             translate_line(NATIVE_WORKER_RESULT.as_bytes(), &resumed, "fixture", 30).unwrap();
         assert!(!has_spawn(&repeated.0));
+    }
+
+    #[test]
+    fn worker_launch_uses_exact_native_declaration_and_async_result() {
+        let prompt = worker_prompt();
+        let (_, context) =
+            translate_line(NATIVE_WORKER_DECLARATION, &prompt, "fixture", 10).unwrap();
+        let (facts, _) = translate_line(
+            NATIVE_WORKER_ASYNC_RESULT.as_bytes(),
+            &context,
+            "fixture",
+            20,
+        )
+        .unwrap();
+        assert!(!has_spawn(&facts));
+        let launch = facts
+            .iter()
+            .find(|row| row["kind"] == "worker_launch")
+            .unwrap();
+        assert!(
+            launch["event_id"]
+                .as_str()
+                .unwrap()
+                .ends_with(":worker-launch")
+        );
+        assert_eq!(
+            launch["identity"],
+            json!({
+                "session_id":"session","worker_id":"parent","turn_id":digest("turn"),
+                "operation_id":digest("toolu_agent1"),
+            })
+        );
+        assert_eq!(launch["payload"], json!({"child_worker_id":"child"}));
+        assert!(!launch.to_string().contains("private"));
+        for (from, to) in [
+            (r#""isAsync":true"#, r#""isAsync":false"#),
+            (r#""isAsync":true,"#, ""),
+            (r#""status":"async_launched""#, r#""status":"queued""#),
+            (r#""agentId":"child","#, ""),
+        ] {
+            let raw = NATIVE_WORKER_ASYNC_RESULT.replace(from, to);
+            assert_ne!(raw, NATIVE_WORKER_ASYNC_RESULT);
+            let (_, fresh) =
+                translate_line(NATIVE_WORKER_DECLARATION, &prompt, "fixture", 11).unwrap();
+            let (facts, _) = translate_line(raw.as_bytes(), &fresh, "fixture", 20).unwrap();
+            assert!(!has_spawn(&facts));
+            assert!(!facts.iter().any(|row| row["kind"] == "worker_launch"));
+        }
     }
 
     #[test]
@@ -1203,6 +1283,142 @@ mod tests {
         assert!(!serialized.contains("private"));
         assert_eq!(facts[1]["payload"]["input_tokens"], 6);
         assert_eq!(facts[2]["payload"]["category"], "shell");
+    }
+
+    #[test]
+    fn file_edit_summaries_report_counts_without_paths_or_content() {
+        let mut context = header_identity(br#"{"sessionId":"session"}"#).unwrap();
+        context.turn_id = digest("active-turn");
+        let edit_row = |name: &str, input: Value| {
+            json!({
+                "type":"assistant","sessionId":"session","uuid":"assistant","agentId":"main",
+                "timestamp":"2026-10-24T12:00:01Z",
+                "message":{"content":[
+                    {"type":"tool_use","id":"call-1","name":name,"input":input}
+                ]}
+            })
+            .to_string()
+            .into_bytes()
+        };
+        for (name, input, summary) in [
+            (
+                "Write",
+                json!({"file_path":"fixture/created.txt","content":"private file content"}),
+                json!({"added":1,"updated":0,"deleted":0,"moved":0}),
+            ),
+            (
+                "write",
+                json!({"file_path":"fixture/created.txt","content":"private file content"}),
+                json!({"added":1,"updated":0,"deleted":0,"moved":0}),
+            ),
+            (
+                "Edit",
+                json!({"file_path":"fixture/lib.rs","old_string":"private old text","new_string":"private new text"}),
+                json!({"added":0,"updated":1,"deleted":0,"moved":0}),
+            ),
+            (
+                "MultiEdit",
+                json!({"file_path":"fixture/lib.rs","edits":[
+                    {"old_string":"private first old","new_string":"private first new"},
+                    {"old_string":"private second old","new_string":"private second new"},
+                    {"old_string":"private third old","new_string":"private third new"}
+                ]}),
+                json!({"added":0,"updated":3,"deleted":0,"moved":0}),
+            ),
+        ] {
+            let (facts, _) =
+                translate_line(&edit_row(name, input), &context, "origin", 42).unwrap();
+            let edit = facts
+                .iter()
+                .find(|fact| fact["kind"] == "file_edit")
+                .unwrap_or_else(|| panic!("{name} should report a file edit summary"));
+            assert_eq!(edit["payload"], summary, "{name}");
+            assert_eq!(edit["identity"]["turn_id"], digest("active-turn"));
+            assert_eq!(edit["identity"]["operation_id"], digest("call-1"), "{name}");
+            let tool = facts.iter().find(|fact| fact["kind"] == "tool").unwrap();
+            assert_eq!(edit["identity"], tool["identity"], "{name}");
+            assert_eq!(tool["payload"]["category"], "file", "{name}");
+            let serialized = serde_json::to_string(&facts).unwrap();
+            assert!(!serialized.contains("fixture/"), "{name}");
+            assert!(!serialized.contains("private"), "{name}");
+        }
+    }
+
+    #[test]
+    fn malformed_file_edit_inputs_withhold_the_summary_without_failing_the_line() {
+        let mut context = header_identity(br#"{"sessionId":"session"}"#).unwrap();
+        context.turn_id = digest("active-turn");
+        let edit_row = |input: Value| {
+            json!({
+                "type":"assistant","sessionId":"session","uuid":"assistant",
+                "timestamp":"2026-10-24T12:00:01Z",
+                "message":{"content":[
+                    {"type":"tool_use","id":"call-1","name":"MultiEdit","input":input}
+                ]}
+            })
+            .to_string()
+            .into_bytes()
+        };
+        let empty_edits = json!({"file_path":"fixture/lib.rs","edits":[]});
+        let oversized = json!({"file_path":"fixture/lib.rs",
+            "edits":vec![json!({"old_string":"a","new_string":"b"}); 257]});
+        for (name, input) in [
+            ("missing input", json!(null)),
+            ("scalar input", json!("private scalar")),
+            ("missing file path", json!({"content":"private content"})),
+            (
+                "empty file path",
+                json!({"file_path":"","content":"private content"}),
+            ),
+            ("non string file path", json!({"file_path":7})),
+            ("empty edit list", empty_edits),
+            ("oversized edit list", oversized),
+        ] {
+            let raw = if name == "missing input" {
+                br#"{"type":"assistant","sessionId":"session","uuid":"assistant","timestamp":"2026-10-24T12:00:01Z","message":{"content":[{"type":"tool_use","id":"call-1","name":"MultiEdit"}]}}"#.to_vec()
+            } else {
+                edit_row(input)
+            };
+            let (facts, _) = translate_line(&raw, &context, "origin", 42)
+                .unwrap_or_else(|_| panic!("{name} must not fail the line"));
+            assert!(
+                facts.iter().all(|fact| fact["kind"] != "file_edit"),
+                "{name} must withhold the summary"
+            );
+            assert!(facts.iter().any(|fact| fact["kind"] == "tool"), "{name}");
+        }
+        // A shell tool is never a file edit, and no active turn withholds
+        // every edit summary regardless of the input shape.
+        for (name, raw) in [
+            (
+                "shell tool",
+                br#"{"type":"assistant","sessionId":"session","uuid":"assistant","timestamp":"2026-10-24T12:00:01Z","message":{"content":[{"type":"tool_use","id":"call-1","name":"Bash","input":{"file_path":"fixture/not-an-edit.sh"}}]}}"#.to_vec(),
+            ),
+            (
+                "read tool",
+                br#"{"type":"assistant","sessionId":"session","uuid":"assistant","timestamp":"2026-10-24T12:00:01Z","message":{"content":[{"type":"tool_use","id":"call-1","name":"Read","input":{"file_path":"fixture/lib.rs"}}]}}"#.to_vec(),
+            ),
+            (
+                "mcp tool",
+                br#"{"type":"assistant","sessionId":"session","uuid":"assistant","timestamp":"2026-10-24T12:00:01Z","message":{"content":[{"type":"tool_use","id":"call-1","name":"mcp__server__edit","input":{"file_path":"fixture/lib.rs"}}]}}"#.to_vec(),
+            ),
+        ] {
+            let (facts, _) = translate_line(&raw, &context, "origin", 42).unwrap();
+            assert!(
+                facts.iter().all(|fact| fact["kind"] != "file_edit"),
+                "{name} must not report a file edit"
+            );
+        }
+        let turnless = header_identity(br#"{"sessionId":"session"}"#).unwrap();
+        assert!(turnless.turn_id.is_empty());
+        let (facts, _) = translate_line(
+            br#"{"type":"assistant","sessionId":"session","uuid":"assistant","timestamp":"2026-10-24T12:00:01Z","message":{"content":[{"type":"tool_use","id":"call-1","name":"Write","input":{"file_path":"fixture/created.txt","content":"private content"}}]}}"#,
+            &turnless,
+            "origin",
+            42,
+        )
+        .unwrap();
+        assert!(facts.iter().all(|fact| fact["kind"] != "file_edit"));
     }
 
     #[test]

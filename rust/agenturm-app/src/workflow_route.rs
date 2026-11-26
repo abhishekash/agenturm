@@ -54,27 +54,79 @@ pub(crate) fn load_route_file(path: &std::path::Path) -> Result<Vec<String>, Str
     read(path)
 }
 
+/// Load an operator-saved route scoped to one exact receiver identity. A
+/// receiver replacement at the same endpoint therefore cannot inherit the
+/// old host route.
+pub(crate) fn load_saved_route(
+    endpoint: std::net::SocketAddr,
+    identity: &str,
+) -> Result<Option<Vec<String>>, String> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::load_saved_route(endpoint, identity)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (endpoint, identity);
+        Err("Saved host routes are available on Linux".into())
+    }
+}
+
+/// Persist an explicit route in a private per-user directory, keyed by the
+/// endpoint and authenticated receiver identity.
+pub(crate) fn save_route(
+    endpoint: std::net::SocketAddr,
+    identity: &str,
+    route: &[String],
+) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::save_route(endpoint, identity, route)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (endpoint, identity, route);
+        Err("Saved host routes are available on Linux".into())
+    }
+}
+
+/// Remove only the route for the exact authenticated receiver identity.
+pub(crate) fn forget_saved_route(endpoint: std::net::SocketAddr) -> Result<(), String> {
+    #[cfg(target_os = "linux")]
+    {
+        linux::forget_saved_route(endpoint)
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = endpoint;
+        Err("Saved host routes are available on Linux".into())
+    }
+}
+
 #[cfg(target_os = "linux")]
 mod linux {
+    use sha2::{Digest, Sha256};
     use std::collections::{BTreeMap, BTreeSet};
     use std::fs;
-    use std::io::Read;
+    use std::io::{Read, Write};
     use std::os::unix::fs::MetadataExt;
-    use std::path::Path;
+    use std::os::unix::fs::OpenOptionsExt;
+    use std::path::{Path, PathBuf};
     use std::process::{Command, Stdio};
     use std::thread;
     use std::time::{Duration, Instant};
 
-    const NO_ROUTE: &str =
-        "No unique live tmux pane was verified. Open this session in its native terminal.";
-    const REMOTE_NO_ROUTE: &str = "No unique live tmux pane was verified on the receiver host. Open this session in its native terminal.";
-    const REMOTE_UNAVAILABLE: &str = "The configured host route did not answer with the expected bounded output. Verify the route command and its authentication.";
+    const NO_ROUTE: &str = "No unique live tmux pane was verified. Open this session in its native terminal. If the execution is on a receiver host, configure an authenticated host route with --route-file <path> --save-route and reopen the cockpit.";
+    const INVALID_RESUME: &str = "This request has no verifiable native resume command for its provider or session identifier.";
+    const REMOTE_NO_ROUTE: &str = "No unique live tmux pane was verified on the receiver host through the configured route. Open this session in its native terminal there.";
+    const REMOTE_UNAVAILABLE: &str = "The configured host route did not answer with the expected bounded output. Verify the route command and its authentication; this cockpit never guesses or selects a remote pane.";
     const MAX_PROCESS_ENTRIES: usize = 4096;
     const MAX_ANCESTORS: usize = 64;
     const MAX_ROUTE_WORDS: usize = 32;
     const MAX_ROUTE_WORD_BYTES: usize = 256;
     const MAX_ROUTE_OUTPUT: usize = 256 * 1024;
     const ROUTE_DEADLINE: Duration = Duration::from_secs(5);
+    const MAX_SAVED_ROUTE_BYTES: u64 = 8 * 1024;
 
     #[derive(Clone, Copy, Debug, Eq, PartialEq)]
     struct Process {
@@ -92,26 +144,44 @@ mod linux {
         let kind = source
             .strip_prefix("harness.")
             .and_then(|tail| tail.split('.').next())
-            .ok_or(NO_ROUTE)?;
+            .ok_or(INVALID_RESUME)?;
         if session.is_empty()
             || session.len() > 200
             || !session
                 .bytes()
                 .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
         {
-            return Err(NO_ROUTE.into());
+            return Err(INVALID_RESUME.into());
         }
         match kind {
             "codex" => Ok(("codex", &["resume"])),
             "claude" => Ok(("claude", &["--resume"])),
             "kiro" if session.starts_with("sess_") => Ok(("kiro-cli", &["chat", "--resume-id"])),
-            _ => Err(NO_ROUTE.into()),
+            _ => Err(INVALID_RESUME.into()),
         }
     }
 
     pub(super) fn load_route_file(path: &Path) -> Result<Vec<String>, String> {
-        let raw = fs::read_to_string(path)
+        let file = fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_CLOEXEC | libc::O_NONBLOCK)
+            .open(path)
             .map_err(|_| "The configured host route file could not be read".to_owned())?;
+        let metadata = file
+            .metadata()
+            .map_err(|_| "The configured host route file could not be inspected")?;
+        if !metadata.is_file() || metadata.len() > MAX_SAVED_ROUTE_BYTES {
+            return Err("The configured host route file is not a bounded regular file".into());
+        }
+        let mut bytes = Vec::with_capacity(metadata.len() as usize);
+        file.take(MAX_SAVED_ROUTE_BYTES + 1)
+            .read_to_end(&mut bytes)
+            .map_err(|_| "The configured host route file could not be read")?;
+        if bytes.len() as u64 > MAX_SAVED_ROUTE_BYTES {
+            return Err("The configured host route file exceeds its size limit".into());
+        }
+        let raw = std::str::from_utf8(&bytes)
+            .map_err(|_| "The configured host route file is not UTF-8")?;
         let route: Vec<String> = raw
             .lines()
             .map(str::trim)
@@ -140,6 +210,193 @@ mod linux {
             }
         }
         Ok(())
+    }
+
+    fn saved_route_path(
+        endpoint: std::net::SocketAddr,
+        create: bool,
+    ) -> Result<Option<(PathBuf, PathBuf)>, String> {
+        use std::os::unix::fs::DirBuilderExt;
+
+        let state = crate::cockpit_startup::state_directory(
+            std::env::var_os("XDG_STATE_HOME").as_deref(),
+            std::env::var_os("HOME").as_deref(),
+        )?;
+        let root = state.join("receiver-routes");
+        if create {
+            fs::DirBuilder::new()
+                .recursive(true)
+                .mode(0o700)
+                .create(&root)
+                .map_err(|_| "Cannot create the private receiver-route directory")?;
+        }
+        let root_metadata = match fs::symlink_metadata(&root) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !create => {
+                return Ok(None);
+            }
+            Err(_) => return Err("Cannot inspect the receiver-route directory".into()),
+        };
+        if !root_metadata.is_dir()
+            || root_metadata.uid() != owner_uid()
+            || root_metadata.mode() & 0o7777 != 0o700
+        {
+            return Err("Receiver-route directory must be private and owned by this user".into());
+        }
+        let encoded = serde_json::to_vec(&("agenturm-receiver-route/1", endpoint))
+            .map_err(|_| "Cannot scope the receiver route")?;
+        let key = format!("{:x}", Sha256::digest(encoded));
+        let directory = root.join(key);
+        if create {
+            match fs::DirBuilder::new().mode(0o700).create(&directory) {
+                Ok(()) => {}
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => {}
+                Err(_) => return Err("Cannot create the receiver-route directory".into()),
+            }
+        }
+        let metadata = match fs::symlink_metadata(&directory) {
+            Ok(metadata) => metadata,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound && !create => {
+                return Ok(None);
+            }
+            Err(_) => return Err("Cannot inspect the receiver-route directory".into()),
+        };
+        if !metadata.is_dir() || metadata.uid() != owner_uid() || metadata.mode() & 0o7777 != 0o700
+        {
+            return Err("Receiver-route directory must be private and owned by this user".into());
+        }
+        Ok(Some((directory.join("route"), directory)))
+    }
+
+    fn owner_uid() -> u32 {
+        // SAFETY: geteuid has no arguments or preconditions.
+        unsafe { libc::geteuid() }
+    }
+
+    pub(super) fn load_saved_route(
+        endpoint: std::net::SocketAddr,
+        identity: &str,
+    ) -> Result<Option<Vec<String>>, String> {
+        if identity.is_empty() || identity.len() > 256 {
+            return Err("The receiver identity is invalid".into());
+        }
+        let Some((path, _directory)) = saved_route_path(endpoint, false)? else {
+            return Ok(None);
+        };
+        let file = match fs::OpenOptions::new()
+            .read(true)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC | libc::O_NONBLOCK)
+            .open(&path)
+        {
+            Ok(file) => file,
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+            Err(_) => return Err("Cannot read the saved receiver route".into()),
+        };
+        let metadata = file
+            .metadata()
+            .map_err(|_| "Cannot inspect the saved receiver route")?;
+        if !metadata.is_file()
+            || metadata.uid() != owner_uid()
+            || metadata.nlink() != 1
+            || metadata.mode() & 0o7777 != 0o600
+            || metadata.len() > MAX_SAVED_ROUTE_BYTES
+        {
+            return Err("Saved receiver route is not a private regular file".into());
+        }
+        let mut raw = Vec::with_capacity(metadata.len() as usize);
+        file.take(MAX_SAVED_ROUTE_BYTES + 1)
+            .read_to_end(&mut raw)
+            .map_err(|_| "Cannot read the saved receiver route")?;
+        if raw.len() as u64 > MAX_SAVED_ROUTE_BYTES {
+            return Err("Saved receiver route exceeds its size limit".into());
+        }
+        let profile: serde_json::Value =
+            serde_json::from_slice(&raw).map_err(|_| "Saved receiver route is invalid")?;
+        if profile.get("version").and_then(serde_json::Value::as_u64) != Some(1) {
+            return Err("Saved receiver route has an unsupported version".into());
+        }
+        if profile.as_object().is_none_or(|fields| fields.len() != 3) {
+            return Err("Saved receiver route is invalid".into());
+        }
+        if profile
+            .get("receiver_identity")
+            .and_then(serde_json::Value::as_str)
+            != Some(identity)
+        {
+            return Err("Saved route belongs to a different receiver at this endpoint; remove it and configure the route again".into());
+        }
+        let route: Vec<String> = profile
+            .get("route")
+            .and_then(serde_json::Value::as_array)
+            .ok_or("Saved receiver route is invalid")?
+            .iter()
+            .map(|word| {
+                word.as_str()
+                    .map(str::to_owned)
+                    .ok_or("Saved receiver route is invalid")
+            })
+            .collect::<Result<_, _>>()?;
+        validate_route(&route)?;
+        Ok(Some(route))
+    }
+
+    pub(super) fn save_route(
+        endpoint: std::net::SocketAddr,
+        identity: &str,
+        route: &[String],
+    ) -> Result<(), String> {
+        use std::time::{SystemTime, UNIX_EPOCH};
+
+        validate_route(route)?;
+        let (path, directory) = saved_route_path(endpoint, true)?
+            .ok_or_else(|| "Cannot create the receiver-route directory".to_owned())?;
+        if identity.is_empty() || identity.len() > 256 {
+            return Err("The receiver identity is invalid".into());
+        }
+        let raw = serde_json::to_vec(&serde_json::json!({
+            "version": 1,
+            "receiver_identity": identity,
+            "route": route,
+        }))
+        .map_err(|_| "Cannot encode the receiver route")?;
+        if raw.len() as u64 > MAX_SAVED_ROUTE_BYTES {
+            return Err("Saved receiver route exceeds its size limit".into());
+        }
+        let nonce = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .map_err(|_| "Cannot create a receiver-route update")?
+            .as_nanos();
+        let temporary = directory.join(format!(".route-{}-{nonce}", std::process::id()));
+        let mut file = fs::OpenOptions::new()
+            .write(true)
+            .create_new(true)
+            .mode(0o600)
+            .custom_flags(libc::O_NOFOLLOW | libc::O_CLOEXEC)
+            .open(&temporary)
+            .map_err(|_| "Cannot stage the receiver route")?;
+        let result = file
+            .write_all(&raw)
+            .and_then(|()| file.sync_all())
+            .and_then(|()| fs::rename(&temporary, &path))
+            .and_then(|()| fs::File::open(&directory).and_then(|directory| directory.sync_all()));
+        if result.is_err() {
+            let _ = fs::remove_file(&temporary);
+            return Err("Cannot save the receiver route".into());
+        }
+        Ok(())
+    }
+
+    pub(super) fn forget_saved_route(endpoint: std::net::SocketAddr) -> Result<(), String> {
+        let Some((path, directory)) = saved_route_path(endpoint, false)? else {
+            return Ok(());
+        };
+        match fs::remove_file(&path) {
+            Ok(()) => fs::File::open(directory)
+                .and_then(|directory| directory.sync_all())
+                .map_err(|_| "Cannot confirm removal of the saved receiver route".into()),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+            Err(_) => Err("Cannot remove the saved receiver route".into()),
+        }
     }
 
     pub(super) fn remote_locate(
@@ -612,6 +869,57 @@ exit 0",
     #[cfg(test)]
     mod tests {
         use super::*;
+        use std::ffi::OsString;
+        use std::sync::Mutex;
+
+        static STATE_HOME_LOCK: Mutex<()> = Mutex::new(());
+        static NEXT_STATE_HOME: std::sync::atomic::AtomicU64 = std::sync::atomic::AtomicU64::new(0);
+
+        struct StateHomeGuard {
+            path: PathBuf,
+            previous: Option<OsString>,
+        }
+
+        impl StateHomeGuard {
+            fn new() -> Self {
+                use std::sync::atomic::Ordering;
+
+                let path = std::env::temp_dir().join(format!(
+                    "agenturm-route-state-{}-{}",
+                    std::process::id(),
+                    NEXT_STATE_HOME.fetch_add(1, Ordering::Relaxed)
+                ));
+                fs::create_dir_all(&path).unwrap();
+                let previous = std::env::var_os("XDG_STATE_HOME");
+                // SAFETY: route-profile tests serialize their environment
+                // changes with STATE_HOME_LOCK and restore the previous value.
+                unsafe { std::env::set_var("XDG_STATE_HOME", &path) };
+                Self { path, previous }
+            }
+        }
+
+        impl Drop for StateHomeGuard {
+            fn drop(&mut self) {
+                match self.previous.take() {
+                    Some(value) => {
+                        // SAFETY: see StateHomeGuard::new; this restores the
+                        // value before releasing the test's mutex guard.
+                        unsafe { std::env::set_var("XDG_STATE_HOME", value) };
+                    }
+                    None => {
+                        // SAFETY: see StateHomeGuard::new.
+                        unsafe { std::env::remove_var("XDG_STATE_HOME") };
+                    }
+                }
+                let _ = fs::remove_dir_all(&self.path);
+            }
+        }
+
+        fn isolated_state_home() -> (std::sync::MutexGuard<'static, ()>, StateHomeGuard) {
+            let lock = STATE_HOME_LOCK.lock().unwrap();
+            (lock, StateHomeGuard::new())
+        }
+
         #[test]
         fn resume_matching_is_exact_and_provider_specific() {
             let args = &["codex", "resume", "session-22"];
@@ -641,6 +949,16 @@ exit 0",
             assert!(expected_resume("harness.codex", "").is_err());
             assert!(expected_resume("harness.codex", "bad session").is_err());
             assert!(expected_resume("harness.codex", &"x".repeat(201)).is_err());
+        }
+
+        #[test]
+        fn unavailable_route_guidance_is_explicit_and_never_guesses_a_target() {
+            assert!(NO_ROUTE.contains("--route-file"));
+            assert!(NO_ROUTE.contains("native terminal"));
+            assert!(REMOTE_NO_ROUTE.contains("configured route"));
+            assert!(REMOTE_UNAVAILABLE.contains("never guesses or selects a remote pane"));
+            assert!(INVALID_RESUME.contains("provider or session identifier"));
+            assert!(!INVALID_RESUME.contains("route-file"));
         }
 
         #[test]
@@ -770,7 +1088,166 @@ esac
             assert!(load_route_file(&path).is_err());
             fs::write(&path, "has space\n").unwrap();
             assert!(load_route_file(&path).is_err());
+            fs::write(&path, format!("{}\n", "x".repeat(8192))).unwrap();
+            assert!(load_route_file(&path).is_err());
+            let directory = path.with_extension("directory");
+            fs::create_dir(&directory).unwrap();
+            assert!(load_route_file(&directory).is_err());
+            let _ = fs::remove_dir(directory);
             let _ = fs::remove_file(&path);
+        }
+
+        #[test]
+        fn saved_route_is_endpoint_scoped_and_rejects_receiver_identity_replacement() {
+            let (_lock, _state) = isolated_state_home();
+            let endpoint_a: std::net::SocketAddr = "127.0.0.1:4318".parse().unwrap();
+            let endpoint_b: std::net::SocketAddr = "127.0.0.1:4319".parse().unwrap();
+            let route_a = vec!["ssh".into(), "receiver-a".into()];
+            let route_c = vec!["ssh".into(), "receiver-c".into()];
+
+            save_route(endpoint_a, "receiver-identity-a", &route_a).unwrap();
+            save_route(endpoint_b, "receiver-identity-a", &route_c).unwrap();
+            assert_eq!(
+                load_saved_route(endpoint_a, "receiver-identity-a").unwrap(),
+                Some(route_a.clone())
+            );
+            assert!(load_saved_route(endpoint_a, "receiver-identity-b").is_err());
+            let route_b = vec!["ssh".into(), "receiver-b".into()];
+            save_route(endpoint_a, "receiver-identity-b", &route_b).unwrap();
+            assert!(load_saved_route(endpoint_a, "receiver-identity-a").is_err());
+            assert_eq!(
+                load_saved_route(endpoint_a, "receiver-identity-b").unwrap(),
+                Some(route_b)
+            );
+            assert_eq!(
+                load_saved_route(endpoint_b, "receiver-identity-a").unwrap(),
+                Some(route_c.clone())
+            );
+            assert!(load_saved_route(endpoint_b, "receiver-identity-b").is_err());
+
+            forget_saved_route(endpoint_a).unwrap();
+            assert!(
+                load_saved_route(endpoint_a, "receiver-identity-b")
+                    .unwrap()
+                    .is_none()
+            );
+            assert_eq!(
+                load_saved_route(endpoint_b, "receiver-identity-a").unwrap(),
+                Some(route_c)
+            );
+        }
+
+        #[test]
+        fn saved_route_storage_is_private_symlink_safe_and_atomically_replaced() {
+            use std::os::unix::fs::{PermissionsExt, symlink};
+
+            let (_lock, state) = isolated_state_home();
+            let endpoint: std::net::SocketAddr = "127.0.0.1:4318".parse().unwrap();
+            let identity = "receiver-identity";
+            let route_old = vec!["ssh".into(), "old-host".into()];
+            let route_new = vec!["ssh".into(), "new-host".into(), "-p".into(), "2222".into()];
+            save_route(endpoint, identity, &route_old).unwrap();
+            let (path, directory) = saved_route_path(endpoint, false).unwrap().unwrap();
+            assert_eq!(fs::metadata(&directory).unwrap().mode() & 0o7777, 0o700);
+            assert_eq!(
+                fs::metadata(&directory).unwrap().uid(),
+                // SAFETY: geteuid has no arguments or preconditions.
+                unsafe { libc::geteuid() }
+            );
+            assert_eq!(fs::metadata(&path).unwrap().mode() & 0o7777, 0o600);
+            assert_eq!(
+                fs::metadata(&path).unwrap().uid(),
+                // SAFETY: geteuid has no arguments or preconditions.
+                unsafe { libc::geteuid() }
+            );
+
+            let mut broad = fs::metadata(&path).unwrap().permissions();
+            broad.set_mode(0o644);
+            fs::set_permissions(&path, broad).unwrap();
+            assert!(load_saved_route(endpoint, identity).is_err());
+
+            // Saving uses a same-directory temporary plus rename and repairs
+            // an unsafe existing target without following it.
+            let external = state.path.join("outside.txt");
+            fs::write(&external, "external sentinel").unwrap();
+            fs::remove_file(&path).unwrap();
+            symlink(&external, &path).unwrap();
+            assert!(load_saved_route(endpoint, identity).is_err());
+            save_route(endpoint, identity, &route_new).unwrap();
+            assert_eq!(
+                load_saved_route(endpoint, identity).unwrap(),
+                Some(route_new)
+            );
+            assert_eq!(fs::read_to_string(external).unwrap(), "external sentinel");
+            assert!(fs::symlink_metadata(&path).unwrap().file_type().is_file());
+            assert_eq!(fs::metadata(&path).unwrap().mode() & 0o7777, 0o600);
+            let entries = fs::read_dir(&directory)
+                .unwrap()
+                .map(|entry| entry.unwrap().file_name())
+                .collect::<Vec<_>>();
+            assert_eq!(entries, vec![std::ffi::OsString::from("route")]);
+            fs::write(&path, "not a route profile").unwrap();
+            assert!(load_saved_route(endpoint, identity).is_err());
+            let recovered = vec!["ssh".into(), "recovered".into()];
+            save_route(endpoint, identity, &recovered).unwrap();
+            assert_eq!(
+                load_saved_route(endpoint, identity).unwrap(),
+                Some(recovered)
+            );
+
+            // A symlink in place of the route directory is rejected even
+            // when its target contains a valid-looking route.
+            let root = state.path.join("agenturm-rust/receiver-routes");
+            fs::remove_dir_all(&root).unwrap();
+            let redirected = state.path.join("redirected-routes");
+            fs::create_dir(&redirected).unwrap();
+            fs::set_permissions(&redirected, fs::Permissions::from_mode(0o700)).unwrap();
+            symlink(&redirected, &root).unwrap();
+            assert!(load_saved_route(endpoint, identity).is_err());
+        }
+
+        #[test]
+        fn saving_rejects_invalid_routes_and_receiver_identities() {
+            let (_lock, _state) = isolated_state_home();
+            let endpoint: std::net::SocketAddr = "127.0.0.1:4318".parse().unwrap();
+            assert!(save_route(endpoint, "receiver", &[]).is_err());
+            assert!(save_route(endpoint, "receiver", &["host with spaces".into()]).is_err());
+            assert!(save_route(endpoint, "receiver", &["x".repeat(257)]).is_err());
+            assert!(save_route(endpoint, "", &["ssh".into()]).is_err());
+            assert!(save_route(endpoint, &"x".repeat(257), &["ssh".into()]).is_err());
+            assert!(load_saved_route(endpoint, "").is_err());
+        }
+
+        #[test]
+        fn forget_route_completes_offline_without_a_token_file() {
+            let (_lock, _state) = isolated_state_home();
+            let endpoint: std::net::SocketAddr = "127.0.0.1:1".parse().unwrap();
+            save_route(
+                endpoint,
+                "receiver-identity",
+                &["ssh".into(), "host".into()],
+            )
+            .unwrap();
+            assert!(
+                load_saved_route(endpoint, "receiver-identity")
+                    .unwrap()
+                    .is_some()
+            );
+            let options = crate::remote_history::parse_attach(&[
+                "--endpoint".into(),
+                "http://127.0.0.1:1".into(),
+                "--forget-route".into(),
+            ])
+            .unwrap();
+            // No receiver listens on port 1 and no token file is supplied.
+            // Success proves the forget command deletes locally before the
+            // attach path attempts authentication or opens a socket.
+            crate::remote_history::execute_remote_cockpit(&options).unwrap();
+            assert!(
+                load_saved_route(endpoint, "receiver-identity")
+                    .unwrap()
+                    .is_none()
+            );
         }
     }
 }

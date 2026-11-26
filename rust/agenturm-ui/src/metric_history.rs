@@ -55,6 +55,13 @@ impl<Row, Position> Page<Row, Position> {
             ));
         }
     }
+
+    fn select_edge(&mut self, first: bool) {
+        if !self.rows.is_empty() {
+            self.selection
+                .select(Some(if first { 0 } else { self.rows.len() - 1 }));
+        }
+    }
 }
 
 struct Pages<Row, Position> {
@@ -118,6 +125,14 @@ impl Scroll {
             KeyCode::Down | KeyCode::Char('j') => 1,
             KeyCode::PageUp => -8,
             KeyCode::PageDown => 8,
+            KeyCode::Home => {
+                self.offset = 0;
+                return true;
+            }
+            KeyCode::End => {
+                self.offset = self.max_offset;
+                return true;
+            }
             _ => return false,
         };
         self.offset = self
@@ -421,6 +436,14 @@ impl MetricBrowser {
                 return MetricInput::Unhandled;
             }
         }
+        if matches!(key, KeyCode::Home | KeyCode::End) {
+            if let Some(history) = &mut self.history {
+                history.pages.current.select_edge(key == KeyCode::Home);
+            } else {
+                self.catalog.current.select_edge(key == KeyCode::Home);
+            }
+            return MetricInput::Handled;
+        }
         let delta = match key {
             KeyCode::Up | KeyCode::Char('k') => -1,
             KeyCode::Down | KeyCode::Char('j') => 1,
@@ -545,7 +568,13 @@ impl MetricBrowser {
     }
 
     pub(super) fn loaded_view(&self) -> LoadedView {
-        let snapshot = format!("Retained metric metadata · Snapshot {}", self.snapshot_id);
+        let snapshot = format!(
+            "Retained metric metadata{} · Snapshot {}",
+            self.source_id.as_ref().map_or_else(String::new, |source| {
+                format!(" · Source {}", source.as_str())
+            }),
+            self.snapshot_id
+        );
         if let Some(trace) = &self.trace {
             let scope = self.point().map_or(snapshot.clone(), |row| {
                 format!(
@@ -805,14 +834,14 @@ impl MetricBrowser {
             format!("Esc points   ↑↓ scroll{extras}")
         } else if let Some(history) = &self.history {
             format!(
-                "Esc series   ↑↓ select   Enter details{}",
+                "Esc series   ↑↓ select   Home/End   Enter details{}",
                 history.pages.paging_hint()
             )
         } else if self.series_detail.is_some() {
             "Esc catalog   ↑↓ scroll   Enter points".into()
         } else {
             format!(
-                "/ search   d details   Enter points   ↑↓{}",
+                "/ search   d details   Enter points   ↑↓ Home/End{}",
                 self.catalog.paging_hint()
             )
         }
@@ -1096,6 +1125,72 @@ mod tests {
             .iter()
             .map(|cell| cell.symbol())
             .collect()
+    }
+
+    #[test]
+    fn metric_catalog_and_detail_scroll_support_home_and_end() {
+        let mut scroll = Scroll {
+            offset: 3,
+            max_offset: 12,
+        };
+        assert!(scroll.key(KeyCode::End));
+        assert_eq!(scroll.offset, 12);
+        assert!(scroll.key(KeyCode::Home));
+        assert_eq!(scroll.offset, 0);
+
+        let source = ExtensionId::parse("otlp.fixture").unwrap();
+        let entry = |id: &str, name: &str| MetricSeriesEntry {
+            key: MetricSeriesKey {
+                source_id: source.clone(),
+                series_id: id.into(),
+            },
+            series: MetricSeries {
+                id: id.into(),
+                name: name.into(),
+                unit: "ms".into(),
+                service: None,
+                scope: None,
+                kind: MetricKind::Gauge,
+                temporality: MetricTemporality::Unspecified,
+                monotonic: None,
+            },
+            latest_unix_ns: 1,
+            description: None,
+        };
+        let mut browser = MetricBrowser::new(MetricHistoryPage::Series {
+            snapshot_id: 4.into(),
+            rows: vec![
+                entry(&"1".repeat(64), "first"),
+                entry(&"2".repeat(64), "last"),
+            ],
+            next: None,
+        })
+        .unwrap();
+        assert_eq!(browser.catalog.current.selection.selected(), Some(0));
+        assert!(matches!(
+            browser.key(KeyCode::End, false),
+            MetricInput::Handled
+        ));
+        assert_eq!(
+            browser
+                .catalog
+                .current
+                .selected()
+                .map(|row| row.series.name.as_str()),
+            Some("last")
+        );
+        assert!(matches!(
+            browser.key(KeyCode::Home, false),
+            MetricInput::Handled
+        ));
+        assert_eq!(
+            browser
+                .catalog
+                .current
+                .selected()
+                .map(|row| row.series.name.as_str()),
+            Some("first")
+        );
     }
 
     #[test]

@@ -1,0 +1,438 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Cli Parity Audit</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 0.2.8</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cli-parity-audit.md">Markdown source ↗</a></nav><h1>AP1 — SDK/CLI parity audit: Python 0.2.8 against the Rust rewrite</h1>
+<p>Updated 23 November 2026. This is the <strong>AP1</strong> audit required by the
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md">remaining-work plan</a> and the
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-plan.md">execution plan</a>: reconcile every retained
+Python 0.2.8 CLI entry point, cockpit keyboard journey, and selected SDK
+integration with its actual Rust code path. Every <strong>implemented</strong> row was
+verified by reading the Rust parse/dispatch code, not inferred from
+documentation. The audit records dispositions; confirmed missing journeys
+remain on the active Python-parity plan unless an explicit product decision
+retires them.</p>
+<h2>Method and boundaries</h2>
+<ul>
+<li>Python surface: <code>observatory/__main__.py</code>, <code>observatory/attention_cli.py</code>,
+<code>review_cli.py</code>, <code>investigation_cli.py</code>, <code>task_cli.py</code>,
+<code>native_lifecycle.py</code>, and the journeys in
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/keyboard-navigation.md">keyboard navigation</a>.</li>
+<li>Rust surface: <code>rust/agenturm-app/src/lib.rs</code> Command enum (:237-302),
+<code>main.rs</code> dispatch (:27-300), <code>parse_command</code> (:849-947), and the
+<code>agenturm-ui</code> keymap/workbench/workspace handlers.</li>
+<li>Base comparison: the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-cutover-workflows.md">cutover workflows table</a>.</li>
+<li>Python receiver-attach forms (<code>--receiver-protocol python-v0.2.8</code>) are
+Linux-only in the Rust app (<code>#[cfg(target_os = &quot;linux&quot;)]</code>, lib.rs:863-905).</li>
+<li>Classifications are exactly: <strong>implemented</strong>, <strong>test-only acceptance
+pending</strong>, <strong>confirmed missing feature</strong>, <strong>scope decision needed</strong>. No CLI
+or SDK row required the <em>native evidence unavailable</em> class in this audit;
+that class stays reserved for harness-side items such as the actual Kiro
+transcript (A4/Q8), which this audit does not cover.</li>
+</ul>
+<h2>Parity table</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Python 0.2.8</th>
+<th>Rust counterpart</th>
+<th>Classification</th>
+<th>Anchor</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>bare <code>agenturm</code> / <code>cockpit</code> / <code>--db</code></td>
+<td>Opens cockpit, starts/attaches receiver</td>
+<td>Bare TTY launch defaults to <code>cockpit</code>; <code>cockpit [--db]</code></td>
+<td>implemented</td>
+<td>main.rs:16; lib.rs:880</td>
+</tr>
+<tr>
+<td><code>cockpit --endpoint</code></td>
+<td>Attach to Python receiver</td>
+<td><code>--endpoint --token-file --receiver-protocol</code> → RemoteCockpit (Linux)</td>
+<td>implemented</td>
+<td>lib.rs:886-892</td>
+</tr>
+<tr>
+<td><code>cockpit --once</code></td>
+<td>One snapshot, exit</td>
+<td><code>cockpit --once [--json] [--limit]</code> → Summary</td>
+<td>implemented</td>
+<td>summary_cli.rs:17-42</td>
+</tr>
+<tr>
+<td><code>cockpit --new-window</code></td>
+<td>New terminal window</td>
+<td><code>--new-window</code> → Window (Linux launchers)</td>
+<td>implemented (Linux)</td>
+<td>new_window.rs</td>
+</tr>
+<tr>
+<td><code>cockpit --port</code></td>
+<td>Receiver port choice</td>
+<td>none as a flag; receiver via <code>serve-traces --listen</code></td>
+<td>scope decision needed</td>
+<td>see dispositions</td>
+</tr>
+<tr>
+<td><code>cockpit --no-local-agents</code> / <code>--metadata-only</code></td>
+<td>Disable discovery / omit native text</td>
+<td>none as flags; inverted explicit-grant capture model</td>
+<td>scope decision needed</td>
+<td>see dispositions</td>
+</tr>
+<tr>
+<td><code>cockpit --retention-days</code></td>
+<td>Opt DB into age retention</td>
+<td><code>retention set --max-age-days N</code></td>
+<td>implemented (different command)</td>
+<td>retention_cli.rs:66-98</td>
+</tr>
+<tr>
+<td><code>cockpit --capability-config</code></td>
+<td>Capability pane activation (repeatable TOML)</td>
+<td>Process-extension catalog <code>--extension-catalog</code>/<code>--extension</code></td>
+<td>implemented (different mechanism)</td>
+<td>lib.rs:1243-1283</td>
+</tr>
+<tr>
+<td><code>serve</code></td>
+<td>OTLP/HTTP receiver: traces/logs/metrics, auth, retention</td>
+<td><code>serve-traces --listen --db --source-id [--capture-log-text] [--payload-token-file]</code></td>
+<td>implemented for retained scope; Python <code>/api/*</code> wire, remote TLS, arbitrary legacy JSONL tail stay open (cutover:18)</td>
+<td>trace_receiver.rs:165-215</td>
+</tr>
+<tr>
+<td><code>serve --watch-jsonl</code> / <code>--watch-service</code></td>
+<td>Tail harness JSONL as spans</td>
+<td><code>watch-jsonl --file --db --source-id [--interval-ms]</code></td>
+<td>implemented (subset)</td>
+<td>span_jsonl_follow.rs:21-46</td>
+</tr>
+<tr>
+<td><code>serve --host/--port/--token/--no-auth/--allowed-host</code></td>
+<td>Remote binding, auth modes</td>
+<td><code>--listen</code> loopback-only + <code>--token-file</code></td>
+<td>confirmed missing for remote deployment (recorded open)</td>
+<td>trace_receiver.rs:209-214</td>
+</tr>
+<tr>
+<td><code>serve --retention-days</code></td>
+<td>Age deletion</td>
+<td><code>retention set/run/status</code> via collector/broker ticks</td>
+<td>implemented</td>
+<td>retention_cli.rs:88-95</td>
+</tr>
+<tr>
+<td><code>serve --plugin-config</code> / <code>--rust-plugin-host[-sha256]</code> / <code>--use-bundled-rust-plugin-host</code></td>
+<td>Python plugin opt-ins</td>
+<td>Rust-native plugin host + <code>collect --config</code> catalog with SHA-256 pins</td>
+<td>implemented (different mechanism)</td>
+<td>lib.rs:367-381</td>
+</tr>
+<tr>
+<td><code>migrate-db</code></td>
+<td>Copy Python telemetry DB</td>
+<td>none — retired by the Rust-only product decision; <code>backup</code>/<code>restore</code> cover Rust state</td>
+<td>confirmed missing (retired by explicit decision, cutover:22)</td>
+<td>cutover:22</td>
+</tr>
+<tr>
+<td><code>run</code></td>
+<td>Launch agent with automatic SDK capture</td>
+<td>`run [--db</td>
+<td>--endpoint --token-file] --source-id [--instrument python] -- <program>`</td>
+<td>implemented</td>
+</tr>
+<tr>
+<td><code>run --transport otlp</code> identity flags</td>
+<td>Structural spans with exact linkage</td>
+<td>Same flags honored through the Rust launcher</td>
+<td>implemented</td>
+<td>docs/python.md:77-148</td>
+</tr>
+<tr>
+<td><code>import-jsonl</code></td>
+<td>Import span JSONL</td>
+<td><code>import-jsonl</code> bounded ≤4 MiB/≤1024 spans, opt-in content</td>
+<td>implemented</td>
+<td>span_jsonl_import.rs:51-91</td>
+</tr>
+<tr>
+<td><code>import-evals</code></td>
+<td>Join eval outcomes to traces</td>
+<td><code>import-evals</code> + <code>evals</code> views + private <code>eval-detail</code> grant/preview/revoke</td>
+<td>implemented (superset)</td>
+<td>eval_import.rs:50-95</td>
+</tr>
+<tr>
+<td><code>prune --older-than-days</code></td>
+<td>Delete older telemetry</td>
+<td><code>prune --before-unix-ns</code> + persisted retention</td>
+<td>implemented (unit changed: ns)</td>
+<td>main.rs:221-227</td>
+</tr>
+<tr>
+<td><code>attention watch</code></td>
+<td>Poll receiver; durable store; <code>--desktop --once --interval</code></td>
+<td><code>attention watch --db [--interval-ms] [--max-polls] [--desktop] [--once]</code>; remote attach; <code>--workflow</code> body-free status</td>
+<td>implemented; legacy workflow-state migration stays open (cutover:24)</td>
+<td>attention.rs:58-166</td>
+</tr>
+<tr>
+<td><code>attention status</code></td>
+<td>Offline durable records</td>
+<td><code>attention status --db</code>; <code>--workflow</code></td>
+<td>implemented</td>
+<td>attention.rs:78-101</td>
+</tr>
+<tr>
+<td><code>attention native bind/send/hook/retry</code></td>
+<td>Explicit owner-only native bindings</td>
+<td>Same verbs, Linux-only, <code>--token-file</code> required, adapters <code>generic-v1</code>/<code>codex-notify-v1</code></td>
+<td>implemented; disposition now recorded here (previously unnamed in the RFCs)</td>
+<td>attention_native.rs:162-248</td>
+</tr>
+<tr>
+<td><code>review</code></td>
+<td>Exact-run evidence from receiver</td>
+<td>Native <code>review --db --harness-id --session-id …</code>; attached Rust receiver; Python-receiver mode keeps exact Python flags (Linux)</td>
+<td>implemented</td>
+<td>lib.rs:1523-1586; remote_review.rs:33-110</td>
+</tr>
+<tr>
+<td><code>investigate path|command|instruction|source</code></td>
+<td>Bounded retained search</td>
+<td>Native kinds incl. <code>failures</code>; Python-receiver mode keeps Python flags (Linux)</td>
+<td>implemented (adds <code>failures</code>)</td>
+<td>investigate_cli.rs:149-219</td>
+</tr>
+<tr>
+<td><code>task create/list/show/update/archive</code></td>
+<td>Offline saved tasks</td>
+<td><code>task add/create/list/show/update/archive</code>; cursor paging via <code>--limit/--before</code> (no <code>--offset</code>)</td>
+<td>implemented (paging model differs)</td>
+<td>task_cli.rs:240-283</td>
+</tr>
+<tr>
+<td><code>task create --snapshot</code></td>
+<td>Opt-in Git capture after creation</td>
+<td><code>--snapshot</code> captures the supplied local workspace; without it, create stays metadata-only. A capture failure returns the saved task plus <code>snapshot_error</code>.</td>
+<td>Implemented on <code>feature/task-create-snapshot</code>; acceptance pending</td>
+<td>task_cli.rs</td>
+</tr>
+<tr>
+<td><code>task snapshot</code></td>
+<td>Bounded read-only Git capture</td>
+<td><code>task snapshot ID [--include-diff]</code> (patch ≤64 KiB)</td>
+<td>implemented</td>
+<td>task_cli.rs:276-283</td>
+</tr>
+<tr>
+<td><code>task link/unlink</code></td>
+<td>Link by trace ID or evidence file</td>
+<td>Exact native identity only (<code>--source-id --session-id [--turn-id --worker-id]</code>)</td>
+<td>implemented; trace-ID/evidence-file link forms confirmed missing (recorded, cutover:28)</td>
+<td>task_cli.rs:379-391</td>
+</tr>
+<tr>
+<td><code>task handoff</code></td>
+<td>Markdown/HTML/JSON brief; <code>--endpoint</code> revalidation</td>
+<td><code>task handoff [--format] [--output] [--include-decision-history] [--include-diff]</code>; offline only</td>
+<td>implemented; receiver-revalidation flag confirmed missing</td>
+<td>task_cli.rs:356-367</td>
+</tr>
+<tr>
+<td><code>task backup</code></td>
+<td>Consistent SQLite backup</td>
+<td><code>task backup</code> + workspace <code>backup --bundle</code>/<code>restore --bundle</code></td>
+<td>implemented</td>
+<td>task_cli.rs:226</td>
+</tr>
+<tr>
+<td><code>task brief/decide/decisions</code></td>
+<td>Structured briefs; immutable supersession</td>
+<td><code>task brief/decide/decisions</code> + <code>continuity</code> reveal + <code>complete/reopen/export/handoffs</code></td>
+<td>implemented (superset)</td>
+<td>task_cli.rs:297-392</td>
+</tr>
+<tr>
+<td><code>task draft/approve-draft</code></td>
+<td>Source-backed draft from Review JSON</td>
+<td>Native anchor draft + <code>--review-file</code>; Python-receiver variant (Linux)</td>
+<td>implemented; <code>--workspace</code>/<code>--format</code> flags confirmed missing</td>
+<td>task_cli.rs:335-347, 406-437</td>
+</tr>
+<tr>
+<td>cockpit views 1-7, <code>/</code>, <code>[ ] l</code>, <code>t</code>, <code>s</code>, back</td>
+<td>Monitor navigation</td>
+<td>All present (plus <code>9</code> Operations)</td>
+<td>implemented</td>
+<td>keymap.rs:17-67</td>
+</tr>
+<tr>
+<td>agent family nav, <code>f</code>, <code>w</code>, <code>v</code>, <code>X</code>, pause, <code>R</code>, <code>U</code>/<code>u</code>, <code>z</code>, Ctrl+R review, Ctrl+F investigate, F1/?, Ctrl+C, <code>q</code>, Ctrl+S</td>
+<td>Core keyboard journeys</td>
+<td>All present</td>
+<td>implemented</td>
+<td>workspace.rs:1939-2060; workbench.rs:1185-1240</td>
+</tr>
+<tr>
+<td>workflow route <code>g</code>, resume copy <code>c</code></td>
+<td>Verified route + resume</td>
+<td><code>l</code> Locate (local + cross-host route file) and <code>c</code></td>
+<td>implemented (key <code>g</code>→<code>l</code>)</td>
+<td>workbench.rs:1198-1203</td>
+</tr>
+<tr>
+<td>Ctrl+P command palette (actions)</td>
+<td>Theme + action index (choose session, save task, open workflow, investigate)</td>
+<td>Ctrl+P/F2 is the theme selector only; actions reachable by direct keys</td>
+<td>confirmed missing (palette action surface)</td>
+<td>theme.rs:246-252</td>
+</tr>
+<tr>
+<td><code>o</code> sort menu</td>
+<td>Working/Updated/Status ordering</td>
+<td>Updated ↓ always</td>
+<td>scope decision needed (recorded intentional, cutover:77)</td>
+<td>cutover:77</td>
+</tr>
+<tr>
+<td>saved-task <code>p</code> Brief / <code>d</code> Decisions screens</td>
+<td>Structured editors in cockpit</td>
+<td>CLI-only (<code>task brief/decide/decisions</code>); no cockpit editors</td>
+<td>confirmed missing (cockpit journey)</td>
+<td>workbench.rs:521-539</td>
+</tr>
+<tr>
+<td>Ctrl+R reload saved task after concurrent edit</td>
+<td>Revision-conflict reload in cockpit</td>
+<td>none in workbench key handling</td>
+<td>confirmed missing (cockpit journey)</td>
+<td>workbench.rs:1036-1230</td>
+</tr>
+<tr>
+<td>Workflow <code>h</code> include-older-completions</td>
+<td>History scope toggle</td>
+<td>not present (<code>R/r/s/X/l/c</code> only)</td>
+<td>confirmed missing (cockpit journey)</td>
+<td>workbench.rs:1190-1205</td>
+</tr>
+<tr>
+<td>compact/wide prompt-index dual mode</td>
+<td>Dropdown confirmation / wide index</td>
+<td>flat prompt list with Enter reveal</td>
+<td>scope decision needed</td>
+<td>workspace.rs:2023</td>
+</tr>
+<tr>
+<td>OpenAI + Anthropic SDK auto-capture</td>
+<td><code>auto.py</code> OpenInference bootstrap</td>
+<td><code>run --instrument python</code> against the Rust receiver; CI <code>automatic-capture-interoperability</code> covers OpenAI sync/stream/error + Anthropic flush</td>
+<td>implemented (bootstrap stays Python — recorded decision, cutover:439)</td>
+<td>ci.yml:387-415</td>
+</tr>
+<tr>
+<td>LangChain/LangGraph</td>
+<td>auto + explicit callbacks</td>
+<td>CI <code>langchain-interoperability</code> through the Rust launcher</td>
+<td>implemented</td>
+<td>ci.yml:359-385</td>
+</tr>
+<tr>
+<td>OpenAI Agents SDK</td>
+<td><code>create_processor</code> exporter</td>
+<td>CI <code>openai-agents-interoperability</code></td>
+<td>implemented</td>
+<td>ci.yml:333-357</td>
+</tr>
+<tr>
+<td>Google ADK</td>
+<td>framework-native OTel</td>
+<td>CI <code>google-adk-interoperability</code></td>
+<td>implemented</td>
+<td>ci.yml:307-331</td>
+</tr>
+<tr>
+<td>Pydantic AI</td>
+<td>framework-native instrumentation</td>
+<td>CI <code>pydantic-ai-interoperability</code></td>
+<td>implemented</td>
+<td>ci.yml:281-305</td>
+</tr>
+<tr>
+<td>Python manual client / Node.js client</td>
+<td>manual spans to receiver</td>
+<td>both exercised in CI <code>rust-protocol</code> against the Rust launcher</td>
+<td>implemented</td>
+<td>ci.yml:101-109</td>
+</tr>
+<tr>
+<td>Selected SDK jobs on the current head</td>
+<td>—</td>
+<td>five vendor jobs pass at recorded heads; current-head results are Q7's to record</td>
+<td>test-only acceptance pending</td>
+<td>remaining plan Q7</td>
+</tr>
+</tbody>
+</table></div>
+<h2>Dispositions for previously unrecorded items</h2>
+<ol>
+<li><strong><code>attention native bind/send/hook/retry</code></strong> — implemented in Rust
+(Linux-only, token-file required); this audit is its first recorded
+disposition. The cutover table's attention row now covers it by reference.</li>
+<li><strong><code>task draft --workspace</code> / <code>task handoff --endpoint</code> revalidation</strong> —
+confirmed missing flags. The Rust model is offline-first with explicit
+local-history anchors; receiver-revalidated handoff sections need a
+product decision before becoming development work.</li>
+<li><strong><code>task create --snapshot</code></strong> — implemented as an explicit opt-in to match
+the Python convenience while preserving the safer default: task creation
+alone does not inspect a workspace. The existing <code>task snapshot</code> command
+remains available for later recaptures. A failed capture preserves the
+task and reports its ID plus a <code>snapshot_error</code>.</li>
+<li><strong><code>task list --offset</code></strong> — disposition: cursor paging (<code>--limit/--before</code>)
+is the retained model; offset paging is not planned.</li>
+<li><strong><code>cockpit --no-local-agents</code> / <code>--metadata-only</code> / <code>--capability-config</code></strong>
+— disposition: replaced by the inverted explicit-grant capture model and
+the process-extension catalog (see
+<a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-process-extension-plugins.md">process extension RFC</a>). Flag-level
+parity is not planned; the capabilities are reached by different,
+explicit means.</li>
+<li><strong><code>serve --no-auth</code> / <code>--allowed-host</code> / plugin flags</strong> — remote
+deployment flags remain the recorded open wire/TLS gap (cutover:18);
+plugin flags are superseded by the Rust plugin host (disposition 5).</li>
+</ol>
+<h2>Findings that gate the B1/D3 cutover decision</h2>
+<p>Confirmed missing cockpit journeys and flags remain active parity work under
+the user's completion direction. The separate implementation plan assigns
+their development; this audit records the source-backed gaps:</p>
+<ol>
+<li>Ctrl+P action palette (choose session, save task, open workflow,
+investigate) beyond the theme selector.</li>
+<li>Saved-task <code>p</code> Brief and <code>d</code> Decisions cockpit editors with the decisions
+version-chooser journey.</li>
+<li>Ctrl+R reload of a concurrently edited saved task.</li>
+<li>Workflow <code>h</code> include-older-completions toggle.</li>
+<li><code>task draft --workspace</code> binding and <code>task handoff</code> receiver
+revalidation.</li>
+<li>Remote receiver deployment (<code>--allowed-host</code>, TLS) — already recorded open
+in the cutover table.</li>
+</ol>
+<p>Scope decisions with no development implied: <code>o</code> sort menu (intentional
+Updated ↓ ordering), compact/wide prompt-index dual mode, <code>task list --offset</code>, <code>cockpit --port</code>.</p>
+<h2>SDK coverage verdict</h2>
+<p>All five selected SDK families (OpenAI, Anthropic, LangChain/LangGraph,
+Google ADK, Pydantic AI) have CI jobs exercising a real Rust path via the
+launcher, plus the manual Python and Node clients. Caveats recorded:
+Anthropic shares the automatic-capture job rather than a dedicated one; the
+auto-capture bootstrap remains the Python OpenInference layer (a recorded
+product decision); and passing jobs at older heads are not current-head
+acceptance — Q7 owns that record. Nothing documented-but-untested remains in
+the SDK scope.</p>
+<p>No workflow is retired by this audit. Installed and paired-state acceptance
+remains with the separate test owner (CF1–CF7 and Q1–Q10).</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

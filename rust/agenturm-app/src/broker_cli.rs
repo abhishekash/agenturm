@@ -787,40 +787,44 @@ fn trace_commit(
     ))
 }
 
+fn broker_prompt_history(
+    store: &NativeStore,
+    owner: agenturm_ui::WorkAnchor,
+    before: Option<agenturm_ui::PromptHistoryCursor>,
+) -> Result<agenturm_ui::WorkResult, String> {
+    use crate::prompt_history::PromptHistoryError;
+    Ok(cockpit_workflows::prompt_history_with(
+        owner,
+        before,
+        |owner, cursor| {
+            let source = ExtensionId::parse(&owner.source)
+                .map_err(|_| PromptHistoryError::MissingIdentity)?;
+            let references = store
+                .list_private_prompts(&source, &owner.session)
+                .map_err(|error| PromptHistoryError::Denied(error.to_string()))?;
+            Ok(crate::prompt_history::scoped_window(
+                references,
+                owner.turn.as_deref(),
+                cursor,
+                crate::prompt_history::DEFAULT_PROMPT_PAGE,
+            ))
+        },
+    ))
+}
+
 fn execute_private_cockpit(
     store: &NativeStore,
     workspace: &Path,
     command: agenturm_ui::WorkCommand,
 ) -> Result<agenturm_ui::WorkResult, String> {
     use agenturm_storage_service::{PrivateEvidenceKind, PrivateEvidenceSelection};
-    use agenturm_ui::{OperationDetailKind, PromptEntry, WorkCommand, WorkResult};
+    use agenturm_ui::{OperationDetailKind, WorkCommand, WorkResult};
     match command {
         command @ (WorkCommand::Investigate(_) | WorkCommand::RevealInvestigation { .. }) => {
             investigate_cli::cockpit::broker(command, store, workspace)
         }
-        WorkCommand::Prompts(owner) => {
-            let source = ExtensionId::parse(&owner.source).map_err(|error| error.to_string())?;
-            let prompts = store
-                .list_private_prompts(&source, &owner.session)
-                .map_err(|error| error.to_string())?;
-            Ok(WorkResult::Prompts(
-                prompts
-                    .into_iter()
-                    .map(|prompt| {
-                        let mut anchor = owner.clone();
-                        anchor.turn = Some(prompt.turn_id);
-                        PromptEntry {
-                            anchor,
-                            event_id: prompt.event_id,
-                            revision: prompt.revision,
-                            timestamp: prompt.observed_at_unix_ns,
-                            snapshot_id: prompt.snapshot_id,
-                            history_identity: prompt.history_identity,
-                        }
-                    })
-                    .collect(),
-            ))
-        }
+        WorkCommand::Prompts(owner) => broker_prompt_history(store, owner, None),
+        WorkCommand::PromptPage { anchor, before } => broker_prompt_history(store, anchor, before),
         WorkCommand::RevealPrompt(prompt, mut output) => {
             let selection = PrivateEvidenceSelection {
                 source_id: ExtensionId::parse(&prompt.anchor.source)
@@ -887,6 +891,16 @@ fn execute_private_cockpit(
         }
         WorkCommand::RevealOperation(operation, mut output) => {
             let kind = match operation.kind {
+                OperationDetailKind::Mcp
+                    if operation.event_id.starts_with("pi:")
+                        || operation.source_id == "harness.pi"
+                        || operation.source_id.starts_with("harness.pi.") =>
+                {
+                    PrivateEvidenceKind::PiMcpPayload {
+                        turn_id: operation.turn_id,
+                        operation_id: operation.operation_id,
+                    }
+                }
                 OperationDetailKind::Mcp => PrivateEvidenceKind::CodexMcpPayload {
                     turn_id: operation.turn_id,
                     operation_id: operation.operation_id,

@@ -1,0 +1,304 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — Rust Ui Parity Plan</title><style>
+:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
+</style></head><body><main><nav><strong>Agenturm / 26 November 2026</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-ui-parity-plan.md">Markdown source ↗</a></nav><h1>Rust cockpit UI parity implementation plan</h1>
+<p>26 November 2026 · Python reference <strong>0.2.8</strong> · Rust planning baseline <strong><code>fd398c1</code></strong> on main</p>
+<p>Build the full Python 0.2.8 cockpit experience into the Rust terminal app. A user must be able to discover work, choose an exact session, read its latest progress and earlier requests, investigate history, review the result, and resume follow-up work with the same evidence, discoverable controls, and predictable back navigation.</p>
+<p>The approved Agenturm command center remains the landing screen: full-width project groups, named tasks, selectable status counts, newest updated first, and Enter to open the inspector. Preserve the Rust evidence and permission model. Match Python's visual hierarchy, layout quality, density, focus, and workflow outcomes elsewhere. Record any layout, key, or policy difference for explicit acceptance.</p>
+<h2>Implementation status — 26 November 2026</h2>
+<p>The interrupted UI and core migration records were consolidated. PR #396
+(<code>afbdbdc</code>) merged the integrated UI candidate and Activity prompt-only filter
+to <code>main</code>. Candidate evidence remains limited to its recorded scope: 991 tests
+across 96 suites, strict app/UI Clippy, 159 fresh-process <code>NO_COLOR=1</code> UI
+tests, selected empty and populated PTY journeys at 120×32, 80×24 and 60×18,
+and a selected debug QA archive smoke. This is not full Python parity or final
+release qualification. The current unmerged feature branch adds a contextual entry from a
+selected session to the global Metrics catalog. This is navigation only: metric
+records use <code>otlp.*</code> source IDs and currently have no typed link to ordinary
+<code>harness.*</code> sessions, so true per-session OTLP Metrics remains open. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-acceptance.md">qualification report</a>
+and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-parity-resume.md">continuation record</a> for exact
+scope and limits.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Lane</th>
+<th>Consolidated state</th>
+<th>Remaining implementation or acceptance</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>UI-01 Reference inventory</td>
+<td>Original 234-row Python 0.2.8 inventory retained.</td>
+<td>Reclassify every row against the current candidate; attach source and journey evidence; resolve unaccepted required differences.</td>
+</tr>
+<tr>
+<td>UI-02 Shared shell</td>
+<td>Shared key/action dispatch, contextual help, command palette and theme routing integrated in the candidate.</td>
+<td>Complete the full binding/control journey comparison, including forms, clipboard, mouse and all compact/error states.</td>
+</tr>
+<tr>
+<td>UI-03 Command center and inspector</td>
+<td>Today/History, chooser, named roster behavior, inspector Overview/Prompts/Details and nested navigation are implemented in the candidate.</td>
+<td>Pin primary-event identity through linked Activity; add inspector Locate/acknowledge/dismiss with distinct dismissed-error semantics; add subtree evidence queries when the kernel exposes them; catalog capture policy.</td>
+</tr>
+<tr>
+<td>UI-04 Prompts and history</td>
+<td>Integrated navigator/reader, wide and compact modes, exact grant behavior, paging and late-response fencing are implemented.</td>
+<td>Add cursor-backed paging beyond the adapter’s bounded window; resolve no-copy policy differences; proactively clear on idle-policy changes; qualify attached/provider journeys.</td>
+</tr>
+<tr>
+<td>UI-05 Evidence and observability screens</td>
+<td>PR #396 merged page-local evidence filters, typed MCP-call trace navigation, selection-scoped copy/export, Activity prompt-only filter over typed NativeRequest rows and explicit “Unreported” worker detail. PR #397 adds contextual K/palette entry into the global Metrics catalog; app compile passes and a 100×26 PTY verified navigation, scope label and selection return.</td>
+<td>Trace tree and linked-evidence traversal; typed MCP aggregate metric cohort; session-filtered OTLP Metrics needs typed link from metric facts to session identity; diagnostics/health/reconnect/retry integration. UI05-A/B and UI-Q remain open; UI05-C contextual navigation passed, while true session-linked Metrics remains unimplemented.</td>
+</tr>
+<tr>
+<td>UI-06 Review and workflow</td>
+<td>Review receipts, incident state/owner and safe retry, settings draft confirmation, resume-unavailable reason, task search CLI and handoff collision checks are implemented in the candidate.</td>
+<td>Review copy/export/save-task/excerpt/draft/Git/map actions; turn-scoped Review; persistent incident acknowledgment; cockpit task search and Decisions/Brief/version selector; handoff preview/copy; provider private detail remains coordinated with FD2.</td>
+</tr>
+<tr>
+<td>UI-07 Themes and visual system</td>
+<td>Five palettes, semantic styles, help and palette fallback geometry are integrated.</td>
+<td>Run the paired visual matrix; review the documented Solarized muted-on-panel contrast result (4.23:1); verify overlays and history at compact sizes.</td>
+</tr>
+<tr>
+<td>UI-Q Installed parity</td>
+<td>Selected coordinator qualification passed on the candidate and an extracted selected-debug archive.</td>
+<td>Independent full identical-fixture matrix, exact release artifact and ARM64, live broker revocation in an isolated root-capable fixture, and final independent sign-off remain open.</td>
+</tr>
+</tbody>
+</table></div>
+<p>The candidate’s lane checks are not a release gate. Keep the pluggable
+architecture: UI behavior consumes provider-neutral typed kernel facts;
+provider-specific proof stays in adapters and grant-aware app services; panes
+and capabilities use their extension seams. Do not hardcode a new provider in
+the UI to close a presentation gap. Keep all unaccepted UI-Q items and the
+default cutover gate open.</p>
+<h2>Reference and scope</h2>
+<ul>
+<li><strong>Python oracle.</strong> Use the actual tagged app at <code>2802d79930728bb331db1d4d718d6dea1c9c374d</code>. Inventory screens, controls, and states from <code>observatory/terminal_ui.py</code>, <code>ui_keyboard.py</code>, <code>themes.py</code>, and the tagged screen tests. Pair <a href="https://github.com/abhishekash/agenturm/blob/v0.2.8/docs/keyboard-navigation.md">the Python keyboard guide</a> with <a href="https://github.com/abhishekash/agenturm/blob/v0.2.8/observatory/terminal_ui.py">the tagged app source</a>.</li>
+<li><strong>Rust baseline.</strong> Preserve theme support, the named roster, scoped evidence tables, paged Codex Review edits, MCP inventory and linked traces, metric history and exemplars, combined usage, Findings, Host, and Workflow actions. The merged cross-host route is available for native attachments with explicit configuration. Existing checks qualify the recorded versions and scenarios. <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-ui-journey-parity.md">Earlier UI comparison</a> · <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-migration-test-plan-results.md">Independent results</a> · <a href="https://github.com/abhishekash/agenturm/pull/387">Cross-host routing PR</a></li>
+<li><strong>Product boundary.</strong> Cover the Linux cockpit and interactive launch/attach behavior: standalone live collection, existing local history, broker access, native receiver, and the explicitly supported Python receiver. A mode without a capability must explain the limitation and leave navigation usable. Keep Python as a test oracle. SDK breadth, storage and service qualification, macOS support, and release policy remain in the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md">migration plan</a>.</li>
+</ul>
+<h2>Implementation order</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Task</th>
+<th>Owner</th>
+<th>Starting point</th>
+<th>Deliverable and dependencies</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>UI-01 · Reference inventory</td>
+<td>UI lead</td>
+<td>Partial audit exists</td>
+<td>Build a row for every Python view, control, binding, and visible state. Record the Rust entry point, baseline, status, owner, and acceptance case. Start here and lock the shared key and focus contracts before merging dependent changes.</td>
+</tr>
+<tr>
+<td>UI-02 · Shared shell and input</td>
+<td>UI shell owner</td>
+<td>Ratatui workspace, numbered views, help and five themes exist</td>
+<td>Unify navigation, focus, layout and status behavior. Add the searchable command palette and reconcile bindings. Establish shared contracts for UI-03 through UI-07.</td>
+</tr>
+<tr>
+<td>UI-03 · Command center and inspector</td>
+<td>Session UI owner</td>
+<td>Named roster and Overview/Activity/Review routes exist</td>
+<td>Complete the Today/History, session chooser, and Overview/Details workflows. Ship inspector navigation with a Prompts entry point coordinated with UI-04.</td>
+</tr>
+<tr>
+<td>UI-04 · Prompts and retained history</td>
+<td>Session evidence UI owner</td>
+<td>Scoped prompt picker, private reader, and paged history exist</td>
+<td>Build the integrated prompt navigator and back stack. Reuse existing proof and query paths. Agree on session scope and layout with UI-03 before editing shared dispatch.</td>
+</tr>
+<tr>
+<td>UI-05 · Observability screens</td>
+<td>Evidence UI owner</td>
+<td>Primary queries and screens exist</td>
+<td>Close interaction and visual differences in Activity, Operations, MCP, Traces, Metrics, Usage, Findings, Host, and history search. Per-view work can proceed in parallel after shared contracts.</td>
+</tr>
+<tr>
+<td>UI-06 · Review, Workflow and saved work</td>
+<td>Workflow UI owner</td>
+<td>Review and decision flows, saved tasks, and request actions exist</td>
+<td>Complete paired workflows and form navigation. Coordinate provider edit/MCP detail with FD2 and receiver acceptance with CF7.</td>
+</tr>
+<tr>
+<td>UI-07 · Themes and terminal states</td>
+<td>UI visual owner</td>
+<td>Five palettes and responsive layouts exist</td>
+<td>Compare and close gaps in semantic styling, compact layouts, and the full state matrix. Integrate after each screen stabilizes.</td>
+</tr>
+<tr>
+<td>UI-Q · Installed parity acceptance</td>
+<td>Separate test agent</td>
+<td>Earlier baselines have partial paired coverage</td>
+<td>Sign off the full matrix against the exact installed Rust candidate and tagged Python build. Feed reproducible failures back to the feature owners.</td>
+</tr>
+</tbody>
+</table></div>
+<p>UI-03, UI-04, UI-05 and UI-06 can build and review their own models and rendering in parallel. The UI shell owner integrates edits to shared <code>workspace.rs</code> dispatch and help. Give each lane one owner for shared files, and keep focused component checks with the lane. Keep broad paired testing with the independent test agent.</p>
+<h2>UI-01 · Build the parity inventory</h2>
+<p>Start with the tagged keyboard guide and palette, every root view, every inspector section and nested screen, the help and diagnostics surfaces, and actions exposed by a visible control. Record <strong>implemented, qualification pending</strong>, <strong>implementation gap</strong>, <strong>source evidence unavailable</strong>, or <strong>intentional difference awaiting acceptance</strong>. Attach the reference and Rust source locations to each row. Treat untested behavior as unknown until checked.</p>
+<p>Record the Python and Rust entry key or control, the expected visible fields, initial focus, actions available, exact selection on return, and expected behavior when access or data is unavailable. Include mouse equivalence wherever Python's exposed controls are clickable. Require a documented keyboard route for every action. Add discovered missing behaviors to the lane that owns the view.</p>
+<h2>UI-02 · Shared cockpit shell, keyboard and navigation</h2>
+<ul>
+<li>Keep the Agenturm summary, horizontal views, active scope and connection state recognizable. Preserve <code>1</code>–<code>7</code> for the Python root destinations and document the Rust-only Operations and Usage paths. Expose clipped destinations through help and the palette.</li>
+<li>Restore <code>Ctrl+P</code> as the searchable cockpit command palette. Rust currently also uses it for themes. Keep themes on <code>F2</code> and offer Themes as a palette entry. Include destinations, session chooser, Today/History, evidence scope, live pause/refresh, diagnostics, retention history searches, and current-view actions. Limit each context to meaningful or explicitly unavailable commands.</li>
+<li>Use one action inventory for key dispatch, footer hints, and scrollable contextual <code>F1</code> help. <code>?</code> opens help outside text entry. Help opened from an editor, compact chooser, or active inspector returns to the originating control and preserves drafts and scroll.</li>
+<li>Define which control receives each key. A chooser owns Escape before the enclosing form. Text fields keep literal letters, digits, brackets and punctuation. Tab and Shift+Tab reach visible controls in order. Enter and Space activate buttons where compatible. Resolve <code>Ctrl+C</code> copy versus terminal interrupt by focus and document the behavior. Preserve unsaved drafts through help, resize and cancel.</li>
+<li>Restore views by typed identity and navigation context. Save the history incarnation, source, session or worker, turn, evidence identity, page or cursor, active filter, focus and scroll as applicable. If an identity is gone, show why and use a deterministic nearby selection. Discard late responses for a closed or superseded context. Keep the event loop responsive while reads are pending.</li>
+<li><strong>Implementation anchors.</strong> <code>rust/agenturm-ui/src/keymap.rs</code>, <code>workspace.rs</code>, <code>workbench.rs</code> and the per-view modules. Reuse the existing request/response and terminal lifecycle paths.</li>
+</ul>
+<h2>UI-03 · Command center and the session inspector</h2>
+<h3>Command center and session history</h3>
+<ol>
+<li>Retain project headings, counts, human-readable native task titles with agent nickname fallback, and Updated ↓. Keep exact identities in Details. Group and row order follow recency with deterministic ties, and refresh, paging, filtering and resize preserve selection by identity.
+<ul>
+<li><strong>Never render a literal <code>Name unavailable</code> label.</strong> When neither a task title nor a native nickname exists, derive a concise, human-understandable name from available provider, role, project and session context (for example <code>Codex session · payments-api</code>, <code>Claude Code worker · agenturm</code>). Keep the missing metadata and exact IDs explicit in Details and the inspector, where unknown values stay labelled as unknown. Apply the same rule to the palette session chooser, inspector headers, workflow incidents, and saved-task run lists. Verify titled sessions, nickname-only subagents, duplicates and genuinely unnamed sessions.</li>
+</ul>
+</li>
+<li>Provide <strong>Today</strong> and <strong>History</strong> as explicit time scopes alongside the approved status filters. Today includes active work and pending input that started earlier, plus qualifying outcomes according to the tagged behavior. History includes earlier retained work, including unreviewed completions and dismissed failures. Verify the Python boundary with a fixed clock and timezone. Keep time scope, search, error filtering and session selection independently discoverable. Mark counts as page or scope counts according to their actual coverage.</li>
+<li>Expose a searchable <strong>Choose agent session</strong> control and palette action. Search title, project, provider, session and worker identity. Keep empty results, cancel, clear and confirm usable at 60×18. Preserve exact source identity when titles or native IDs collide.</li>
+<li>Preserve confirmed tree/flat presentation, expand/collapse, parent/child and descendant-attention paths, and exact-agent versus evidence-backed subtree scope where the reference offers it. Keep unsupported worker relationships explicit. A recorded lifecycle state never establishes current OS process liveness.</li>
+<li>Document the approved landing-screen order as a deliberate difference from Python's fixed status groups and selectable update sort direction. Exercise retained lookback and session search while preserving newest-first order.</li>
+</ol>
+<h3>Inspector</h3>
+<p>Enter or <code>e</code> opens the exact selected session with three discoverable sections. Preserve a selected session through section switches, live arrivals, width changes, and nested navigation.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Section</th>
+<th>Required behavior</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Overview</strong></td>
+<td>Lead with the task, project, provider, recorded state/reason and last update. Show the latest attributable progress, turn/event summaries, checks, edits, failures and usage when available. Link to exact Activity, Review, Traces and related evidence. Label bounded, partial or absent evidence.</td>
+</tr>
+<tr>
+<td><strong>Prompts</strong></td>
+<td>Place the request navigator and reader inside the inspector, with the full contract in UI-04. Keep the current <code>P</code> shortcut as a direct entry where it fits.</td>
+</tr>
+<tr>
+<td><strong>Details</strong></td>
+<td>Separate stable source/session/worker identity, native context and provenance, collection status, observed relationships, timestamps, usage coverage and available diagnostics from the Overview summary. Show unknown, missing or unsupported values explicitly.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Give section tabs, the active section and its read/navigation focus visible indications. Support the Python section controls where compatible, including Left/Right on the tabs, Enter or Down to enter, and the documented section-switch shortcuts from content. Capture and resolve any conflict with the current Rust Activity and Review paths. Esc returns one layer at a time to the same roster filter, project, task and scroll. Keep selection stable when the displayed title changes.</p>
+<h2>UI-04 · Prompts, session activity and cross-session history</h2>
+<ol>
+<li><strong>Wide prompt navigation.</strong> At 120 columns show a chronological request index beside the reader. Open with the newest available request selected and the navigator focused. Match Python's Up/Down, Home/End, Enter/Right to read, and Left to return from the reader. Reader scrolling keeps the selected request fixed.</li>
+<li><strong>Compact prompt navigation.</strong> At 80×24 and 60×18 use a one-line chooser and devote the remaining body to the reader. Enter confirms the current choice even if unchanged. Enter, Space or arrows open the chooser as documented. Preserve equivalent focus and the visible text position on resize. Support <code>[</code>, <code>]</code>, <code>l</code>, earlier pages and retry from their documented contexts. Distinguish loaded count, retained/capped history, and an empty exact scope.</li>
+<li><strong>Private reader.</strong> Show Readable and Original for the same granted captured request with <code>z</code>. Reuse existing exact proof, timeout, revocation and redraw clearing. Keep metadata-only contexts useful. Scope every read to the selected history/source/session and supported exact worker/turn; explicitly disclose any main-session navigation from a worker context. Compare copy and export behavior with the reference, with any tighter Rust disclosure policy documented and accepted. Cover grant denied, revoked, expired, stale, out-of-scope, truncated, missing capture, and late result after close.</li>
+<li><strong>Retained evidence paging.</strong> Distinguish roster History from older/newer/latest pages of Activity, MCP, Traces, Review and other paged views. Preserve filters, selection, query and snapshot through page changes, boundary cases, live pause, reconnect and restart. Search the intended retained scope where the workflow requires it and disclose page-local limits where they apply.</li>
+<li><strong>History investigation.</strong> Wire the tagged <code>Ctrl+F</code> journeys for recorded paths, commands, instructions and failures to the available Rust evidence and current grants. Verify each query kind before classifying it as implemented. Open the exact occurrence and make Escape or Alt+Left restore the query, filters, occurrence, page and focus. Scope unavailable and permission errors to the attempted action.</li>
+<li><strong>Implementation anchors.</strong> Extend workspace session modes and <code>workspace/prompt.rs</code>, the prompt workbench model, <code>agenturm-app/src/cockpit_workflows.rs</code> and the existing private content viewer. Keep query and grant enforcement in the app layer. Keep retained identifiers in the UI navigation model.</li>
+</ol>
+<h2>UI-05 and UI-06 · Remaining screen and workflow coverage</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Surface</th>
+<th>Implementation work and acceptance journey</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td><strong>Activity and Operations</strong></td>
+<td>Match populated table columns, filters including prompt/operation views where applicable, and selected evidence detail. From a session or interrupted turn, open a tool or check, inspect its result with recorded provenance, follow related evidence, and return to the same event. Verify unavailable attribution and exact worker scope.</td>
+</tr>
+<tr>
+<td><strong>MCP</strong></td>
+<td>Compare configured, idle and observed inventory, server filtering, call search/paging and related traces. Open a filtered call, read its exact permitted payload or reason it is unavailable, follow its linked trace, and return with the same server, query and call. Extend provider-specific payload viewing only where FD2 has retained proof and a valid grant.</td>
+</tr>
+<tr>
+<td><strong>Traces</strong></td>
+<td>Match trace tree/list navigation, parent/child context, timestamps and span evidence. Move between linked Activity, call, exemplar and trace, then return to the originating selection. Include missing links, partial trace, and private span detail when authorized.</td>
+</tr>
+<tr>
+<td><strong>Metrics and Usage</strong></td>
+<td>Verify complete retained catalog search and descriptions, select an older series and history page, open an exact exemplar and return. Compare seven-day chart/list, source/session filters, combined and separate evidence totals, cost units/currencies, exclusions, per-day coverage and unreported data. Keep chart values readable in compact and monochrome modes. Verify the current FD3 candidate.</td>
+</tr>
+<tr>
+<td><strong>Findings and diagnostics</strong></td>
+<td>Group and count findings and show exact occurrences, observed scope, source and available project/process labels. Verify command, span, evaluation, log, and supported attached-receiver source routes, retry, policy changes, and return. Compare diagnostics, index/receiver health, reconnect and detail copy.</td>
+</tr>
+<tr>
+<td><strong>Host</strong></td>
+<td>Verify live Linux processes, recorded history, remote source chooser, metadata provenance, staleness, and scoped search. Inspect an exact process and return through refresh/reordering, source switch and process exit. Clearly label current versus recorded evidence.</td>
+</tr>
+<tr>
+<td><strong>Review</strong></td>
+<td>Open exact session or turn Review from the roster or inspector. Cover edit list, older evidence, checks and errors, selected edit reveal, acknowledgement, notes, version-linked decisions, excerpts and save-as-task. Return to the same version and selection after nested views. Use the existing whole-session Codex browser. FD2 owns remaining provider proofs and missing detail.</td>
+</tr>
+<tr>
+<td><strong>Workflow</strong></td>
+<td>Cover inbox focus, incident detail, observed owner, Seen, review, verified local Locate/resume, configured cross-host attach guidance, settings, thresholds, snooze, notification, and exact failed-attempt retry. Show clear unavailable/stale cases. Route and Seen must preserve the request selection and its recorded approval state.</td>
+</tr>
+<tr>
+<td><strong>Saved tasks, decisions and handoff</strong></td>
+<td>Open, search, create and edit tasks. Link exact runs and workspace context, add and supersede decisions, preview or export a handoff, then reopen persisted work. Verify version selector, dirty editor, cancel and export collision behavior.</td>
+</tr>
+<tr>
+<td><strong>Copy, export, preferences and overlays</strong></td>
+<td>Confirm current selection versus loaded-view export scope, format and destination. Give clear success or denial. Verify read-only modes, help, palette, theme chooser, alerts and private display boundaries.</td>
+</tr>
+</tbody>
+</table></div>
+<h2>UI-07 · Visual and responsive acceptance</h2>
+<p>Use the existing five palettes (<strong>Observation, Current, Bright, Dark, Solarized</strong>) and semantic surface, text, selection, focus and status styles. Compare theme chooser preview, cancel, apply and reopen persistence. Review each screen against the same Python fixture at the same size. Compare framing, spacing, header hierarchy, table density, selected backgrounds and inspector readability. Check focus and status with <code>NO_COLOR</code>, using a visible marker or text as well as any color cue.</p>
+<p>Use one border per content region. At 60 columns measure rows or cells spent on repeated headers, padding, decorative status cues and nested borders, and keep evidence visible first. Prefer one clear selection cue and one concise status label. Truncate labels by terminal cell width and show their full value in detail. Include CJK, combining marks, emoji and long names.</p>
+<pre><code class="language-text">120×32 · session inspector                      60×18 · session inspector
+Agenturm / project / session                   Agenturm / session
+Overview   [Prompts]   Details                 Overview [Prompts] Details
+┌ Requests ─────────┬ Prompt ───────────┐      Request 4 of 7  [Choose ▾]
+│ 1  Earlier request│ Readable / Original│      Readable / Original
+│ ›4 Current request│ Scrollable text   │      Scrollable prompt text
+└───────────────────┴───────────────────┘      ↑↓ Scroll  Esc Back  F1 Help
+← Requests  ↑↓ Scroll  Esc Back  F1 Help
+</code></pre>
+<p>At 80×24 use the compact prompt chooser and collapse optional evidence columns before hiding actions. At 60×18 use one active pane, move details to a drilldown, leave the selected title/status/age or primary evidence readable, and keep Help and Back reachable. Map focus to the equivalent control when resizing. Determine the actual minimum and provide a resize message with a usable exit below it.</p>
+<p>Cover startup, populated, empty, search with no matches, loading, partial, stale/disconnected, denied, error/retry and too-small states. Keep the previous permitted view and focus through refresh. Clear protected content as required by the existing access fence. Verify normal quit, interrupt, failure and supported terminal handoff restore the terminal.</p>
+<h2>UI-Q · Separate acceptance handoff and completion gate</h2>
+<p>The independent test agent owns the paired installed run. Feature owners run targeted state and rendering checks for the behavior they change. Reuse Python Textual Pilot captures, Rust Ratatui buffer assertions for layout and styles, and the existing PTY/tmux fixtures for actual key delivery, resize and terminal restoration. Use comparable deterministic data in both apps and separate actual-harness collection evidence from visual fixtures.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Gate</th>
+<th>Required evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Reference inventory</td>
+<td>Each Python view, action, binding and state maps to a working Rust journey or an explicitly accepted difference. Annotate evidence unavailable by provider and mode.</td>
+</tr>
+<tr>
+<td>Screen and state comparison</td>
+<td>At 120×32, 80×24 and 60×18, paired frames and journeys cover the screen matrix, themes, empty/loading/error and relevant revoked and disconnected states. Record mismatches and resolve required gaps.</td>
+</tr>
+<tr>
+<td>Keyboard and navigation</td>
+<td>Record starting focus, keys, opened evidence identity, nested return, resize behavior and saved selection. Cover inspector → Prompts → older request → original → Review or Activity → return, plus chooser, forms, history, help and copy.</td>
+</tr>
+<tr>
+<td>Exact candidate</td>
+<td>Record the Rust source SHA, archive and executable SHA-256, Python wheel/tag, OS and architecture, terminal environment, fixture version, size, actual result, and artifact/capture paths. Run the affected broker/attached and provider cases on the frozen candidate.</td>
+</tr>
+<tr>
+<td>User acceptance</td>
+<td>Confirm accepted deviations, including the command-center order, any binding differences, and grant-fenced disclosure. Every required mismatch has a fix and rerun. Full UI parity requires the exact installed candidate to pass; release and default cutover retain their separate gates.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Use <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md#q6-installed-paired-ui-and-workflow-journeys">Q6 in the remaining migration plan</a> and <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md">the delegated test plan</a> for execution. Each result should link to its UI task and identify the reference state, actual Rust state, and reproduction keys. Prior test results stay attached to the binaries that produced them.</p>
+<footer>Self-contained HTML companion. Images and styles are embedded; links open the referenced documentation. Demo records are synthetic.</footer></main></body></html>

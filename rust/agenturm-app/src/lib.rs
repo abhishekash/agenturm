@@ -31,6 +31,7 @@ mod native_session_context;
 #[cfg(target_os = "linux")]
 mod new_window;
 mod private_output;
+mod prompt_history;
 #[cfg(target_os = "linux")]
 mod remote_history;
 #[cfg(target_os = "linux")]
@@ -2135,9 +2136,15 @@ fn load_session_catalog_with_sources(
         .into_iter()
         .zip(keys)
         .map(|(session, key)| {
-            let (state, reason, turn_id) = session.lifecycle.map_or((None, None, None), |life| {
-                (Some(life.state), life.reason_code, life.turn_id)
-            });
+            let (state, reason, turn_id, worker_id) =
+                session.lifecycle.map_or((None, None, None, None), |life| {
+                    (
+                        Some(life.state),
+                        life.reason_code,
+                        life.turn_id,
+                        life.worker_id,
+                    )
+                });
             let session_key = (session.harness_id.clone(), session.session_id.clone());
             let metadata = native.remove(&session_key);
             let task_title = titles
@@ -2175,6 +2182,7 @@ fn load_session_catalog_with_sources(
                 project_path,
                 task_title,
                 native_context,
+                worker_id,
                 pending_requests: pending
                     .remove(&(
                         session.harness_id.as_str().to_owned(),
@@ -2208,7 +2216,46 @@ fn load_session_catalog_with_sources(
         sessions,
         older,
         notice,
+        day_start_unix_ns: local_day_start_unix_ns(),
     })
+}
+
+/// The host resolves the local calendar boundary once per catalog read. The
+/// UI and kernel never assume UTC. Resolve the offset at the read instant and
+/// then at local midnight so a daylight-saving transition is reflected, and
+/// fall back to UTC with a deterministic boundary if the platform cannot
+/// report an offset.
+fn local_day_start_unix_ns() -> u64 {
+    let now_ns = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .unwrap_or_default()
+        .as_nanos();
+    let fallback = agenturm_kernel::session_scope::local_day_start_unix_ns(
+        u64::try_from(now_ns).unwrap_or(u64::MAX),
+        0,
+    );
+    let Ok(now) = time::OffsetDateTime::from_unix_timestamp_nanos(now_ns as i128) else {
+        return fallback;
+    };
+    let Ok(offset) = time::UtcOffset::local_offset_at(now) else {
+        return fallback;
+    };
+    let date = now.to_offset(offset).date();
+    // Interpret local midnight with the offset in effect at midnight. Repeat
+    // once because the offset used for the guess can cross a DST boundary.
+    let mut midnight = date.midnight().assume_offset(offset);
+    for _ in 0..2 {
+        let Ok(resolved) = time::UtcOffset::local_offset_at(midnight) else {
+            break;
+        };
+        let next = date.midnight().assume_offset(resolved);
+        if next == midnight {
+            break;
+        }
+        midnight = next;
+    }
+    let start = midnight.unix_timestamp_nanos();
+    u64::try_from(start.max(0)).unwrap_or(fallback)
 }
 
 trait HistoryReader: ObservationStore {
@@ -2577,6 +2624,11 @@ fn load_workspace_history(
             Some(&turn.session_id),
             Some(turn.snapshot_id),
         ),
+        HistorySelection::TurnReview(turn) => (
+            Some(turn.harness_id.as_str()),
+            Some(&turn.session_id),
+            Some(turn.snapshot_id),
+        ),
     };
     let query = ObservationQuery {
         harness_id: source.map(str::to_owned),
@@ -2660,11 +2712,22 @@ fn load_workspace_history(
             );
             Ok(inspector_activity::turn_page(snapshot, &turn))
         }
+        HistorySelection::TurnReview(turn) => {
+            let snapshot = app.kernel.refresh_worker_turn_with_store(
+                store,
+                query,
+                &turn.turn_id,
+                turn.worker_id.as_deref(),
+            );
+            Ok(inspector_activity::turn_review_page(snapshot, &turn))
+        }
         HistorySelection::Session(session, view) => {
             let select_pane: fn(session_evidence::SessionPaneIds) -> ExtensionId = match view {
                 SessionView::Overview => |ids| ids.overview,
+                SessionView::Details => |ids| ids.details,
                 SessionView::Activity => |ids| ids.activity,
                 SessionView::Review => |ids| ids.review,
+                SessionView::Metrics => |ids| ids.overview,
                 SessionView::Usage => |ids| ids.usage,
                 SessionView::Traces => {
                     let page = if session.harness_id.starts_with("otlp.") {
@@ -2694,11 +2757,7 @@ fn load_workspace_history(
                 app.refresh_history_query(store, query),
                 include_reviews,
             )?;
-            let mut panes = session_evidence::add_session_panes(
-                &mut snapshot,
-                &session.harness_id,
-                &session.session_id,
-            );
+            let mut panes = session_evidence::add_session_panes(&mut snapshot, &session);
             session_display::add_context(&mut snapshot, &panes.overview, &session);
             let mut page = inspector_activity::overview_page(snapshot);
             page.features.continuation = continuation.map(Box::new);
@@ -2715,6 +2774,12 @@ fn load_workspace_history(
                             .map_err(|e| e.to_string())?,
                     ),
                     Some(session.session_id.clone()),
+                    page.snapshot.history_snapshot_id,
+                )?));
+            }
+            if matches!(view, SessionView::Metrics) {
+                page.features.metric_history = Some(Box::new(metric_history::initial(
+                    store,
                     page.snapshot.history_snapshot_id,
                 )?));
             }
@@ -2887,6 +2952,110 @@ pub fn execute_selected_review(
     review_from_store(&store, options, selection, output)
 }
 
+/// Renders the bounded review receipt for a cockpit Review scope. The shell
+/// supplies exact identifiers and a format/destination; receipt composition and
+/// every grant-sensitive read stay in the app.
+pub(crate) fn review_receipt_for_scope(
+    store: &impl HistoryReader,
+    db: &std::path::Path,
+    pinned: &agenturm_ui::PinnedReviewQuery,
+    format: &str,
+    directory: Option<&str>,
+) -> Result<String, String> {
+    if store.workspace_history_identity().as_deref() != Some(&pinned.history_identity) {
+        return Err("The loaded Review belongs to a different history; reopen Review".into());
+    }
+    if pinned
+        .before
+        .as_ref()
+        .is_some_and(|cursor| cursor.snapshot_id != pinned.snapshot_id)
+    {
+        return Err("Review cursor belongs to a different snapshot".into());
+    }
+    let harness_id = pinned.anchor.source.as_str();
+    let session_id = pinned.anchor.session.as_str();
+    let turn_id = pinned.anchor.turn.as_deref();
+    let worker_id = pinned.anchor.worker.as_deref();
+    let output = ReviewOutput {
+        format: Some(review_receipt::ReviewFormat::parse(format)?),
+        directory: directory.map(PathBuf::from),
+    };
+    let options = HistoryQueryOptions {
+        db: db.to_path_buf(),
+        harness_id: Some(harness_id.to_owned()),
+        session_id: Some(session_id.to_owned()),
+        before: pinned.before.clone(),
+        snapshot_id: Some(pinned.snapshot_id),
+        limit: INSPECT_PAGE_SIZE,
+    };
+    if turn_id.is_none() && (!pinned.all_workers || worker_id.is_some()) {
+        return Err("Exact worker session Review is unavailable; choose an exact turn".into());
+    }
+    let query = options.observation_query();
+    let mut page = if let Some(turn) = turn_id {
+        store.query_worker_turn_observations(&query, turn, worker_id)
+    } else {
+        store.query_observations(&query)
+    }
+    .map_err(|error| format!("Read review evidence failed: {error}"))?;
+    if page.snapshot_id != pinned.snapshot_id
+        || store.workspace_history_identity().as_deref() != Some(&pinned.history_identity)
+    {
+        return Err("Review history changed during the read; reopen Review".into());
+    }
+    if turn_id.is_none() {
+        page.observations.retain(|row| {
+            !matches!(row.kind, ObservationKind::TraceSpanSummary(_))
+                && (pinned.include_reviews
+                    || !agenturm_kernel::native_review::is_codex_review_source(
+                        row.harness_id.as_str(),
+                    ))
+        });
+    }
+    let events: Vec<_> = page
+        .observations
+        .iter()
+        .map(|row| ObservationPosition {
+            observed_at_unix_ns: row.observed_at_unix_ns,
+            harness_id: row.harness_id.as_str().into(),
+            event_id: row.event_id.clone(),
+            revision: row.revision,
+            snapshot_id: page.snapshot_id,
+        })
+        .collect();
+    if events != pinned.events {
+        return Err("The loaded Review page changed or was pruned; reopen Review before copying or exporting".into());
+    }
+    let snapshot = page.snapshot_id;
+    let mut data = history_page_data(page);
+    if let Some(identity) = store.workspace_history_identity() {
+        data["history_identity"] = serde_json::json!(identity);
+    }
+    data["review_version"] = pinned
+        .version
+        .map(|version| {
+            serde_json::json!({
+                "receipt_sequence": version.receipt_sequence,
+                "retained_observations": version.retained_observations,
+            })
+        })
+        .unwrap_or(serde_json::Value::Null);
+    data["page_before"] =
+        serde_json::to_value(&pinned.before).map_err(|_| "Cannot encode Review cursor")?;
+    review_receipt::render(
+        data,
+        review_receipt::ReviewScope {
+            harness_id,
+            session_id,
+            turn_id,
+            trace_id: None,
+            worker_id,
+        },
+        snapshot,
+        &output,
+    )
+}
+
 fn query_from_store(
     store: &impl ObservationStore,
     options: &HistoryQueryOptions,
@@ -3015,6 +3184,9 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                     "kind":"file_edit", "added":edit.added, "updated":edit.updated,
                     "deleted":edit.deleted, "moved":edit.moved,
                 }),
+                ObservationKind::FileChange(change) => serde_json::json!({
+                    "kind":"file_change", "files":change.files, "digest":change.digest,
+                }),
                 ObservationKind::McpCall {
                     server,
                     tool,
@@ -3065,6 +3237,9 @@ fn history_page_data(page: agenturm_kernel::ObservationPage) -> serde_json::Valu
                 }
                 ObservationKind::WorkerSpawn(spawn) => {
                     serde_json::json!({"kind":"worker_spawn", "child_worker_id":spawn.child_worker_id})
+                }
+                ObservationKind::WorkerLaunch(launch) => {
+                    serde_json::json!({"kind":"worker_launch", "child_worker_id":launch.child_worker_id})
                 }
                 ObservationKind::Message { role } => {
                     serde_json::json!({"kind":"message", "role":role})
@@ -4322,6 +4497,38 @@ pub fn render(command: Command) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn history_page_renders_worker_launch_without_resolution_wording() {
+        let row = Observation {
+            harness_id: ExtensionId::parse("harness.claude").unwrap(),
+            event_id: "launch".into(),
+            revision: 0,
+            identity: agenturm_kernel::ObservationIdentity {
+                scope: agenturm_kernel::ObservationScope::Session,
+                session_id: Some("session-1".into()),
+                worker_id: Some("parent".into()),
+                turn_id: Some("turn-1".into()),
+                operation_id: Some("operation-1".into()),
+            },
+            observed_at_unix_ns: 1,
+            kind: ObservationKind::WorkerLaunch(agenturm_kernel::WorkerLaunch {
+                child_worker_id: "child".into(),
+            }),
+        };
+        let page = agenturm_kernel::ObservationPage {
+            observations: vec![row],
+            has_more: false,
+            snapshot_id: agenturm_kernel::ReadSnapshot::new(0, None),
+        };
+        let data = history_page_data(page);
+        let observation = &data["observations"][0]["observation"];
+        assert_eq!(
+            observation,
+            &serde_json::json!({"kind":"worker_launch", "child_worker_id":"child"})
+        );
+        assert!(!observation.to_string().contains("completed"));
+    }
 
     #[test]
     fn overview_preserves_recorded_lifecycle_turns_and_reasons() {

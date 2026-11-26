@@ -132,6 +132,7 @@ impl<'de> Deserialize<'de> for ObservationRecord {
             ReportedCost,
             Tool,
             FileEdit,
+            FileChange,
             McpCall,
             TraceSpan,
             InternalReview,
@@ -142,6 +143,7 @@ impl<'de> Deserialize<'de> for ObservationRecord {
             PullRequestRaised,
             Relationship,
             WorkerSpawn,
+            WorkerLaunch,
             Message,
             Diagnostic,
         }
@@ -161,6 +163,7 @@ impl<'de> Deserialize<'de> for ObservationRecord {
             }
             FactKind::Tool => serde_json::from_str(payload).map(ObservationFact::Tool),
             FactKind::FileEdit => serde_json::from_str(payload).map(ObservationFact::FileEdit),
+            FactKind::FileChange => serde_json::from_str(payload).map(ObservationFact::FileChange),
             FactKind::McpCall => serde_json::from_str(payload).map(ObservationFact::McpCall),
             FactKind::TraceSpan => serde_json::from_str(payload).map(ObservationFact::TraceSpan),
             FactKind::InternalReview => {
@@ -190,6 +193,12 @@ impl<'de> Deserialize<'de> for ObservationRecord {
                     return Err(serde::de::Error::custom("invalid worker spawn payload"));
                 }
                 serde_json::from_str(payload).map(ObservationFact::WorkerSpawn)
+            }
+            FactKind::WorkerLaunch => {
+                if !payload.trim_start().starts_with('{') {
+                    return Err(serde::de::Error::custom("invalid worker launch payload"));
+                }
+                serde_json::from_str(payload).map(ObservationFact::WorkerLaunch)
             }
             FactKind::Message => serde_json::from_str(payload).map(ObservationFact::Message),
             FactKind::Diagnostic => serde_json::from_str(payload).map(ObservationFact::Diagnostic),
@@ -239,6 +248,7 @@ pub enum ObservationFact {
     ReportedCost(ReportedCost),
     Tool(Tool),
     FileEdit(FileEdit),
+    FileChange(FileChange),
     McpCall(McpCall),
     TraceSpan(TraceSpan),
     InternalReview(crate::native_review::InternalReview),
@@ -249,6 +259,7 @@ pub enum ObservationFact {
     PullRequestRaised(PullRequestRaised),
     Relationship(Relationship),
     WorkerSpawn(WorkerSpawn),
+    WorkerLaunch(WorkerLaunch),
     Message(Message),
     Diagnostic(Diagnostic),
 }
@@ -267,15 +278,34 @@ pub struct WorkerSpawn {
 
 impl WorkerSpawn {
     pub fn is_valid_for(&self, parent_worker_id: Option<&str>) -> bool {
-        let id = self.child_worker_id.as_bytes();
-        !id.is_empty()
-            && id.len() <= 200
-            && id[0].is_ascii_alphanumeric()
-            && id
-                .iter()
-                .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(byte))
-            && parent_worker_id != Some(self.child_worker_id.as_str())
+        is_valid_child_worker_id(&self.child_worker_id, parent_worker_id)
     }
+}
+
+/// Explicit evidence of a child worker asynchronously launched within the
+/// parent session. A launch claims only the child identity and the launched
+/// state; it never claims a resolution.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct WorkerLaunch {
+    pub child_worker_id: String,
+}
+
+impl WorkerLaunch {
+    pub fn is_valid_for(&self, parent_worker_id: Option<&str>) -> bool {
+        is_valid_child_worker_id(&self.child_worker_id, parent_worker_id)
+    }
+}
+
+fn is_valid_child_worker_id(child_worker_id: &str, parent_worker_id: Option<&str>) -> bool {
+    let id = child_worker_id.as_bytes();
+    !id.is_empty()
+        && id.len() <= 200
+        && id[0].is_ascii_alphanumeric()
+        && id
+            .iter()
+            .all(|byte| byte.is_ascii_alphanumeric() || b"._:/-".contains(byte))
+        && parent_worker_id != Some(child_worker_id)
 }
 
 /// Counts from one explicitly successful file edit. Native paths and diffs
@@ -298,6 +328,174 @@ impl FileEdit {
             + self.deleted as usize
             + self.moved as usize;
         (1..=Self::MAX_CHANGES).contains(&total)
+    }
+}
+
+/// Bounded file-change summary for a native patch record that lists edited
+/// paths without per-file add/delete counts. A SHA-256 commitment to the
+/// canonical native patch record binds the private path list; paths and diff
+/// bodies stay in the source and are disclosed only through a content grant.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct FileChange {
+    /// Number of distinct files named by the patch, at least one.
+    pub files: u16,
+    /// SHA-256 of the canonical native patch record, not its opaque Git hash.
+    pub digest: String,
+}
+
+impl FileChange {
+    pub const MAX_FILES: usize = FileEdit::MAX_CHANGES;
+
+    pub fn is_valid(&self) -> bool {
+        (1..=Self::MAX_FILES).contains(&usize::from(self.files))
+            && self.digest.len() == 64
+            && self
+                .digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    }
+}
+
+/// Recognizes the native producer's opaque 40-character lowercase hex hash.
+pub fn is_patch_digest(digest: &str) -> bool {
+    digest.len() == 40
+        && digest
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+}
+
+/// Derives the bounded change summary for one native OpenCode patch part.
+/// Adapters emit the resulting `file_change` fact, and the private detail
+/// reveal re-recognizes the exact same shape before any disclosure. The
+/// native part carries only an edited-path list and a producer digest, so no
+/// per-file add/delete counts exist and none are invented; the paths stay in
+/// the source database and only the count and digest cross the adapter.
+///
+/// A patch with no files, more than `FileChange::MAX_FILES` files, a
+/// non-string entry, or a digest that is not 40 lowercase hex is malformed
+/// and yields `None`.
+pub fn opencode_patch_change(part: &serde_json::Value) -> Option<FileChange> {
+    use sha2::{Digest, Sha256};
+    if part.get("type").and_then(serde_json::Value::as_str) != Some("patch") {
+        return None;
+    }
+    let files = part.get("files")?.as_array()?;
+    if !(1..=FileChange::MAX_FILES).contains(&files.len()) {
+        return None;
+    }
+    if !files
+        .iter()
+        .all(|file| file.as_str().is_some_and(|path| !path.is_empty()))
+    {
+        return None;
+    }
+    let distinct: std::collections::BTreeSet<_> =
+        files.iter().filter_map(serde_json::Value::as_str).collect();
+    if distinct.len() != files.len() {
+        return None;
+    }
+    let digest = part.get("hash")?.as_str()?;
+    if !is_patch_digest(digest) {
+        return None;
+    }
+    Some(FileChange {
+        files: u16::try_from(files.len()).ok()?,
+        // The producer's hash may describe a Git snapshot, not the path list.
+        // Bind every native field ourselves so a same-count path rewrite with
+        // the same producer hash cannot authorize disclosure of new content.
+        digest: format!("{:x}", Sha256::digest(serde_json::to_vec(part).ok()?)),
+    })
+}
+
+/// Derives a content-free Pi file-change summary for one exact native tool
+/// call. Pi's `write` and `edit` calls name one target path but do not prove
+/// whether `write` created or replaced a file, so this reports only the
+/// affected-file count and a commitment to the native call arguments.
+pub fn pi_file_change(name: &str, input: Option<&serde_json::Value>) -> Option<FileChange> {
+    use sha2::{Digest, Sha256};
+    let fields = input?.as_object()?;
+    let tool = name.to_ascii_lowercase();
+    if !matches!(tool.as_str(), "write" | "edit") {
+        return None;
+    }
+    let path = fields.get("path")?.as_str()?;
+    if path.is_empty() || path.len() > 512 || path.chars().any(char::is_control) {
+        return None;
+    }
+    match tool.as_str() {
+        "write"
+            if fields
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .is_some() => {}
+        "edit"
+            if fields
+                .get("oldText")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+                && fields
+                    .get("newText")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some() => {}
+        _ => return None,
+    }
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&serde_json::json!({
+                "tool": name,
+                "arguments": input?,
+            }))
+            .ok()?
+        )
+    );
+    Some(FileChange { files: 1, digest })
+}
+
+/// Derives the edit-count summary for one recognized Claude Code file-edit
+/// tool_use block. Adapters emit the resulting `file_edit` fact, and private
+/// detail reveal re-recognizes the exact same shape before any disclosure.
+/// The input carries file paths and content, which stay in the source
+/// transcript: only the counts below ever leave an adapter.
+///
+/// Recognized tools (case-insensitive) and their deterministic derivations:
+/// - `Write` counts one added file. The native input carries only `file_path`
+///   and `content` with no overwrite evidence, so an update can never be
+///   distinguished from a creation and `added` is the honest mapping.
+/// - `Edit` counts one updated file.
+/// - `MultiEdit` counts one update per edit in its `edits` array; an empty
+///   array or one larger than `FileEdit::MAX_CHANGES` is not summarized.
+///
+/// A missing, non-object, or file-less input is malformed and yields `None`.
+pub fn claude_file_edit_summary(name: &str, input: Option<&serde_json::Value>) -> Option<FileEdit> {
+    let fields = input?.as_object()?;
+    if !fields
+        .get("file_path")
+        .is_some_and(|path| path.as_str().is_some_and(|path| !path.is_empty()))
+    {
+        return None;
+    }
+    match name.to_ascii_lowercase().as_str() {
+        "write" => Some(FileEdit {
+            added: 1,
+            ..FileEdit::default()
+        }),
+        "edit" => Some(FileEdit {
+            updated: 1,
+            ..FileEdit::default()
+        }),
+        "multiedit" => {
+            let edits = fields.get("edits")?.as_array()?;
+            if !(1..=FileEdit::MAX_CHANGES).contains(&edits.len()) {
+                return None;
+            }
+            Some(FileEdit {
+                updated: u16::try_from(edits.len()).ok()?,
+                ..FileEdit::default()
+            })
+        }
+        _ => None,
     }
 }
 

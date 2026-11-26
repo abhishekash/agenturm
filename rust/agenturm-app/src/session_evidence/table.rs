@@ -1,6 +1,7 @@
 use super::{describe_observation, duration_millis, metric, progress_description, timestamp};
 use agenturm_kernel::{MetricRow, Observation, ObservationKind, TraceSpan};
-use agenturm_ui::{EvidenceRow, EvidenceSpec, EvidenceTable};
+use agenturm_ui::{EvidenceRow, EvidenceSpec, EvidenceTable, TraceOperationTarget};
+use std::collections::HashMap;
 
 pub(super) const ACTIVITY: EvidenceSpec = EvidenceSpec {
     title: "Activity",
@@ -66,11 +67,17 @@ pub(super) fn activity(evidence: &[&Observation]) -> EvidenceTable {
                     ObservationKind::WorkerSpawn(spawn) => {
                         ("declared", spawn.child_worker_id.as_str())
                     }
+                    ObservationKind::WorkerLaunch(launch) => {
+                        ("launched", launch.child_worker_id.as_str())
+                    }
                     _ => ("—", description.as_str()),
                 };
                 let mut details = vec![match &row.kind {
                     ObservationKind::WorkerSpawn(spawn) => {
                         metric("Declared child worker", &spawn.child_worker_id)
+                    }
+                    ObservationKind::WorkerLaunch(launch) => {
+                        metric("Launched child worker", &launch.child_worker_id)
                     }
                     _ => metric(kind, description.as_str()),
                 }];
@@ -162,10 +169,13 @@ fn clock(row: &Observation) -> String {
 
 fn identity(row: &Observation) -> impl Iterator<Item = MetricRow> + '_ {
     let worker = row.identity.worker_id.as_deref();
-    let worker = if matches!(row.kind, ObservationKind::WorkerSpawn(_)) {
+    let worker = if matches!(
+        row.kind,
+        ObservationKind::WorkerSpawn(_) | ObservationKind::WorkerLaunch(_)
+    ) {
         ("Parent worker", Some(worker.unwrap_or("Unreported")))
     } else {
-        ("Worker", worker)
+        ("Worker", Some(worker.unwrap_or("Unreported")))
     };
     [
         ("Source", Some(row.harness_id.as_str())),
@@ -187,7 +197,7 @@ pub(super) fn trace(
     session: &str,
     trace: &str,
     evidence: &super::TraceEvidence<'_>,
-) -> EvidenceRow {
+) -> (EvidenceRow, Vec<TraceOperationTarget>) {
     let mut root_spans = evidence
         .spans
         .iter()
@@ -231,28 +241,120 @@ pub(super) fn trace(
         }
         metric("Latest progress on page", progress)
     }));
-    if let Some((row, span)) = root {
-        details.push(span_detail(row, span));
-    }
     details.extend([metric("Source", source), metric("Session", session)]);
-    details.extend(
-        evidence
-            .spans
-            .iter()
-            .filter(|(row, _)| !root.is_some_and(|(root_row, _)| std::ptr::eq(*row, root_row)))
-            .map(|&(row, span)| span_detail(row, span)),
-    );
-    EvidenceRow {
-        cells: vec![status.into(), trace.into(), count, tokens],
-        details,
+    details.extend(trace_span_tree(&evidence.spans));
+    let mut targets = Vec::new();
+    for (row, span) in &evidence.spans {
+        if let (Some(source_id), Some(session_id), Some(operation_id)) = (
+            span.target_source_id.clone(),
+            row.identity.session_id.clone(),
+            span.target_operation_id.clone(),
+        ) {
+            let target = TraceOperationTarget {
+                trace_id: span.trace_id.clone(),
+                span_id: span.span_id.clone(),
+                source_id,
+                session_id,
+                worker_id: row.identity.worker_id.clone(),
+                turn_id: row.identity.turn_id.clone(),
+                operation_id,
+            };
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
+        }
     }
+    (
+        EvidenceRow {
+            cells: vec![status.into(), trace.into(), count, tokens],
+            details,
+        },
+        targets,
+    )
 }
 
 fn token_count(value: Option<u64>) -> String {
     value.map_or_else(|| "—".into(), |value| value.to_string())
 }
 
-fn span_detail(row: &Observation, span: &TraceSpan) -> MetricRow {
+fn trace_span_tree(spans: &[(&Observation, &TraceSpan)]) -> Vec<MetricRow> {
+    let mut by_id = HashMap::with_capacity(spans.len());
+    for (index, (_, span)) in spans.iter().enumerate() {
+        // Trace/span IDs are producer-owned. Keep the first deterministic row
+        // as the parent target if malformed input repeats an ID in one page.
+        by_id.entry(span.span_id.as_str()).or_insert(index);
+    }
+
+    let mut children = vec![Vec::new(); spans.len()];
+    let mut roots = Vec::new();
+    let mut detached = Vec::new();
+    for (index, (_, span)) in spans.iter().enumerate() {
+        match span.parent_span_id.as_deref() {
+            None => roots.push(index),
+            Some(parent) => match by_id.get(parent).copied() {
+                Some(parent_index) if parent_index != index => children[parent_index].push(index),
+                // A parent outside this bounded page is shown as detached. It
+                // is not safe to imply that the missing parent never existed.
+                _ => detached.push(index),
+            },
+        }
+    }
+
+    let mut rows = Vec::with_capacity(spans.len());
+    let mut visited = vec![false; spans.len()];
+    let mut stack: Vec<_> = roots
+        .iter()
+        .rev()
+        .map(|index| (*index, 0usize, false))
+        .collect();
+    while let Some((index, depth, is_detached)) = stack.pop() {
+        if visited[index] {
+            continue;
+        }
+        visited[index] = true;
+        let (row, span) = spans[index];
+        let label = if is_detached {
+            "Detached span · parent not on this page".to_owned()
+        } else if depth == 0 {
+            "Span".to_owned()
+        } else {
+            format!("{}↳ Span", "  ".repeat(depth))
+        };
+        rows.push(span_detail(row, span, &label));
+        for child in children[index].iter().rev() {
+            stack.push((*child, depth.saturating_add(1), false));
+        }
+    }
+
+    // Parent cycles and rows whose parent was omitted by page bounds remain
+    // visible as detached evidence rather than disappearing or looping.
+    let remaining: Vec<_> = (0..spans.len()).filter(|index| !visited[*index]).collect();
+    for index in detached.into_iter().chain(remaining) {
+        if visited[index] {
+            continue;
+        }
+        let mut pending = vec![(index, true)];
+        while let Some((current, is_detached)) = pending.pop() {
+            if visited[current] {
+                continue;
+            }
+            visited[current] = true;
+            let (row, span) = spans[current];
+            let label = if is_detached {
+                "Detached span · parent not on this page".to_owned()
+            } else {
+                "  ↳ Span".to_owned()
+            };
+            rows.push(span_detail(row, span, &label));
+            for child in children[current].iter().rev() {
+                pending.push((*child, false));
+            }
+        }
+    }
+    rows
+}
+
+fn span_detail(row: &Observation, span: &TraceSpan, label: &str) -> MetricRow {
     let status = span.status.as_str();
     let duration = duration_millis(
         row.observed_at_unix_ns
@@ -265,12 +367,8 @@ fn span_detail(row: &Observation, span: &TraceSpan) -> MetricRow {
     if let Some(target) = span.target_source_id.as_deref() {
         value.push_str(&format!(" · target {target}"));
     }
-    metric(
-        if span.parent_span_id.is_some() {
-            "↳ Span"
-        } else {
-            "Span"
-        },
-        value,
-    )
+    if let Some(operation) = span.target_operation_id.as_deref() {
+        value.push_str(&format!(" · linked operation {operation}"));
+    }
+    metric(label, value)
 }

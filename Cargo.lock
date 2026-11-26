@@ -17,6 +17,7 @@ dependencies = [
  "agenturm-store",
  "agenturm-ui",
  "libc",
+ "rusqlite",
  "rustix",
  "serde",
  "serde_json",
@@ -232,6 +233,7 @@ version = "0.0.1"
 dependencies = [
  "serde",
  "serde_json",
+ "sha2",
 ]
 
 [[package]]

@@ -19,6 +19,7 @@ pub(super) struct Settings {
     thresholds: [ThresholdDraft; 3],
     saved_thresholds_pending: bool,
     notice: Option<&'static str>,
+    discard_armed: bool,
 }
 
 struct ThresholdDraft {
@@ -38,6 +39,7 @@ impl Settings {
             cursor: 0,
             saved_thresholds_pending: false,
             notice: None,
+            discard_armed: false,
         }
     }
 
@@ -55,8 +57,15 @@ impl Settings {
         }
         self.notice = (same_history && self.saved_thresholds_pending).then_some("Thresholds saved");
         self.saved_thresholds_pending = false;
+        self.discard_armed = false;
         self.policy = policy;
         self.authority = authority;
+    }
+
+    /// Only the three threshold fields hold operator-authored drafts. Desktop
+    /// and snooze are explicit commands with an immediate receipt.
+    fn dirty(&self) -> bool {
+        self.thresholds.iter().any(|draft| draft.edited)
     }
 
     fn save(&self, change: WorkflowPolicyChange) -> WorkInput {
@@ -68,8 +77,20 @@ impl Settings {
     }
 
     pub(super) fn key(&mut self, key: event::KeyEvent) -> WorkInput {
+        if key.code != KeyCode::Esc {
+            self.discard_armed = false;
+        }
         match key.code {
-            KeyCode::Esc => return WorkInput::Back,
+            KeyCode::Esc => {
+                if self.dirty() && !self.discard_armed {
+                    self.discard_armed = true;
+                    self.notice =
+                        Some("Unsaved threshold changes · Esc again to discard · Ctrl+S save");
+                    return WorkInput::None;
+                }
+                self.discard_armed = false;
+                return WorkInput::Back;
+            }
             KeyCode::Down | KeyCode::Tab => self.cursor = (self.cursor + 1) % FIELDS,
             KeyCode::Up | KeyCode::BackTab => self.cursor = (self.cursor + FIELDS - 1) % FIELDS,
             KeyCode::Enter | KeyCode::Char(' ') if self.cursor == 0 => {
@@ -214,7 +235,11 @@ impl Settings {
         );
         frame.render_widget(
             Paragraph::new(vec![
-                Line::from("Tab fields · Enter change · Ctrl+S save thresholds"),
+                Line::from(if self.dirty() {
+                    "Tab fields · Enter change · Ctrl+S save · Esc discard"
+                } else {
+                    "Tab fields · Enter change · Ctrl+S save thresholds"
+                }),
                 Line::from("Del clear field · z snooze/end · Esc inbox"),
                 Line::from(self.notice.or(status).map(visible_text).unwrap_or_else(|| {
                     if pending {
@@ -299,6 +324,65 @@ mod tests {
     use ratatui::{Terminal, backend::TestBackend};
 
     #[test]
+    fn dirty_threshold_drafts_require_a_second_escape_and_survive_help_and_apply() {
+        let authority = WorkflowNotificationAuthority {
+            history_identity: "visible-history".into(),
+            snapshot_id: 30.into(),
+        };
+        let base = WorkflowNotificationPolicy {
+            revision: 4,
+            thresholds: WorkflowThresholds {
+                tokens: 10,
+                duration_ns: 1,
+                ..Default::default()
+            },
+            ..Default::default()
+        };
+        let key = |code| event::KeyEvent::new(code, KeyModifiers::NONE);
+        let mut settings = Settings::new(Box::new(base), authority.clone());
+        assert!(matches!(settings.key(key(KeyCode::Esc)), WorkInput::Back));
+
+        let mut settings = Settings::new(Box::new(base), authority.clone());
+        settings.key(key(KeyCode::Tab));
+        settings.key(key(KeyCode::Delete));
+        settings.key(key(KeyCode::Char('4')));
+        settings.key(key(KeyCode::Char('2')));
+        let mut terminal = Terminal::new(TestBackend::new(60, 18)).unwrap();
+        terminal
+            .draw(|frame| settings.draw(frame, false, None))
+            .unwrap();
+        let screen = terminal.backend().to_string();
+        assert!(screen.contains("Esc discard"));
+        // A desktop-only policy refresh keeps the unsaved draft.
+        settings.apply(
+            Box::new(WorkflowNotificationPolicy {
+                desktop_enabled: Some(true),
+                revision: 5,
+                ..base
+            }),
+            authority.clone(),
+        );
+        assert!(settings.dirty());
+        assert!(matches!(settings.key(key(KeyCode::Esc)), WorkInput::None));
+        terminal
+            .draw(|frame| settings.draw(frame, false, None))
+            .unwrap();
+        assert!(
+            terminal
+                .backend()
+                .to_string()
+                .contains("Esc again to discard")
+        );
+        assert!(settings.dirty());
+        // Typing cancels the armed discard, so a later single Escape cannot
+        // silently throw away the draft.
+        settings.key(key(KeyCode::Char('0')));
+        assert!(matches!(settings.key(key(KeyCode::Esc)), WorkInput::None));
+        assert!(settings.dirty());
+        assert!(matches!(settings.key(key(KeyCode::Esc)), WorkInput::Back));
+    }
+
+    #[test]
     fn threshold_input_preserves_exact_units_and_rejects_invalid_or_overflow() {
         assert_eq!(scaled_decimal("0", USD_NANOS), Some(0));
         assert_eq!(scaled_decimal("12.1200", USD_NANOS), Some(12_120_000_000));
@@ -379,6 +463,7 @@ mod tests {
                 WorkInput::Command(WorkCommand::ChangeWorkflowSettings {
                     authority: held, expected_revision: 5, change: WorkflowPolicyChange::ToggleSnooze,
                 }) if held == authority));
+            assert!(matches!(settings.key(key(KeyCode::Esc)), WorkInput::None));
             assert!(matches!(settings.key(key(KeyCode::Esc)), WorkInput::Back));
         }
     }

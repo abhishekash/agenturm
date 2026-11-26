@@ -1371,6 +1371,558 @@ fn codex_edit_and_command_details_require_exact_occurrences_and_independent_appr
 }
 
 #[test]
+fn claude_edit_details_require_exact_occurrences_and_an_independent_approval() {
+    let (Some(plugin_host), Some(adapter)) = (
+        std::env::var_os("AGENTURM_RUNTIME_PLUGIN_HOST"),
+        std::env::var_os("AGENTURM_RUNTIME_CLAUDE_ADAPTER"),
+    ) else {
+        eprintln!("skipping Claude edit proof: set plugin host and Claude adapter paths");
+        return;
+    };
+    let scratch = Scratch::new();
+    let adapter = pin_fixture_adapter(&scratch, &adapter);
+    let source = scratch.0.join("claude-edits.jsonl");
+    let config = scratch.0.join("sources.json");
+    let db = scratch.0.join("history.sqlite");
+    let catalog = scratch.0.join("catalog.json");
+    let plugin_id = "example.rust-claude-harness";
+    let assistant = |uuid: &str, second: u8, id: &str, name: &str, input: Value| {
+        json!({
+            "type":"assistant","sessionId":"claude-edit-fixture","uuid":uuid,
+            "timestamp":format!("2026-11-20T12:00:0{second}Z"),
+            "message":{"content":[{"type":"tool_use","id":id,"name":name,"input":input}]}
+        })
+    };
+    let rows = [
+        json!({"type":"summary","sessionId":"claude-edit-fixture"}),
+        json!({"type":"user","sessionId":"claude-edit-fixture","uuid":"turn-1",
+            "timestamp":"2026-11-20T12:00:00Z","message":{"content":"first synthetic handoff"}}),
+        assistant(
+            "write-row",
+            1,
+            "toolu_write",
+            "Write",
+            json!({"file_path":"fixture/created.txt","content":"first private content"}),
+        ),
+        json!({"type":"user","sessionId":"claude-edit-fixture","uuid":"turn-2",
+            "timestamp":"2026-11-20T12:00:02Z","message":{"content":"second synthetic handoff"}}),
+        assistant(
+            "edit-row",
+            3,
+            "toolu_edit",
+            "Edit",
+            json!({"file_path":"fixture/lib.rs","old_string":"private old text","new_string":"private new text"}),
+        ),
+        assistant(
+            "multiedit-row",
+            4,
+            "toolu_multi",
+            "MultiEdit",
+            json!({"file_path":"fixture/lib.rs","edits":[
+                {"old_string":"private first old","new_string":"private first new"},
+                {"old_string":"private second old","new_string":"private second new"},
+            ]}),
+        ),
+        // A Write without a file path and a MultiEdit beyond the change
+        // budget stay tool facts; neither earns an edit summary.
+        assistant(
+            "malformed-row",
+            5,
+            "toolu_bad",
+            "Write",
+            json!({"content":"private content without a path"}),
+        ),
+        assistant(
+            "oversized-row",
+            6,
+            "toolu_many",
+            "MultiEdit",
+            json!({"file_path":"fixture/lib.rs",
+                "edits":vec![json!({"old_string":"a","new_string":"b"}); 257]}),
+        ),
+        assistant(
+            "big-row",
+            7,
+            "toolu_big",
+            "Write",
+            json!({"file_path":"fixture/big.txt","content":"x".repeat(3000)}),
+        ),
+    ]
+    .map(|row| format!("{row}\n"))
+    .concat();
+    fs::write(&source, &rows).unwrap();
+    fs::write(
+        catalog.as_path(),
+        json!({
+            "version": 1,
+            "plugins":[{
+                "plugin_id":plugin_id, "adapter":adapter,
+                "sha256":format!("{:x}", Sha256::digest(fs::read(&adapter).unwrap())),
+                "protocol":1,"features":["source-adapter/1","configured-root/1"],
+                "observation_format":"agenturm-observations/1"}],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(
+        config.as_path(),
+        json!({
+            "version":2, "plugin_host":PathBuf::from(plugin_host), "plugin_catalog":catalog,
+            "sources":[{"plugin_id":plugin_id, "source_id":"harness.claude", "source_root":source}],
+        })
+        .to_string(),
+    )
+    .unwrap();
+    let (db_arg, config_arg) = (db.to_str().unwrap(), config.to_str().unwrap());
+    checked(run(&["collect", "--db", db_arg, "--config", config_arg]));
+    let query = checked(run(&["query", "--db", db_arg]));
+    for private in [
+        "first private content",
+        "private old text",
+        "private first new",
+        "fixture/created.txt",
+        "fixture/lib.rs",
+    ] {
+        assert!(!query.contains(private));
+    }
+    let history: Value = serde_json::from_str(&query).unwrap();
+    let operation = claude_operation_id;
+    let observation = |kind: &str, id: &str| {
+        history["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .find(|row| {
+                row["observation"]["kind"] == kind
+                    && row["identity"]["operation_id"] == operation(id).as_str()
+            })
+            .cloned()
+            .unwrap_or_else(|| panic!("{id} should record a {kind} observation"))
+    };
+    // Malformed and oversized tool_use blocks keep their tool fact only.
+    assert_eq!(
+        observation("tool", "toolu_bad")["observation"]["kind"],
+        "tool"
+    );
+    assert_eq!(
+        observation("tool", "toolu_many")["observation"]["kind"],
+        "tool"
+    );
+    for id in ["toolu_bad", "toolu_many"] {
+        assert!(
+            !history["observations"]
+                .as_array()
+                .unwrap()
+                .iter()
+                .any(|row| row["observation"]["kind"] == "file_edit"
+                    && row["identity"]["operation_id"] == operation(id).as_str()),
+            "{id} must not record an edit summary"
+        );
+    }
+    let write = observation("file_edit", "toolu_write");
+    let edit = observation("file_edit", "toolu_edit");
+    let multiedit = observation("file_edit", "toolu_multi");
+    let big = observation("file_edit", "toolu_big");
+    assert_eq!(write["observation"]["added"], 1);
+    assert_eq!(edit["observation"]["updated"], 1);
+    assert_eq!(multiedit["observation"]["updated"], 2);
+    assert_eq!(write["identity"]["turn_id"], operation("turn-1").as_str());
+    assert_eq!(edit["identity"]["turn_id"], operation("turn-2").as_str());
+
+    let select = |db_path: &str, event: &Value, turn: &str, other: &Value| {
+        run(&[
+            "content",
+            "preview",
+            "--kind",
+            "claude.edit_detail",
+            "--source-id",
+            "harness.claude",
+            "--db",
+            db_path,
+            "--config",
+            config_arg,
+            "--session-id",
+            "claude-edit-fixture",
+            "--turn-id",
+            turn,
+            "--event-id",
+            event["event_id"].as_str().unwrap(),
+            "--revision",
+            event["revision"].to_string().as_str(),
+            "--operation-id",
+            other["identity"]["operation_id"].as_str().unwrap(),
+        ])
+    };
+    let grant = |kind: &str| {
+        run(&[
+            "content",
+            "grant",
+            "--db",
+            db_arg,
+            "--config",
+            config_arg,
+            "--source-id",
+            "harness.claude",
+            "--kind",
+            kind,
+        ])
+    };
+    let preview = |event: &Value| {
+        select(
+            db_arg,
+            event,
+            event["identity"]["turn_id"].as_str().unwrap(),
+            event,
+        )
+    };
+    denied(preview(&write), "requires approval");
+    checked(grant("claude.edit_detail"));
+    // One provider's kind flag never approves another provider's detail.
+    denied(
+        grant("codex.edit_detail"),
+        "requires its matching pinned harness source",
+    );
+    for (event, expected) in [
+        (
+            &write,
+            json!({"tool":"Write","file_path":"fixture/created.txt",
+                "content":"first private content"}),
+        ),
+        (
+            &edit,
+            json!({"tool":"Edit","file_path":"fixture/lib.rs",
+                "old_string":"private old text","new_string":"private new text"}),
+        ),
+        (
+            &multiedit,
+            json!({"tool":"MultiEdit","file_path":"fixture/lib.rs","edits":[
+                {"old_string":"private first old","new_string":"private first new"},
+                {"old_string":"private second old","new_string":"private second new"},
+            ]}),
+        ),
+        (
+            &big,
+            json!({"tool":"Write","file_path":"fixture/big.txt",
+                "content":"x".repeat(2048),"truncated":true}),
+        ),
+    ] {
+        let revealed = checked(preview(event));
+        assert_eq!(
+            serde_json::from_str::<Value>(&revealed).unwrap(),
+            expected.clone(),
+            "unexpected detail for {}",
+            event["event_id"]
+        );
+    }
+    denied(
+        select(db_arg, &write, operation("turn-2").as_str(), &write),
+        "no verified detail",
+    );
+    denied(
+        select(db_arg, &write, operation("turn-1").as_str(), &edit),
+        "no verified detail",
+    );
+    // The malformed Write keeps a tool fact, but no edit detail exists for it.
+    let malformed_tool = observation("tool", "toolu_bad");
+    denied(
+        select(
+            db_arg,
+            &malformed_tool,
+            malformed_tool["identity"]["turn_id"].as_str().unwrap(),
+            &malformed_tool,
+        ),
+        "no verified detail",
+    );
+    fs::write(
+        &source,
+        rows.replace("first private content", "changed source content"),
+    )
+    .unwrap();
+    denied(
+        preview(&write),
+        "no longer matches the committed checkpoint",
+    );
+    fs::write(&source, &rows).unwrap();
+    assert_eq!(
+        serde_json::from_str::<Value>(&checked(preview(&write))).unwrap(),
+        json!({"tool":"Write","file_path":"fixture/created.txt",
+            "content":"first private content"})
+    );
+    checked(run(&[
+        "content",
+        "revoke",
+        "--db",
+        db_arg,
+        "--source-id",
+        "harness.claude",
+        "--kind",
+        "claude.edit_detail",
+    ]));
+    denied(preview(&write), "requires approval");
+}
+
+fn claude_operation_id(id: &str) -> String {
+    format!("{:x}", Sha256::digest(id.as_bytes()))[..32].to_owned()
+}
+
+#[test]
+fn opencode_patch_paths_require_committed_content_and_separate_approval() {
+    let (Some(plugin_host), Some(adapter)) = (
+        std::env::var_os("AGENTURM_RUNTIME_PLUGIN_HOST"),
+        std::env::var_os("AGENTURM_RUNTIME_OPENCODE_ADAPTER"),
+    ) else {
+        eprintln!("set plugin host and OpenCode adapter paths to run the process proof");
+        return;
+    };
+    let scratch = Scratch::new();
+    let adapter = pin_fixture_adapter(&scratch, &adapter);
+    let source = scratch.0.join("native.db");
+    let db = scratch.0.join("history.sqlite");
+    let config = scratch.0.join("sources.json");
+    let catalog = scratch.0.join("catalog.json");
+    let native = rusqlite::Connection::open(&source).unwrap();
+    native.execute_batch(
+        "CREATE TABLE session_v2(id TEXT PRIMARY KEY,time_created INTEGER,time_updated INTEGER);
+         CREATE TABLE session_message(id TEXT,session_id TEXT,type TEXT,seq INTEGER,time_created INTEGER,time_updated INTEGER,data TEXT);
+         CREATE TABLE session_part(message_id TEXT,session_id TEXT,ordinal INTEGER,type TEXT,call_id TEXT,time_created INTEGER,time_updated INTEGER,data TEXT);
+         CREATE TABLE part(id TEXT,message_id TEXT,session_id TEXT,time_created INTEGER,time_updated INTEGER,data TEXT);
+         INSERT INTO session_v2 VALUES('ses_fixture',1,40);
+         INSERT INTO session_message VALUES
+           ('msg_open','ses_fixture','idle',1,1,1,'{\"outcome\":\"succeeded\"}'),
+           ('msg_user','ses_fixture','user',2,10,10,'{\"text\":\"private synthetic prompt\"}'),
+           ('msg_edit','ses_fixture','assistant',3,20,20,'{}'),
+           ('msg_end','ses_fixture','idle',4,30,30,'{\"outcome\":\"succeeded\"}');
+         INSERT INTO part VALUES('prt_edit','msg_edit','ses_fixture',20,20,
+           '{\"type\":\"patch\",\"files\":[\"fixture/private-a.rs\",\"fixture/private-b.rs\"],\"hash\":\"aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa\"}');"
+    ).unwrap();
+    drop(native);
+    fs::write(
+        &catalog,
+        json!({"version":1,"plugins":[{
+            "plugin_id":"example.rust-opencode-harness","adapter":adapter,
+            "sha256":format!("{:x}", Sha256::digest(fs::read(&adapter).unwrap())),
+            "protocol":1,"features":["source-adapter/1","configured-root/1"],
+            "observation_format":"agenturm-observations/1"
+        }]})
+        .to_string(),
+    )
+    .unwrap();
+    fs::write(&config,json!({"version":2,"plugin_host":PathBuf::from(plugin_host),"plugin_catalog":catalog,
+        "sources":[{"plugin_id":"example.rust-opencode-harness","source_id":"harness.opencode","source_root":source}]
+    }).to_string()).unwrap();
+    let (db_arg, config_arg) = (db.to_str().unwrap(), config.to_str().unwrap());
+    let collect = || checked(run(&["collect", "--db", db_arg, "--config", config_arg]));
+    let history =
+        || -> Value { serde_json::from_str(&checked(run(&["query", "--db", db_arg]))).unwrap() };
+    let select_change = |history: &Value| -> Value {
+        history["observations"]
+            .as_array()
+            .unwrap()
+            .iter()
+            .filter(|row| row["observation"]["kind"] == "file_change")
+            .max_by_key(|row| row["revision"].as_u64())
+            .unwrap()
+            .clone()
+    };
+    collect();
+    let first_history = history();
+    let first = select_change(&first_history);
+    for private in [
+        "fixture/private-a.rs",
+        "fixture/private-b.rs",
+        "private synthetic prompt",
+    ] {
+        assert!(!first_history.to_string().contains(private));
+    }
+    assert_eq!(first["observation"]["files"], 2);
+    assert_eq!(first["observation"]["digest"].as_str().unwrap().len(), 64);
+    let preview = |event: &Value, turn: &str, session: &str| {
+        run(&[
+            "content",
+            "preview",
+            "--kind",
+            "opencode.edit_detail",
+            "--db",
+            db_arg,
+            "--config",
+            config_arg,
+            "--source-id",
+            "harness.opencode",
+            "--session-id",
+            session,
+            "--turn-id",
+            turn,
+            "--operation-id",
+            event["identity"]["operation_id"].as_str().unwrap(),
+            "--event-id",
+            event["event_id"].as_str().unwrap(),
+            "--revision",
+            &event["revision"].to_string(),
+        ])
+    };
+    let reveal = |event: &Value| {
+        preview(
+            event,
+            event["identity"]["turn_id"].as_str().unwrap(),
+            "ses_fixture",
+        )
+    };
+    let grant = |kind: &str| {
+        run(&[
+            "content",
+            "grant",
+            "--kind",
+            kind,
+            "--source-id",
+            "harness.opencode",
+            "--db",
+            db_arg,
+            "--config",
+            config_arg,
+        ])
+    };
+    denied(reveal(&first), "requires approval");
+    checked(grant("opencode.edit_detail"));
+    denied(
+        grant("codex.edit_detail"),
+        "requires its matching pinned harness source",
+    );
+    let expected =
+        json!({"files":["fixture/private-a.rs","fixture/private-b.rs"],"reported_files":2});
+    assert_eq!(
+        serde_json::from_str::<Value>(&checked(reveal(&first))).unwrap(),
+        expected
+    );
+    // Review and broker delivery use this same VerifiedEdit proof shape.
+    let matches = records(run(&[
+        "investigate",
+        "path",
+        "fixture/private-a.rs",
+        "--db",
+        db_arg,
+        "--config",
+        config_arg,
+        "--source-id",
+        "harness.opencode",
+        "--session-id",
+        "ses_fixture",
+    ]));
+    assert_eq!(matches[0]["type"], "match");
+    assert_eq!(matches[0]["event_id"], first["event_id"]);
+    let source_detail = records(run(&[
+        "investigate",
+        "source",
+        first["event_id"].as_str().unwrap(),
+        "--reference",
+        matches[0]["source_reference"].as_str().unwrap(),
+        "--db",
+        db_arg,
+        "--config",
+        config_arg,
+    ]));
+    assert_eq!(
+        source_detail[0]["evidence"],
+        json!({"provider_detail":{"provider":"open_code","detail":expected}})
+    );
+    denied(
+        preview(&first, "different-turn", "ses_fixture"),
+        "no verified detail",
+    );
+    denied(
+        preview(
+            &first,
+            first["identity"]["turn_id"].as_str().unwrap(),
+            "ses_sibling",
+        ),
+        "no verified detail",
+    );
+    // Advance the source cursor WITHOUT re-admitting the selected patch. Its
+    // retained record commitment remains sufficient, independently of prompt proofs.
+    let native = rusqlite::Connection::open(&source).unwrap();
+    native
+        .execute(
+            "INSERT INTO session_message VALUES('msg_later','ses_fixture','user',5,40,40,'{}')",
+            [],
+        )
+        .unwrap();
+    drop(native);
+    collect();
+    let second = select_change(&history());
+    assert_eq!(
+        serde_json::from_str::<Value>(&checked(reveal(&second))).unwrap(),
+        expected
+    );
+    // Neither the native hash nor its timestamp changes in this attack.
+    let native = rusqlite::Connection::open(&source).unwrap();
+    native
+        .execute(
+            "UPDATE part SET data=replace(data,'private-a.rs','rewritten.rs')",
+            [],
+        )
+        .unwrap();
+    drop(native);
+    denied(reveal(&second), "no verified detail");
+    collect();
+    let current = select_change(&history());
+    assert!(current["revision"].as_u64().unwrap() > second["revision"].as_u64().unwrap());
+    denied(reveal(&second), "no verified detail");
+    assert_eq!(
+        serde_json::from_str::<Value>(&checked(reveal(&current))).unwrap(),
+        json!({"files":["fixture/rewritten.rs","fixture/private-b.rs"],"reported_files":2})
+    );
+    let native = rusqlite::Connection::open(&source).unwrap();
+    let long_path = format!("fixture/{}", "x".repeat(1000));
+    native
+        .execute(
+            "UPDATE part SET data=?1",
+            [json!({"type":"patch","files":[long_path],"hash":"a".repeat(40)}).to_string()],
+        )
+        .unwrap();
+    drop(native);
+    collect();
+    let long = select_change(&history());
+    let revealed: Value = serde_json::from_str(&checked(reveal(&long))).unwrap();
+    assert_eq!(revealed["files"][0].as_str().unwrap().len(), 512);
+    assert_eq!(revealed["truncated"], true);
+    let native = rusqlite::Connection::open(&source).unwrap();
+    native
+        .execute(
+            "UPDATE part SET data=?1",
+            [
+                json!({"type":"patch","files":["fixture/unsafe\u{1b}.rs"],"hash":"a".repeat(40)})
+                    .to_string(),
+            ],
+        )
+        .unwrap();
+    drop(native);
+    collect();
+    let unsafe_change = select_change(&history());
+    denied(reveal(&unsafe_change), "no verified detail");
+    checked(run(&[
+        "content",
+        "revoke",
+        "--kind",
+        "opencode.edit_detail",
+        "--source-id",
+        "harness.opencode",
+        "--db",
+        db_arg,
+    ]));
+    denied(reveal(&unsafe_change), "requires approval");
+    checked(run(&[
+        "content",
+        "grant",
+        "--source-id",
+        "harness.opencode",
+        "--db",
+        db_arg,
+        "--config",
+        config_arg,
+    ]));
+    denied(reveal(&unsafe_change), "requires approval");
+}
+
+#[test]
 fn claude_and_kiro_preview_the_exact_native_user_rows() {
     for (kind, session, member, rows) in [
         (

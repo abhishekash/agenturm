@@ -19,8 +19,9 @@ const DEFAULT_LIMIT: usize = 100;
 const MAX_TEXT_INPUT: u64 = 4 * 1024;
 const MAX_BRIEF_INPUT: u64 = 128 * 1024;
 pub(super) const USAGE: &str = concat!(
-    "usage: agenturm task list --db <history> [--all] [--limit <1..200>] [--before <id>]\n",
-    "       agenturm task add --db <history> --title <title> [--notes <text>|--notes-file <path>] [--workspace <directory>]\n",
+    "usage: agenturm task list --db <history> [--all] [--search <text>] [--limit <1..200>] [--before <id>]\n",
+    "       agenturm task add --db <history> --title <title> [--notes <text>|--notes-file <path>] [--workspace <directory>] [--snapshot]\n",
+    "       agenturm task create --db <history> --title <title> [--notes <text>|--notes-file <path>] [--workspace <directory>] [--snapshot]\n",
     "       agenturm task show <task-id> --db <history>\n",
     "       agenturm task <complete|reopen> <task-id> --db <history> [--expected-revision <n>]\n",
     "       agenturm task snapshot <task-id> --db <history> [--include-diff] [--expected-revision <n>]\n",
@@ -41,6 +42,7 @@ pub(super) const USAGE: &str = concat!(
     "       Python-backed task draft, approve-draft and continuity --approval-id use --receiver-protocol python-v0.2.8 --endpoint <loopback-http-url> --token-file <path> with --db.\n",
     "\nBrief fields are intent, acceptance_criteria, constraints, open_questions and next_action. Use hyphens in flags.\n",
     "Create is an alias for add. Results are JSON except task handoff, which defaults to Markdown.\n",
+    "Task creation reads workspace Git state only when --snapshot is explicitly supplied with --workspace.\n",
     "Handoff --output and export write private Markdown and HTML pairs.\n",
     "Task backup writes saved tasks, handoffs and their attached workbench data as a private SQLite file.\n",
 );
@@ -59,11 +61,13 @@ enum TaskAction {
         limit: usize,
         before: Option<u64>,
         all: bool,
+        search: Option<String>,
     },
     Add {
         title: String,
         note: Option<TextInput>,
         workspace: Option<String>,
+        snapshot: bool,
     },
     Show(u64),
     Update {
@@ -183,7 +187,12 @@ pub(super) fn parse(args: &[String]) -> Result<TaskOptions, String> {
         }
         if matches!(
             flag.as_str(),
-            "--all" | "--restore" | "--json" | "--include-decision-history" | "--include-diff"
+            "--all"
+                | "--restore"
+                | "--json"
+                | "--include-decision-history"
+                | "--include-diff"
+                | "--snapshot"
         ) {
             if flags.insert(flag.as_str(), "").is_some() {
                 return Err(format!("Duplicate option {flag}"));
@@ -242,6 +251,11 @@ pub(super) fn parse(args: &[String]) -> Result<TaskOptions, String> {
                     limit,
                     before,
                     all: flags.remove("--all").is_some(),
+                    search: flags
+                        .remove("--search")
+                        .map(str::trim)
+                        .filter(|search| !search.is_empty())
+                        .map(str::to_owned),
                 }
             } else {
                 TaskAction::Handoffs { limit, before }
@@ -251,6 +265,7 @@ pub(super) fn parse(args: &[String]) -> Result<TaskOptions, String> {
             title: required_flag(&mut flags, "--title")?.into(),
             note: text_input(&mut flags, "--notes", "--notes-file")?,
             workspace: flags.remove("--workspace").map(str::to_owned),
+            snapshot: flags.remove("--snapshot").is_some(),
         },
         ("show", Some(id)) => TaskAction::Show(id),
         ("update", Some(id)) => {
@@ -601,17 +616,37 @@ pub(super) fn execute_ledger(
             ledger.backup_tasks_to(destination).map_err(string)?;
             json!({"format": "agenturm-rust-task-backup/1", "path": destination})
         }
-        TaskAction::List { limit, before, all } => {
+        TaskAction::List {
+            limit,
+            before,
+            all,
+            search,
+        } => {
             let page = ledger.list_tasks_including_archived(*limit, *before, *all)?;
+            let needle = search.as_deref().map(str::to_lowercase);
+            let items = page
+                .items
+                .into_iter()
+                .filter(|task| {
+                    needle
+                        .as_deref()
+                        .is_none_or(|needle| task_matches(task, needle))
+                })
+                .collect::<Vec<_>>();
             json!({
-                "items": page.items.iter().map(task_json).collect::<Vec<_>>(),
+                "items": items.iter().map(task_json).collect::<Vec<_>>(),
                 "next_before": page.next_before,
+                "search": search,
+                // The ledger filters one loaded page. Older matches beyond
+                // next_before are not claimed by this result.
+                "page_local": search.is_some(),
             })
         }
         TaskAction::Add {
             title,
             note,
             workspace,
+            snapshot,
         } => {
             let note = note
                 .as_ref()
@@ -619,7 +654,51 @@ pub(super) fn execute_ledger(
                 .transpose()?
                 .unwrap_or_default();
             let directory = workspace_directory(workspace.as_deref())?;
-            task_json(&ledger.create_task_in_workspace(None, title, &note, directory.as_deref())?)
+            let created =
+                ledger.create_task_in_workspace(None, title, &note, directory.as_deref())?;
+            if !snapshot {
+                task_json(&created)
+            } else {
+                let captured = directory
+                    .as_deref()
+                    .filter(|directory| !directory.is_empty())
+                    .ok_or_else(|| {
+                        "Set a workspace with --workspace before using --snapshot".to_owned()
+                    })
+                    .and_then(|directory| {
+                        super::task_git::capture(Path::new(directory))
+                            .map_err(|error| error.to_string())
+                    });
+                match captured {
+                    Ok(git) => match ledger.save_task_workspace_capture_if_current(
+                        created.id,
+                        &git,
+                        None,
+                        Some(created.revision),
+                    ) {
+                        Ok(Some(task)) => {
+                            let mut result = task_json(&task);
+                            result["git_snapshot"] = git_snapshot_json(&git);
+                            result
+                        }
+                        Ok(None) => {
+                            let mut result = task_json(&created);
+                            result["snapshot_error"] = json!(MISSING_TASK);
+                            result
+                        }
+                        Err(error) => {
+                            let mut result = task_json(&created);
+                            result["snapshot_error"] = json!(error.to_string());
+                            result
+                        }
+                    },
+                    Err(error) => {
+                        let mut result = task_json(&created);
+                        result["snapshot_error"] = json!(error);
+                        result
+                    }
+                }
+            }
         }
         TaskAction::Show(id) => {
             let task = task(ledger, *id)?;
@@ -864,6 +943,25 @@ pub(super) fn execute_ledger(
 }
 
 const MISSING_TASK: &str = "That task is no longer available";
+
+/// Case-insensitive search over operator-authored task text and the exact
+/// recorded identity of any linked run. Search never reads captured content.
+fn task_matches(task: &SavedTask, needle: &str) -> bool {
+    let mut fields = vec![
+        task.title.as_str(),
+        task.note.as_str(),
+        task.workspace_directory.as_deref().unwrap_or(""),
+    ];
+    if let Some(anchor) = &task.anchor {
+        fields.push(anchor.harness_id.as_str());
+        fields.push(anchor.session_id.as_str());
+        fields.push(anchor.worker_id.as_deref().unwrap_or(""));
+        fields.push(anchor.turn_id.as_deref().unwrap_or(""));
+    }
+    fields
+        .into_iter()
+        .any(|field| field.to_lowercase().contains(needle))
+}
 
 fn task(ledger: &WorkspaceLedger, id: u64) -> TaskResult<SavedTask> {
     Ok(ledger.task(id)?.ok_or(MISSING_TASK)?)

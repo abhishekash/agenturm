@@ -7,12 +7,20 @@ use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
 
-const MAX_REFERENCES: usize = 256;
+/// Bounded retained user-prompt references returned by one listing.
+/// The UI reports this as the retained cap; older history stays in Activity.
+pub const MAX_PROMPT_REFERENCES: usize = 256;
 
 #[derive(Clone, Copy, Debug, Deserialize, Eq, PartialEq, Serialize)]
 pub enum ContentKind {
     #[serde(rename = "pi.user_text")]
     PiUserText,
+    #[serde(rename = "pi.edit_detail")]
+    PiEditDetail,
+    #[serde(rename = "pi.mcp_payload")]
+    PiMcpDetail,
+    #[serde(rename = "claude.mcp_payload")]
+    ClaudeMcpPayload,
     #[serde(rename = "codex.user_text")]
     CodexUserText,
     #[serde(rename = "claude.user_text")]
@@ -25,6 +33,10 @@ pub enum ContentKind {
     CodexMcpPayload,
     #[serde(rename = "codex.edit_detail")]
     CodexEditDetail,
+    #[serde(rename = "claude.edit_detail")]
+    ClaudeEditDetail,
+    #[serde(rename = "opencode.edit_detail")]
+    OpenCodeEditDetail,
     #[serde(rename = "codex.command_detail")]
     CodexCommandDetail,
     #[serde(rename = "telemetry.span_payload")]
@@ -39,12 +51,17 @@ impl ContentKind {
     fn as_str(self) -> &'static str {
         match self {
             Self::PiUserText => "pi.user_text",
+            Self::PiEditDetail => "pi.edit_detail",
+            Self::PiMcpDetail => "pi.mcp_payload",
+            Self::ClaudeMcpPayload => "claude.mcp_payload",
             Self::CodexUserText => "codex.user_text",
             Self::ClaudeUserText => "claude.user_text",
             Self::KiroUserText => "kiro.user_text",
             Self::OpenCodeUserText => "opencode.user_text",
             Self::CodexMcpPayload => "codex.mcp_payload",
             Self::CodexEditDetail => "codex.edit_detail",
+            Self::ClaudeEditDetail => "claude.edit_detail",
+            Self::OpenCodeEditDetail => "opencode.edit_detail",
             Self::CodexCommandDetail => "codex.command_detail",
             Self::TelemetrySpanPayload => "telemetry.span_payload",
             Self::EvalResultDetail => "eval.result_detail",
@@ -150,6 +167,12 @@ pub struct CodexOperationEvidence {
     pub admitted_cursor: String,
     pub turn_id: String,
     pub observed_at_unix_ns: u64,
+    /// The retained file-change digest, present only for `file_change`
+    /// observations; other operation kinds record none.
+    pub digest: Option<String>,
+    /// The retained file-change count, present only for `file_change`
+    /// observations; other operation kinds record none.
+    pub files: Option<u16>,
 }
 
 pub(super) fn create_schema(connection: &Connection, version: i64) -> Result<()> {
@@ -173,8 +196,23 @@ pub(super) fn create_schema(connection: &Connection, version: i64) -> Result<()>
         17..=19 => {
             "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail')"
         }
-        20..=SCHEMA_VERSION => {
+        20..=22 => {
             "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')"
+        }
+        23 => {
+            "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'claude.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')"
+        }
+        24 => {
+            "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'claude.edit_detail', 'opencode.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')"
+        }
+        25 => {
+            "kind IN ('pi.user_text', 'pi.edit_detail', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'claude.edit_detail', 'opencode.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')"
+        }
+        26 => {
+            "kind IN ('pi.user_text', 'pi.edit_detail', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'claude.mcp_payload', 'codex.edit_detail', 'claude.edit_detail', 'opencode.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')"
+        }
+        27..=SCHEMA_VERSION => {
+            "kind IN ('pi.user_text', 'pi.edit_detail', 'pi.mcp_payload', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'claude.mcp_payload', 'codex.edit_detail', 'claude.edit_detail', 'opencode.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')"
         }
         _ => return Err(StoreError::UnsupportedSchema(version)),
     };
@@ -209,7 +247,10 @@ pub(super) fn record_receipt_proof(
 ) -> Result<()> {
     let proof = if let Some(native) = cursor.strip_prefix("v2:") {
         jsonl_receipt_proof(native)
-    } else if let Some(native) = cursor.strip_prefix("oc4:") {
+    } else if let Some(native) = cursor
+        .strip_prefix("oc4:")
+        .or_else(|| cursor.strip_prefix("oc5:"))
+    {
         sqlite_receipt_proof(native)
     } else {
         None
@@ -468,14 +509,26 @@ impl Store {
         self.verify_content_writer()?;
         let observation_kind = match scope.kind {
             ContentKind::CodexMcpPayload => "mcp_call",
+            ContentKind::ClaudeMcpPayload => "mcp_call",
             ContentKind::CodexEditDetail if selection.turn_id.is_some() => "file_edit",
+            ContentKind::PiEditDetail if selection.turn_id.is_some() => "file_change",
+            ContentKind::PiMcpDetail if selection.turn_id.is_some() => "tool",
+            ContentKind::ClaudeEditDetail if selection.turn_id.is_some() => "file_edit",
+            ContentKind::OpenCodeEditDetail if selection.turn_id.is_some() => "file_change",
             ContentKind::CodexCommandDetail if selection.turn_id.is_some() => "tool",
             _ => return Err(StoreError::StaleContentGrant),
         };
+        // JSONL operations need their receipt's prefix proof. OpenCode patch
+        // observations instead retain a canonical content commitment, so they
+        // remain provable after cursor advances without a prompt-row proof in
+        // the patch's receipt. The content verifier rechecks that commitment.
         self.verify_content_grant(scope, grant)?;
         self.connection
             .query_row(
-                "SELECT state.cursor, COALESCE(proof.cursor, state.cursor), o.turn_id, o.observed_at_unix_ns
+                "SELECT state.cursor, COALESCE(proof.cursor, state.cursor), o.turn_id, o.observed_at_unix_ns,
+                        json_extract(o.kind_json, '$.digest'),
+                        CASE WHEN json_extract(o.kind_json, '$.files') BETWEEN 1 AND 65535
+                             THEN json_extract(o.kind_json, '$.files') END
                  FROM agenturm_observations AS o
                  JOIN agenturm_source_state AS state ON state.source_id = o.source_id
                  LEFT JOIN agenturm_content_cursor_proofs AS proof ON proof.request_id = o.request_id
@@ -483,13 +536,14 @@ impl Store {
                    AND o.session_id = ?4 AND o.operation_id = ?5
                    AND o.scope = 'session' AND o.worker_id IS NULL AND o.turn_id IS NOT NULL
                    AND (?6 IS NULL OR o.turn_id = ?6)
-                   AND (proof.cursor GLOB 'v2:*' OR (state.cursor GLOB 'v2:*' AND o.request_id = (
+                   AND ((?8 AND state.cursor GLOB 'oc5:*') OR (NOT ?8 AND (proof.cursor GLOB 'v2:*' OR (state.cursor GLOB 'v2:*' AND o.request_id = (
                        SELECT newest.request_id FROM agenturm_history_batches AS newest
                        JOIN agenturm_ingest_receipts AS receipt USING (request_id)
                        WHERE receipt.source_id = o.source_id ORDER BY newest.sequence DESC LIMIT 1
-                   )))
+                   )))))
                    AND json_extract(o.kind_json, '$.kind') = ?7
-                   AND (?7 <> 'tool' OR json_extract(o.kind_json, '$.category') = 'shell')
+                   AND (?7 <> 'tool' OR json_extract(o.kind_json, '$.category') =
+                        CASE WHEN ?9 THEN 'mcp' ELSE 'shell' END)
                    AND NOT EXISTS (
                        SELECT 1 FROM agenturm_observations AS newer
                        WHERE newer.source_id = o.source_id AND newer.event_id = o.event_id
@@ -507,6 +561,8 @@ impl Store {
                     selection.operation_id,
                     selection.turn_id,
                     observation_kind,
+                    matches!(scope.kind, ContentKind::OpenCodeEditDetail),
+                    matches!(scope.kind, ContentKind::PiMcpDetail),
                 ],
                 |row| {
                     Ok(CodexOperationEvidence {
@@ -514,6 +570,8 @@ impl Store {
                         admitted_cursor: row.get(1)?,
                         turn_id: row.get(2)?,
                         observed_at_unix_ns: row.get(3)?,
+                        digest: row.get(4)?,
+                        files: row.get::<_, Option<i64>>(5)?.and_then(|files| u16::try_from(files).ok()),
                     })
                 },
             )
@@ -543,8 +601,13 @@ impl Store {
         self.verify_content_writer()?;
         if matches!(
             scope.kind,
-            ContentKind::CodexMcpPayload
+            ContentKind::PiEditDetail
+                | ContentKind::PiMcpDetail
+                | ContentKind::ClaudeMcpPayload
+                | ContentKind::CodexMcpPayload
                 | ContentKind::CodexEditDetail
+                | ContentKind::ClaudeEditDetail
+                | ContentKind::OpenCodeEditDetail
                 | ContentKind::CodexCommandDetail
                 | ContentKind::TelemetrySpanPayload
                 | ContentKind::EvalResultDetail
@@ -599,7 +662,7 @@ impl Store {
                 event_id,
                 revision,
                 session_id,
-                MAX_REFERENCES,
+                MAX_PROMPT_REFERENCES,
                 opencode,
                 watermark,
             ],

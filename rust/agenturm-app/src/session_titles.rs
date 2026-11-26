@@ -120,6 +120,7 @@ fn activity_caption(kind: &ObservationKind) -> Option<String> {
                 .unwrap_or_else(|| format!("Pull request #{number}"))
         }
         ObservationKind::FileEdit(_) => "Recorded file edit".into(),
+        ObservationKind::FileChange(_) => "Recorded file change".into(),
         ObservationKind::McpCall { tool, .. } => tool.as_deref().and_then(safe_title).map_or_else(
             || "Recorded MCP operation".into(),
             |tool| format!("MCP · {tool}"),

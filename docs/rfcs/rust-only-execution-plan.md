@@ -1,8 +1,8 @@
 # Rust-only Agenturm execution plan
 
-Status updated 23 November 2026. **Migration and feature development remain incomplete; default cutover is gated.** The Rust-only product decision dates from 21 November. This document supersedes the Python-bridge, compatibility, and migration portions of `rust-plugin-kernel-plan.md` for future implementation.
+Status updated 26 November 2026. **Migration and feature development remain incomplete; default cutover is gated.** The Rust-only product decision dates from 21 November. This document supersedes the Python-bridge, compatibility, and migration portions of `rust-plugin-kernel-plan.md` for future implementation.
 
-## Current progress — 23 November 2026
+## Current progress — 26 November 2026
 
 Use this status and the [detailed remaining-work plan](rust-migration-remaining-plan.md) for current scheduling. That separate plan distinguishes **feature development (F1–F5)**, **integration (I1–I3)** and **tests/qualification (Q1–Q10)**. Early milestone paragraphs below describe implementation history and must not override this progress record.
 
@@ -14,9 +14,26 @@ Use this status and the [detailed remaining-work plan](rust-migration-remaining-
 | Metric descriptions and full-catalog search | Joined code passed **833 tests / 96 suites**, strict Clippy and all binaries. Real HTTP and all three terminal sizes passed search beyond the first page, descriptions, snapshot binding and exact return. | Current-source CI and final optimized schema 21→22 upgrade/installed acceptance are qualification work. |
 | Remote Host inventory | Latest-per-authorized-source query and reported hostname/platform implemented. Final chooser refresh/source-context correction passed **14 focused tests** plus the joined **833-test / 96-suite** run, strict workspace Clippy and all binaries. | Correction integrated; joined checks and updated separate-UID terminal/KVM fixture passed. Final optimized archive remains open. |
 | Remaining feature work | Core FD1–FD4: attributable native shapes, private provider details beyond Codex, duplicate-safe usage/cost aggregation and cross-host terminal routing. Separate FD5–FD7: remote extension packages/formats, additional connector profiles and macOS. | Use the FD registry below; AP1 resolves SDK/CLI audit items. Tests remain delegated. No workflow is retired implicitly. |
+| OpenCode private edit detail | PR [#394](https://github.com/abhishekash/agenturm/pull/394) merged as `1b00428`; exact patch-path proof and independent grants implemented. | PR CI needs a fixture-lockfile correction: its standalone harness `cargo build --locked` failed; five dependent SDK jobs were skipped. The refreshed lockfile passes an offline locked fixture build on the corrective branch; fresh CI remains pending. |
+| Python 0.2.8 UI parity | PR #397 contextual Metrics navigation, PR #402 searchable palette, and PR #404 hierarchical trace details are merged. The test owner reports the trace feature's app library suite passed (189); new hierarchy edge cases still need direct regressions. | Full parity remains open: interactive span-to-operation traversal, typed MCP aggregate metrics, session-linked Metrics, diagnostics/health/retry, and installed paired UI-Q acceptance. See the [UI plan](rust-ui-parity-plan.md) and [test handoff](../validation/rust-core-feature-test-plan.md). |
 | Release/default switch | Rust 0.3.8 remains the latest public opt-in Linux release. No 0.3.9 publication or default change. | Final selected workflow acceptance and immutable-artifact checks. At most one public release per rolling 24 hours. |
 
-The 813, 819 and 833 test counts belong to successive source baselines and are **not additive**. The 833-test baseline includes the final Host chooser correction and predates CF1–CF5/schema 22. No completion percentage is asserted while required workflow acceptance remains open. A real Kiro transcript and an approved production connector endpoint remain external inputs; macOS needs native runners and its D2-Mac checks. Comparative benchmarks remain deferred.
+## Consolidated session and PR handoff — 26 November 2026
+
+| Workstream | Current result | Remaining gate |
+| --- | --- | --- |
+| UI palette follow-up, PR [#402](https://github.com/abhishekash/agenturm/pull/402) | Rebased change pushed; 161 UI library tests, focused palette/workspace cases, strict UI Clippy, fmt and diff checks passed on `8ee7f87`. The final docs-only test-plan commit is `e0d03f2`. | Draft PR CI still reports adapter and Linux bundle failures; installed paired Python/Rust acceptance and palette PTY journey remain under UI-Q. |
+| Pi edit / Claude MCP, PR [#398](https://github.com/abhishekash/agenturm/pull/398) | Clippy corrections pushed as `54483d8`; strict workspace Clippy and focused Pi/Claude detail tests pass. | New full CI run is in progress; artifact and installed private-detail acceptance remain open. |
+| Receiver route profiles, PR [#399](https://github.com/abhishekash/agenturm/pull/399) | Missing `sha2` example lock entry pushed as `07e3691`; locked standalone example test and host compatibility pass. | New full CI run is in progress; installed/paired receiver and security review remain open. |
+| Task snapshot, PR [#400](https://github.com/abhishekash/agenturm/pull/400) | Task help now lists `agenturm task add`; focused regression passes on `2bdc1c5`. | Latest full CI run still reports adapter and Linux bundle failures; await completed logs and rerun after correction. |
+| Workflow completion history, PR [#401](https://github.com/abhishekash/agenturm/pull/401) | Rebased onto current main at `000549b`; five focused Workflow tests, 163 UI library tests, strict UI Clippy, fmt and diff checks pass. | Full PR CI has been triggered; broader paired UI acceptance remains separate. |
+| Codex JS wrapper checks, [evidence-gate PR #403](https://github.com/abhishekash/agenturm/pull/403) | Documentation records the negative native status scan and keeps status inference disabled. No speculative product code was retained. | Reopen implementation only when an actual matched call/output provides structured exit status; collaboration-layer relationship evidence also remains unimplemented. |
+
+These scoped local results do not replace full PR CI, integrated artifact
+qualification, or the installed paired UI parity gate. No default switch or
+release publication is authorized by this status update.
+
+The 813, 819 and 833 test counts belong to successive source baselines and are **not additive**. The 833-test baseline includes the final Host chooser correction and predates CF1–CF5/schema 22; the separate UI-candidate count belongs to `17206a4`. No completion percentage is asserted while required workflow acceptance remains open. A real Kiro transcript and an approved production connector endpoint remain external inputs; macOS needs native runners and its D2-Mac checks. Comparative benchmarks remain deferred.
 
 
 ## Remaining feature development — current scheduling
@@ -31,10 +48,10 @@ audit and test qualification are separate work categories.
 
 | ID | Priority / owner | Feature still to implement | Dependency and completion condition |
 | --- | --- | --- | --- |
-| FD1 | Core / harness adapters | Remaining attributable native evidence: Pi same-session worker relationships, Claude asynchronous workers, and additional supported check/turn shapes. | Obtain positive native records for each shape, then add exact typed attribution through admission/reopen and the evidence UI. Missing exit codes or parent evidence stay unknown; fixtures or output prose cannot invent facts. Completed Claude worker spawning and neutral presence are not reopened. |
-| FD2 | Core / private evidence and UI | Provider-specific private edit and MCP detail beyond the implemented Codex routes. | Define each provider's exact retained/source proof and separate content approval. Implement scoped selection/reveal/revocation and clear unavailable cases. Existing whole-session Codex Review edits, MCP preview and linked-trace paths remain implemented. |
+| FD1 | Core / harness adapters | Remaining attributable native evidence: Pi same-session worker relationships, Claude asynchronous workers, and additional supported check/turn shapes. | [Evidence scan completed 23 November](../validation/rust-fd1-native-evidence.md): Pi worker relationships have **no positive witness** on any local record — an explicit evidence gate, not fixture work. Claude async launches have a **positive, exactly-structured witness** (declaration → structured `async_launched` result with child `agentId`, sidechain transcript and `meta.json` linkage): **launch-only typed attribution is implemented** — a `worker_launch { child_worker_id }` fact correlates the Agent declaration to the structured `async_launched` result through the same declaration tracking, first-consumer-wins and ownership fences, with **no completion claim** and the checkpoint wire format unchanged; the single observed peer-handback resolution stays a recorded shape until more witnesses exist. Codex `exec`/JavaScript-wrapped compound checks and the collab-layer `function_call` family are recorded for the check-coverage inventory; current native `exec` tool calls are shell-categorized, while recognizing checks inside JavaScript wrappers remains open. A 26 November structure-only scan of local November Codex rollouts found no qualifying check-status witness: none of 30,580 single-literal `exec_command` wrappers contained an explicit native `exit_code` guard, and paired tool-output rows carried no structured error/status field. Wrapper check recognition stays gated until native structured status evidence is available; JS output text is not parsed. Missing exit codes or parent evidence stay unknown; fixtures or output prose cannot invent facts. |
+| FD2 | Core / private evidence and UI | Provider-specific private edit and MCP detail beyond the implemented Codex routes. | **Pi edit detail and Claude MCP payload detail were merged in PR #398** with source-scoped grants and exact retained-proof checks. [OpenCode patch-path detail](../validation/rust-opencode-edit-detail.md) verifies exact source part, session, operation, turn boundary, timestamp and retained content commitment; it invents no diffs or add/delete counts. Remaining: obtain native Kiro tool-argument evidence before adding Kiro edit detail, cover unsupported OpenCode shapes, and extend MCP detail only where retained proof and grants exist. Installed acceptance remains delegated in the [core feature test plan](../validation/rust-core-feature-test-plan.md). |
 | FD3 | Core / usage and cost | Combined usage/cost totals that safely handle overlapping producer reports. | **Combined slice implemented:** per-day combined totals exclude reports whose overlap is established through exact `(target source, session)` identity, count the exclusions, and sum only nonduplicated native reports plus the per-trace-deduplicated trace cohort and disjoint log-only cohort; currencies stay distinct, and native assistant cost records that forks can duplicate stay outside combined totals. Unattributed telemetry carries no identity link and contributes; that boundary is disclosed rather than inferred away. Older attached-receiver pages without the combined block stay readable. Remaining: cross-layer overlap without identity links cannot be detected and is never summed speculatively; installed, paired-state and broad qualification are delegated as CF6 in the [core feature test plan](../validation/rust-core-feature-test-plan.md). Existing seven-day and per-currency views remain implemented. |
-| FD4 | Core / remote workflow | Cross-host terminal routing to the exact recorded remote owner/session. | **Routing slice implemented:** an attached cockpit accepts an explicit operator-authored `--route-file` (one command word per line, for example `ssh` and `user@receiver-host`); `l` verifies the exact current request, runs fixed read-only tmux and `/proc` probes through the route, resolves the unique remote pane whose process ancestry carries the exact recorded resume command, re-verifies the pane's process, and presents the attach command for the operator. Routing never selects a remote pane, answers, or approves; worker requests, unsupported providers, missing configuration, ambiguous or stale targets and unreachable routes fail closed. The route must transport arguments the way `ssh` does; the legacy Python receiver protocol rejects a route file. Focused validation passed: eight routing tests including a fake-route end-to-end resolution, ambiguity and stale-pane rejection, an attach-option parse test, workspace strict Clippy and fmt. Remaining: per-host route persistence beyond attach-time configuration, transports that do not join arguments the way `ssh` does, an independent security/transport review, and installed/paired acceptance are delegated as CF7 in the [core feature test plan](../validation/rust-core-feature-test-plan.md). Existing local routing/resume and native/attached receiver reads are not missing features. |
+| FD4 | Core / remote workflow | Cross-host terminal routing to the exact recorded remote owner/session. | **Routing slice implemented:** an attached cockpit accepts an explicit operator-authored `--route-file`; `l` verifies the exact current request, resolves one live remote pane through fixed read-only tmux and `/proc` probes, then presents the attach command. Current development adds `--route-file PATH --save-route` and `--forget-route`. Saved profiles are owner-only and keyed to both the endpoint and authenticated receiver identity; Python receiver protocol is rejected. App compile and formatting pass; delegated profile regressions are pending. Remaining: non-ssh argument transport, independent security/transport review and installed/paired CF7 acceptance. Routing never selects a pane, answers or approves. |
 
 FD1–FD4 can progress independently after agreeing on any shared DTO, grant or
 transport contracts. An unavailable native witness is a dependency, not proof
@@ -54,18 +71,23 @@ Linux release scope without an explicit product decision.
 
 ### AP1 — SDK/CLI parity audit, not a blanket missing-feature list
 
-Reconcile every retained Python 0.2.8 CLI/keyboard journey and selected SDK
-integration with its actual Rust code path. Cover OpenAI, Anthropic,
-LangChain/LangGraph, Google ADK and Pydantic AI as applicable to the retained
-inventory. Record each row as **implemented**, **test-only acceptance pending**,
-**confirmed missing feature**, **native evidence unavailable**, or **scope
-decision needed**. Include the owner, source anchor and acceptance journey.
+**Audit completed 23 November 2026** — see
+[the AP1 parity audit](rust-cli-parity-audit.md). Every retained Python 0.2.8
+CLI entry point, cockpit keyboard journey and selected SDK integration now
+has a recorded disposition with source anchors: the parity table classifies
+each surface, the six previously unrecorded items have explicit dispositions,
+and all five selected SDK families have real CI jobs exercising a Rust path
+(current-head results remain Q7's to record).
 
-Only confirmed missing behavior becomes a new FD development task. Passing
-selected SDK jobs on an older source is not complete instrumentation coverage;
-unexecuted tests are not evidence that implementation is absent. Complete this
-audit before claiming feature development or default cutover complete. No
-workflow is retired by this documentation update.
+The audit's confirmed-missing inventory includes the Ctrl+P action palette,
+saved-task Brief/Decisions cockpit editors, Ctrl+R concurrent-edit reload,
+Workflow `h` history toggle, `task draft --workspace` and handoff receiver
+revalidation, and remote receiver deployment. Under the user's direction to
+complete Rust feature and Python workflow parity, these are active planned
+gaps; none is silently retired. `task create --snapshot` is being implemented
+as an explicit opt-in on `feature/task-create-snapshot`, retaining metadata-only
+creation by default. Focused spot-verification confirmed the remaining audit
+anchors (theme-only Ctrl+P, Draft editor surface, attention-native verbs).
 
 ### Implemented code and qualification ownership
 

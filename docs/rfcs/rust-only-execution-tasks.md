@@ -1,11 +1,13 @@
 # Rust-only execution tasks
 
-Progress updated 23 November 2026 against merged native PR #379 (`52ec13b`), Findings PR #380 (`ef3d647`) and the joined Host/Metrics development baseline. See the [detailed remaining-work plan](rust-migration-remaining-plan.md): **F = feature development, I = integration, Q = tests/qualification**. The status column below supersedes old scheduling labels such as “Start now”; dependencies and original acceptance criteria remain for traceability.
+Progress updated 26 November 2026. This board reconciles core migration through PR #395 and UI integration through PR #396; neither UI parity nor cutover is complete. The current feature branch is `feature/ui05-session-metrics` in `/tmp/agenturm-ui05-session-metrics`. See the [detailed remaining-work plan](rust-migration-remaining-plan.md): **F = feature development, I = integration, Q = tests/qualification**. The status column below supersedes old scheduling labels such as “Start now”; dependencies and original acceptance criteria remain for traceability.
 
 - **Merged native baseline:** 813 tests / 96 suites, strict Clippy, exact optimized archive install/upgrade and 12 separate-UID KVM cases passed.
 - **Findings follow-up:** 819 tests / 96 suites, actual tagged development/optimized journeys and all applicable PR CI passed; PR #380 merged as `39474dd`; final joined-artifact regression remains.
 - **Host/Metrics joined baseline:** 833 tests / 96 suites, strict Clippy and all binaries; real metric HTTP and three-size terminal checks passed. The final Host refresh/context correction passed its 14 focused tests and the joined 833-test / 96-suite run with strict workspace Clippy/all binaries; the updated separate-UID Host KVM/three-size fixture also passed. Final optimized artifact qualification remains.
 - **Full migration:** incomplete. Do not add successive test totals or equate implemented code with final artifact acceptance. Default cutover and one-release-per-24-hours rules remain in force.
+- **PR #395/#396 CI:** merged PR checks exposed a stale lockfile in `examples/rust_prompt_signals_extension` and a stale PTY assertion in `scripts/validate_rust_default_cockpit.py`. The script expects `Project unavailable 1`, while the captured filtered UI correctly shows `No recorded project 1` and the selected Pi row. This branch refreshed the extension lockfile offline; its `--offline --locked` build passes. The test owner records the assertion correction; no script edit is included here.
+- **UI candidate:** PR #396 (`afbdbdc`) merged the candidate and Activity prompt filter. Prior coordinator evidence is limited to its recorded 991 tests / 96 suites, strict app/UI Clippy, 159 `NO_COLOR=1` UI tests, selected PTY journeys and selected-debug archive smoke. It is not full parity or final release acceptance. See the [UI status and gaps](rust-ui-parity-plan.md#implementation-status--26-november-2026).
 
 ## Synchronized test progress
 
@@ -47,15 +49,34 @@ for new assignments. The older A–E IDs retain their original acceptance criter
 
 | Track | Current assignment | Category |
 | --- | --- | --- |
-| FD1 / A1–A3 | Remaining attributable Pi worker, Claude async and native check/turn shapes; require positive native evidence. | Core feature development |
-| FD2 / B3–B4 | Private edit/MCP detail beyond the implemented Codex paths. | Core feature development |
+| FD1 / A1–A3 | Claude async launch attribution implemented (`worker_launch` fact, no completion claim); Pi worker shapes stay gated (no local witness); Codex JS `exec` wrappers and collab calls inventoried. Wrapper check recognition is evidence-gated: the 26 Nov scan found no structured exit-status witness in local native records. CF9 owns installed acceptance. | Core feature development |
+| FD2 / B3–B4 | Claude edit detail implemented; OpenCode patch-path detail with separate grants and exact retained-source proofs merged in PR #394. Pi/Kiro edit detail, unsupported OpenCode shapes and beyond-Codex MCP detail remain; CF8/CF10 own installed acceptance. | Core feature development |
 | FD3 / B6 | Provenance-aware, duplicate-safe combined usage/cost totals. | Core feature development |
-| FD4 / B6 | Implemented slice: native remote cockpit route-file option, exact current-request verification and receiver-side unique-pane resolution with presented attach command; routed via CF7 for installed/paired and security-review acceptance. Per-host persistence and non-ssh transports remain open. | Core feature development |
+| FD4 / B6 | Implemented slice: native remote cockpit route-file option, exact current-request verification and receiver-side unique-pane resolution with presented attach command. `--save-route`/offline `--forget-route` profiles are endpoint-keyed, verify receiver identity before reuse, and use private storage. Focused route regressions (3), offline no-token forget, app lib (194), strict Clippy, fmt and diff checks pass. Non-ssh transports and real receiver/UI/frozen-artifact/security acceptance remain open. | Core feature development |
 | FD5 / B8 | Remote package discovery/download and additional decoder formats; local lifecycle is complete. | Separate extension development |
 | FD6 / C6–C8 | Additional provider transports, credential provisioning and architecture isolation profiles. | Separate connector development |
 | FD7 / D2-Mac | Mac artifacts/install/paths/launchd/signing; Apple Silicon and Intel separate. | Separate platform development |
-| AP1 / B1, B5–B6 | Map SDK/CLI/keyboard inventory to implemented, test-only, genuinely missing, unavailable native evidence or scope decision. | Audit; do not count all rows as missing features |
+| AP1 / B1, B5–B6 | Map SDK/CLI/keyboard inventory to implemented, test-only, genuinely missing, unavailable native evidence or scope decision. `task create --snapshot` is implemented as an explicit opt-in on `feature/task-create-snapshot`; separate test owner has acceptance. | Audit; do not count all rows as missing features |
 | CF1–CF5 / Q1–Q10 | Qualify completed source, artifact, UI and authority behavior; obtain real Kiro/production/Mac evidence as applicable. | Separate test agent; not feature development |
+
+## UI parity workstream snapshot
+
+The [UI parity plan](rust-ui-parity-plan.md) tracks the current integrated
+source and gaps. PR #396 (`afbdbdc`) merged the UI implementation candidate and
+Activity prompt-only filter, but the release remains unpublished and parity is
+not complete. The current feature branch adds `SessionView::Metrics`, entered
+from a selected session with `K`, as a contextual jump into the global Metrics
+catalog. This is navigation only: OTLP metric source IDs are distinct from
+ordinary harness session IDs, and the stored metric facts have no typed session
+link. Existing Usage remains the true session-filtered view; linked OTLP Metrics
+remains open until the typed contract can prove that relationship. Offline locked app compile passes; no tests have
+run for this branch. The [delegated test plan](../validation/rust-core-feature-test-plan.md#ui-05-follow-up-handoff--not-run)
+assigns UI05-A/B to the separate test owner; UI05-C contextual navigation
+passed in a 100×26 PTY on `b57af26`. True session-linked OTLP Metrics remains
+unimplemented because no typed harness-session/source link exists. PR #397's
+bundle PTY CI is blocked by the stale project-copy assertion described above.
+Remaining UI-05/UI-06 work and UI-Q stay open. Keep provider details in
+adapter/app proof contracts and keep screens provider-neutral.
 
 ## Review of the existing plan
 
@@ -86,7 +107,7 @@ Each ID retains its original acceptance requirement. Assign only unfinished work
 
 | ID | Current status | Task | Depends on | Done when |
 | --- | --- | --- | --- | --- |
-| B1 | Inventory exists — required differences and cutover scope still need explicit closure (F2). | Inventory remaining user workflows and decide cutover scope | Start now | Map each Python CLI entry point and cockpit workflow to a Rust command, a missing behavior or an explicit retirement decision. Include SDK instrumentation, payload views, usage/cost and host history. List the required Python 0.2.8 keyboard journeys, their expected evidence and navigation results, and the owner of each open decision. |
+| B1 | AP1 parity audit complete (`rust-cli-parity-audit.md`); cutover-scope decisions on its confirmed-missing inventory remain. | Inventory remaining user workflows and decide cutover scope | Decide each audit finding: schedule, or record an explicit retirement. | Map each Python CLI entry point and cockpit workflow to a Rust command, a missing behavior or an explicit retirement decision. Include SDK instrumentation, payload views, usage/cost and host history. List the required Python 0.2.8 keyboard journeys, their expected evidence and navigation results, and the owner of each open decision. |
 | B2 | Implemented/verified — older exact retained OpenCode proof path; final artifact regression Q5/Q6. | Extend OpenCode prompt proofs beyond the current sweep | Start now | An older retained SQLite event can be revealed under its current grant after a later sweep and reopen. Changed source bytes, expired evidence, source replacement, revocation and restore all deny reveal. |
 | B3 | Exact Codex e/edit preview, whole-session browser and version-linked notes implemented; non-Codex source/shape work FD2, installed acceptance Q6. | Add detailed edit evidence to Review | Start now with a source that provides edit evidence | A recorded edit appears on the correct run and evidence version. Existing decision notes survive reopen. Content-bearing detail follows the applicable grant. |
 | B4 | Partial — current-grant exact Codex MCP preview/trace paths implemented; remaining source-specific detail F2/Q6. | Add scoped MCP payload detail | Start now with existing Codex MCP metadata | Opening a supported operation shows only authorized detail for that operation. Missing payload, mismatched identity and revoked access are covered. |

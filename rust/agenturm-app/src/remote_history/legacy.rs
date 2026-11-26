@@ -54,7 +54,10 @@ pub(crate) struct LegacyReceiver {
 
 impl LegacyReceiver {
     pub(crate) fn connect(options: &RemoteHistoryOptions) -> Result<Self, String> {
-        let token = ProducerToken::from_python_receiver_file(options.token_file())?;
+        let token_file = options
+            .token_file()
+            .ok_or_else(|| "Python receiver attach requires --token-file".to_owned())?;
+        let token = ProducerToken::from_python_receiver_file(token_file)?;
         let deadline = Instant::now() + MAX_READ_TIME;
         let (identity, health) = get::<Health>(
             options.endpoint(),

@@ -291,6 +291,17 @@ impl Browser {
         };
         let count = self.page.groups.len();
         let label = if count == 1 { "group" } else { "groups" };
+        let occurrences = self
+            .page
+            .groups
+            .iter()
+            .map(|group| group.occurrences.len())
+            .sum::<usize>();
+        let occurrence_label = if occurrences == 1 {
+            "occurrence"
+        } else {
+            "occurrences"
+        };
         let coverage = if self.page.evaluation_partial {
             " · evals partial"
         } else {
@@ -298,7 +309,7 @@ impl Browser {
         };
         frame.render_widget(
             Paragraph::new(format!(
-                "{count} {label} · {} examined on this page{coverage}{older}",
+                "{count} {label} · {occurrences} {occurrence_label} · {} examined on this page{coverage}{older}",
                 self.page.scanned
             ))
             .style(label_style()),
@@ -362,10 +373,16 @@ impl Browser {
         .highlight_symbol("› ");
         frame.render_stateful_widget(table, list, &mut self.group);
         if let Some(group) = self.group() {
+            let count = group.occurrences.len();
             let caption = format!(
-                "{} · {}",
+                "{} · {} · {count} {} · Enter shows exact evidence",
                 visible_text(group.source_id.as_str()),
-                visible_text(&group.signal)
+                visible_text(&group.signal),
+                if count == 1 {
+                    "occurrence"
+                } else {
+                    "occurrences"
+                },
             );
             frame.render_widget(
                 Paragraph::new(caption)
@@ -473,24 +490,32 @@ impl Browser {
             ObservationScope::Source => "Source",
             ObservationScope::Session => "Session",
         };
-        let mut fields = vec![
-            ("Signal", group.signal.as_str()),
-            ("Source", row.position.harness_id.as_str()),
+        let total = group.occurrences.len();
+        let index = self.occurrence.selected().unwrap_or(0) + 1;
+        let mut fields: Vec<(String, String)> = vec![
+            (
+                "Occurrence".into(),
+                format!("{index} of {total} on this loaded page"),
+            ),
+            ("Kind".into(), group.kind.to_owned()),
+            ("Severity".into(), group.severity.clone()),
+            ("Signal".into(), group.signal.clone()),
+            ("Source".into(), row.position.harness_id.clone()),
         ];
         if let Some(outcome) = &row.evaluation {
             fields.extend([
-                ("Trace", outcome.trace_id.as_str()),
-                ("Evaluation revision", revision.as_str()),
-                ("Trace evidence snapshot", snapshot.as_str()),
-                ("Coverage", "Current evaluation at read time"),
+                ("Trace".into(), outcome.trace_id.clone()),
+                ("Evaluation revision".into(), revision.clone()),
+                ("Trace evidence snapshot".into(), snapshot.clone()),
+                ("Coverage".into(), "Current evaluation at read time".into()),
             ]);
         } else {
             fields.extend([
-                ("Scope", scope),
-                ("Event", row.position.event_id.as_str()),
-                ("Revision", revision.as_str()),
-                ("Snapshot", snapshot.as_str()),
-                ("Observed Unix ns", time.as_str()),
+                ("Scope".into(), scope.to_owned()),
+                ("Event".into(), row.position.event_id.clone()),
+                ("Revision".into(), revision.clone()),
+                ("Snapshot".into(), snapshot.clone()),
+                ("Observed Unix ns".into(), time.clone()),
             ]);
         }
         for (label, value) in [
@@ -500,34 +525,28 @@ impl Browser {
             ("Operation", row.identity.operation_id.as_deref()),
         ] {
             if let Some(value) = value {
-                fields.push((label, value));
+                fields.push((label.to_owned(), value.to_owned()));
             }
         }
         fields.extend(
             row.details
                 .iter()
-                .map(|field| (field.label.as_str(), field.value.as_str())),
+                .map(|field| (field.label.clone(), field.value.clone())),
         );
-        fields.push((
-            "Source body",
-            if row.source.is_some() {
-                "s requests a grant-checked preview"
-            } else {
-                "Unavailable for this occurrence"
-            },
-        ));
+        fields.push(("Source route".into(), source_route(row.source.as_ref())));
         let width = area.width.saturating_sub(2).max(1);
         let height = usize::from(area.height.saturating_sub(2)).max(1);
         let lines = fields
             .into_iter()
             .flat_map(|(label, value)| {
-                let value = format!("{label}  {}", visible_text(value));
+                let value = format!("{label}  {}", visible_text(&value));
+                let label = label.clone();
                 wrap_display_width(&value, usize::from(width))
                     .into_iter()
                     .map(move |text| {
-                        if let Some(rest) = text.strip_prefix(label) {
+                        if let Some(rest) = text.strip_prefix(&label) {
                             Line::from(vec![
-                                Span::styled(label.to_owned(), label_style()),
+                                Span::styled(label.clone(), label_style()),
                                 Span::raw(rest.to_owned()),
                             ])
                         } else {
@@ -550,6 +569,26 @@ impl Browser {
             .block(panel(" Exact retained occurrence ")),
             area,
         );
+    }
+}
+
+fn source_route(source: Option<&FindingSource>) -> String {
+    match source {
+        Some(FindingSource::Command(_)) => {
+            "s · grant-checked captured command on the exact occurrence".into()
+        }
+        Some(FindingSource::Telemetry(_)) => {
+            "s · grant-checked span detail from the exact source and snapshot".into()
+        }
+        Some(FindingSource::Log(_)) => {
+            "s · grant-checked captured log text for the exact revision".into()
+        }
+        Some(FindingSource::Evaluation(_)) => {
+            "s · grant-checked evaluation detail for the current revision".into()
+        }
+        None => {
+            "Unavailable for this occurrence · no private source is retained or permitted".into()
+        }
     }
 }
 
@@ -685,7 +724,7 @@ mod tests {
             };
             let grouped = render(&mut browser);
             for marker in [
-                "1 group · 7 examined on this page",
+                "1 group · 2 occurrences · 7 examined on this page",
                 "Count",
                 "Recorded fixture",
                 source.as_str(),
@@ -717,12 +756,16 @@ mod tests {
             let details = render(&mut browser);
             for marker in [
                 "Exact retained occurrence",
+                "Occurrence  2 of 2 on this loaded page",
+                "Kind  Lifecycle",
+                "Severity  error",
                 "Event  fixture-event-b",
                 "Revision  3",
                 "Snapshot  88",
                 "fixture-session",
                 "fixture-turn",
                 "worker-b",
+                "Source route  Unavailable",
             ] {
                 assert!(
                     details.contains(marker),

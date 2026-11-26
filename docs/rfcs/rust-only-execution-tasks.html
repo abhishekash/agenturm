@@ -2,13 +2,15 @@
 :root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
 @media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
 *{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}img{display:block;max-width:100%;height:auto;border-radius:6px}p[align=center]{text-align:center}p[align=center] img{margin:auto}pre{background:var(--panel);border:1px solid var(--line);padding:20px;border-radius:6px;overflow:auto;font-size:13px;line-height:1.8}code{font-family:ui-monospace,monospace;font-size:.85em}pre code{font-size:inherit}.table-wrap{overflow:auto;margin:24px 0}table{border-collapse:collapse;width:100%;min-width:480px;font-size:15px}th,td{border-bottom:1px solid var(--line);padding:14px 16px;text-align:left;vertical-align:top}th{background:var(--panel)}td:first-child{min-width:140px}li+li{margin-top:8px}details{padding:20px;border:1px solid var(--line);border-radius:6px}summary{cursor:pointer}.badge{display:inline-block;padding:2px 8px;font-size:12px;background:var(--panel);border:1px solid var(--line);border-radius:4px}hr{border:0;border-top:1px solid var(--line);margin-top:40px}blockquote{border-left:3px solid var(--line);margin:24px 0;padding:0 24px;color:var(--muted)}footer{font-size:13px;color:var(--muted);border-top:1px solid var(--line);padding-top:24px;margin-top:40px}@media(prefers-reduced-motion:reduce){html{scroll-behavior:auto}}@media(max-width:480px){body{font-size:16px}main{padding-inline:20px}h2{font-size:26px}pre{padding:16px;font-size:12px}.table-wrap{margin-inline:-4px}th,td{padding:10px}}
-</style></head><body><main><nav><strong>Agenturm / 23 November 2026</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-tasks.md">Markdown source ↗</a></nav><h1>Rust-only execution tasks</h1>
-<p>Progress updated 23 November 2026 against merged native PR #379 (<code>52ec13b</code>), Findings PR #380 (<code>ef3d647</code>) and the joined Host/Metrics development baseline. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md">detailed remaining-work plan</a>: <strong>F = feature development, I = integration, Q = tests/qualification</strong>. The status column below supersedes old scheduling labels such as “Start now”; dependencies and original acceptance criteria remain for traceability.</p>
+</style></head><body><main><nav><strong>Agenturm / 26 November 2026</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-only-execution-tasks.md">Markdown source ↗</a></nav><h1>Rust-only execution tasks</h1>
+<p>Progress updated 26 November 2026. This board reconciles core migration through PR #395 and UI integration through PR #396; neither UI parity nor cutover is complete. The current feature branch is <code>feature/ui05-session-metrics</code> in <code>/tmp/agenturm-ui05-session-metrics</code>. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-migration-remaining-plan.md">detailed remaining-work plan</a>: <strong>F = feature development, I = integration, Q = tests/qualification</strong>. The status column below supersedes old scheduling labels such as “Start now”; dependencies and original acceptance criteria remain for traceability.</p>
 <ul>
 <li><strong>Merged native baseline:</strong> 813 tests / 96 suites, strict Clippy, exact optimized archive install/upgrade and 12 separate-UID KVM cases passed.</li>
 <li><strong>Findings follow-up:</strong> 819 tests / 96 suites, actual tagged development/optimized journeys and all applicable PR CI passed; PR #380 merged as <code>39474dd</code>; final joined-artifact regression remains.</li>
 <li><strong>Host/Metrics joined baseline:</strong> 833 tests / 96 suites, strict Clippy and all binaries; real metric HTTP and three-size terminal checks passed. The final Host refresh/context correction passed its 14 focused tests and the joined 833-test / 96-suite run with strict workspace Clippy/all binaries; the updated separate-UID Host KVM/three-size fixture also passed. Final optimized artifact qualification remains.</li>
 <li><strong>Full migration:</strong> incomplete. Do not add successive test totals or equate implemented code with final artifact acceptance. Default cutover and one-release-per-24-hours rules remain in force.</li>
+<li><strong>PR #395/#396 CI:</strong> merged PR checks exposed a stale lockfile in <code>examples/rust_prompt_signals_extension</code> and a stale PTY assertion in <code>scripts/validate_rust_default_cockpit.py</code>. The script expects <code>Project unavailable 1</code>, while the captured filtered UI correctly shows <code>No recorded project 1</code> and the selected Pi row. This branch refreshed the extension lockfile offline; its <code>--offline --locked</code> build passes. The test owner records the assertion correction; no script edit is included here.</li>
+<li><strong>UI candidate:</strong> PR #396 (<code>afbdbdc</code>) merged the candidate and Activity prompt filter. Prior coordinator evidence is limited to its recorded 991 tests / 96 suites, strict app/UI Clippy, 159 <code>NO_COLOR=1</code> UI tests, selected PTY journeys and selected-debug archive smoke. It is not full parity or final release acceptance. See the <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-ui-parity-plan.md#implementation-status--26-november-2026">UI status and gaps</a>.</li>
 </ul>
 <h2>Synchronized test progress</h2>
 <p>The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-migration-test-plan-results.md">independent Q1–Q10 run and review</a>
@@ -79,12 +81,12 @@ for new assignments. The older A–E IDs retain their original acceptance criter
 <tbody>
 <tr>
 <td>FD1 / A1–A3</td>
-<td>Remaining attributable Pi worker, Claude async and native check/turn shapes; require positive native evidence.</td>
+<td>Claude async launch attribution implemented (<code>worker_launch</code> fact, no completion claim); Pi worker shapes stay gated (no local witness); Codex JS <code>exec</code> wrappers and collab calls inventoried. Wrapper check recognition is evidence-gated: the 26 November scan found no structured exit-status witness in local native records. CF9 owns installed acceptance.</td>
 <td>Core feature development</td>
 </tr>
 <tr>
 <td>FD2 / B3–B4</td>
-<td>Private edit/MCP detail beyond the implemented Codex paths.</td>
+<td>Claude edit detail implemented; OpenCode patch-path detail with separate grants and exact retained-source proofs merged in PR #394. Pi/Kiro edit detail, unsupported OpenCode shapes and beyond-Codex MCP detail remain; CF8/CF10 own installed acceptance.</td>
 <td>Core feature development</td>
 </tr>
 <tr>
@@ -114,7 +116,7 @@ for new assignments. The older A–E IDs retain their original acceptance criter
 </tr>
 <tr>
 <td>AP1 / B1, B5–B6</td>
-<td>Map SDK/CLI/keyboard inventory to implemented, test-only, genuinely missing, unavailable native evidence or scope decision.</td>
+<td>Map SDK/CLI/keyboard inventory to implemented, test-only, genuinely missing, unavailable native evidence or scope decision. <code>task create --snapshot</code> is in draft PR #400; Workflow older completions are in draft PR #401. The shared searchable command/session palette and F2 theme route are integrated on current <code>main</code> in PR #396. This branch adds the <code>:</code> launcher and fuzzy matching scoped within a command word. The prior branch's 88-test run is not evidence for this rebased implementation; current-head rerun is pending. Installed/PTY parity and remaining UI acceptance stay open.</td>
 <td>Audit; do not count all rows as missing features</td>
 </tr>
 <tr>
@@ -124,6 +126,23 @@ for new assignments. The older A–E IDs retain their original acceptance criter
 </tr>
 </tbody>
 </table></div>
+<h2>UI parity workstream snapshot</h2>
+<p>The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/rfcs/rust-ui-parity-plan.md">UI parity plan</a> tracks the current integrated
+source and gaps. PR #396 (<code>afbdbdc</code>) merged the UI implementation candidate and
+Activity prompt-only filter, but the release remains unpublished and parity is
+not complete. The current feature branch adds <code>SessionView::Metrics</code>, entered
+from a selected session with <code>K</code>, as a contextual jump into the global Metrics
+catalog. This is navigation only: OTLP metric source IDs are distinct from
+ordinary harness session IDs, and the stored metric facts have no typed session
+link. Existing Usage remains the true session-filtered view; linked OTLP Metrics
+remains open until the typed contract can prove that relationship. Offline locked app compile passes; no tests have
+run for this branch. The <a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-core-feature-test-plan.md#ui-05-follow-up-handoff--not-run">delegated test plan</a>
+assigns UI05-A/B to the separate test owner; UI05-C contextual navigation
+passed in a 100×26 PTY on <code>b57af26</code>. True session-linked OTLP Metrics remains
+unimplemented because no typed harness-session/source link exists. PR #397's
+bundle PTY CI is blocked by the stale project-copy assertion described above.
+Remaining UI-05/UI-06 work and UI-Q stay open. Keep provider details in
+adapter/app proof contracts and keep screens provider-neutral.</p>
 <h2>Review of the existing plan</h2>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
@@ -227,9 +246,9 @@ for new assignments. The older A–E IDs retain their original acceptance criter
 <tbody>
 <tr>
 <td>B1</td>
-<td>Inventory exists — required differences and cutover scope still need explicit closure (F2).</td>
+<td>AP1 parity audit complete (<code>rust-cli-parity-audit.md</code>); cutover-scope decisions on its confirmed-missing inventory remain.</td>
 <td>Inventory remaining user workflows and decide cutover scope</td>
-<td>Start now</td>
+<td>Decide each audit finding: schedule, or record an explicit retirement.</td>
 <td>Map each Python CLI entry point and cockpit workflow to a Rust command, a missing behavior or an explicit retirement decision. Include SDK instrumentation, payload views, usage/cost and host history. List the required Python 0.2.8 keyboard journeys, their expected evidence and navigation results, and the owner of each open decision.</td>
 </tr>
 <tr>

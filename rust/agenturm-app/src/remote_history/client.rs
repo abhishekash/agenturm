@@ -1,6 +1,9 @@
 //! Attach the existing cockpit and attention workflow to bounded metadata reads.
 
-use super::{Reply, Request, VERSION, http, loopback_address, parse_address_and_token};
+use super::{
+    Reply, Request, VERSION, http, loopback_address, parse_address_and_optional_token,
+    parse_address_and_token,
+};
 use crate::trace_receiver::ProducerToken;
 use crate::{AgenturmApp, HistoryReader, cockpit_startup, cockpit_workflows, workspace_response};
 use agenturm_kernel::retained_history::{
@@ -24,13 +27,15 @@ use std::net::{SocketAddr, TcpStream};
 use std::path::{Path, PathBuf};
 use std::time::Instant;
 
-const ATTACH_USAGE: &str = "agenturm cockpit --endpoint http://<loopback-IP:port> --token-file <path> [--route-file <path>] [--receiver-protocol python-v0.2.8]";
+const ATTACH_USAGE: &str = "agenturm cockpit --endpoint http://<loopback-IP:port> --token-file <path> [--route-file <path> [--save-route]] [--forget-route] [--receiver-protocol python-v0.2.8]";
 
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct RemoteHistoryOptions {
     endpoint: SocketAddr,
-    token_file: PathBuf,
+    token_file: Option<PathBuf>,
     route_file: Option<PathBuf>,
+    save_route: bool,
+    forget_route: bool,
     python_receiver: bool,
 }
 
@@ -41,41 +46,78 @@ impl RemoteHistoryOptions {
     pub(crate) fn endpoint(&self) -> SocketAddr {
         self.endpoint
     }
-    pub(super) fn token_file(&self) -> &Path {
-        &self.token_file
+    pub(super) fn token_file(&self) -> Option<&Path> {
+        self.token_file.as_deref()
     }
     pub(super) fn route_file(&self) -> Option<&Path> {
         self.route_file.as_deref()
+    }
+    pub(super) fn save_route(&self) -> bool {
+        self.save_route
+    }
+    pub(super) fn forget_route(&self) -> bool {
+        self.forget_route
     }
 }
 
 pub(crate) fn parse(args: &[String]) -> Result<RemoteHistoryOptions, String> {
     let mut python_receiver = false;
     let mut route_file = None;
+    let mut save_route = false;
+    let mut forget_route = false;
     let mut native_args = Vec::with_capacity(args.len());
-    let (pairs, extra) = args.as_chunks::<2>();
-    for pair in pairs {
-        if pair[0] == "--receiver-protocol" {
-            if python_receiver || pair[1] != super::legacy::PROTOCOL {
-                return Err(ATTACH_USAGE.into());
+    let mut index = 0;
+    while index < args.len() {
+        match args[index].as_str() {
+            "--save-route" if !save_route => {
+                save_route = true;
+                index += 1;
             }
-            python_receiver = true;
-        } else if pair[0] == "--route-file" {
-            if route_file.is_some() {
-                return Err(ATTACH_USAGE.into());
+            "--forget-route" if !forget_route => {
+                forget_route = true;
+                index += 1;
             }
-            route_file = Some(PathBuf::from(&pair[1]));
-        } else {
-            native_args.extend_from_slice(pair);
+            "--receiver-protocol" | "--route-file" => {
+                let Some(value) = args.get(index + 1) else {
+                    return Err(ATTACH_USAGE.into());
+                };
+                if args[index] == "--receiver-protocol" {
+                    if python_receiver || value != super::legacy::PROTOCOL {
+                        return Err(ATTACH_USAGE.into());
+                    }
+                    python_receiver = true;
+                } else {
+                    if route_file.is_some() {
+                        return Err(ATTACH_USAGE.into());
+                    }
+                    route_file = Some(PathBuf::from(value));
+                }
+                index += 2;
+            }
+            _ => {
+                if args.get(index + 1).is_none() {
+                    return Err(ATTACH_USAGE.into());
+                }
+                native_args.extend_from_slice(&args[index..index + 2]);
+                index += 2;
+            }
         }
     }
-    if !extra.is_empty() {
-        return Err(ATTACH_USAGE.into());
-    }
-    if python_receiver && route_file.is_some() {
+    if python_receiver && (route_file.is_some() || save_route || forget_route) {
         return Err("Host routes require the native receiver protocol".into());
     }
-    let (address, token_file) = parse_address_and_token(&native_args, "--endpoint", ATTACH_USAGE)?;
+    if (save_route && (route_file.is_none() || forget_route))
+        || (forget_route && route_file.is_some())
+    {
+        return Err(ATTACH_USAGE.into());
+    }
+    let (address, token_file) = if forget_route {
+        parse_address_and_optional_token(&native_args, "--endpoint", ATTACH_USAGE)?
+    } else {
+        let (address, token_file) =
+            parse_address_and_token(&native_args, "--endpoint", ATTACH_USAGE)?;
+        (address, Some(token_file))
+    };
     let address = address
         .strip_prefix("http://")
         .ok_or("History attach expects a loopback HTTP endpoint")?;
@@ -84,6 +126,8 @@ pub(crate) fn parse(args: &[String]) -> Result<RemoteHistoryOptions, String> {
         endpoint,
         token_file,
         route_file,
+        save_route,
+        forget_route,
         python_receiver,
     })
 }
@@ -95,11 +139,26 @@ pub fn execute_remote_cockpit(options: &RemoteHistoryOptions) -> Result<(), Stri
         }
         return super::legacy::cockpit(options);
     }
-    let route = options
+    if options.forget_route() {
+        crate::workflow_route::forget_saved_route(options.endpoint())?;
+        println!("Removed the saved terminal route for this endpoint.");
+        return Ok(());
+    }
+    let (store, marker) = open_workspace(options)?;
+    let explicit_route = options
         .route_file()
         .map(crate::workflow_route::load_route_file)
         .transpose()?;
-    let (store, marker) = open_workspace(options)?;
+    if options.save_route() {
+        let route = explicit_route
+            .as_deref()
+            .ok_or_else(|| "--save-route requires --route-file".to_owned())?;
+        crate::workflow_route::save_route(store.endpoint, &store.identity, route)?;
+    }
+    let route = match explicit_route {
+        Some(route) => Some(route),
+        None => crate::workflow_route::load_saved_route(store.endpoint, &store.identity)?,
+    };
     let mut app = AgenturmApp::default_composition();
     let ui_stop = std::sync::Arc::new(std::sync::atomic::AtomicBool::new(false));
     let loader_stop = std::sync::Arc::clone(&ui_stop);
@@ -170,7 +229,10 @@ impl RemoteStore {
                 "Python receivers provide live metadata through their explicit protocol".into(),
             );
         }
-        let token = ProducerToken::from_file(&options.token_file)?;
+        let token_file = options
+            .token_file()
+            .ok_or_else(|| "History attach requires --token-file".to_owned())?;
+        let token = ProducerToken::from_file(token_file)?;
         let reply = exchange(
             options.endpoint,
             &token,
@@ -636,5 +698,74 @@ mod tests {
             ])
             .is_err()
         );
+    }
+
+    #[test]
+    fn saved_route_options_are_unambiguous_and_native_only() {
+        let base = || {
+            vec![
+                "--endpoint".into(),
+                "http://127.0.0.1:4318".into(),
+                "--token-file".into(),
+                "receiver.token".into(),
+            ]
+        };
+
+        let mut save = base();
+        save.extend([
+            "--route-file".into(),
+            "route.txt".into(),
+            "--save-route".into(),
+        ]);
+        let options = parse(&save).unwrap();
+        assert_eq!(options.route_file(), Some(Path::new("route.txt")));
+        assert!(options.save_route());
+        assert!(!options.forget_route());
+
+        let mut forget = base();
+        forget.push("--forget-route".into());
+        let options = parse(&forget).unwrap();
+        assert!(options.forget_route());
+        assert!(options.route_file().is_none());
+
+        let forget_without_token = parse(&[
+            "--endpoint".into(),
+            "http://127.0.0.1:1".into(),
+            "--forget-route".into(),
+        ])
+        .unwrap();
+        assert!(forget_without_token.forget_route());
+        assert!(forget_without_token.token_file().is_none());
+
+        let mut save_without_file = base();
+        save_without_file.push("--save-route".into());
+        assert!(parse(&save_without_file).is_err());
+
+        let mut save_and_forget = base();
+        save_and_forget.extend([
+            "--route-file".into(),
+            "route.txt".into(),
+            "--save-route".into(),
+            "--forget-route".into(),
+        ]);
+        assert!(parse(&save_and_forget).is_err());
+
+        let mut python_save = base();
+        python_save.extend([
+            "--route-file".into(),
+            "route.txt".into(),
+            "--save-route".into(),
+            "--receiver-protocol".into(),
+            super::super::legacy::PROTOCOL.into(),
+        ]);
+        assert!(matches!(parse(&python_save), Err(error) if error.contains("native receiver")));
+
+        let mut python_forget = base();
+        python_forget.extend([
+            "--forget-route".into(),
+            "--receiver-protocol".into(),
+            super::super::legacy::PROTOCOL.into(),
+        ]);
+        assert!(matches!(parse(&python_forget), Err(error) if error.contains("native receiver")));
     }
 }

@@ -77,6 +77,15 @@ fn parse_address_and_token<'a>(
     address_flag: &str,
     usage: &str,
 ) -> Result<(&'a str, PathBuf), String> {
+    let (address, token_file) = parse_address_and_optional_token(args, address_flag, usage)?;
+    Ok((address, token_file.ok_or(usage)?))
+}
+
+fn parse_address_and_optional_token<'a>(
+    args: &'a [String],
+    address_flag: &str,
+    usage: &str,
+) -> Result<(&'a str, Option<PathBuf>), String> {
     let (pairs, remainder) = args.as_chunks::<2>();
     if !remainder.is_empty() {
         return Err(usage.into());
@@ -94,7 +103,7 @@ fn parse_address_and_token<'a>(
             return Err(usage.into());
         }
     }
-    Ok((address.ok_or(usage)?, token_file.ok_or(usage)?))
+    Ok((address.ok_or(usage)?, token_file))
 }
 
 fn loopback_address(value: &str, allow_ephemeral: bool) -> Result<SocketAddr, String> {

@@ -13,27 +13,36 @@ const SPEC: EvidenceSpec = EvidenceSpec {
     empty: "No incidents established by this history page.",
 };
 
+const RECENT_COMPLETION_DAYS: u64 = 10;
+const NANOS_PER_DAY: u64 = 86_400_000_000_000;
+
 pub(super) struct Alerts {
     inbox: Box<WorkflowAlertInbox>,
     selected: Option<usize>,
     detail: Option<Inspection>,
     scroll_bounds: (usize, usize),
+    notice: Option<&'static str>,
+    include_older_completions: bool,
 }
 
 impl Alerts {
     pub(super) fn new(inbox: Box<WorkflowAlertInbox>) -> Self {
-        let selected = (!inbox.page.alerts.is_empty()).then_some(0);
-        Self {
+        let mut alerts = Self {
             inbox,
-            selected,
+            selected: None,
             detail: None,
             scroll_bounds: (1, 0),
-        }
+            notice: None,
+            include_older_completions: false,
+        };
+        alerts.selected = alerts.visible_indices().first().copied();
+        alerts
     }
 
     pub(super) fn apply(&mut self, inbox: Box<WorkflowAlertInbox>) {
         let same_history = inbox.page.history_identity == self.inbox.page.history_identity
             && inbox.page.snapshot_id.incarnation() == self.inbox.page.snapshot_id.incarnation();
+        let requested = self.selected.is_some();
         let selected = self
             .selected
             .and_then(|index| self.inbox.page.alerts.get(index))
@@ -48,8 +57,35 @@ impl Alerts {
         if selected.is_none() {
             self.detail = None;
         }
-        self.selected = selected.or_else(|| (!inbox.page.alerts.is_empty()).then_some(0));
+        self.notice = if !same_history && !inbox.page.alerts.is_empty() {
+            Some("Incident history changed · showing the latest page")
+        } else if requested && selected.is_none() && !inbox.page.alerts.is_empty() {
+            Some("Selected incident is no longer established · nearest incident selected")
+        } else {
+            None
+        };
         self.inbox = inbox;
+        let visible = self.visible_indices();
+        self.selected = selected
+            .filter(|index| visible.contains(index))
+            .or_else(|| visible.first().copied());
+    }
+
+    fn visible_indices(&self) -> Vec<usize> {
+        let cutoff = current_time_unix_ns()
+            .saturating_sub(RECENT_COMPLETION_DAYS.saturating_mul(NANOS_PER_DAY));
+        self.inbox
+            .page
+            .alerts
+            .iter()
+            .enumerate()
+            .filter_map(|(index, alert)| {
+                (self.include_older_completions
+                    || alert.kind != WorkflowAlertKind::Completion
+                    || alert.evidence.observed_at_unix_ns >= cutoff)
+                    .then_some(index)
+            })
+            .collect()
     }
 
     fn selected_alert(&self) -> Option<&WorkflowAlert> {
@@ -91,16 +127,32 @@ impl Alerts {
             }
             return WorkInput::None;
         }
-        let Some(selected) = self.selected else {
+        if code == KeyCode::Char('h') {
+            let previous = self.selected;
+            self.include_older_completions = !self.include_older_completions;
+            let visible = self.visible_indices();
+            self.selected = previous
+                .filter(|index| visible.contains(index))
+                .or_else(|| visible.first().copied());
+            return WorkInput::None;
+        }
+        let visible = self.visible_indices();
+        let Some(position) = self
+            .selected
+            .and_then(|selected| visible.iter().position(|index| *index == selected))
+        else {
             return WorkInput::None;
         };
         match code {
             KeyCode::Down | KeyCode::Char('j') => {
-                self.selected =
-                    Some((selected + 1).min(self.inbox.page.alerts.len().saturating_sub(1)))
+                self.selected = visible
+                    .get((position + 1).min(visible.len().saturating_sub(1)))
+                    .copied()
             }
-            KeyCode::Up | KeyCode::Char('k') => self.selected = Some(selected.saturating_sub(1)),
-            KeyCode::Enter => self.detail = self.table().open_inspection(selected),
+            KeyCode::Up | KeyCode::Char('k') => {
+                self.selected = visible.get(position.saturating_sub(1)).copied()
+            }
+            KeyCode::Enter => self.detail = self.table().open_inspection(position),
             _ => {}
         }
         WorkInput::None
@@ -116,17 +168,24 @@ impl Alerts {
             spec.title = "Workflow incidents · partial";
             spec.empty = "No incidents established in available evidence. Coverage is partial.";
         }
+        let visible = self.visible_indices();
+        if visible.is_empty() && !self.inbox.page.alerts.is_empty() {
+            spec.empty = "No recent incidents · h includes older completions.";
+        }
         let rows = self
             .inbox
             .page
             .alerts
             .iter()
-            .map(|alert| {
+            .enumerate()
+            .filter(|(index, _)| visible.contains(index))
+            .map(|(_, alert)| {
                 let delivery = self
                     .delivery(alert)
                     .map_or("Unrecorded", |delivery| delivery_label(delivery.state));
                 let label = kind(&alert.kind);
                 let mut details = vec![
+                    value("Observed owner", observed_owner(alert)),
                     value("Incident", label),
                     value("Source", alert.scope.source_id.as_str()),
                     value("Session", &alert.scope.session_id),
@@ -146,8 +205,18 @@ impl Alerts {
                             WorkflowAlertCoverage::ReportedLowerBound => "Reported lower bound",
                         },
                     ),
+                    value("Recorded approval state", approval_state(&alert.kind)),
                     value("Delivery", delivery),
                 ];
+                if let Some(delivery) = self.delivery(alert) {
+                    details.push(value(
+                        "Delivery attempt",
+                        format!(
+                            "#{} · policy revision {}",
+                            delivery.attempt, delivery.policy_revision
+                        ),
+                    ));
+                }
                 let clock = match alert.evidence.clock {
                     WorkflowAlertClock::SourceReported => "Source reported",
                     WorkflowAlertClock::ReceiverReceipt => "Receiver receipt",
@@ -191,6 +260,7 @@ impl Alerts {
     }
 
     pub(super) fn draw(&mut self, frame: &mut Frame, pending: bool, status: Option<&str>) {
+        let status = status.or(self.notice);
         let [header, body, foot] = Layout::vertical([
             Constraint::Length(1),
             Constraint::Min(1),
@@ -202,7 +272,11 @@ impl Alerts {
             Paragraph::new(format!(" Agenturm / {}", table.spec.title)).style(heading_style()),
             header,
         );
-        let index = self.selected.unwrap_or_default();
+        let visible = self.visible_indices();
+        let index = self
+            .selected
+            .and_then(|selected| visible.iter().position(|index| *index == selected))
+            .unwrap_or_default();
         let keys = if let Some(detail) = &mut self.detail {
             let page = usize::from(body.height.saturating_sub(2)).max(1);
             let limit = table.inspection_limit(index, body.width, page);
@@ -213,13 +287,57 @@ impl Alerts {
         } else {
             table.draw(frame, body, index);
             if self.retry().is_some() {
-                "Enter inspect · T retry delivery · R refresh\nTab requests · S settings · Esc requests"
+                if self.include_older_completions {
+                    "Enter inspect · T retry delivery · R refresh\nh hide older · Tab requests · S settings · Esc back"
+                } else {
+                    "Enter inspect · T retry delivery · R refresh\nh older · Tab requests · S settings · Esc back"
+                }
             } else {
-                "Enter inspect · R refresh\nTab requests · S settings · Esc requests"
+                if self.include_older_completions {
+                    "Enter inspect · R refresh\nh hide older · Tab requests · S settings · Esc back"
+                } else {
+                    "Enter inspect · R refresh · h older completions\nTab requests · S settings · Esc back"
+                }
             }
         };
         draw_footer(frame, foot, keys, pending, status);
     }
+}
+
+fn observed_owner(alert: &WorkflowAlert) -> String {
+    let owner = match alert.scope.worker_id.as_deref() {
+        Some(worker) => format!("worker {worker} · session {}", alert.scope.session_id),
+        None => format!("main session {}", alert.scope.session_id),
+    };
+    format!(
+        "{} · {} · turn {}",
+        alert.scope.source_id.as_str(),
+        owner,
+        alert.scope.turn_id
+    )
+}
+
+fn approval_state(value: &WorkflowAlertKind) -> &'static str {
+    match value {
+        WorkflowAlertKind::Failure => "Recorded failure · response stays in the native terminal",
+        WorkflowAlertKind::Interruption => {
+            "Recorded interruption · response stays in the native terminal"
+        }
+        WorkflowAlertKind::Completion => {
+            "Recorded completion · not a correctness verdict; review acknowledges locally"
+        }
+        WorkflowAlertKind::Tokens | WorkflowAlertKind::UsdCost | WorkflowAlertKind::Elapsed => {
+            "Running threshold · request remains pending"
+        }
+    }
+}
+
+fn current_time_unix_ns() -> u64 {
+    std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .ok()
+        .and_then(|duration| u64::try_from(duration.as_nanos()).ok())
+        .unwrap_or(0)
 }
 
 fn kind(value: &WorkflowAlertKind) -> &'static str {
@@ -321,11 +439,26 @@ mod tests {
             assert!(text.contains("Workflow incidents · partial"));
             assert!(text.contains("USD threshold"));
             assert!(text.contains("T retry delivery"));
+            assert!(
+                text.contains("h older"),
+                "default retry footer clipped at {width} columns: {text}"
+            );
+            assert!(
+                text.contains("R refresh"),
+                "default retry footer clipped at {width} columns: {text}"
+            );
+            assert!(
+                text.contains("Esc back"),
+                "default retry footer clipped at {width} columns: {text}"
+            );
             browser.key(KeyCode::Enter);
             terminal
                 .draw(|frame| browser.draw(frame, false, None))
                 .unwrap();
             let text = terminal.backend().to_string();
+            assert!(text.contains("Observed owner"));
+            assert!(text.contains("worker worker-a"));
+            assert!(text.contains("Recorded approval state"));
             assert!(text.contains("worker-a"));
             assert!(!text.contains("worker-b"));
             browser.key(KeyCode::Esc);
@@ -346,6 +479,263 @@ mod tests {
             assert_eq!(browser.selected_alert(), Some(&chosen));
             assert!(!browser.accept_delivery(&updated));
             assert!(browser.retry().is_none());
+
+            let mut replaced = page.clone();
+            replaced.snapshot_id = agenturm_kernel::ReadSnapshot::new(
+                25,
+                Some("00112233445566778899aabbccddeeff".parse().unwrap()),
+            );
+            browser.apply(Box::new(WorkflowAlertInbox {
+                page: replaced,
+                deliveries: vec![(chosen.id.clone(), delivery.clone())],
+            }));
+            assert_eq!(browser.selected_alert(), page.alerts.first());
+            terminal
+                .draw(|frame| browser.draw(frame, false, None))
+                .unwrap();
+            assert!(
+                terminal
+                    .backend()
+                    .to_string()
+                    .contains("Incident history changed")
+            );
+        }
+    }
+
+    fn fixture_alert(id: &str, kind: WorkflowAlertKind, observed_at_unix_ns: u64) -> WorkflowAlert {
+        WorkflowAlert {
+            id: id.into(),
+            scope: WorkflowAlertScope {
+                source_id: ExtensionId::parse("harness.codex.fixture").unwrap(),
+                session_id: "session-a".into(),
+                turn_id: format!("turn-{id}"),
+                worker_id: None,
+            },
+            kind,
+            evidence: WorkflowAlertEvidence {
+                event_id: format!("{id}-event"),
+                revision: 1,
+                observed_at_unix_ns,
+                clock: WorkflowAlertClock::SourceReported,
+            },
+            measured: None,
+            threshold: None,
+            coverage: WorkflowAlertCoverage::ExactFact,
+            quiet: false,
+        }
+    }
+
+    fn fixture_inbox(alerts: Vec<WorkflowAlert>) -> Box<WorkflowAlertInbox> {
+        Box::new(WorkflowAlertInbox {
+            page: WorkflowAlertPage {
+                history_identity: "history-a".into(),
+                snapshot_id: 23.into(),
+                alerts,
+                partial: false,
+                gaps: WorkflowAlertGaps::default(),
+            },
+            deliveries: Vec::new(),
+        })
+    }
+
+    fn history_fixture_alerts() -> Vec<WorkflowAlert> {
+        let now = current_time_unix_ns();
+        let cutoff = now.saturating_sub(RECENT_COMPLETION_DAYS * NANOS_PER_DAY);
+        // Keep these on the recent side across the tiny clock advance between
+        // fixture construction and the view's independently sampled cutoff.
+        let within_window = cutoff.saturating_add(60_000_000_000);
+        vec![
+            fixture_alert(
+                "old-completion",
+                WorkflowAlertKind::Completion,
+                cutoff.saturating_sub(1),
+            ),
+            fixture_alert(
+                "within-window-completion",
+                WorkflowAlertKind::Completion,
+                within_window,
+            ),
+            fixture_alert(
+                "recent-completion",
+                WorkflowAlertKind::Completion,
+                cutoff.saturating_add(NANOS_PER_DAY),
+            ),
+            fixture_alert("old-failure", WorkflowAlertKind::Failure, 1),
+            fixture_alert("old-interruption", WorkflowAlertKind::Interruption, 1),
+            fixture_alert("old-tokens", WorkflowAlertKind::Tokens, 1),
+            fixture_alert("old-usd", WorkflowAlertKind::UsdCost, 1),
+            fixture_alert("old-elapsed", WorkflowAlertKind::Elapsed, 1),
+        ]
+    }
+
+    #[test]
+    fn older_completion_toggle_keeps_recent_completions_and_all_other_incidents_visible() {
+        let alerts = history_fixture_alerts();
+        let mut browser = Alerts::new(fixture_inbox(alerts.clone()));
+        assert_eq!(browser.visible_indices(), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(browser.selected_alert(), Some(&alerts[1]));
+
+        browser.key(KeyCode::Char('h'));
+        assert_eq!(
+            browser.visible_indices(),
+            (0..alerts.len()).collect::<Vec<_>>()
+        );
+        assert_eq!(browser.selected_alert(), Some(&alerts[1]));
+        browser.key(KeyCode::Char('h'));
+        assert_eq!(browser.visible_indices(), vec![1, 2, 3, 4, 5, 6, 7]);
+        assert_eq!(browser.selected_alert(), Some(&alerts[1]));
+    }
+
+    #[test]
+    fn older_completion_toggle_falls_back_only_when_the_selected_row_becomes_hidden() {
+        let alerts = history_fixture_alerts();
+        let mut browser = Alerts::new(fixture_inbox(alerts.clone()));
+        browser.key(KeyCode::Down);
+        assert_eq!(browser.selected_alert(), Some(&alerts[2]));
+        browser.key(KeyCode::Char('h'));
+        assert_eq!(browser.selected_alert(), Some(&alerts[2]));
+
+        browser.selected = Some(0);
+        browser.key(KeyCode::Char('h'));
+        assert_eq!(browser.selected, Some(1));
+        assert_eq!(browser.selected_alert(), Some(&alerts[1]));
+    }
+
+    #[test]
+    fn refresh_keeps_exact_selected_alert_in_the_same_history_and_drops_stale_detail() {
+        let alerts = history_fixture_alerts();
+        let chosen = alerts[3].clone();
+        let mut browser = Alerts::new(fixture_inbox(alerts.clone()));
+        browser.selected = Some(3);
+        browser.key(KeyCode::Enter);
+        assert!(browser.inspecting());
+
+        let mut reordered = alerts.clone();
+        reordered.reverse();
+        let mut same_history = fixture_inbox(reordered.clone());
+        same_history.page.snapshot_id = 24.into();
+        browser.apply(same_history);
+        assert_eq!(browser.selected_alert(), Some(&chosen));
+        assert!(browser.inspecting());
+
+        let mut other_history = fixture_inbox(reordered.clone());
+        other_history.page.history_identity = "history-b".into();
+        other_history.page.snapshot_id = 25.into();
+        browser.apply(other_history);
+        assert!(!browser.inspecting());
+        assert_eq!(browser.selected_alert(), Some(&reordered[0]));
+    }
+
+    #[test]
+    fn history_toggle_is_ignored_in_detail_and_footer_controls_fit_narrow_widths() {
+        let now = current_time_unix_ns();
+        let cutoff = now.saturating_sub(RECENT_COMPLETION_DAYS * NANOS_PER_DAY);
+        let completion = fixture_alert(
+            "completion",
+            WorkflowAlertKind::Completion,
+            cutoff.saturating_sub(1),
+        );
+        let failure = fixture_alert("failure", WorkflowAlertKind::Failure, 1);
+        let inbox = fixture_inbox(vec![completion.clone(), failure]);
+
+        let mut browser = Alerts::new(inbox);
+        browser.selected = Some(1);
+        browser.key(KeyCode::Enter);
+        assert!(browser.inspecting());
+        browser.key(KeyCode::Char('h'));
+        assert!(browser.inspecting());
+        assert!(!browser.include_older_completions);
+        browser.key(KeyCode::Esc);
+        assert!(!browser.inspecting());
+        assert_eq!(
+            browser.selected_alert().map(|alert| alert.id.as_str()),
+            Some("failure")
+        );
+        browser.key(KeyCode::Char('h'));
+        assert!(browser.include_older_completions);
+
+        let delivery = WorkflowDelivery {
+            authority: WorkflowNotificationAuthority {
+                history_identity: "history-a".into(),
+                snapshot_id: 23.into(),
+            },
+            key: [3; 32],
+            policy_revision: 1,
+            attempt: 1,
+            state: WorkflowDeliveryState::Failed,
+        };
+        let mut with_retry = Alerts::new(Box::new(WorkflowAlertInbox {
+            page: WorkflowAlertPage {
+                history_identity: "history-a".into(),
+                snapshot_id: 23.into(),
+                alerts: vec![completion],
+                partial: false,
+                gaps: WorkflowAlertGaps::default(),
+            },
+            deliveries: vec![("completion".into(), delivery)],
+        }));
+        with_retry.key(KeyCode::Char('h'));
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| with_retry.draw(frame, false, None))
+                .unwrap();
+            let text = terminal.backend().to_string();
+            assert!(
+                text.contains("T retry delivery"),
+                "footer clipped at {width} columns: {text}"
+            );
+            assert!(
+                text.contains("h hide older"),
+                "footer clipped at {width} columns: {text}"
+            );
+            assert!(
+                text.contains("R refresh"),
+                "footer clipped at {width} columns: {text}"
+            );
+            assert!(
+                text.contains("Esc back"),
+                "footer clipped at {width} columns: {text}"
+            );
+        }
+
+        let mut without_retry = Alerts::new(fixture_inbox(vec![fixture_alert(
+            "old-completion",
+            WorkflowAlertKind::Completion,
+            cutoff.saturating_sub(1),
+        )]));
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| without_retry.draw(frame, false, None))
+                .unwrap();
+            let text = terminal.backend().to_string();
+            assert!(
+                text.contains("h older completions"),
+                "default footer clipped at {width} columns: {text}"
+            );
+            assert!(
+                text.contains("R refresh"),
+                "default footer clipped at {width} columns: {text}"
+            );
+            without_retry.key(KeyCode::Char('h'));
+            terminal
+                .draw(|frame| without_retry.draw(frame, false, None))
+                .unwrap();
+            let text = terminal.backend().to_string();
+            assert!(
+                text.contains("h hide older"),
+                "revealed footer clipped at {width} columns: {text}"
+            );
+            assert!(
+                text.contains("R refresh"),
+                "revealed footer clipped at {width} columns: {text}"
+            );
+            assert!(
+                text.contains("Esc back"),
+                "revealed footer clipped at {width} columns: {text}"
+            );
+            without_retry.key(KeyCode::Char('h'));
         }
     }
 }

@@ -1,0 +1,144 @@
+<!doctype html><html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><title>Agenturm — FD1 Native Evidence Scan</title><style>:root{color-scheme:light dark;--bg:#f7f5ef;--fg:#222722;--muted:#596157;--line:#ced1c6;--panel:#eeece3;--link:#694799}
+@media(prefers-color-scheme:dark){:root{--bg:#100f16;--fg:#f4f1eb;--muted:#b9afc5;--line:#443b52;--panel:#1b1722;--link:#c5adff}}
+*{box-sizing:border-box}html{scroll-behavior:smooth}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.8 system-ui,sans-serif}main{max-width:1040px;margin:auto;padding:32px clamp(20px,5vw,56px) 80px}nav{display:flex;flex-wrap:wrap;gap:12px 24px;border-bottom:1px solid var(--line);padding-bottom:20px;margin-bottom:32px;font-size:14px}a{color:var(--link);text-underline-offset:4px}h1,h2,h3{line-height:1.25;letter-spacing:-.025em}h1{font-size:clamp(32px,6vw,48px)}h2{font-size:30px;margin-top:52px;border-top:1px solid var(--line);padding-top:28px}h3{font-size:23px;margin-top:32px}p,li,td{overflow-wrap:anywhere}p{margin:20px 0}table{border-collapse:collapse;width:100%;margin:24px 0;font-size:15px}th,td{border:1px solid var(--line);padding:8px 12px;text-align:left;vertical-align:top}thead th{background:var(--panel)}code{font:14px/1.6 ui-monospace,monospace;background:var(--panel);border-radius:4px;padding:1px 5px}pre{background:var(--panel);border:1px solid var(--line);border-radius:8px;padding:14px 16px;overflow-x:auto}pre code{background:none;border:none;padding:0}ul,ol{padding-left:28px}</style></head><body><main>
+<nav><strong>Agenturm / FD1 native evidence</strong><a href="https://www.agenturm.dev/#demo">Interactive walkthrough ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/validation/rust-fd1-native-evidence.md">Markdown source ↗</a></nav>
+<h1>FD1 native evidence scan — Pi, Claude and Codex open shapes</h1>
+<p>Updated 23 November 2026. This record reports what a scan of this machine's</p>
+<p>actual native agent records found for the three open FD1 shapes. Prompt and</p>
+<p>result text is redacted throughout; only structure and field names are</p>
+<p>reported. An unavailable native witness is a dependency, not proof that a</p>
+<p>producer records the desired fact — and a positive witness is what allows</p>
+<p>typed attribution work to start.</p>
+<h2>A — Pi same-session worker relationships: no positive evidence</h2>
+<p><code>$PI_CODING_AGENT_DIR</code> is unset; the default <code>~/.pi/agent/sessions</code> holds 30</p>
+<p><code>.jsonl</code> session files (format version 3, October 2026) across 10</p>
+<p>project-named directories; every file was scanned.</p>
+<ul>
+<li>Event types present: <code>message</code> (13,080), <code>model_change</code> (75),</li>
+</ul>
+<p>  <code>context_edit</code> (52), <code>thinking_level_change</code> (38), <code>session</code> (30),</p>
+<p>  <code>compaction</code> (21), <code>grammar</code> (9). There is **no fork, worker or subagent</p>
+<p>  event type**.</p>
+<ul>
+<li>Recorded tool calls include <code>bash</code>, <code>edit</code>, <code>read</code>, <code>write</code>, <code>codemode</code>,</li>
+</ul>
+<p>  <code>caveman_retrieve</code>, and <code>mcp__ai_shed__*</code> — no <code>Agent</code>/<code>Task</code>-style</p>
+<p>  delegation invocation anywhere.</p>
+<ul>
+<li>The ubiquitous <code>parentId</code> field is ordinary message-chain threading, not a</li>
+</ul>
+<p>  worker relationship.</p>
+<ul>
+<li>The fields the Rust adapter looks for — <code>agentId</code> (pi.rs:106),</li>
+</ul>
+<p>  <code>parentSessionId</code> (pi.rs:360), <code>parentSession</code> (pi.rs:123) — occur **zero</p>
+<p>  times** in any file. The only subagent-adjacent text is an <code>Agent</code> tool</p>
+<p>  *schema declaration* (never invoked) inside one system prompt, which is</p>
+<p>  not a relationship record.</p>
+<p><strong>Disposition:</strong> the Pi fork-parent and worker-identity paths have no native</p>
+<p>data to validate against on this machine. FD1-Pi stays an explicit evidence</p>
+<p>gate; do not build typed attribution from fixtures.</p>
+<h2>B — Claude asynchronous workers: positive native evidence</h2>
+<p>Source: <code>~/.claude/projects/-home-abhishekash-abhi-codes-agentic-agenturm/</code></p>
+<p>(7 <code>.jsonl</code> files). Findings are from real Agent launches in live sessions</p>
+<p>(Claude Code 2.1.330); the declarations use tool name <strong><code>Agent</code></strong> — no</p>
+<p><code>Task</code>-named tool_use exists on this machine.</p>
+<h3>B1 — async launch with structured result: 3 positive records + 1 resolution</h3>
+<p>An assistant <code>Agent</code> tool_use declaration (<code>input</code> carries <code>description</code>,</p>
+<p><code>prompt</code>, <code>subagent_type</code>) is answered by exactly one user <code>tool_result</code></p>
+<p>whose row-level <code>sourceToolAssistantUUID</code> matches the declaring assistant</p>
+<p>uuid, with a structured <code>toolUseResult</code>:</p>
+<pre><code>
+{"isAsync": true, "status": "async_launched", "agentId": "&lt;16-hex&gt;",
+ "description": "&lt;str&gt;", "resolvedModel": "&lt;str&gt;", "prompt": "&lt;str&gt;",
+ "outputFile": "&lt;path under /tmp/claude-1000/...&gt;", "canReadOutputFile": true,
+ "canContinueAgent": true}
+</code></pre>
+<p>All three launches share this exact shape; no <code>completed</code> status exists in</p>
+<p>any transcript on this machine. The embedded text block is internal metadata</p>
+<p>prose, not a structured result.</p>
+<h3>B2 — later resolution: the peer-handback row</h3>
+<p>One resolution record observed: a user row with <code>isMeta: true</code>,</p>
+<p><code>promptSource: "system"</code>, <code>turnOrigin: "peer"</code>, whose <code>message.content</code> is a</p>
+<p><strong>bare string</strong> (not a block array) and whose <code>origin</code> object is:</p>
+<pre><code>
+{"kind": "peer", "from": "&lt;agentId of the async launch&gt;",
+ "senderTaskId": "&lt;same id&gt;", "name": "Explore", "body": "&lt;str&gt;",
+ "handback": true, "handbackReportText": "&lt;str&gt;",
+ "handbackToolUseId": "&lt;tool_use id from inside the subagent&gt;"}
+</code></pre>
+<p><code>origin.from</code> equals the async launch's <code>toolUseResult.agentId</code>. Surrounding</p>
+<p>mechanics are <code>queue-operation</code> rows (<code>enqueue</code>/<code>dequeue</code>/<code>remove</code> with</p>
+<p><code>reason: "absorbed_mid_turn"</code> and a <code>deliveryId</code>). Only one resolution was</p>
+<p>observed — enough to record the shape, not yet enough to implement</p>
+<p>resolution attribution.</p>
+<h3>B3 — worker transcripts and ancestry metadata</h3>
+<p><code>subagents/agent-&lt;agentId&gt;.jsonl</code> (filename = the agentId): every row</p>
+<p>carries <code>agentId</code>, <code>isSidechain: true</code>, and the <strong>parent session's</strong></p>
+<p><code>sessionId</code> (workers do not get their own session id), plus normal</p>
+<p><code>parentUuid</code> threading. The side file <code>agent-&lt;agentId&gt;.meta.json</code> carries:</p>
+<pre><code>
+{"agentType": "&lt;str&gt;", "isBuiltIn": true, "launchedWithDefaults": true,
+ "description": "&lt;str&gt;", "toolUseId": "&lt;the parent's Agent tool_use id&gt;",
+ "spawnDepth": 1, "requestShape": "background", "requestNonInteractive": true,
+ "model": "&lt;str&gt;", "pickedEffortModel": "&lt;str&gt;"}
+</code></pre>
+<p>and for worktree-spawned workers additionally <code>worktreePath</code>,</p>
+<p><code>spawnedWithWorktree: true</code>, <code>worktreeBranch</code>. The <code>meta.json</code> <code>toolUseId</code></p>
+<p>links the worker transcript back to the parent declaration; <code>origin.from</code></p>
+<p>links the handback to the worker. This is concrete message-ancestry</p>
+<p>evidence: parent session id + worker agentId + <code>isSidechain</code> + meta</p>
+<p><code>toolUseId</code>.</p>
+<h3>Negative findings within B</h3>
+<ul>
+<li><strong>Text-only results</strong> (tool_result without structured <code>toolUseResult</code>):</li>
+</ul>
+<p>  no positive evidence — all Agent results carry the structured object.</p>
+<ul>
+<li><strong>Multiple genuine tool_result rows for one tool_use id</strong>: none. Apparent</li>
+</ul>
+<p>  duplicates are always <code>type: "api-request-blob"</code> rows — recorded outbound</p>
+<p>  API request echoes with no uuid and no <code>sourceToolAssistantUUID</code> — never a</p>
+<p>  second genuine user tool_result.</p>
+<h3>What the decoder currently rejects</h3>
+<p><code>rust/agenturm-claude-harness/src/claude/worker_spawns.rs</code> requires</p>
+<p><code>status == "completed"</code> (line ~224) and a structured result (line ~223):</p>
+<p><code>async_launched</code> launches with a valid <code>agentId</code> are currently invisible;</p>
+<p>the peer-handback row (bare-string content, no <code>sourceToolAssistantUUID</code>)</p>
+<p>fails row deserialization and is ignored; <code>queue-operation</code> rows and</p>
+<p><code>.meta.json</code> files are never read. First-consumer-wins and the &gt;3</p>
+<p>declarations cap remain deliberate ambiguity guards.</p>
+<p><strong>Disposition:</strong> async launches have a positive, exactly-structured native</p>
+<p>witness (declaration → structured <code>async_launched</code> result with child</p>
+<p><code>agentId</code>, plus sidechain transcript and meta linkage). This is sufficient</p>
+<p>to implement a <strong>launch-only typed attribution</strong> — a child identity with a</p>
+<p>declared launched state and <strong>no completion claim</strong>. Resolution attribution</p>
+<p>(single sample) and <code>.meta.json</code> ingestion remain recorded shapes, not</p>
+<p>implemented facts.</p>
+<h2>C — Codex check/turn shapes: exec wraps shell in JavaScript source</h2>
+<p>Recent rollouts under <code>~/.codex/sessions/2026/11/*</code> record command execution</p>
+<p>as <code>custom_tool_call</code> rows with tool name <code>exec</code> whose <code>input</code> is a **string</p>
+<p>of JavaScript source** wrapping one or many shell commands (`const r=await</p>
+<p>&lt;cmd&gt;<code> with branching on </code>r.value<code>; </code>await Promise.allSettled([...])` running</p>
+<p>commands in parallel; <code>for p in &lt;paths&gt;; do … done</code> loops; <code>sed</code>/<code>rg</code></p>
+<p>chains). Three representative files with hundreds of such calls were</p>
+<p>recorded (2026-11-21 through 23). The most recent rollouts additionally</p>
+<p>contain a Codex collab layer as ordinary <code>function_call</code> rows —</p>
+<p><code>spawn_agent</code>, <code>wait_agent</code>, <code>followup_task</code>, <code>list_agents</code>,</p>
+<p><code>interrupt_agent</code>, <code>request_user_input_async</code>, <code>send_message_to_user_async</code></p>
+<p>— a worker-orchestration family separate from the exec shell layer.</p>
+<p><strong>Disposition:</strong> recognized direct-check coverage must eventually treat the</p>
+<p>exec/JS wrapper as a check candidate; the collab-layer function_calls are a</p>
+<p>new relationship evidence family. Neither is implemented by this record;</p>
+<p>both are now on file for the check-coverage and relationship inventories.</p>
+<h2>Outcome for FD1 scheduling</h2>
+<table>
+<thead><tr><th>Shape</th><th>Evidence</th><th>Scheduling</th></tr></thead>
+<tbody>
+<tr><td>Pi same-session worker relationships</td><td>Negative on all local records</td><td>Explicit evidence gate; no fixture-based work</td></tr>
+<tr><td>Claude async launch attribution</td><td>Positive (3 records, exact structure, ancestry)</td><td>Implement launch-only typed attribution next; no completion claim</td></tr>
+<tr><td>Claude peer-handback resolution</td><td>One observed record</td><td>Record the shape; implement only with more witnesses</td></tr>
+<tr><td>Claude text-only / duplicate results</td><td>Negative</td><td>Keep the deliberate rejections</td></tr>
+<tr><td>Codex exec/JS check wrapper; collab layer</td><td>Positive shapes recorded</td><td>Feed the check-coverage inventory; separate work item</td></tr>
+</tbody></table>
+</main></body></html>

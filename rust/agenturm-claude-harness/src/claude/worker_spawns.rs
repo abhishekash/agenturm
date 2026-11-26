@@ -2,7 +2,7 @@
 
 use super::{digest, identifier, worker_checkpoint};
 use agenturm_jsonl_source::{MAX_CURSOR, Result};
-use agenturm_protocol::observation::WorkerSpawn;
+use agenturm_protocol::observation::{WorkerLaunch, WorkerSpawn};
 use serde::Deserialize;
 use std::{collections::BTreeSet, fmt::Write};
 
@@ -89,8 +89,18 @@ struct Block<'a> {
 #[derive(Deserialize)]
 struct ToolResult<'a> {
     status: Option<&'a str>,
+    #[serde(rename = "isAsync")]
+    is_async: Option<bool>,
     #[serde(rename = "agentId")]
     child: Option<&'a str>,
+}
+
+/// A correlated Agent result claims either a spawned child or an asynchronously
+/// launched child. Both consume the declaration; neither claims a resolution.
+#[derive(Clone, Debug, PartialEq, Eq)]
+pub(super) enum WorkerOutcome {
+    Spawned(WorkerSpawn),
+    Launched(WorkerLaunch),
 }
 
 impl Row<'_> {
@@ -197,7 +207,7 @@ impl WorkerSpawns {
         raw: &[u8],
         session: &str,
         worker: &str,
-    ) -> Option<(String, WorkerSpawn)> {
+    ) -> Option<(String, WorkerOutcome)> {
         if !self.matches_turn_worker(worker) {
             return None;
         }
@@ -221,14 +231,20 @@ impl WorkerSpawns {
             return None;
         }
         let result = row.result?;
-        if result.status != Some("completed") {
-            return None;
-        }
-        let child_worker_id = result.child.filter(|id| identifier(id))?.to_owned();
-        let spawn = WorkerSpawn { child_worker_id };
-        spawn
-            .is_valid_for(Some(worker))
-            .then_some((operation, spawn))
+        let outcome = match (result.is_async, result.status) {
+            (_, Some("completed")) => WorkerOutcome::Spawned(WorkerSpawn {
+                child_worker_id: result.child.filter(|id| identifier(id))?.to_owned(),
+            }),
+            (Some(true), Some("async_launched")) => WorkerOutcome::Launched(WorkerLaunch {
+                child_worker_id: result.child.filter(|id| identifier(id))?.to_owned(),
+            }),
+            _ => return None,
+        };
+        let valid = match &outcome {
+            WorkerOutcome::Spawned(spawn) => spawn.is_valid_for(Some(worker)),
+            WorkerOutcome::Launched(launch) => launch.is_valid_for(Some(worker)),
+        };
+        valid.then_some((operation, outcome))
     }
 
     pub(super) fn enforce_checkpoint_budget(&mut self, base_bytes: usize) {
@@ -310,5 +326,78 @@ impl WorkerSpawns {
             turn_worker: Some(owner.to_owned()),
             declarations,
         })
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+
+    const OPENING: &[u8] = br#"{"type":"user","sessionId":"session","agentId":"parent","uuid":"turn","timestamp":"2026-10-24T12:00:00Z","message":{"role":"user"}}"#;
+    const DECLARATION: &[u8] = br#"{"type":"assistant","sessionId":"session","agentId":"parent","uuid":"declaration","timestamp":"2026-10-24T12:00:01Z","message":{"role":"assistant","content":[{"type":"tool_use","name":"Agent","id":"toolu_agent1","input":{"prompt":"private launch"}}]}}"#;
+    const ASYNC_RESULT: &str = r#"{"type":"user","sessionId":"session","agentId":"parent","uuid":"launch","sourceToolAssistantUUID":"declaration","timestamp":"2026-10-24T12:00:02Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_agent1","content":"private result"}]},"toolUseResult":{"isAsync":true,"status":"async_launched","agentId":"child","description":"side quest","resolvedModel":"claude-sonnet","prompt":"private prompt","outputFile":"/tmp/claude/child-output","canReadOutputFile":true,"canContinueAgent":true}}"#;
+    const COMPLETED_RESULT: &str = r#"{"type":"user","sessionId":"session","agentId":"parent","uuid":"completion","sourceToolAssistantUUID":"declaration","timestamp":"2026-10-24T12:00:03Z","message":{"role":"user","content":[{"type":"tool_result","tool_use_id":"toolu_agent1","content":"private result"}]},"toolUseResult":{"status":"completed","agentId":"child"}}"#;
+
+    fn tracked() -> WorkerSpawns {
+        let mut spawns = WorkerSpawns::start_turn(OPENING, "session", "parent");
+        spawns.note_declarations(DECLARATION, "session", "parent");
+        spawns
+    }
+
+    fn take(spawns: &mut WorkerSpawns, raw: &str) -> Option<(String, WorkerOutcome)> {
+        spawns.take_result(raw.as_bytes(), "session", "parent")
+    }
+
+    #[test]
+    fn real_async_shape_yields_a_launch_and_consumes_the_declaration() {
+        let mut spawns = tracked();
+        let (operation, outcome) = take(&mut spawns, ASYNC_RESULT).unwrap();
+        assert_eq!(operation, digest("toolu_agent1"));
+        assert_eq!(
+            outcome,
+            WorkerOutcome::Launched(WorkerLaunch {
+                child_worker_id: "child".into(),
+            })
+        );
+        // First consumer wins: a later completed result cannot double-claim.
+        assert!(take(&mut spawns, COMPLETED_RESULT).is_none());
+        assert!(take(&mut spawns, ASYNC_RESULT).is_none());
+    }
+
+    #[test]
+    fn completed_result_still_yields_a_spawn() {
+        let mut spawns = tracked();
+        let (operation, outcome) = take(&mut spawns, COMPLETED_RESULT).unwrap();
+        assert_eq!(operation, digest("toolu_agent1"));
+        assert_eq!(
+            outcome,
+            WorkerOutcome::Spawned(WorkerSpawn {
+                child_worker_id: "child".into(),
+            })
+        );
+    }
+
+    #[test]
+    fn unsupported_async_evidence_fails_closed() {
+        for (from, to) in [
+            (r#""isAsync":true"#, r#""isAsync":false"#),
+            (r#""isAsync":true,"#, ""),
+            (r#""status":"async_launched""#, r#""status":"queued""#),
+            (r#""agentId":"child","#, ""),
+            (r#""agentId":"child""#, r#""agentId":"not a valid id""#),
+            (
+                r#""tool_use_id":"toolu_agent1""#,
+                r#""tool_use_id":"toolu_agent1","is_error":true"#,
+            ),
+            (
+                r#""sourceToolAssistantUUID":"declaration""#,
+                r#""sourceToolAssistantUUID":"other""#,
+            ),
+        ] {
+            let raw = ASYNC_RESULT.replace(from, to);
+            assert_ne!(raw, ASYNC_RESULT);
+            let mut spawns = tracked();
+            assert!(take(&mut spawns, &raw).is_none(), "{raw}");
+        }
     }
 }

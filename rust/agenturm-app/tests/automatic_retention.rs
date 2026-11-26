@@ -138,10 +138,16 @@ fn json(output: Output) -> Value {
     serde_json::from_slice(&output.stdout).unwrap()
 }
 
-struct Receiver(Child);
+struct Receiver {
+    child: Child,
+    // Keep the pipe open after reading the address. Dropping it immediately
+    // races the receiver's next status print and can terminate the child with
+    // BrokenPipe before the readiness request completes.
+    _stdout: BufReader<std::process::ChildStdout>,
+}
 impl Receiver {
     fn start(db: &Path) -> Self {
-        let child = Command::new(env!("CARGO_BIN_EXE_agenturm"))
+        let mut child = Command::new(env!("CARGO_BIN_EXE_agenturm"))
             .args([
                 "serve-traces",
                 "--listen",
@@ -155,11 +161,13 @@ impl Receiver {
             .stderr(Stdio::inherit())
             .spawn()
             .unwrap();
-        let mut receiver = Self(child);
+        let stdout = BufReader::new(child.stdout.take().unwrap());
+        let mut receiver = Self {
+            child,
+            _stdout: stdout,
+        };
         let mut line = String::new();
-        BufReader::new(receiver.0.stdout.take().unwrap())
-            .read_line(&mut line)
-            .unwrap();
+        receiver._stdout.read_line(&mut line).unwrap();
         let address = line
             .trim()
             .strip_prefix("Listening for OTLP traces at http://")
@@ -185,8 +193,8 @@ impl Receiver {
 }
 impl Drop for Receiver {
     fn drop(&mut self) {
-        let _ = self.0.kill();
-        let _ = self.0.wait();
+        let _ = self.child.kill();
+        let _ = self.child.wait();
     }
 }
 

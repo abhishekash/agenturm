@@ -57,6 +57,20 @@ pub(super) fn render_task(handoff: &TaskHandoff, history: bool, html: bool) -> S
     }
 }
 
+pub(super) fn render_saved(handoff: &SavedHandoff, html: bool) -> String {
+    let title = format!("Handoff {}", handoff.id);
+    let sections = [
+        ("From", anchor_text(&handoff.from)),
+        ("To", anchor_text(&handoff.to)),
+        ("Note", handoff.note.clone()),
+    ];
+    if html {
+        html_sections(&title, &sections)
+    } else {
+        markdown_sections(&title, &sections)
+    }
+}
+
 fn write_export(db: &Path, handoff: &SavedHandoff) -> io::Result<PathBuf> {
     let db = db.canonicalize()?;
     if !db.is_file() {
@@ -503,6 +517,94 @@ mod tests {
         );
         assert!(staging.is_dir());
         assert!(destination.is_dir());
+    }
+
+    #[test]
+    fn document_export_refuses_an_existing_pair_and_keeps_the_first_copy() {
+        let scratch = Scratch::new();
+        let destination = scratch.0.join("preview");
+        export_documents(&destination, &[("handoff.md", "first")]).unwrap();
+        assert_eq!(
+            fs::read_to_string(destination.join("handoff.md")).unwrap(),
+            "first"
+        );
+        let error = export_documents(&destination, &[("handoff.md", "second")]).unwrap_err();
+        assert_eq!(error.kind(), io::ErrorKind::AlreadyExists);
+        assert_eq!(
+            fs::read_to_string(destination.join("handoff.md")).unwrap(),
+            "first"
+        );
+        assert_eq!(
+            fs::read_dir(&scratch.0)
+                .unwrap()
+                .filter_map(Result::ok)
+                .filter(|entry| entry.file_name().to_string_lossy().contains(".pending"))
+                .count(),
+            0
+        );
+    }
+
+    #[test]
+    fn decision_history_labels_current_and_superseded_versions_exactly() {
+        use agenturm_store::{SavedTaskDecision, TaskBrief, TaskDecisionInput, TaskDecisionKind};
+
+        let handoff = TaskHandoff {
+            task: agenturm_store::SavedTask {
+                id: 4,
+                anchor: None,
+                title: "Retain the API".into(),
+                note: "Operator note".into(),
+                completed: false,
+                archived: false,
+                revision: 7,
+                workspace_directory: None,
+            },
+            brief: TaskBrief {
+                intent: "Avoid a breaking change".into(),
+                ..TaskBrief::default()
+            },
+            decisions: vec![
+                SavedTaskDecision {
+                    id: 1,
+                    created_at_unix_ns: 1,
+                    decision: TaskDecisionInput {
+                        kind: TaskDecisionKind::Accepted,
+                        text: "Keep the old endpoint".into(),
+                        rationale: String::new(),
+                        scope: String::new(),
+                        supersedes_id: None,
+                    },
+                    source: None,
+                },
+                SavedTaskDecision {
+                    id: 2,
+                    created_at_unix_ns: 2,
+                    decision: TaskDecisionInput {
+                        kind: TaskDecisionKind::Rejected,
+                        text: "Remove the endpoint".into(),
+                        rationale: "Deprecate first".into(),
+                        scope: "Public callers".into(),
+                        supersedes_id: Some(1),
+                    },
+                    source: None,
+                },
+            ],
+            links: Vec::new(),
+            links_truncated: false,
+            git_snapshot: None,
+            git_diff: None,
+            continuity: Vec::new(),
+        };
+        let current = render_task(&handoff, false, false);
+        assert!(current.contains("Remove the endpoint"));
+        assert!(current.contains("current"));
+        assert!(!current.contains("Keep the old endpoint"));
+        let history = render_task(&handoff, true, true);
+        assert!(history.contains("Keep the old endpoint"));
+        assert!(history.contains("superseded"));
+        assert!(history.contains("Remove the endpoint"));
+        assert!(history.contains("Supersedes 1"));
+        assert!(history.contains("Revision 7"));
     }
 
     struct Scratch(PathBuf);

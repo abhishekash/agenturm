@@ -1,6 +1,6 @@
 # Core feature development: delegated test plan
 
-Updated 23 November 2026. The user assigned this implementation session to
+Updated 26 November 2026. The user assigned this implementation session to
 **core feature development** and a separate agent to test execution. This plan
 is the handoff contract. It supplements Q1–Q10 in the
 [remaining-work plan](../rfcs/rust-migration-remaining-plan.md).
@@ -18,7 +18,13 @@ scoped Store lib/test Clippy and a genuine metric-point identity upgrade
 regression pass. The reference Review fixture's `--help` now documents and can
 show the required import-path setup without loading the reference first.
 
-For the next broad execution use the corrective PR's merged head, record its
+The PR #394 standalone-fixture `--locked` failure was caused by a stale fixture
+lockfile. PR #395 merged the offline lockfile correction as `6c9ec8e`; the exact
+fixture build passes locally with `--offline --locked`, and fresh merged CI is
+running. The full PR #395 coordinator status remains separate from this plan's
+delegated source and artifact tests.
+
+For the next core broad execution use the current integrated main head, record its
 exact SHA and freeze artifacts. Keep this matrix pending until those actual
 CF1–CF5 and related Review identity scenarios run. Add an explicit shell loop
 (`for script in scripts/*.sh; do bash -n "$script" || exit; done`) rather than
@@ -38,10 +44,85 @@ context and known staging helpers are documented in the results report.
   for testing and fix returned defects. Do not duplicate the test agent's
   campaigns or call an implemented feature release-qualified prematurely.
 
-The base is merged `18aa7026be1041b93a0b8517874f5b518da44777` (PR #381).
-Its existing 833-test and development terminal/KVM results are historical
-baselines, not results for the new feature slices. Every new row starts
-**not run** until the test agent records evidence against the integrated head.
+## AP1 follow-up: `task create --snapshot`
+
+Implementation is on `feature/task-create-snapshot`. The flag is opt-in: a
+plain task create must remain metadata-only, while the flag captures Git only
+from the supplied local `--workspace`. If workspace capture or persistence
+fails after task creation, return the saved task and an explicit
+`snapshot_error`; do not hide the task ID or imply the snapshot succeeded.
+
+| Scenario | Required result | Status |
+| --- | --- | --- |
+| Create with `--snapshot` in a clean Git workspace | Saved task includes the captured repository, head, branch and change state; returned task revision reflects the saved capture. | PASS: integration fixture verifies top-level task ID, revision 2, repository/head/branch, zero change counts and persisted capture. |
+| Create with `--snapshot` in a dirty workspace | Capture remains read-only, excludes untracked file contents, and reports tracked/staged/unstaged state without claiming agent attribution. | PASS: staged/unstaged/untracked counts are exact; worktree status and Git index are unchanged; no private file body appears in output. |
+| Create without `--snapshot` | No Git capture occurs; existing task creation result and revision remain unchanged. | PASS: task creation succeeds for a non-Git directory, revision remains 1, and later show has no Git snapshot. |
+| Capture unavailable or workspace missing | Task remains saved and result includes its ID plus a clear `snapshot_error`; no false success claim. | PASS: missing repository and omitted workspace both preserve task ID/revision and return top-level `snapshot_error`. |
+
+Test-owner validation ran on `/tmp/agenturm-task-create-snapshot`, branch
+`feature/task-create-snapshot`, source base `afbdbdcf28f3e31f34eb3363c05b997cbad68526`
+plus the dirty implementation and test changes. The focused command
+`cargo test --offline --locked -p agenturm-app --test task_cli task_create_snapshot
+-- --nocapture` passed all 3 new tests. The app library command
+`cargo test --offline --locked -p agenturm-app --lib -- --quiet` passed 189
+tests. Strict lint passed with
+`cargo clippy --offline --locked -p agenturm-app --all-targets -- -D warnings`;
+`cargo fmt --all -- --check` also passed. These are local Git fixtures, not
+release-artifact qualification. The merged `18aa7026be1041b93a0b8517874f5b518da44777`
+(PR #381) and its existing 833-test / terminal-KVM results remain historical
+baselines, not results for this slice.
+
+## Workflow incident history toggle (`h`) follow-up
+
+Implementation review and focused test-only regressions ran on
+`feature/rust-workflow-history-toggle`, base `fd398c1`, with the owner’s dirty
+footer change and test-only additions in
+`rust/agenturm-ui/src/workbench/workflow_alerts.rs`. No production code was
+changed by the test lane. The acceptance matrix is:
+
+| Scenario | Expected result | Status |
+| --- | --- | --- |
+| Completion older than 10 days | Hidden initially; `h` reveals it; second `h` hides it. | PASS: regression uses an observation one nanosecond older than the sampled cutoff. |
+| Recent completions within the cutoff | Visible both before and after toggling. | PASS: regression checks rows 60 seconds and one day newer than the cutoff. Exact equality to a real-time cutoff is not separately tested. |
+| Old Failure, Interruption, Tokens, USD threshold and Elapsed threshold | Remain visible with history toggle off. | PASS: regression places each kind far outside the completion window. |
+| Selection on a visible row / selection on a row hidden by `h` | Preserve identity when visible; when hidden select first visible row, with stable deterministic behavior. | PASS: focused tests verify selection survives toggles and falls back to the first visible row only when hidden. |
+| Refresh/reorder/same-id row from another history or incarnation | Preserve exact matching alert only in the same history incarnation; otherwise clear stale detail and fall back safely. | PASS: reorder preserves the selected exact alert/detail on the same history; a different history clears detail and falls back. |
+| Enter detail, press `h`, Esc | Detail remains scoped; `h` does not change the list while detail is open; Esc returns to the selected incident. | PASS: focused regression exercises the detail and return path. |
+| Footer at 120×32, 80×24, and 60×18 with and without retry | Toggle state and available actions remain readable without clipping. | PASS: rendered-frame regression verifies all controls in retry/no-retry and default/revealed states. Longest hint line is 51 terminal cells; all tested lines fit 60 columns. |
+
+Footer cell widths were measured with Unicode East Asian width: the retry
+footer lines are 44 and 46 cells in the default state, or 44 and 51 cells with
+older completions revealed; no-retry lines are 47/36 cells by default and
+25/51 cells after reveal. All fit at 60 columns.
+
+Focused
+`cargo test --offline --locked -p agenturm-ui workbench::workflow_alerts::tests -- --nocapture`
+passed 5/5. Full UI library tests
+`cargo test --offline --locked -p agenturm-ui --lib` passed 80/80. Strict
+`cargo clippy --offline --locked -p agenturm-ui --all-targets -- -D warnings`
+and `cargo fmt --all -- --check` passed. These are local UI tests, not an
+installed paired Python/Rust journey; that broader parity remains pending.
+
+## Searchable action palette (`Ctrl+P` / `:`) follow-up
+
+PR #396 already integrated the shared searchable command/session palette,
+context-aware action registry and F2 theme picker. The previous standalone
+palette prototype's 88-test run on `fd398c1` is historical and does not qualify
+the rebased follow-up. This branch only adds `:` as an alternate launcher and
+within-word fuzzy search over the existing command entries; no second palette
+implementation or command registry is introduced.
+
+| Scenario | Expected result | Status |
+| --- | --- | --- |
+| `:` and Ctrl+P launch / text-entry focus isolation | Both launch the existing command palette outside text entry; while the agent search field is focused, neither opens the palette and `:` remains literal input. | PASS: `cargo test --offline --locked -p agenturm-ui workspace::tests::colon_opens_commands_but_stays_literal_in_text_search --quiet` (1 passed). |
+| Exact and fuzzy theme search | `theme` finds Themes without cross-field false matches; `thms` remains a valid within-word fuzzy query. | PASS: `cargo test --offline --locked -p agenturm-ui palette::tests --quiet` (10 passed), including exact `theme` and fuzzy `thms`. |
+| Session chooser and selection return | Ctrl+P retains the shared session chooser; selecting a session preserves identity, and Escape returns to the prior context. | PASS: `cargo test --offline --locked -p agenturm-ui workspace::tests::ctrl_p_opens_the_searchable_palette_and_themes_stay_on_f2 --quiet` and `cargo test --offline --locked -p agenturm-ui workspace::tests::session_chooser_keeps_exact_identity_and_owns_escape --quiet` (1 passed each). |
+| F2 theme routing and footer | Themes remain on F2 and footer hints come from the shared key inventory. | PASS: the Ctrl+P/F2 test above and `cargo test --offline --locked -p agenturm-ui keymap::tests::footer_hints_come_from_the_inventory --quiet` (1 passed). |
+| Full UI library and static checks | Rebased shared palette compiles and all UI library tests pass with strict Clippy and formatting. | PASS on final amended HEAD `8ee7f87`: `cargo test --offline --locked -p agenturm-ui --lib --quiet` (161 passed); `cargo clippy --offline --locked -p agenturm-ui --all-targets -- -D warnings`; `cargo fmt --all -- --check`. |
+
+Focused qualification completed on the rebased source head. These unit tests do
+not establish installed paired Python/Rust parity or palette PTY journeys;
+those remain in UI-Q. The full workspace build/check is tracked separately.
 
 ## Feature handoff board
 
@@ -53,11 +134,40 @@ baselines, not results for the new feature slices. Every new row starts
 | CF4 | Body-free OTLP error/fatal logs in failure investigation, including explicit `--kind log`; existing Findings private log view unchanged. | `/tmp/agenturm-core-development` | Separate test agent; not run on new source. |
 | CF5 | Implemented: exact native Claude worker-spawn facts and declared-child metadata in session evidence. | `/tmp/agenturm-native-presence` + `/tmp/agenturm-review-session-edits` | Separate test agent; execute on the supplied integrated source head. |
 | CF6 | Implemented: combined deduplicated usage/cost totals that exclude and count reports overlapping at exact `(target source, session)` identity; unattributed telemetry contributes with a disclosed boundary. | Development branch `feature/combined-usage-dedup` | Separate test agent; not run on new source. |
-| CF7 | Implemented: cross-host terminal routing through an explicit operator-authored attach-time route file; fixed read-only tmux and `/proc` probes resolve one exact remote pane or report unavailable. | Development branch (see PR) | Separate test agent; not run on new source. |
+| CF7 | Implemented: cross-host terminal routing through explicit route files and endpoint-keyed saved receiver profiles; fixed read-only tmux and `/proc` probes resolve one exact remote pane or report unavailable. | `/tmp/agenturm-route-profile`, `feature/receiver-route-profile` (base `afbdbdc`; dirty implementation tree) | Test-owner unit regressions pass; live receiver/transport and frozen-artifact scenarios remain not run. |
+| CF8 | Implemented: Claude private edit detail through the harness-generic operation contract — adapter `file_edit` summaries, schema-23 grants with a v22 upgrade path, bounded credential-screened reveal under a Claude fingerprint domain, cross-kind grant denial. | Development branch (see PR) | Separate test agent; not run on new source. |
+| CF9 | Implemented: Claude async launch attribution — a `worker_launch { child_worker_id }` fact from the real `isAsync`/`async_launched` record shape, with no completion claim and the checkpoint wire format unchanged. | Development branch (see PR) | Separate test agent; not run on new source. |
+| CF10 | Implemented: OpenCode patch-path evidence and independent schema-24 edit grants; canonical content commitment, provider-shaped local/broker proof and Review/turn selection. No invented diffs or add/delete counts. | `feature/opencode-edit-detail` | Installed/paired qualification remains with the separate test owner. |
+| CF11 | Proposed Codex JS `exec_command` wrapper checks. Recognition stays gated until native rollout evidence contains both an explicit exit-code-to-throw guard and a matching structured `isError` result. | `/tmp/agenturm-codex-check-wrapper` | BLOCKED: Nov rollout scan found zero qualifying guards and no structured `isError` on custom tool outputs; no check inference is qualified. |
 
 Worktree paths identify current ownership, not release artifacts. The developer
 must supply the final integrated commit before the test owner freezes a binary.
 Do not build different sources concurrently into one Cargo target directory.
+
+## UI-05 follow-up handoff — not run
+
+PR #396 (`afbdbdc`) merged the integrated UI candidate and Activity evidence
+filter to `main`. The current unmerged branch
+`feature/ui05-session-metrics` adds contextual session-to-Metrics navigation
+into the global catalog. Do not count the prior 991-test and PTY evidence as qualification for
+these follow-up changes.
+
+| ID | Required test | Acceptance | Status |
+| --- | --- | --- | --- |
+| UI05-A | Activity prompt-only filter and page query | At 120×32, 80×24 and 60×18, toggle `F` and the palette command. Only typed `Native request` events remain; prompt text is not read or inferred. Combine `/` search with the toggle, handle an empty prompt set, preserve the selected event when it remains visible, preserve mode across older/newer page replacement, and restore all events on the second toggle. Verify another pane and MCP `f` server filtering are unaffected. Compare the tagged Python `Prompts` button journey. | Not run; implementation `81c7357`. |
+| UI05-B | Activity worker attribution | Inspect ordinary activity with a recorded worker, no worker, WorkerSpawn and WorkerLaunch. Show exact worker, `Worker: Unreported`, or separately named `Parent worker: Unreported` as appropriate. Verify the same rows at all three sizes; do not infer a parent or child ID. | Not run; implementation `81c7357`. |
+| UI05-C | Session-to-Metrics navigation and honest scope | From roster and inspector, press `K` or invoke the palette action and open the global Metrics catalog. Verify its query is unscoped (`source_id=None`), the UI does not imply these series belong to the selected session, and Escape returns to the same session selection. Record that current `otlp.*` source IDs do not link to ordinary `harness.*` session IDs, so true per-session Metrics is still pending typed linkage. | Passed scoped PTY on `b57af26` at 100×26: K and palette opened the global catalog, explicit non-link scope was shown, Escape restored the same row, normal quit restored terminal. True per-session metric linkage remains open. Evidence: `/tmp/agenturm-ui05-k-navigation.txt`. |
+
+The merged bundle PTY failure is a stale test expectation in
+`scripts/validate_rust_default_cockpit.py`: it checks for `Project unavailable 1`
+but the latest command center copy is `No recorded project 1`. The evidence
+shows the requested search and selected row. The test owner updates and reruns
+that assertion against the frozen source; this implementation branch does not
+edit the test script.
+
+Run these against a frozen integrated source and binary. Keep UI-Q's paired
+screen matrix, live broker/private grant cases, release archive and independent
+sign-off as separate gates.
 
 ## CF1 — native session presence
 
@@ -253,12 +363,24 @@ tail (NUL-count, basename and length all checked), the tmux pane inventory,
 and a pane-process re-verification. The unique resolved target is presented as
 an attach command; Agenturm never selects a remote pane, answers, or approves.
 
-**Developer handoff:** eight focused routing tests including a fake-route
-end-to-end that emulates `ssh` argument joining — unique resolution, ambiguous
-snapshot rejection, stale pane rejection, base64 round-trip, route-file
-validation — plus the attach-option parse test, workspace all-target strict
-Clippy and fmt. These are developer checks against synthetic routes, not a
-qualification of any real transport.
+**Developer and test-owner results:** on `/tmp/agenturm-route-profile`, branch
+`feature/receiver-route-profile`, base `afbdbdc` plus the current dirty source
+and test changes, `cargo test --offline --locked -p agenturm-app --lib --
+--quiet` passed all 194 tests. Focused saved-profile tests passed with
+`cargo test --offline --locked -p agenturm-app saved_route_ -- --nocapture`
+(3 passed), and the offline/no-token command passed with
+`cargo test --offline --locked -p agenturm-app
+forget_route_completes_offline_without_a_token_file -- --nocapture` (1 passed).
+The tests cover endpoint-keyed profile isolation and receiver-identity mismatch,
+narrow forget, owner/mode checks (0700 directory, 0600 file), route-file
+validation and size/non-regular rejection, saved-file and directory symlink
+rejection, atomic replacement without a staging-file leak, native-only option
+parsing, and `--forget-route --endpoint ...` deleting an existing profile
+without a token file or available receiver. These unit checks use local files
+and a closed loopback port; they do not qualify a real transport or frozen
+artifact. `cargo fmt --all -- --check` and `git diff --check` passed.
+Strict app lint also passed with
+`cargo clippy --offline --locked -p agenturm-app --all-targets -- -D warnings`.
 
 | Scenario | Required observation | Status |
 | --- | --- | --- |
@@ -268,10 +390,142 @@ qualification of any real transport.
 | Worker/unsupported provider/missing configuration | Worker requests, non-Codex/Claude/Kiro sources, unsafe session identifiers and absent route files fail closed with exact reasons. | Not run |
 | Probe hygiene | Probes are read-only, bounded in output and time, carry no session bytes in script text, and leave no temporary files behind on the receiver host. | Not run |
 | Return selection at all three sizes | 120×32, 80×24 and 60×18 preserve the Workflow selection after routing results and errors. | Not run |
-| Python receiver protocol | `--route-file` with `--receiver-protocol python-v0.2.8` is rejected at parse time. | Not run |
+| Python receiver protocol | `--route-file`, `--save-route` and `--forget-route` with `--receiver-protocol python-v0.2.8` are rejected at parse time. | PASS in parser unit fixture; a real Python receiver was not contacted. |
+| Saved receiver route | `--route-file PATH --save-route` writes a private per-user profile keyed by endpoint and records the authenticated receiver identity; a later attach reuses it only if the same identity authenticates. `--forget-route --endpoint http://127.0.0.1:PORT` removes by endpoint without contacting the receiver or requiring a token file. Verify mode 0600 file, mode 0700 directory, symlink rejection, atomic overwrite, missing/corrupt profile behavior and a receiver replacement at the same endpoint. | Partial PASS in unit fixtures: permissions, symlinks, atomic replace, endpoint scope, identity mismatch/replacement, native option parsing and offline/no-token forget pass. Corrupt profile, online authenticated attach, and frozen artifact remain not run. |
 
-All CF7 scenarios are **not run** until the test owner records actual results
+Live receiver/transport and frozen-artifact CF7 scenarios remain **not run**;
+the saved-profile unit results above do not qualify an installed candidate.
+
+## CF8 — Claude private edit detail
+
+Implemented with the FD2 first provider slice. The operation-detail reveal
+contract is harness-generic: a shared protocol recognition contract derives
+the `FileEdit` summary both in the Claude adapter fact and at reveal
+re-recognition, `claude.edit_detail` grants live at store schema 23 (with a
+verified v22 upgrade that preserves prior approvals), the source-side reveal
+locates the exact assistant row by committed byte offset within the admitted
+proof range, re-verifies session/worker/timestamp/operation identity, and
+extracts a bounded payload — strings truncated on char boundaries with an
+explicit `truncated` flag, and credential-shaped or bidirectional text
+withholds the whole payload. Cross-kind grants deny explicitly; malformed
+inputs withhold without failing the line; no turn identity is invented
+store-side or re-derived source-side.
+
+**Developer handoff:** adapter unit tests for Write/Edit/MultiEdit counts,
+case-insensitivity, no-leak and skip-on-malformed; a schema v22→v23 upgrade
+regression with prior-grant retention; and a real-binary integration test
+covering grant requirement, bounded reveals, 3 KiB→2 KiB truncation,
+wrong-turn/wrong-operation/malformed denials, cross-kind denial,
+changed-source denial and revoke — all green alongside every pre-existing
+Codex/Pi/Kiro content test. Workspace strict Clippy and fmt clean.
+
+| Scenario | Required observation | Status |
+| --- | --- | --- |
+| Installed binary + real Claude adapter against a real transcript | Grant-gated bounded reveal of exact edits; no content in query output. | Not run |
+| Schema upgrade on a live database | v22→v23 keeps prior approvals; `claude.edit_detail` grants become accepted; older kinds unchanged. | Not run |
+| Truncation and screening | Long content truncates at 2 KiB on a char boundary with the flag; credential-shaped or bidi text withholds the payload. | Not run |
+| Cross-kind and revoked grants | `codex.edit_detail` on a Claude source (and vice versa) denies; revoke denies; changed source bytes deny. | Not run |
+| Dense lines and malformed shapes | Dense batches keep the 256-record/64 KiB budget; missing input, non-file tools and out-of-range MultiEdit withhold without failing the line. | Not run |
+| Terminal reveal at all three sizes | 120×32, 80×24 and 60×18 render the bounded edit payload with selection preserved. | Not run |
+
+All CF8 scenarios are **not run** until the test owner records actual results
 on the frozen integrated head.
+
+## CF9 — Claude async launch attribution
+
+Implemented with the FD1 Claude-async slice, licensed by the
+[native evidence record](rust-fd1-native-evidence.md). A `worker_launch` fact
+correlates an assistant `Agent` tool_use declaration to its structured
+`toolUseResult {isAsync: true, status: "async_launched", agentId}` through the
+same declaration tracking, first-consumer-wins consumption and turn-ownership
+fences as the completed-spawn proof. It claims a child identity and a
+launched state only — no completion, no resolution, no liveness. The
+checkpoint wire format is unchanged; evidence presentation says "launched"
+without completion wording, and the "Declared child workers on page" count
+still counts completed spawns only — a disclosed difference, not a silent
+semantic change.
+
+**Developer handoff:** worker_spawns unit tests with the real record shape
+(launch + declaration consumption; completed path unchanged; deny cases for
+`isAsync` false/missing, other statuses, missing/invalid agentId, errors and
+wrong assistant), a line-level adapter test (launch fact emitted, no spawn
+fact, no private-text leak), store round-trip and admission tests with the
+deny-unknown-fields case, and a presentation test asserting no completion
+wording — all green on the rebased head with workspace strict Clippy and fmt.
+
+| Scenario | Required observation | Status |
+| --- | --- | --- |
+| Real async launch in an actual Claude transcript | One launch fact with the exact child agentId and parent operation; no completion wording anywhere. | Not run |
+| Declaration consumption and ambiguity | A later result for the same declaration never double-claims; duplicates and errors stay withheld. | Not run |
+| Checkpoint continuity | The declaration checkpoint format round-trips unchanged across restart; older cursors stay readable. | Not run |
+| Relationships projection and roster | Launches appear in the relationships projection without claiming completed parentage or roster recency. | Not run |
+| Declared-child count disclosure | The "Declared child workers on page" count stays spawn-only and the launched rows are visibly separate. | Not run |
+
+All CF9 scenarios are **not run** until the test owner records actual results
+on the frozen integrated head.
+
+## CF10 — OpenCode patch-path detail
+
+The [implementation and acceptance handoff](rust-opencode-edit-detail.md)
+defines the source inventory, canonical content commitment, `oc5` sweep,
+schema-24 independent grant, provider-shaped edit proof, bounded path-only
+reveal and separate installed/paired acceptance matrix. It does not claim
+native diffs, add/delete counts, exact first-turn attribution or worker linkage.
+All installed/paired CF10 scenarios remain **not run** until the test owner
+records results against the final integrated source and artifact.
+
+## CF11 — Codex JS exec-wrapper check gate
+
+**Native evidence review (26 November 2026):** a structure-only scan of the
+available November Codex rollouts found no wrapper containing one literal
+`exec_command` with an explicit `exit_code`-to-throw guard (0 observed). The
+observed `custom_tool_call_output` rows did not contain a structured
+boolean `isError`; their output was represented as a list or string. Therefore
+the proposed JS-wrapper check signal has no observed native producer contract
+and cannot safely generate typed test/lint/build facts. Keep recognition
+disabled and do not infer check success or failure from command text, prose,
+or native exit text alone. The wrapper feature remains gated until a real
+serialized Codex example supplies both required witnesses on the same matched
+tool-call/result identity.
+
+The same scan found 2,341 `spawn_agent` function calls whose stringified
+arguments carry `task_name`, `message`, and sometimes `fork_turns`. Of 2,089
+outputs matched by native call ID, all were strings and none carried a typed
+child identity. Keep this collaboration family unsupported for relationship
+facts; names remain sourced from native Codex metadata, not task text.
+
+The following acceptance cases are intentionally **BLOCKED / not run** until
+such a native witness is captured. Synthetic fixtures can be used after a
+producer example establishes the shape; they cannot replace that evidence.
+
+| Acceptance case | Required behavior once the native contract is established | Status |
+| --- | --- | --- |
+| Literal test, lint and build command | One literal test/lint/build command plus an explicit nonzero `exit_code`-to-throw guard is eligible for a pending typed check. | Blocked: no qualifying native wrapper observed. |
+| Matched structured output | Emit only after the corresponding call ID receives a structured boolean `isError`; false means passed and true means failed. The call and check share one operation identity. | Blocked: native outputs expose no structured `isError` field. |
+| Checkpoint round-trip | A pending call/category survives a harness restart and emits only when the matching output arrives. | Not run; feature remains gated. |
+| Multiple/dynamic/template commands and absent guard | Multiple calls, dynamically computed or template commands, and missing guards do not fabricate checks. | Not run; feature remains gated. |
+| Unknown output, wrong call ID, other tool names | Unstructured text, mismatched output identity and tools other than exact `exec` cannot create or resolve a check. | Not run; feature remains gated. |
+| Content privacy | Raw command and output content never appears in projected check facts. | Not run; feature remains gated. |
+
+Do not use unit-test passes from the speculative implementation snapshot as
+qualification evidence. When a real producer sample becomes available, add
+test-only fixture coverage, run the focused Codex harness suite, strict harness
+Clippy and fmt, and update this section against the exact source commit.
+
+## Scoped CI fix confirmations — 26 November 2026
+
+These local checks confirm the specific follow-up commits only. Full PR CI and
+broader feature qualification remain pending.
+
+| PR / commit | Focused result | Exact local checks |
+| --- | --- | --- |
+| #398 / `54483d8` (Pi edit and Claude MCP content fixes) | PASS: strict workspace Clippy; Pi harness 28 tests; Pi edit reveal 2 tests; Claude MCP reveal 2 tests. | `cargo clippy --offline --locked --workspace --all-targets -- -D warnings`; `cargo test --offline --locked -p agenturm-pi-harness --quiet`; `cargo test --offline --locked -p agenturm-content --lib pi_edit_reveal --quiet`; `cargo test --offline --locked -p agenturm-content --lib claude_mcp_reveal --quiet`. |
+| #399 / `07e3691` (prompt-signals example lockfile) | PASS: locked standalone example test, including the host-compatibility integration test (1 passed). | `cargo test --locked --manifest-path examples/rust_prompt_signals_extension/Cargo.toml`. |
+| #400 / `2bdc1c5` (task CLI help assertion) | PASS: exact task CLI regression now sees the documented `agenturm task add` command (1 passed). | `cargo test --offline --locked -p agenturm-app --test task_cli tasks_refuse_missing_or_unrelated_history_without_creating_workspace -- --exact`. |
+| #401 / `000549b` (Workflow history rebased on current main) | PASS: 5 focused Workflow tests; full UI library 163 tests; strict Clippy, fmt and diff checks. | `cargo test --offline --locked -p agenturm-ui workbench::workflow_alerts::tests -- --nocapture`; `cargo test --offline --locked -p agenturm-ui --lib --quiet`; `cargo clippy --offline --locked -p agenturm-ui --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `git diff --check`. |
+
+These results do not replace the running/required PR CI, Linux bundle PTY
+rerun, or remaining feature and artifact acceptance checks.
 
 ## Related Review identity fixes — delegated regression
 
