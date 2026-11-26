@@ -102,7 +102,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 24;
+const SCHEMA_VERSION: i64 = 26;
 pub const MAX_HOST_HISTORY_PAGE: usize = 64;
 const MAX_BATCH_EVENTS: usize = 2_048;
 pub const MAX_OTLP_BATCH_SPANS: usize = 1_024;
@@ -126,7 +126,9 @@ const STORE_MARKER_V20: &str = "agenturm.observation-store.v20";
 const STORE_MARKER_V21: &str = "agenturm.observation-store.v21";
 const STORE_MARKER_V22: &str = "agenturm.observation-store.v22";
 const STORE_MARKER_V23: &str = "agenturm.observation-store.v23";
-const STORE_MARKER: &str = "agenturm.observation-store.v24";
+const STORE_MARKER_V24: &str = "agenturm.observation-store.v24";
+const STORE_MARKER_V25: &str = "agenturm.observation-store.v25";
+const STORE_MARKER: &str = "agenturm.observation-store.v26";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -677,7 +679,9 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         21 => STORE_MARKER_V21,
         22 => STORE_MARKER_V22,
         23 => STORE_MARKER_V23,
-        24..=SCHEMA_VERSION => STORE_MARKER,
+        24 => STORE_MARKER_V24,
+        25 => STORE_MARKER_V25,
+        26..=SCHEMA_VERSION => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -1503,10 +1507,22 @@ impl Store {
             validate_marked_shape(&transaction, 22)?;
             transaction.commit()?;
         }
-        if (2..24).contains(&schema_version) {
+        if (2..25).contains(&schema_version) {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
-            content_grant::migrate_grant_schema(&transaction, 24)?;
+            content_grant::migrate_grant_schema(&transaction, 25)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V25],
+            )?;
+            transaction.pragma_update(None, "user_version", 25)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 25)?;
+        }
+        if (2..26).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            content_grant::migrate_grant_schema(&transaction, 26)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],
@@ -3263,6 +3279,165 @@ mod tests {
                 .unwrap()
                 .unwrap()
                 .is_none()
+        );
+    }
+
+    #[test]
+    fn v24_to_v26_preserves_legacy_grants_and_separates_pi_edit_from_claude_mcp() {
+        use agenturm_kernel::{
+            FileChange, McpMethod, Observation, ObservationIdentity, ObservationKind,
+        };
+
+        let db = TempDb::new();
+        let source = ExtensionId::parse("harness.provider").unwrap();
+        let codex_mcp =
+            ContentGrantScope::new(source.clone(), ContentKind::CodexMcpPayload, [1; 32]);
+        let claude_edit =
+            ContentGrantScope::new(source.clone(), ContentKind::ClaudeEditDetail, [2; 32]);
+        let pi_edit = ContentGrantScope::new(source.clone(), ContentKind::PiEditDetail, [3; 32]);
+        let claude_mcp =
+            ContentGrantScope::new(source.clone(), ContentKind::ClaudeMcpPayload, [4; 32]);
+        let mut store = Store::open(&db.0).unwrap();
+        let prior_codex_mcp = store.grant_content(&codex_mcp).unwrap();
+        let prior_claude_edit = store.grant_content(&claude_edit).unwrap();
+
+        // Recreate the v24 grant constraint while retaining exactly the rows
+        // that v24 could represent, then exercise Store::open's real two-step
+        // v24 -> v25 -> v26 upgrade path.
+        let transaction = store.connection.transaction().unwrap();
+        content_grant::migrate_grant_schema(&transaction, 24).unwrap();
+        transaction
+            .execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V24],
+            )
+            .unwrap();
+        transaction.pragma_update(None, "user_version", 24).unwrap();
+        transaction.commit().unwrap();
+        drop(store);
+
+        let mut store = Store::open(&db.0).unwrap();
+        assert_eq!(
+            store
+                .connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            26
+        );
+        store
+            .verify_content_grant(&codex_mcp, &prior_codex_mcp)
+            .unwrap();
+        store
+            .verify_content_grant(&claude_edit, &prior_claude_edit)
+            .unwrap();
+        assert!(store.current_content_grant(&pi_edit).unwrap().is_none());
+        assert!(store.current_content_grant(&claude_mcp).unwrap().is_none());
+
+        let pi_grant = store.grant_content(&pi_edit).unwrap();
+        let claude_mcp_grant = store.grant_content(&claude_mcp).unwrap();
+        store.verify_content_grant(&pi_edit, &pi_grant).unwrap();
+        store
+            .verify_content_grant(&claude_mcp, &claude_mcp_grant)
+            .unwrap();
+        assert!(
+            store
+                .verify_content_grant(&pi_edit, &claude_mcp_grant)
+                .is_err()
+        );
+        assert!(store.verify_content_grant(&claude_mcp, &pi_grant).is_err());
+
+        let mut identity = ObservationIdentity::session("session-one");
+        identity.turn_id = Some("turn-one".into());
+        identity.operation_id = Some("pi-operation".into());
+        let pi_change = Observation {
+            harness_id: source.clone(),
+            event_id: "pi-edit-event".into(),
+            revision: 0,
+            identity: identity.clone(),
+            observed_at_unix_ns: 10,
+            kind: ObservationKind::FileChange(FileChange {
+                files: 1,
+                digest: "a".repeat(64),
+            }),
+        };
+        identity.operation_id = Some("claude-operation".into());
+        let claude_call = Observation {
+            harness_id: source.clone(),
+            event_id: "claude-mcp-event".into(),
+            revision: 0,
+            identity,
+            observed_at_unix_ns: 20,
+            kind: ObservationKind::McpCall {
+                server: Some("server".into()),
+                tool: Some("lookup".into()),
+                method: McpMethod::ToolsCall,
+                duration_ns: None,
+                result: "started".into(),
+            },
+        };
+        store
+            .commit(
+                source.as_str(),
+                None,
+                "v2:fixture-receipt",
+                &[pi_change, claude_call],
+            )
+            .unwrap();
+        let pi_selection = CodexOperationSelection {
+            session_id: "session-one",
+            event_id: "pi-edit-event",
+            revision: 0,
+            operation_id: "pi-operation",
+            turn_id: Some("turn-one"),
+        };
+        let claude_selection = CodexOperationSelection {
+            session_id: "session-one",
+            event_id: "claude-mcp-event",
+            revision: 0,
+            operation_id: "claude-operation",
+            turn_id: Some("turn-one"),
+        };
+        assert!(
+            store
+                .with_user_content_fence(|store| store.current_codex_operation_evidence(
+                    &pi_edit,
+                    &pi_grant,
+                    &pi_selection,
+                ))
+                .unwrap()
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .with_user_content_fence(|store| store.current_codex_operation_evidence(
+                    &claude_mcp,
+                    &claude_mcp_grant,
+                    &claude_selection,
+                ))
+                .unwrap()
+                .unwrap()
+                .is_some()
+        );
+        assert!(
+            store
+                .with_user_content_fence(|store| store.current_codex_operation_evidence(
+                    &pi_edit,
+                    &claude_mcp_grant,
+                    &pi_selection,
+                ))
+                .unwrap()
+                .is_err()
+        );
+        assert!(
+            store
+                .with_user_content_fence(|store| store.current_codex_operation_evidence(
+                    &claude_mcp,
+                    &pi_grant,
+                    &claude_selection,
+                ))
+                .unwrap()
+                .is_err()
         );
     }
 

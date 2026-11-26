@@ -15,6 +15,10 @@ pub const MAX_PROMPT_REFERENCES: usize = 256;
 pub enum ContentKind {
     #[serde(rename = "pi.user_text")]
     PiUserText,
+    #[serde(rename = "pi.edit_detail")]
+    PiEditDetail,
+    #[serde(rename = "claude.mcp_payload")]
+    ClaudeMcpPayload,
     #[serde(rename = "codex.user_text")]
     CodexUserText,
     #[serde(rename = "claude.user_text")]
@@ -45,6 +49,8 @@ impl ContentKind {
     fn as_str(self) -> &'static str {
         match self {
             Self::PiUserText => "pi.user_text",
+            Self::PiEditDetail => "pi.edit_detail",
+            Self::ClaudeMcpPayload => "claude.mcp_payload",
             Self::CodexUserText => "codex.user_text",
             Self::ClaudeUserText => "claude.user_text",
             Self::KiroUserText => "kiro.user_text",
@@ -193,8 +199,14 @@ pub(super) fn create_schema(connection: &Connection, version: i64) -> Result<()>
         23 => {
             "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'claude.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')"
         }
-        24..=SCHEMA_VERSION => {
+        24 => {
             "kind IN ('pi.user_text', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'claude.edit_detail', 'opencode.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')"
+        }
+        25 => {
+            "kind IN ('pi.user_text', 'pi.edit_detail', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'claude.edit_detail', 'opencode.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')"
+        }
+        26..=SCHEMA_VERSION => {
+            "kind IN ('pi.user_text', 'pi.edit_detail', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'claude.mcp_payload', 'codex.edit_detail', 'claude.edit_detail', 'opencode.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')"
         }
         _ => return Err(StoreError::UnsupportedSchema(version)),
     };
@@ -491,7 +503,9 @@ impl Store {
         self.verify_content_writer()?;
         let observation_kind = match scope.kind {
             ContentKind::CodexMcpPayload => "mcp_call",
+            ContentKind::ClaudeMcpPayload => "mcp_call",
             ContentKind::CodexEditDetail if selection.turn_id.is_some() => "file_edit",
+            ContentKind::PiEditDetail if selection.turn_id.is_some() => "file_change",
             ContentKind::ClaudeEditDetail if selection.turn_id.is_some() => "file_edit",
             ContentKind::OpenCodeEditDetail if selection.turn_id.is_some() => "file_change",
             ContentKind::CodexCommandDetail if selection.turn_id.is_some() => "tool",
@@ -578,7 +592,9 @@ impl Store {
         self.verify_content_writer()?;
         if matches!(
             scope.kind,
-            ContentKind::CodexMcpPayload
+            ContentKind::PiEditDetail
+                | ContentKind::ClaudeMcpPayload
+                | ContentKind::CodexMcpPayload
                 | ContentKind::CodexEditDetail
                 | ContentKind::ClaudeEditDetail
                 | ContentKind::OpenCodeEditDetail

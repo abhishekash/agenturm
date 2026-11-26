@@ -21,6 +21,17 @@ parser.add_argument("--app", type=Path, required=True)
 args = parser.parse_args()
 checkout = args.checkout.resolve(strict=True)
 app = args.app.resolve(strict=True)
+schema_path = checkout / 'rust/agenturm-store/src/lib.rs'
+schema_source = schema_path.read_text()
+schema_matches = re.findall(
+    r"(?m)^[ \t]*const[ \t]+SCHEMA_VERSION[ \t]*:[ \t]*i64[ \t]*=[ \t]*(\d+)[ \t]*;[ \t]*$",
+    schema_source,
+)
+if len(schema_matches) != 1:
+    raise SystemExit(f'Expected exactly one integer SCHEMA_VERSION in {schema_path}')
+schema_version = int(schema_matches[0])
+if not 1 <= schema_version <= 2**31 - 1:
+    raise SystemExit(f'Invalid SCHEMA_VERSION in {schema_path}: {schema_version}')
 fixture=checkout/'rust/agenturm-app/src/trace_receiver/metrics/fixtures'
 source='otlp.metrics-final-proof'
 
@@ -63,7 +74,10 @@ with tempfile.TemporaryDirectory(prefix='agenturm-metrics-http-proof-') as folde
                     "SELECT cursor FROM agenturm_source_state WHERE source_id=?", [source]
                 ).fetchone()
                 version, = store.execute("PRAGMA user_version").fetchone()
-                assert version == 22
+                assert version == schema_version, (
+                    f"database schema {version} does not match source SCHEMA_VERSION "
+                    f"{schema_version} in {schema_path}"
+                )
                 points = tuple(row for row in rows if json.loads(row[2])["kind"] == "metric_point")
                 descriptors = tuple(row for row in rows if json.loads(row[2])["kind"] == "metric_descriptor")
                 return points, descriptors, cursor
