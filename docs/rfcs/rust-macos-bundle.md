@@ -23,7 +23,7 @@ with the installer included in that archive:
 
 ```sh
 tar -xzf ~/Downloads/agenturm-VERSION-macos-aarch64.tar.gz -C ~/Downloads
-sh ~/Downloads/agenturm-VERSION-macos-aarch64/install-rust-macos.sh install --version VERSION \
+bash ~/Downloads/agenturm-VERSION-macos-aarch64/install-rust-macos.sh install --version VERSION \
   --archive ~/Downloads/agenturm-VERSION-macos-aarch64.tar.gz \
   --checksum ~/Downloads/agenturm-VERSION-macos-aarch64.tar.gz.sha256
 ```
@@ -47,7 +47,7 @@ the warning.
 ## Uninstall
 
 ```sh
-sh /path/to/extracted/agenturm-VERSION-macos-aarch64/install-rust-macos.sh uninstall
+bash /path/to/extracted/agenturm-VERSION-macos-aarch64/install-rust-macos.sh uninstall
 ```
 
 This removes only the installer-owned executable releases and launcher. It
@@ -71,6 +71,13 @@ the bundle to Apple's notary service, and only replaces the candidate archive
 and checksum after notarization succeeds. Gatekeeper must be able to verify
 the signed executables online on first use; do not remove quarantine or disable
 Gatekeeper.
+
+After signing a current archive and a previous supported archive, run
+`scripts/verify-rust-macos-install.sh CURRENT.tar.gz PREVIOUS.tar.gz` on a clean
+Apple Silicon Mac to check Gatekeeper assessment, install, upgrade, uninstall,
+retained history, and launch without Python or a Rust toolchain. A first macOS
+release has no previous macOS asset, so its upgrade gate must wait for the next
+signed release.
 
 ## Qualification status
 

@@ -78,6 +78,7 @@ trap 'rm -rf "$stage"' EXIT
 tar -xzf "$archive" -C "$stage" -- "$name"
 bundle="$stage/$name"
 [[ -f $bundle/release-metadata.json && -f $bundle/bin/agenturm && -f $bundle/bin/agenturm-plugin-host ]] || fail "archive is missing required bundle files"
+[[ $("$bundle/bin/agenturm" --version) == "agenturm $version" ]] || fail "archive version does not match --version"
 grep -q '"target": "aarch64-apple-darwin"' "$bundle/release-metadata.json" || fail "archive target metadata is not Apple Silicon macOS"
 grep -q '"minimum_macos": "13.0"' "$bundle/release-metadata.json" || fail "unsupported minimum macOS metadata"
 for executable in "$bundle"/bin/*; do
