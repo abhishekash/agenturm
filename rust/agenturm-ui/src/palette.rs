@@ -238,10 +238,7 @@ impl Palette {
             .entries
             .iter()
             .enumerate()
-            .filter(|(_, entry)| {
-                let haystack = entry.haystack();
-                words.iter().all(|word| haystack.contains(word))
-            })
+            .filter(|(_, entry)| words.iter().all(|word| entry.matches_word(word)))
             .map(|(index, _)| index)
             .collect();
         self.selection = previous_key
@@ -411,6 +408,21 @@ impl Palette {
             hint,
         );
     }
+}
+
+impl Entry {
+    fn matches_word(&self, query: &str) -> bool {
+        self.haystack()
+            .split_whitespace()
+            .any(|word| fuzzy_subsequence(query, word))
+    }
+}
+
+fn fuzzy_subsequence(query: &str, candidate: &str) -> bool {
+    let mut chars = candidate.chars();
+    query
+        .chars()
+        .all(|wanted| chars.any(|actual| actual == wanted))
 }
 
 struct StyleText {
@@ -636,6 +648,43 @@ mod tests {
             palette.key(key(KeyCode::Enter)),
             Outcome::Run("cockpit.themes".into())
         );
+    }
+
+    #[test]
+    fn fuzzy_search_stays_within_a_single_command_word() {
+        let mut palette = Palette::default();
+        palette.open_commands(vec![
+            Entry::command(
+                "themes",
+                "Appearance themes",
+                "Preview and apply colors",
+                "SYSTEM",
+            ),
+            Entry::command(
+                "today",
+                "Today",
+                "Show current work and recent outcomes",
+                "TIME",
+            ),
+            Entry::command("history", "History", "Show retained sessions", "TIME"),
+            Entry::command(
+                "refresh",
+                "Refresh sessions",
+                "Reload the current page",
+                "LIVE",
+            ),
+        ]);
+        for character in "theme".chars() {
+            palette.key(key(KeyCode::Char(character)));
+        }
+        assert_eq!(palette.selected().unwrap().key, "themes");
+        assert_eq!(palette.visible.len(), 1);
+        palette.key(KeyEvent::new(KeyCode::Char('a'), KeyModifiers::CONTROL));
+        for character in "thms".chars() {
+            palette.key(key(KeyCode::Char(character)));
+        }
+        assert_eq!(palette.selected().unwrap().key, "themes");
+        assert_eq!(palette.visible.len(), 1);
     }
 
     #[test]

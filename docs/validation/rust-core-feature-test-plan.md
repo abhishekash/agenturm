@@ -103,6 +103,27 @@ passed 5/5. Full UI library tests
 and `cargo fmt --all -- --check` passed. These are local UI tests, not an
 installed paired Python/Rust journey; that broader parity remains pending.
 
+## Searchable action palette (`Ctrl+P` / `:`) follow-up
+
+PR #396 already integrated the shared searchable command/session palette,
+context-aware action registry and F2 theme picker. The previous standalone
+palette prototype's 88-test run on `fd398c1` is historical and does not qualify
+the rebased follow-up. This branch only adds `:` as an alternate launcher and
+within-word fuzzy search over the existing command entries; no second palette
+implementation or command registry is introduced.
+
+| Scenario | Expected result | Status |
+| --- | --- | --- |
+| `:` and Ctrl+P launch / text-entry focus isolation | Both launch the existing command palette outside text entry; while the agent search field is focused, neither opens the palette and `:` remains literal input. | PASS: `cargo test --offline --locked -p agenturm-ui workspace::tests::colon_opens_commands_but_stays_literal_in_text_search --quiet` (1 passed). |
+| Exact and fuzzy theme search | `theme` finds Themes without cross-field false matches; `thms` remains a valid within-word fuzzy query. | PASS: `cargo test --offline --locked -p agenturm-ui palette::tests --quiet` (10 passed), including exact `theme` and fuzzy `thms`. |
+| Session chooser and selection return | Ctrl+P retains the shared session chooser; selecting a session preserves identity, and Escape returns to the prior context. | PASS: `cargo test --offline --locked -p agenturm-ui workspace::tests::ctrl_p_opens_the_searchable_palette_and_themes_stay_on_f2 --quiet` and `cargo test --offline --locked -p agenturm-ui workspace::tests::session_chooser_keeps_exact_identity_and_owns_escape --quiet` (1 passed each). |
+| F2 theme routing and footer | Themes remain on F2 and footer hints come from the shared key inventory. | PASS: the Ctrl+P/F2 test above and `cargo test --offline --locked -p agenturm-ui keymap::tests::footer_hints_come_from_the_inventory --quiet` (1 passed). |
+| Full UI library and static checks | Rebased shared palette compiles and all UI library tests pass with strict Clippy and formatting. | PASS on `d353e6f`: `cargo test --offline --locked -p agenturm-ui --lib --quiet` (161 passed); `cargo clippy --offline --locked -p agenturm-ui --all-targets -- -D warnings`; `cargo fmt --all -- --check`. |
+
+Focused qualification completed on the rebased source head. These unit tests do
+not establish installed paired Python/Rust parity or palette PTY journeys;
+those remain in UI-Q. The full workspace build/check is tracked separately.
+
 ## Feature handoff board
 
 | ID | Developer scope | Implementation worktree | Test owner/status |

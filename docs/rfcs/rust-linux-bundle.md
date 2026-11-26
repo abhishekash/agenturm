@@ -167,7 +167,7 @@ fully verified committed prefix before its workspace is shown.
 In the unreleased UI-parity source candidate (tested at `17206a4`), press `F2`
 to preview Observation, Current, Bright, Dark and Solarized, or
 choose Themes from the palette. Enter saves the selected theme; Escape restores
-the previous one. `Ctrl+P` opens the searchable cockpit command palette. The
+the previous one. `Ctrl+P` or `:` opens the searchable cockpit command palette. The
 shared palette applies to the command center, evidence tables, inspectors and
 dialogs.
 These shortcut changes do not modify published 0.3.8 binaries, where `F2` or
@@ -239,8 +239,8 @@ From Agents, `g` opens the cross-source Overview. Use `2` for Activity,
 `3` for MCP, `4` for Traces, `5` for recorded Host, `6` for Metrics,
 `7` for Findings, `9` for Operations, and `U` for workspace Usage. `H` opens
 live Host; `8` remains a trace alias. Press `T` in a history view to select a
-recorded turn, `F1` or `?` for scrollable contextual help, `Ctrl+P` for the
-command palette, and `q` to quit. Clipped numbered destinations stay available
+recorded turn, `F1` or `?` for scrollable contextual help, `Ctrl+P` or `:` for
+the command palette, and `q` to quit. Clipped numbered destinations stay available
 in both help and the palette. The available
 evidence varies by source. For Codex MCP calls the view includes the server,
 tool, method, duration and outcome when recorded.

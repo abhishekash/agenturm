@@ -2058,7 +2058,10 @@ impl Workspace {
                 palette::Outcome::Run(id) => self.run_action(sender, &id),
             };
         }
-        if keymap::palette(key) {
+        let focus = self.focus();
+        let colon_shortcut = key.code == KeyCode::Char(':')
+            && (key.modifiers.is_empty() || key.modifiers == KeyModifiers::SHIFT);
+        if (keymap::palette(key) || colon_shortcut) && !focus.text_entry() && !focus.chooser() {
             if self.prompt.is_none() {
                 self.open_palette();
             }
@@ -7184,6 +7187,37 @@ mod tests {
         assert!(workspace.palette.is_open());
         assert!(!workspace.key(&sender, plain_code(KeyCode::Esc)));
         assert!(!workspace.palette.is_open());
+    }
+
+    #[test]
+    fn colon_opens_commands_but_stays_literal_in_text_search() {
+        let mut workspace = Workspace::new();
+        workspace.agents.update(catalog(vec![session(
+            "harness.codex",
+            "one",
+            "running",
+            None,
+        )]));
+        let (sender, requests) = mpsc::channel();
+        assert!(!workspace.key(&sender, plain_key(':')));
+        assert!(workspace.palette.is_open());
+        for ch in "theme".chars() {
+            workspace.key(&sender, plain_key(ch));
+        }
+        assert_eq!(
+            workspace.palette.selected().unwrap().key,
+            keymap::id::THEMES
+        );
+        workspace.key(&sender, plain_code(KeyCode::Esc));
+        assert!(!workspace.palette.is_open());
+
+        workspace.agents.editing = true;
+        workspace.agents.search = "codex".into();
+        assert!(!workspace.key(&sender, plain_key(':')));
+        assert!(!workspace.key(&sender, ctrl(KeyCode::Char('p'))));
+        assert!(!workspace.palette.is_open());
+        assert_eq!(workspace.agents.search, "codex:");
+        assert!(requests.try_recv().is_err());
     }
 
     #[test]
