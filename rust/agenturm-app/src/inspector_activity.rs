@@ -323,6 +323,60 @@ mod tests {
     }
 
     #[test]
+    fn pi_review_edit_route_keeps_exact_private_occurrence_identity() {
+        let mut row = Observation {
+            harness_id: ExtensionId::parse("harness.pi.fixture").unwrap(),
+            event_id: "pi:generation:assistant-row:file-change-0".into(),
+            revision: 3,
+            identity: ObservationIdentity {
+                turn_id: Some("turn-exact".into()),
+                operation_id: Some("operation-exact".into()),
+                ..ObservationIdentity::session("session-exact")
+            },
+            observed_at_unix_ns: 12,
+            kind: ObservationKind::FileChange(agenturm_kernel::FileChange {
+                files: 1,
+                digest: "a".repeat(64),
+            }),
+        };
+        let selected = operation_detail(&row).expect("Pi FileChange should route into Review");
+        assert_eq!(selected.kind, OperationDetailKind::Edit);
+        assert_eq!(selected.source_id, "harness.pi.fixture");
+        assert_eq!(selected.session_id, "session-exact");
+        assert_eq!(selected.turn_id, "turn-exact");
+        assert_eq!(selected.operation_id, "operation-exact");
+        assert_eq!(
+            selected.event_id,
+            "pi:generation:assistant-row:file-change-0"
+        );
+        assert_eq!(selected.revision, 3);
+
+        row.identity.session_id = None;
+        assert!(
+            operation_detail(&row).is_none(),
+            "session identity is required"
+        );
+        row.identity.session_id = Some("session-exact".into());
+        row.identity.turn_id = None;
+        assert!(
+            operation_detail(&row).is_none(),
+            "turn identity is required"
+        );
+        row.identity.turn_id = Some("turn-exact".into());
+        row.identity.operation_id = None;
+        assert!(
+            operation_detail(&row).is_none(),
+            "operation identity is required"
+        );
+        row.identity.operation_id = Some("operation-exact".into());
+        row.event_id = "codex:wrong-prefix".into();
+        assert!(
+            operation_detail(&row).is_none(),
+            "Pi native event identity is required"
+        );
+    }
+
+    #[test]
     fn review_edits_page_through_sparse_history_without_crossing_scope_or_version() {
         let mut store = Store::open(":memory:").unwrap();
         let source = ExtensionId::parse("harness.codex.review-fixture").unwrap();
