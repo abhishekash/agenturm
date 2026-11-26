@@ -487,6 +487,21 @@ impl FollowDiscovery {
             }) {
                 continue;
             }
+            if shape == SourceShape::SqliteFile {
+                for path in regular_database(root)
+                    .map_err(|error| format!("scan {kind} sessions failed: {error}"))?
+                {
+                    let entry = source_entry(kind, plugin, &path)?;
+                    if wanted.contains(&entry.source_id) {
+                        sources.push(AuthorizedSource {
+                            source_id: entry.source_id,
+                            plugin_id: entry.plugin_id,
+                            source_root: entry.source_root,
+                        });
+                    }
+                }
+                continue;
+            }
             let mut scan = TranscriptScan {
                 harness: kind,
                 shape,
@@ -1000,6 +1015,7 @@ mod tests {
         let expected = [
             source_entry("codex", agenturm_runtime::CODEX_PLUGIN_ID, &retained).unwrap(),
             source_entry("claude", CLAUDE_PLUGIN_ID, &claude_retained).unwrap(),
+            source_entry("pi", PI_PLUGIN_ID, &pi_retained).unwrap(),
         ];
         let mut wanted = expected
             .iter()
