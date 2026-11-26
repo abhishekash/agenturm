@@ -20,7 +20,7 @@ const MAX_TEXT_INPUT: u64 = 4 * 1024;
 const MAX_BRIEF_INPUT: u64 = 128 * 1024;
 pub(super) const USAGE: &str = concat!(
     "usage: agenturm task list --db <history> [--all] [--search <text>] [--limit <1..200>] [--before <id>]\n",
-    "       agenturm task add --db <history> --title <title> [--notes <text>|--notes-file <path>] [--workspace <directory>]\n",
+    "       agenturm task <add|create> --db <history> --title <title> [--notes <text>|--notes-file <path>] [--workspace <directory>] [--snapshot]\n",
     "       agenturm task show <task-id> --db <history>\n",
     "       agenturm task <complete|reopen> <task-id> --db <history> [--expected-revision <n>]\n",
     "       agenturm task snapshot <task-id> --db <history> [--include-diff] [--expected-revision <n>]\n",
@@ -41,6 +41,7 @@ pub(super) const USAGE: &str = concat!(
     "       Python-backed task draft, approve-draft and continuity --approval-id use --receiver-protocol python-v0.2.8 --endpoint <loopback-http-url> --token-file <path> with --db.\n",
     "\nBrief fields are intent, acceptance_criteria, constraints, open_questions and next_action. Use hyphens in flags.\n",
     "Create is an alias for add. Results are JSON except task handoff, which defaults to Markdown.\n",
+    "Task creation reads workspace Git state only when --snapshot is explicitly supplied with --workspace.\n",
     "Handoff --output and export write private Markdown and HTML pairs.\n",
     "Task backup writes saved tasks, handoffs and their attached workbench data as a private SQLite file.\n",
 );
@@ -65,6 +66,7 @@ enum TaskAction {
         title: String,
         note: Option<TextInput>,
         workspace: Option<String>,
+        snapshot: bool,
     },
     Show(u64),
     Update {
@@ -184,7 +186,12 @@ pub(super) fn parse(args: &[String]) -> Result<TaskOptions, String> {
         }
         if matches!(
             flag.as_str(),
-            "--all" | "--restore" | "--json" | "--include-decision-history" | "--include-diff"
+            "--all"
+                | "--restore"
+                | "--json"
+                | "--include-decision-history"
+                | "--include-diff"
+                | "--snapshot"
         ) {
             if flags.insert(flag.as_str(), "").is_some() {
                 return Err(format!("Duplicate option {flag}"));
@@ -257,6 +264,7 @@ pub(super) fn parse(args: &[String]) -> Result<TaskOptions, String> {
             title: required_flag(&mut flags, "--title")?.into(),
             note: text_input(&mut flags, "--notes", "--notes-file")?,
             workspace: flags.remove("--workspace").map(str::to_owned),
+            snapshot: flags.remove("--snapshot").is_some(),
         },
         ("show", Some(id)) => TaskAction::Show(id),
         ("update", Some(id)) => {
@@ -637,6 +645,7 @@ pub(super) fn execute_ledger(
             title,
             note,
             workspace,
+            snapshot,
         } => {
             let note = note
                 .as_ref()
@@ -644,7 +653,51 @@ pub(super) fn execute_ledger(
                 .transpose()?
                 .unwrap_or_default();
             let directory = workspace_directory(workspace.as_deref())?;
-            task_json(&ledger.create_task_in_workspace(None, title, &note, directory.as_deref())?)
+            let created =
+                ledger.create_task_in_workspace(None, title, &note, directory.as_deref())?;
+            if !snapshot {
+                task_json(&created)
+            } else {
+                let captured = directory
+                    .as_deref()
+                    .filter(|directory| !directory.is_empty())
+                    .ok_or_else(|| {
+                        "Set a workspace with --workspace before using --snapshot".to_owned()
+                    })
+                    .and_then(|directory| {
+                        super::task_git::capture(Path::new(directory))
+                            .map_err(|error| error.to_string())
+                    });
+                match captured {
+                    Ok(git) => match ledger.save_task_workspace_capture_if_current(
+                        created.id,
+                        &git,
+                        None,
+                        Some(created.revision),
+                    ) {
+                        Ok(Some(task)) => {
+                            let mut result = task_json(&task);
+                            result["git_snapshot"] = git_snapshot_json(&git);
+                            result
+                        }
+                        Ok(None) => {
+                            let mut result = task_json(&created);
+                            result["snapshot_error"] = json!(MISSING_TASK);
+                            result
+                        }
+                        Err(error) => {
+                            let mut result = task_json(&created);
+                            result["snapshot_error"] = json!(error.to_string());
+                            result
+                        }
+                    },
+                    Err(error) => {
+                        let mut result = task_json(&created);
+                        result["snapshot_error"] = json!(error);
+                        result
+                    }
+                }
+            }
         }
         TaskAction::Show(id) => {
             let task = task(ledger, *id)?;

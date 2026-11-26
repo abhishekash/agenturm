@@ -280,13 +280,12 @@ and all five selected SDK families have real CI jobs exercising a Rust path
 (current-head results remain Q7's to record).</p>
 <p>The audit's confirmed-missing inventory (Ctrl+P action palette, saved-task
 Brief/Decisions cockpit editors, Ctrl+R concurrent-edit reload, Workflow <code>h</code>
-history toggle, <code>task create --snapshot</code>, <code>task draft --workspace</code> and handoff
-receiver revalidation, remote receiver deployment) gates the B1/D3
-cutover-scope decision — it does not create development tasks by itself.
-Only that decision, or an explicit retirement, schedules them. No workflow is
-retired by the audit. Focused spot-verification confirmed the audit's key
-anchors (theme-only Ctrl+P, no <code>--snapshot</code> on <code>task create</code>, Draft editor
-surface, attention-native verbs).</p>
+history toggle, <code>task draft --workspace</code> and handoff receiver revalidation,
+remote receiver deployment) remains active parity work under the user's
+completion direction. <code>task create --snapshot</code> is in implementation as an
+explicit opt-in. No retained workflow is silently retired. Focused
+spot-verification confirmed the audit's key anchors (theme-only Ctrl+P,
+Draft editor surface, attention-native verbs).</p>
 <h3>Implemented code and qualification ownership</h3>
 <p>CF1 neutral Claude/Pi presence and admission-age retention, CF2 whole-session
 Review edits, CF3 adapter lifecycle, CF4 log failure investigation and CF5 exact
