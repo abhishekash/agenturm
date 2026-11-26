@@ -72,6 +72,37 @@ release-artifact qualification. The merged `18aa7026be1041b93a0b8517874f5b518da4
 (PR #381) and its existing 833-test / terminal-KVM results remain historical
 baselines, not results for this slice.
 
+## Workflow incident history toggle (`h`) follow-up
+
+Implementation review and focused test-only regressions ran on
+`feature/rust-workflow-history-toggle`, base `fd398c1`, with the owner’s dirty
+footer change and test-only additions in
+`rust/agenturm-ui/src/workbench/workflow_alerts.rs`. No production code was
+changed by the test lane. The acceptance matrix is:
+
+| Scenario | Expected result | Status |
+| --- | --- | --- |
+| Completion older than 10 days | Hidden initially; `h` reveals it; second `h` hides it. | PASS: regression uses an observation one nanosecond older than the sampled cutoff. |
+| Recent completions within the cutoff | Visible both before and after toggling. | PASS: regression checks rows 60 seconds and one day newer than the cutoff. Exact equality to a real-time cutoff is not separately tested. |
+| Old Failure, Interruption, Tokens, USD threshold and Elapsed threshold | Remain visible with history toggle off. | PASS: regression places each kind far outside the completion window. |
+| Selection on a visible row / selection on a row hidden by `h` | Preserve identity when visible; when hidden select first visible row, with stable deterministic behavior. | PASS: focused tests verify selection survives toggles and falls back to the first visible row only when hidden. |
+| Refresh/reorder/same-id row from another history or incarnation | Preserve exact matching alert only in the same history incarnation; otherwise clear stale detail and fall back safely. | PASS: reorder preserves the selected exact alert/detail on the same history; a different history clears detail and falls back. |
+| Enter detail, press `h`, Esc | Detail remains scoped; `h` does not change the list while detail is open; Esc returns to the selected incident. | PASS: focused regression exercises the detail and return path. |
+| Footer at 120×32, 80×24, and 60×18 with and without retry | Toggle state and available actions remain readable without clipping. | PASS: rendered-frame regression verifies all controls in retry/no-retry and default/revealed states. Longest hint line is 51 terminal cells; all tested lines fit 60 columns. |
+
+Footer cell widths were measured with Unicode East Asian width: the retry
+footer lines are 44 and 46 cells in the default state, or 44 and 51 cells with
+older completions revealed; no-retry lines are 47/36 cells by default and
+25/51 cells after reveal. All fit at 60 columns.
+
+Focused
+`cargo test --offline --locked -p agenturm-ui workbench::workflow_alerts::tests -- --nocapture`
+passed 5/5. Full UI library tests
+`cargo test --offline --locked -p agenturm-ui --lib` passed 80/80. Strict
+`cargo clippy --offline --locked -p agenturm-ui --all-targets -- -D warnings`
+and `cargo fmt --all -- --check` passed. These are local UI tests, not an
+installed paired Python/Rust journey; that broader parity remains pending.
+
 ## Feature handoff board
 
 | ID | Developer scope | Implementation worktree | Test owner/status |
