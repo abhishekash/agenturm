@@ -420,7 +420,13 @@ fn read_search(
                 quote(&row.event_id),
                 quote(&reference.encode()?),
                 quote(&format!("http://{}", options.receiver.endpoint())),
-                quote(options.receiver.token_file().to_str().ok_or(USAGE)?)
+                quote(
+                    options
+                        .receiver
+                        .token_file()
+                        .and_then(|path| path.to_str())
+                        .ok_or(USAGE)?,
+                )
             );
         }
         report.matches.extend(page.matches);

@@ -59,7 +59,7 @@ baselines, not results for the new feature slices. Every new row starts
 | CF4 | Body-free OTLP error/fatal logs in failure investigation, including explicit `--kind log`; existing Findings private log view unchanged. | `/tmp/agenturm-core-development` | Separate test agent; not run on new source. |
 | CF5 | Implemented: exact native Claude worker-spawn facts and declared-child metadata in session evidence. | `/tmp/agenturm-native-presence` + `/tmp/agenturm-review-session-edits` | Separate test agent; execute on the supplied integrated source head. |
 | CF6 | Implemented: combined deduplicated usage/cost totals that exclude and count reports overlapping at exact `(target source, session)` identity; unattributed telemetry contributes with a disclosed boundary. | Development branch `feature/combined-usage-dedup` | Separate test agent; not run on new source. |
-| CF7 | Implemented: cross-host terminal routing through an explicit operator-authored attach-time route file; fixed read-only tmux and `/proc` probes resolve one exact remote pane or report unavailable. | Development branch (see PR) | Separate test agent; not run on new source. |
+| CF7 | Implemented: cross-host terminal routing through explicit route files and endpoint-keyed saved receiver profiles; fixed read-only tmux and `/proc` probes resolve one exact remote pane or report unavailable. | `/tmp/agenturm-route-profile`, `feature/receiver-route-profile` (base `afbdbdc`; dirty implementation tree) | Test-owner unit regressions pass; live receiver/transport and frozen-artifact scenarios remain not run. |
 | CF8 | Implemented: Claude private edit detail through the harness-generic operation contract — adapter `file_edit` summaries, schema-23 grants with a v22 upgrade path, bounded credential-screened reveal under a Claude fingerprint domain, cross-kind grant denial. | Development branch (see PR) | Separate test agent; not run on new source. |
 | CF9 | Implemented: Claude async launch attribution — a `worker_launch { child_worker_id }` fact from the real `isAsync`/`async_launched` record shape, with no completion claim and the checkpoint wire format unchanged. | Development branch (see PR) | Separate test agent; not run on new source. |
 | CF10 | Implemented: OpenCode patch-path evidence and independent schema-24 edit grants; canonical content commitment, provider-shaped local/broker proof and Review/turn selection. No invented diffs or add/delete counts. | `feature/opencode-edit-detail` | Installed/paired qualification remains with the separate test owner. |
@@ -287,12 +287,24 @@ tail (NUL-count, basename and length all checked), the tmux pane inventory,
 and a pane-process re-verification. The unique resolved target is presented as
 an attach command; Agenturm never selects a remote pane, answers, or approves.
 
-**Developer handoff:** eight focused routing tests including a fake-route
-end-to-end that emulates `ssh` argument joining — unique resolution, ambiguous
-snapshot rejection, stale pane rejection, base64 round-trip, route-file
-validation — plus the attach-option parse test, workspace all-target strict
-Clippy and fmt. These are developer checks against synthetic routes, not a
-qualification of any real transport.
+**Developer and test-owner results:** on `/tmp/agenturm-route-profile`, branch
+`feature/receiver-route-profile`, base `afbdbdc` plus the current dirty source
+and test changes, `cargo test --offline --locked -p agenturm-app --lib --
+--quiet` passed all 194 tests. Focused saved-profile tests passed with
+`cargo test --offline --locked -p agenturm-app saved_route_ -- --nocapture`
+(3 passed), and the offline/no-token command passed with
+`cargo test --offline --locked -p agenturm-app
+forget_route_completes_offline_without_a_token_file -- --nocapture` (1 passed).
+The tests cover endpoint-keyed profile isolation and receiver-identity mismatch,
+narrow forget, owner/mode checks (0700 directory, 0600 file), route-file
+validation and size/non-regular rejection, saved-file and directory symlink
+rejection, atomic replacement without a staging-file leak, native-only option
+parsing, and `--forget-route --endpoint ...` deleting an existing profile
+without a token file or available receiver. These unit checks use local files
+and a closed loopback port; they do not qualify a real transport or frozen
+artifact. `cargo fmt --all -- --check` and `git diff --check` passed.
+Strict app lint also passed with
+`cargo clippy --offline --locked -p agenturm-app --all-targets -- -D warnings`.
 
 | Scenario | Required observation | Status |
 | --- | --- | --- |
@@ -302,10 +314,11 @@ qualification of any real transport.
 | Worker/unsupported provider/missing configuration | Worker requests, non-Codex/Claude/Kiro sources, unsafe session identifiers and absent route files fail closed with exact reasons. | Not run |
 | Probe hygiene | Probes are read-only, bounded in output and time, carry no session bytes in script text, and leave no temporary files behind on the receiver host. | Not run |
 | Return selection at all three sizes | 120×32, 80×24 and 60×18 preserve the Workflow selection after routing results and errors. | Not run |
-| Python receiver protocol | `--route-file` with `--receiver-protocol python-v0.2.8` is rejected at parse time. | Not run |
+| Python receiver protocol | `--route-file`, `--save-route` and `--forget-route` with `--receiver-protocol python-v0.2.8` are rejected at parse time. | PASS in parser unit fixture; a real Python receiver was not contacted. |
+| Saved receiver route | `--route-file PATH --save-route` writes a private per-user profile keyed by endpoint and records the authenticated receiver identity; a later attach reuses it only if the same identity authenticates. `--forget-route --endpoint http://127.0.0.1:PORT` removes by endpoint without contacting the receiver or requiring a token file. Verify mode 0600 file, mode 0700 directory, symlink rejection, atomic overwrite, missing/corrupt profile behavior and a receiver replacement at the same endpoint. | Partial PASS in unit fixtures: permissions, symlinks, atomic replace, endpoint scope, identity mismatch/replacement, native option parsing and offline/no-token forget pass. Corrupt profile, online authenticated attach, and frozen artifact remain not run. |
 
-All CF7 scenarios are **not run** until the test owner records actual results
-on the frozen integrated head.
+Live receiver/transport and frozen-artifact CF7 scenarios remain **not run**;
+the saved-profile unit results above do not qualify an installed candidate.
 
 ## CF8 — Claude private edit detail
 
