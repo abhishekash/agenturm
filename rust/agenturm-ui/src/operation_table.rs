@@ -826,6 +826,134 @@ impl ServerInventory {
 mod tests {
     use super::*;
 
+    fn operation(identity: OperationIdentity) -> OperationRow {
+        OperationRow {
+            time: "2026-11-26 00:00:00Z".into(),
+            server: None,
+            tool: identity.operation_id.clone(),
+            result: None,
+            latency: None,
+            evidence: Vec::new(),
+            mcp_event: None,
+            identity: Some(identity),
+        }
+    }
+
+    fn operation_context(id: ExtensionId) -> UiModel {
+        let mut ui = UiModel::default();
+        ui.panes.push(Pane {
+            id: Some(id),
+            title: "Operations".into(),
+            rows: Vec::new(),
+        });
+        ui
+    }
+
+    fn identity(
+        operation_id: &str,
+        worker_id: Option<&str>,
+        turn_id: Option<&str>,
+    ) -> OperationIdentity {
+        OperationIdentity {
+            source_id: "harness.codex".into(),
+            session_id: "session-1".into(),
+            worker_id: worker_id.map(str::to_owned),
+            turn_id: turn_id.map(str::to_owned),
+            operation_id: operation_id.into(),
+        }
+    }
+
+    #[test]
+    fn trace_target_selects_only_the_exact_typed_operation_and_scope() {
+        let id = ExtensionId::parse("test.operations").unwrap();
+        let rows = vec![
+            operation(identity("same-op", Some("worker-a"), Some("turn-a"))),
+            operation(identity("same-op", Some("worker-b"), Some("turn-b"))),
+            operation(OperationIdentity {
+                source_id: "harness.pi".into(),
+                session_id: "session-1".into(),
+                worker_id: Some("worker-a".into()),
+                turn_id: Some("turn-a".into()),
+                operation_id: "same-op".into(),
+            }),
+        ];
+        let mut browser = Browser::new([(id.clone(), rows)].into(), None);
+        let ui = operation_context(id);
+        let target = TraceOperationTarget {
+            trace_id: "trace-1".into(),
+            span_id: "span-1".into(),
+            source_id: "harness.codex".into(),
+            session_id: "session-1".into(),
+            worker_id: Some("worker-b".into()),
+            turn_id: Some("turn-b".into()),
+            operation_id: "same-op".into(),
+        };
+
+        browser.select_trace_target(&ui, &target).unwrap();
+        let selected = browser.active_ref(&ui).unwrap().selected_row().unwrap();
+        assert_eq!(
+            selected.identity.as_ref().unwrap().worker_id.as_deref(),
+            Some("worker-b")
+        );
+        assert_eq!(
+            selected.identity.as_ref().unwrap().turn_id.as_deref(),
+            Some("turn-b")
+        );
+    }
+
+    #[test]
+    fn trace_target_fails_closed_for_zero_ambiguous_or_filter_hidden_matches() {
+        let id = ExtensionId::parse("test.operations").unwrap();
+        let matching = identity("same-op", Some("worker-a"), Some("turn-a"));
+        let rows = vec![operation(matching.clone()), operation(matching)];
+        let mut browser = Browser::new([(id.clone(), rows)].into(), None);
+        let ui = operation_context(id);
+        let target = TraceOperationTarget {
+            trace_id: "trace-1".into(),
+            span_id: "span-1".into(),
+            source_id: "harness.codex".into(),
+            session_id: "session-1".into(),
+            worker_id: Some("worker-a".into()),
+            turn_id: Some("turn-a".into()),
+            operation_id: "same-op".into(),
+        };
+        let absent = TraceOperationTarget {
+            operation_id: "missing-op".into(),
+            ..target.clone()
+        };
+        assert_eq!(
+            browser.select_trace_target(&ui, &absent),
+            Err("No exact recorded operation matches this trace span")
+        );
+        assert_eq!(
+            browser.select_trace_target(&ui, &target),
+            Err("This trace span matches multiple operations; refusing an ambiguous jump")
+        );
+
+        let id = ExtensionId::parse("test.operations").unwrap();
+        let rows = vec![
+            operation(identity("other-op", Some("worker-a"), Some("turn-a"))),
+            operation(identity("same-op", Some("worker-a"), Some("turn-a"))),
+        ];
+        let mut browser = Browser::new([(id.clone(), rows)].into(), None);
+        let ui = operation_context(id.clone());
+        let pane = browser.panes.get_mut(&id).unwrap();
+        let hidden = pane
+            .rows
+            .iter()
+            .position(|row| {
+                row.identity
+                    .as_ref()
+                    .is_some_and(|identity| identity.operation_id == "same-op")
+            })
+            .unwrap();
+        pane.visible.retain(|index| *index != hidden);
+        assert_eq!(
+            browser.select_trace_target(&ui, &target),
+            Err("The matching operation is hidden by the current filter")
+        );
+    }
+
     #[test]
     fn filter_expand_and_return_keep_the_selected_occurrence() {
         let id = ExtensionId::parse("test.operations").unwrap();

@@ -5152,6 +5152,237 @@ mod tests {
     }
 
     #[test]
+    fn trace_span_picker_cancel_and_jump_restore_exact_filtered_origin() {
+        let traces_id = ExtensionId::parse("app.session-traces").unwrap();
+        let operations_id = ExtensionId::parse("app.session-operations").unwrap();
+        let target = |span: &str, operation: &str, worker: &str, turn: &str| TraceOperationTarget {
+            trace_id: "trace-2".into(),
+            span_id: span.into(),
+            source_id: "harness.codex".into(),
+            session_id: "session-2".into(),
+            worker_id: Some(worker.into()),
+            turn_id: Some(turn.into()),
+            operation_id: operation.into(),
+        };
+        let targets = vec![
+            vec![target("span-a", "op-a", "worker-a", "turn-a")],
+            vec![
+                target("span-b", "op-b", "worker-b", "turn-b"),
+                target("span-c", "op-c", "worker-c", "turn-c"),
+            ],
+            vec![target("span-d", "op-d", "worker-d", "turn-d")],
+        ];
+        let trace_rows = ["trace-1", "trace-2", "trace-3"]
+            .into_iter()
+            .map(|trace| EvidenceRow {
+                cells: vec!["Ok".into(), trace.into(), "2".into(), "—".into()],
+                details: vec![MetricRow {
+                    label: "Trace".into(),
+                    value: trace.into(),
+                }],
+            })
+            .collect::<Vec<_>>();
+        let mut trace_table = EvidenceSpec {
+            title: "Traces",
+            inspector: "Trace details",
+            columns: &[("Status", 10), ("Trace", 34), ("Spans", 8), ("Tokens", 10)],
+            empty: "No traces",
+        }
+        .table(trace_rows);
+        trace_table.operation_targets = targets;
+
+        let operations = [
+            ("op-a", "worker-a", "turn-a"),
+            ("op-b", "worker-b", "turn-b"),
+            ("op-c", "worker-c", "turn-c"),
+            ("op-d", "worker-d", "turn-d"),
+        ]
+        .into_iter()
+        .map(|(operation, worker, turn)| OperationRow {
+            time: "Recorded".into(),
+            server: None,
+            tool: operation.into(),
+            result: Some("succeeded".into()),
+            latency: None,
+            evidence: vec![MetricRow {
+                label: "Operation detail".into(),
+                value: operation.into(),
+            }],
+            mcp_event: None,
+            identity: Some(OperationIdentity {
+                source_id: "harness.codex".into(),
+                session_id: "session-2".into(),
+                worker_id: Some(worker.into()),
+                turn_id: Some(turn.into()),
+                operation_id: operation.into(),
+            }),
+        })
+        .collect();
+
+        let mut page = empty_history_page();
+        page.snapshot.panes.insert(
+            traces_id.clone(),
+            agenturm_kernel::PaneModel {
+                title: "Traces".into(),
+                rows: vec![
+                    MetricRow {
+                        label: "Trace".into(),
+                        value: "trace-1".into(),
+                    },
+                    MetricRow {
+                        label: "Trace".into(),
+                        value: "trace-2".into(),
+                    },
+                    MetricRow {
+                        label: "Trace".into(),
+                        value: "trace-3".into(),
+                    },
+                ],
+            },
+        );
+        page.snapshot.panes.insert(
+            operations_id.clone(),
+            agenturm_kernel::PaneModel {
+                title: "Operations".into(),
+                rows: Vec::new(),
+            },
+        );
+        page.initial_pane = Some(traces_id.clone());
+        page.evidence_tables.insert(traces_id, trace_table);
+        page.operation_tables.insert(operations_id, operations);
+
+        let mut workspace = Workspace::new();
+        workspace.history.push(HistoryView::new(
+            HistorySelection::All(WorkspaceView::Operations),
+            page,
+        ));
+        let (sender, _) = mpsc::channel();
+        {
+            let view = workspace.history.last_mut().unwrap();
+            view.page.ui.set_viewport(120, 32);
+            assert!(view.page.ui.evidence_filter_key(KeyCode::Char('/')));
+            for ch in "trace".chars() {
+                assert!(view.page.ui.evidence_filter_key(KeyCode::Char(ch)));
+            }
+            assert!(view.page.ui.evidence_filter_key(KeyCode::Enter));
+        }
+        assert!(!press(&mut workspace, &sender, KeyCode::Down));
+        {
+            let view = workspace.history.last().unwrap();
+            assert_eq!(view.page.ui.selected_title(), Some("Traces"));
+            assert_eq!(view.page.ui.scroll, 1);
+            assert_eq!(
+                view.page.ui.selected_evidence_export().unwrap().1.cells[1],
+                "trace-2"
+            );
+        }
+
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('o')));
+        let mut terminal = Terminal::new(TestBackend::new(120, 32)).unwrap();
+        terminal
+            .draw(|frame| draw_workspace(frame, &mut workspace))
+            .unwrap();
+        let picker = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        for label in [
+            "span span-b",
+            "operation op-b",
+            "source harness.codex",
+            "session session-2",
+            "worker worker-b",
+            "turn turn-b",
+        ] {
+            assert!(
+                picker.contains(label),
+                "missing {label} from picker:\n{picker}"
+            );
+        }
+        assert!(!press(&mut workspace, &sender, KeyCode::Down));
+        assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+        {
+            let view = workspace.history.last().unwrap();
+            assert_eq!(view.page.ui.selected_title(), Some("Traces"));
+            assert_eq!(view.page.ui.scroll, 1);
+            assert_eq!(
+                view.page.ui.selected_evidence_export().unwrap().1.cells[1],
+                "trace-2"
+            );
+            assert!(
+                view.page
+                    .ui
+                    .evidence_filter_label()
+                    .unwrap()
+                    .contains("trace")
+            );
+        }
+
+        assert!(!press(&mut workspace, &sender, KeyCode::Char('o')));
+        assert!(!press(&mut workspace, &sender, KeyCode::Down));
+        assert!(!press(&mut workspace, &sender, KeyCode::Enter));
+        {
+            let view = workspace.history.last().unwrap();
+            assert_eq!(view.page.ui.selected_title(), Some("Operations"));
+            assert_eq!(
+                view.page
+                    .operation_table
+                    .active_ref(&view.page.ui)
+                    .unwrap()
+                    .selected_row()
+                    .unwrap()
+                    .identity
+                    .as_ref()
+                    .unwrap()
+                    .operation_id,
+                "op-c"
+            );
+        }
+        assert!(!press(&mut workspace, &sender, KeyCode::Enter));
+        assert!(
+            workspace
+                .history
+                .last()
+                .unwrap()
+                .page
+                .operation_table
+                .active_ref(&workspace.history.last().unwrap().page.ui)
+                .unwrap()
+                .expanded()
+        );
+        assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+        assert!(
+            !workspace
+                .history
+                .last()
+                .unwrap()
+                .page
+                .operation_table
+                .active_ref(&workspace.history.last().unwrap().page.ui)
+                .unwrap()
+                .expanded()
+        );
+        assert!(!press(&mut workspace, &sender, KeyCode::Esc));
+        let view = workspace.history.last().unwrap();
+        assert_eq!(view.page.ui.selected_title(), Some("Traces"));
+        assert_eq!(view.page.ui.scroll, 1);
+        assert_eq!(
+            view.page.ui.selected_evidence_export().unwrap().1.cells[1],
+            "trace-2"
+        );
+        assert!(
+            view.page
+                .ui
+                .evidence_filter_label()
+                .unwrap()
+                .contains("trace")
+        );
+    }
+
+    #[test]
     fn review_session_edits_keep_the_pinned_occurrence_and_return_to_decisions() {
         let (sender, requests) = mpsc::channel();
         let mut session = session("harness.codex.fixture", "selected", "completed", None);
