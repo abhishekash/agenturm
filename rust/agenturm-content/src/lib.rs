@@ -96,6 +96,7 @@ pub struct VerifiedEdit {
     deny_unknown_fields
 )]
 pub enum ProviderEditDetail {
+    Pi(PiEditDetail),
     Claude(ClaudeEditDetail),
     OpenCode(OpenCodeEditDetail),
 }
@@ -130,6 +131,7 @@ impl VerifiedEdit {
     /// Compare recorded paths literally, including the destination of a move.
     pub fn contains_path(&self, path: &str) -> bool {
         match &self.provider_detail {
+            Some(ProviderEditDetail::Pi(detail)) => detail.path == path,
             Some(ProviderEditDetail::Claude(detail)) => detail.file_path == path,
             Some(ProviderEditDetail::OpenCode(detail)) => {
                 !detail.truncated && detail.files.iter().any(|file| file == path)
@@ -143,6 +145,7 @@ impl VerifiedEdit {
     /// Deliver the verified edit using the private terminal preview format.
     pub fn write_terminal(&self, output: &mut dyn Write) -> Result<(), String> {
         let display = match &self.provider_detail {
+            Some(ProviderEditDetail::Pi(detail)) => detail.display(),
             Some(ProviderEditDetail::Claude(detail)) => detail.display(),
             Some(ProviderEditDetail::OpenCode(detail)) => detail.display(),
             None => display_edit_changes(&self.changes),
@@ -252,6 +255,15 @@ fn operation_definition(
             unavailable: "The selected command has no verified invocation",
             label: "Codex",
         }),
+        (Harness::Pi, OperationDetailKind::Edit) => Ok(OperationDefinition {
+            grant: ContentKind::PiEditDetail,
+            fingerprint_domain: b"agenturm.pi-edit-detail/1",
+            event_suffix: ":file-change-",
+            native_kind: "toolCall",
+            description: "file edit",
+            unavailable: "The selected Pi file edit has no verified detail",
+            label: "Pi",
+        }),
         (Harness::Claude, OperationDetailKind::Edit) => Ok(OperationDefinition {
             grant: ContentKind::ClaudeEditDetail,
             fingerprint_domain: b"agenturm.claude-edit-detail/1",
@@ -261,9 +273,15 @@ fn operation_definition(
             unavailable: "The selected Claude file edit has no verified detail",
             label: "Claude Code",
         }),
-        (Harness::Claude, OperationDetailKind::Mcp) => {
-            Err("MCP payload preview requires a supported pinned Codex source".into())
-        }
+        (Harness::Claude, OperationDetailKind::Mcp) => Ok(OperationDefinition {
+            grant: ContentKind::ClaudeMcpPayload,
+            fingerprint_domain: b"agenturm.claude-mcp-payload/1",
+            event_suffix: ":mcp-use-",
+            native_kind: "tool_use",
+            description: "MCP payload",
+            unavailable: "The selected Claude MCP operation has no verified payload",
+            label: "Claude Code",
+        }),
         (Harness::Claude, OperationDetailKind::Command) => {
             Err("Command detail preview requires a supported pinned Codex source".into())
         }
@@ -283,7 +301,8 @@ fn operation_definition(
             Err("Command detail preview requires a supported pinned Codex source".into())
         }
         _ => Err(
-            "Operation details require a supported pinned Codex, Claude, or OpenCode source".into(),
+            "Operation details require a supported pinned Pi, Codex, Claude, or OpenCode source"
+                .into(),
         ),
     }
 }
@@ -470,6 +489,9 @@ pub fn with_verified_edit<T>(
             payload.encode(false).map_err(|_| operation.unavailable)?;
             let (changes, provider_detail) = match payload {
                 OperationPayload::Edit { changes } => (changes, None),
+                OperationPayload::PiEdit(detail) => {
+                    (Vec::new(), Some(ProviderEditDetail::Pi(detail)))
+                }
                 OperationPayload::ClaudeEdit(detail) => {
                     (Vec::new(), Some(ProviderEditDetail::Claude(detail)))
                 }
@@ -560,7 +582,7 @@ fn with_verified_operation<T>(
     ) -> Result<T, String>,
 ) -> Result<T, String> {
     if !valid_id(selection.session_id)
-        || !valid_id(selection.operation_id)
+        || !valid_operation_id(selection.operation_id)
         || selection.turn_id.is_some_and(|turn| !valid_id(turn))
     {
         return Err("Invalid session, turn, or operation ID".into());
@@ -759,11 +781,11 @@ impl BoundSource {
         if operation_kind.is_some()
             && !matches!(
                 harness,
-                Harness::Codex | Harness::Claude | Harness::OpenCode
+                Harness::Pi | Harness::Codex | Harness::Claude | Harness::OpenCode
             )
         {
             return Err(
-                "Operation details require a supported pinned Codex, Claude, or OpenCode source"
+                "Operation details require a supported pinned Pi, Codex, Claude, or OpenCode source"
                     .into(),
             );
         }
@@ -1141,6 +1163,12 @@ impl VerifiedPrefix {
     ) -> Result<OperationPayload, String> {
         match &self.header {
             Header::Codex(_) => self.codex_operation_payload(operation, selection, evidence),
+            Header::Claude(_) if kind == OperationDetailKind::Mcp => {
+                self.claude_mcp_payload(operation, selection, evidence)
+            }
+            Header::Pi(_) if kind == OperationDetailKind::Edit => {
+                self.pi_edit_payload(operation, selection, evidence)
+            }
             Header::Claude(_) if kind == OperationDetailKind::Edit => {
                 self.claude_edit_payload(operation, selection, evidence)
             }
@@ -1197,6 +1225,93 @@ impl VerifiedPrefix {
             _ => None,
         }
         .ok_or_else(|| unavailable.to_owned())
+    }
+
+    /// Verifies the exact Claude MCP tool_use occurrence and returns only its
+    /// bounded, screened input under the independent Claude MCP grant.
+    fn claude_mcp_payload(
+        &self,
+        operation: &OperationDefinition,
+        selection: &CodexOperationSelection<'_>,
+        evidence: &CodexOperationEvidence,
+    ) -> Result<OperationPayload, String> {
+        let unavailable = operation.unavailable;
+        let Header::Claude(session_id) = &self.header else {
+            return Err(unavailable.into());
+        };
+        if session_id != selection.session_id {
+            return Err(unavailable.into());
+        }
+        let member = selection
+            .event_id
+            .strip_prefix("claude:")
+            .and_then(|event| event.strip_prefix(&self.cursor.generation))
+            .and_then(|event| event.strip_prefix(':'))
+            .ok_or(unavailable)?;
+        let (native, tail) = member
+            .split_once(operation.event_suffix)
+            .ok_or(unavailable)?;
+        let index: usize = tail
+            .parse()
+            .ok()
+            .filter(|index| *index < MAX_CLAUDE_BLOCKS)
+            .ok_or(unavailable)?;
+        let offset = usize::try_from(selection.revision).map_err(|_| unavailable)?;
+        let proofs = self.admitted_offsets(std::iter::once(evidence.admitted_cursor.as_str()));
+        let proof_end = proofs
+            .get(evidence.admitted_cursor.as_str())
+            .ok_or(unavailable)?;
+        let rows = self.rows(std::iter::once(offset.to_string()))?;
+        let line = match rows.get(&offset.to_string()) {
+            Some(RowMatch::Exact { line, end }) if *end <= *proof_end => *line,
+            _ => return Err(unavailable.into()),
+        };
+        let row: ClaudeOperationRow = serde_json::from_slice(line).map_err(|_| unavailable)?;
+        let native_uuid = match row.uuid.as_deref().filter(|uuid| !uuid.is_empty()) {
+            Some(uuid) => hash(uuid.as_bytes())[..32].to_owned(),
+            None => format!("offset-{}", selection.revision),
+        };
+        if row.kind != "assistant"
+            || row.session_id != selection.session_id
+            || row.worker_id.is_some()
+            || row.is_meta
+            || native_uuid != native
+            || observed_timestamp(&row.timestamp) != Some(evidence.observed_at_unix_ns)
+        {
+            return Err(unavailable.into());
+        }
+        let block = row
+            .message
+            .content
+            .get(index)
+            .ok_or_else(|| unavailable.to_owned())?;
+        let call_id = block
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .filter(|id| !id.is_empty() && id.len() <= 512)
+            .ok_or(unavailable)?;
+        let name = block
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(unavailable)?;
+        if block.get("type").and_then(serde_json::Value::as_str) != Some("tool_use")
+            || hash(call_id.as_bytes())[..32] != *selection.operation_id
+            || agenturm_kernel::mcp_tool_labels(name).is_none()
+        {
+            return Err(unavailable.into());
+        }
+        let input = block.get("input").ok_or(unavailable)?;
+        let encoded = serde_json::to_string(input).map_err(|_| unavailable)?;
+        if text_preview(UserContent::Text(encoded.clone()))
+            .ok()
+            .as_deref()
+            != Some(&encoded)
+        {
+            return Err(unavailable.into());
+        }
+        let mut fields = serde_json::Map::new();
+        fields.insert("arguments".into(), input.clone());
+        Ok(OperationPayload::Mcp(fields))
     }
 
     /// Verifies the exact Claude assistant row carrying the selected file-edit
@@ -1275,6 +1390,99 @@ impl VerifiedPrefix {
         }
         let detail = claude_edit_detail(name, block.get("input")).ok_or(unavailable)?;
         Ok(OperationPayload::ClaudeEdit(detail))
+    }
+
+    /// Verifies one exact Pi assistant toolCall behind a retained file-change
+    /// fact, then extracts only a bounded, grant-protected edit preview.
+    fn pi_edit_payload(
+        &self,
+        operation: &OperationDefinition,
+        selection: &CodexOperationSelection<'_>,
+        evidence: &CodexOperationEvidence,
+    ) -> Result<OperationPayload, String> {
+        let unavailable = operation.unavailable;
+        let Header::Pi(header) = &self.header else {
+            return Err(unavailable.into());
+        };
+        if header.session_id.as_deref().unwrap_or(&header.id) != selection.session_id
+            || header
+                .agent_id
+                .as_deref()
+                .is_some_and(|worker| !worker.is_empty())
+            || selection.revision != 0
+        {
+            return Err(unavailable.into());
+        }
+        let member = selection
+            .event_id
+            .strip_prefix("pi:")
+            .and_then(|event| event.strip_prefix(&self.cursor.generation))
+            .and_then(|event| event.strip_prefix(':'))
+            .ok_or(unavailable)?;
+        let (native_row, tail) = member
+            .rsplit_once(operation.event_suffix)
+            .ok_or(unavailable)?;
+        let index: usize = tail
+            .parse()
+            .ok()
+            .filter(|index| *index < MAX_CLAUDE_BLOCKS)
+            .ok_or(unavailable)?;
+        if !valid_id(native_row) {
+            return Err(unavailable.into());
+        }
+        let proofs = self.admitted_offsets(std::iter::once(evidence.admitted_cursor.as_str()));
+        let proof_end = proofs
+            .get(evidence.admitted_cursor.as_str())
+            .ok_or(unavailable)?;
+        let rows = self.rows(std::iter::once(native_row.to_owned()))?;
+        let line = match rows.get(native_row) {
+            Some(RowMatch::Exact { line, end }) if end <= proof_end => *line,
+            _ => return Err(unavailable.into()),
+        };
+        let row: serde_json::Value = serde_json::from_slice(line).map_err(|_| unavailable)?;
+        if row.get("type").and_then(serde_json::Value::as_str) != Some("message")
+            || row.get("id").and_then(serde_json::Value::as_str) != Some(native_row)
+            || row["message"]["role"].as_str() != Some("assistant")
+            || observed_timestamp(
+                row.get("timestamp")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+            ) != Some(evidence.observed_at_unix_ns)
+        {
+            return Err(unavailable.into());
+        }
+        let block = row["message"]["content"]
+            .as_array()
+            .and_then(|blocks| blocks.get(index))
+            .ok_or(unavailable)?;
+        if block.get("type").and_then(serde_json::Value::as_str) != Some("toolCall")
+            || pi_operation_id(
+                block
+                    .get("id")
+                    .and_then(serde_json::Value::as_str)
+                    .ok_or(unavailable)?,
+            )
+            .as_deref()
+                != Some(selection.operation_id)
+        {
+            return Err(unavailable.into());
+        }
+        let name = block
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(unavailable)?;
+        let arguments = block.get("arguments").ok_or(unavailable)?;
+        let Some(summary) = agenturm_kernel::pi_file_change(name, Some(arguments)) else {
+            return Err(unavailable.into());
+        };
+        if Some(summary.digest.as_str()) != evidence.digest.as_deref()
+            || Some(summary.files) != evidence.files
+        {
+            return Err(unavailable.into());
+        }
+        pi_edit_detail(name, arguments)
+            .map(OperationPayload::PiEdit)
+            .ok_or_else(|| unavailable.to_owned())
     }
 
     fn admitted_offsets<'a>(
@@ -1728,6 +1936,7 @@ enum OperationPayload {
     },
     ClaudeEdit(ClaudeEditDetail),
     OpenCodeEdit(OpenCodeEditDetail),
+    PiEdit(PiEditDetail),
 }
 
 impl OperationPayload {
@@ -1748,6 +1957,7 @@ impl OperationPayload {
             } => serde_json::to_string(recorded_invocation).map_err(|_| ())?,
             Self::ClaudeEdit(edit) => edit.display(),
             Self::OpenCodeEdit(edit) => edit.display(),
+            Self::PiEdit(edit) => edit.display(),
         };
         serde_json::to_string(&display).map_err(|_| ())
     }
@@ -1823,6 +2033,44 @@ pub struct OpenCodeEditDetail {
     reported_files: u16,
     #[serde(skip_serializing_if = "std::ops::Not::not")]
     truncated: bool,
+}
+
+/// One bounded Pi `write` or `edit` toolCall. The exact native call is
+/// displayed as a proposal; its tool result is not treated as proof that the
+/// filesystem change completed.
+#[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
+#[serde(deny_unknown_fields)]
+pub struct PiEditDetail {
+    tool: String,
+    path: String,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    content: Option<String>,
+    #[serde(rename = "oldText", skip_serializing_if = "Option::is_none")]
+    old_text: Option<String>,
+    #[serde(rename = "newText", skip_serializing_if = "Option::is_none")]
+    new_text: Option<String>,
+    #[serde(skip_serializing_if = "std::ops::Not::not")]
+    truncated: bool,
+}
+
+impl PiEditDetail {
+    fn display(&self) -> String {
+        let mut text = format!("Pi {} target {}", self.tool, self.path);
+        if let Some(content) = &self.content {
+            text.push('\n');
+            text.push_str(content);
+        }
+        if let (Some(old), Some(new)) = (&self.old_text, &self.new_text) {
+            text.push('\n');
+            text.push_str(old);
+            text.push_str("\n→\n");
+            text.push_str(new);
+        }
+        if self.truncated {
+            text.push_str("\n(edit preview was truncated)");
+        }
+        text
+    }
 }
 
 impl OpenCodeEditDetail {
@@ -1903,6 +2151,54 @@ fn claude_edit_detail(name: &str, input: Option<&serde_json::Value>) -> Option<C
         _ => return None,
     }
     Some(detail)
+}
+
+fn pi_edit_detail(name: &str, input: &serde_json::Value) -> Option<PiEditDetail> {
+    let fields = input.as_object()?;
+    let path = fields.get("path")?.as_str()?;
+    if !edit_path(path) {
+        return None;
+    }
+    let tool = name.to_ascii_lowercase();
+    let mut detail = PiEditDetail {
+        tool: tool.clone(),
+        path: path.to_owned(),
+        content: None,
+        old_text: None,
+        new_text: None,
+        truncated: false,
+    };
+    match tool.as_str() {
+        "write" => {
+            let content = bounded_edit_text(fields.get("content")?.as_str()?)?;
+            detail.truncated = content.1;
+            detail.content = Some(content.0);
+        }
+        "edit" => {
+            let old = bounded_edit_text(fields.get("oldText")?.as_str()?)?;
+            let new = bounded_edit_text(fields.get("newText")?.as_str()?)?;
+            detail.truncated = old.1 || new.1;
+            detail.old_text = Some(old.0);
+            detail.new_text = Some(new.0);
+        }
+        _ => return None,
+    }
+    Some(detail)
+}
+
+fn pi_operation_id(value: &str) -> Option<String> {
+    if valid_id(value) {
+        return Some(value.to_owned());
+    }
+    let (call, item) = value.split_once('|')?;
+    let call_suffix = call.strip_prefix("call_")?;
+    let item_suffix = item
+        .strip_prefix("fc_")
+        .or_else(|| item.strip_prefix("ctc_"))?;
+    if call_suffix.is_empty() || item_suffix.is_empty() || !valid_id(call) || !valid_id(item) {
+        return None;
+    }
+    Some(format!("pi-call/{}", hash(value.as_bytes())))
 }
 
 /// Truncates to the edit text bound on a character boundary and applies the
@@ -2134,6 +2430,18 @@ fn valid_id(id: &str) -> bool {
             .all(|byte| byte.is_ascii_alphanumeric() || b"._:-".contains(&byte))
 }
 
+fn valid_operation_id(id: &str) -> bool {
+    if valid_id(id) {
+        return true;
+    }
+    id.strip_prefix("pi-call/").is_some_and(|digest| {
+        digest.len() == 64
+            && digest
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    })
+}
+
 fn hash(bytes: &[u8]) -> String {
     format!("{:x}", Sha256::digest(bytes))
 }
@@ -2232,5 +2540,347 @@ mod codex_guardian_tests {
                 assert!(matches!(result, Err(error) if error == SOURCE_CHANGED));
             }
         }
+    }
+}
+
+#[cfg(test)]
+mod cf11_cf12_operation_proof_tests {
+    use super::*;
+    use serde_json::{Value, json};
+
+    const TIME: &str = "2026-11-20T12:00:00Z";
+
+    fn make_prefix(header: Value, rows: &[Value], harness: Harness) -> (VerifiedPrefix, String) {
+        let mut bytes = serde_json::to_vec(&header).unwrap();
+        bytes.push(b'\n');
+        let header_len = bytes.len();
+        for row in rows {
+            bytes.extend(serde_json::to_vec(row).unwrap());
+            bytes.push(b'\n');
+        }
+        let header_digest = hash(&bytes[..header_len]);
+        let generation = hash(format!("7:11:{header_digest}").as_bytes());
+        let cursor = format!(
+            "v2:7:11:{}:{}:{header_digest}:{generation}:turn",
+            bytes.len(),
+            hash(&bytes)
+        );
+        let proof = cursor_proof(&cursor).unwrap().unwrap();
+        let parsed_header = match harness {
+            Harness::Pi => Header::Pi(serde_json::from_slice(&bytes[..header_len]).unwrap()),
+            Harness::Claude => Header::Claude(
+                serde_json::from_slice::<ClaudeHeader>(&bytes[..header_len])
+                    .unwrap()
+                    .session_id,
+            ),
+            _ => unreachable!(),
+        };
+        (
+            VerifiedPrefix {
+                bytes,
+                cursor: proof,
+                header: parsed_header,
+                header_len,
+            },
+            cursor,
+        )
+    }
+
+    fn evidence(cursor: &str, timestamp: &str) -> CodexOperationEvidence {
+        CodexOperationEvidence {
+            cursor: cursor.to_owned(),
+            admitted_cursor: cursor.to_owned(),
+            turn_id: "turn-1".into(),
+            observed_at_unix_ns: observed_timestamp(timestamp).unwrap(),
+            digest: None,
+            files: None,
+        }
+    }
+
+    fn stale_receipt(cursor: &str) -> String {
+        let mut fields = cursor.split(':').map(str::to_owned).collect::<Vec<_>>();
+        fields[4] = "0".repeat(64);
+        fields.join(":")
+    }
+
+    fn pi_selection(generation: &str, operation_id: &str) -> CodexOperationSelection<'static> {
+        CodexOperationSelection {
+            session_id: "pi-session",
+            event_id: Box::leak(
+                format!("pi:{generation}:assistant-row:file-change-0").into_boxed_str(),
+            ),
+            revision: 0,
+            operation_id: Box::leak(operation_id.to_owned().into_boxed_str()),
+            turn_id: Some("turn-1"),
+        }
+    }
+
+    #[test]
+    fn pi_edit_reveal_requires_exact_admitted_assistant_tool_and_summary() {
+        let args = json!({"path":"src/main.rs","oldText":"before","newText":"after"});
+        let row = json!({"type":"message","id":"assistant-row","timestamp":TIME,
+        "message":{"role":"assistant","content":[
+            {"type":"toolCall","id":"call_1|fc_1","name":"edit","arguments":args}
+        ]}});
+        let (prefix, cursor) = make_prefix(
+            json!({"type":"session","id":"pi-session"}),
+            &[row.clone()],
+            Harness::Pi,
+        );
+        let summary = agenturm_kernel::pi_file_change("edit", Some(&args)).unwrap();
+        let operation = operation_definition(Harness::Pi, OperationDetailKind::Edit).unwrap();
+        let mut proof = evidence(&cursor, TIME);
+        proof.digest = Some(summary.digest.clone());
+        proof.files = Some(summary.files);
+        // Pi's compound native call/item identity is committed as a namespaced
+        // digest by both the adapter and private-content verifier.
+        let operation_id = pi_operation_id("call_1|fc_1").unwrap();
+        let selection = pi_selection(&prefix.cursor.generation, &operation_id);
+        let payload = prefix
+            .operation_payload(OperationDetailKind::Edit, &operation, &selection, &proof)
+            .unwrap();
+        assert!(matches!(payload, OperationPayload::PiEdit(_)));
+
+        let wrong_operation = pi_selection(&prefix.cursor.generation, "other-call");
+        assert!(
+            prefix
+                .operation_payload(
+                    OperationDetailKind::Edit,
+                    &operation,
+                    &wrong_operation,
+                    &proof
+                )
+                .is_err()
+        );
+        let wrong_index = CodexOperationSelection {
+            event_id: Box::leak(
+                format!(
+                    "pi:{}:assistant-row:file-change-1",
+                    prefix.cursor.generation
+                )
+                .into_boxed_str(),
+            ),
+            ..selection
+        };
+        assert!(
+            prefix
+                .operation_payload(OperationDetailKind::Edit, &operation, &wrong_index, &proof)
+                .is_err()
+        );
+
+        let mut changed_summary = proof.clone();
+        changed_summary.digest = Some("0".repeat(64));
+        assert!(
+            prefix
+                .operation_payload(
+                    OperationDetailKind::Edit,
+                    &operation,
+                    &selection,
+                    &changed_summary
+                )
+                .is_err()
+        );
+
+        let mismatched_session = CodexOperationSelection {
+            session_id: "another-session",
+            ..selection
+        };
+        assert!(
+            prefix
+                .operation_payload(
+                    OperationDetailKind::Edit,
+                    &operation,
+                    &mismatched_session,
+                    &proof
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn pi_edit_reveal_withholds_unsafe_inputs_and_stale_receipts() {
+        let unsafe_args = json!({"path":"src/main.rs","oldText":"before",
+            "newText":"token=ghp_123456789012345678901234567890"});
+        let row = json!({"type":"message","id":"assistant-row","timestamp":TIME,
+        "message":{"role":"assistant","content":[
+            {"type":"toolCall","id":"call_1|fc_1","name":"edit","arguments":unsafe_args}
+        ]}});
+        let (unsafe_prefix, cursor) = make_prefix(
+            json!({"type":"session","id":"pi-session"}),
+            &[row],
+            Harness::Pi,
+        );
+        let summary = agenturm_kernel::pi_file_change("edit", Some(&unsafe_args)).unwrap();
+        let operation = operation_definition(Harness::Pi, OperationDetailKind::Edit).unwrap();
+        let mut proof = evidence(&cursor, TIME);
+        proof.digest = Some(summary.digest);
+        proof.files = Some(summary.files);
+        let operation_id = pi_operation_id("call_1|fc_1").unwrap();
+        let selection = pi_selection(&unsafe_prefix.cursor.generation, &operation_id);
+        assert!(
+            unsafe_prefix
+                .operation_payload(OperationDetailKind::Edit, &operation, &selection, &proof)
+                .is_err()
+        );
+
+        let mut stale = proof.clone();
+        stale.admitted_cursor = stale_receipt(&stale.admitted_cursor);
+        assert!(
+            unsafe_prefix
+                .operation_payload(OperationDetailKind::Edit, &operation, &selection, &stale)
+                .is_err()
+        );
+    }
+
+    fn claude_selection(
+        generation: &str,
+        uuid: &str,
+        offset: u32,
+        call_id: &str,
+    ) -> CodexOperationSelection<'static> {
+        let native = hash(uuid.as_bytes())[..32].to_owned();
+        CodexOperationSelection {
+            session_id: "claude-session",
+            event_id: Box::leak(format!("claude:{generation}:{native}:mcp-use-1").into_boxed_str()),
+            revision: offset,
+            operation_id: Box::leak(hash(call_id.as_bytes())[..32].to_owned().into_boxed_str()),
+            turn_id: Some("turn-1"),
+        }
+    }
+
+    #[test]
+    fn claude_mcp_reveal_extracts_only_the_selected_verified_tool_use() {
+        let call_id = "toolu_123";
+        let row = json!({"type":"assistant","sessionId":"claude-session","uuid":"assistant-uuid",
+        "timestamp":TIME,"message":{"content":[
+            {"type":"text","text":"unrelated"},
+            {"type":"tool_use","id":call_id,"name":"mcp__server__lookup",
+             "input":{"query":"exact input"}}
+        ]}});
+        let header = json!({"sessionId":"claude-session"});
+        let header_bytes = serde_json::to_vec(&header).unwrap();
+        let offset = (header_bytes.len() + 1) as u32;
+        let (prefix, cursor) = make_prefix(header, &[row], Harness::Claude);
+        let selection =
+            claude_selection(&prefix.cursor.generation, "assistant-uuid", offset, call_id);
+        let operation = operation_definition(Harness::Claude, OperationDetailKind::Mcp).unwrap();
+        let proof = evidence(&cursor, TIME);
+        let payload = prefix
+            .operation_payload(OperationDetailKind::Mcp, &operation, &selection, &proof)
+            .unwrap();
+        let OperationPayload::Mcp(fields) = payload else {
+            panic!("expected MCP payload");
+        };
+        assert_eq!(
+            fields.get("arguments"),
+            Some(&json!({"query":"exact input"}))
+        );
+        assert_eq!(operation.grant, ContentKind::ClaudeMcpPayload);
+        assert_ne!(operation.grant, ContentKind::CodexMcpPayload);
+
+        let wrong_call = claude_selection(
+            &prefix.cursor.generation,
+            "assistant-uuid",
+            offset,
+            "different-call",
+        );
+        assert!(
+            prefix
+                .operation_payload(OperationDetailKind::Mcp, &operation, &wrong_call, &proof)
+                .is_err()
+        );
+        let wrong_index = CodexOperationSelection {
+            event_id: Box::leak(
+                format!("{}", selection.event_id.replace("mcp-use-1", "mcp-use-0"))
+                    .into_boxed_str(),
+            ),
+            ..selection
+        };
+        assert!(
+            prefix
+                .operation_payload(OperationDetailKind::Mcp, &operation, &wrong_index, &proof)
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn claude_mcp_reveal_rejects_wrong_native_role_name_and_mutated_receipt() {
+        let call_id = "toolu_123";
+        let row = json!({"type":"assistant","sessionId":"claude-session","uuid":"assistant-uuid",
+        "timestamp":TIME,"message":{"content":[
+            {"type":"text","text":"unrelated"},
+            {"type":"tool_use","id":call_id,"name":"mcp__server__lookup",
+             "input":{"query":"exact input"}}
+        ]}});
+        let header = json!({"sessionId":"claude-session"});
+        let header_bytes = serde_json::to_vec(&header).unwrap();
+        let offset = (header_bytes.len() + 1) as u32;
+        let (prefix, cursor) = make_prefix(header, &[row.clone()], Harness::Claude);
+        let selection =
+            claude_selection(&prefix.cursor.generation, "assistant-uuid", offset, call_id);
+        let operation = operation_definition(Harness::Claude, OperationDetailKind::Mcp).unwrap();
+        let proof = evidence(&cursor, TIME);
+        let mut stale = proof.clone();
+        stale.admitted_cursor = stale_receipt(&stale.admitted_cursor);
+        assert!(
+            prefix
+                .operation_payload(OperationDetailKind::Mcp, &operation, &selection, &stale)
+                .is_err()
+        );
+
+        let worker_row = json!({"type":"assistant","sessionId":"claude-session","agentId":"worker",
+        "uuid":"assistant-uuid","timestamp":TIME,"message":{"content":[
+            {"type":"text","text":"unrelated"},
+            {"type":"tool_use","id":call_id,"name":"mcp__server__lookup",
+             "input":{"query":"exact input"}}
+        ]}});
+        let (worker_prefix, worker_cursor) = make_prefix(
+            json!({"sessionId":"claude-session"}),
+            &[worker_row],
+            Harness::Claude,
+        );
+        let worker_selection = claude_selection(
+            &worker_prefix.cursor.generation,
+            "assistant-uuid",
+            offset,
+            call_id,
+        );
+        assert!(
+            worker_prefix
+                .operation_payload(
+                    OperationDetailKind::Mcp,
+                    &operation,
+                    &worker_selection,
+                    &evidence(&worker_cursor, TIME)
+                )
+                .is_err()
+        );
+
+        let non_mcp_row = json!({"type":"assistant","sessionId":"claude-session","uuid":"assistant-uuid",
+        "timestamp":TIME,"message":{"content":[
+            {"type":"text","text":"unrelated"},
+            {"type":"tool_use","id":call_id,"name":"Bash",
+             "input":{"command":"secret"}}
+        ]}});
+        let (non_mcp_prefix, non_mcp_cursor) = make_prefix(
+            json!({"sessionId":"claude-session"}),
+            &[non_mcp_row],
+            Harness::Claude,
+        );
+        assert!(
+            non_mcp_prefix
+                .operation_payload(
+                    OperationDetailKind::Mcp,
+                    &operation,
+                    &claude_selection(
+                        &non_mcp_prefix.cursor.generation,
+                        "assistant-uuid",
+                        offset,
+                        call_id,
+                    ),
+                    &evidence(&non_mcp_cursor, TIME)
+                )
+                .is_err()
+        );
     }
 }

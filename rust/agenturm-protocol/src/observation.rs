@@ -408,6 +408,51 @@ pub fn opencode_patch_change(part: &serde_json::Value) -> Option<FileChange> {
     })
 }
 
+/// Derives a content-free Pi file-change summary for one exact native tool
+/// call. Pi's `write` and `edit` calls name one target path but do not prove
+/// whether `write` created or replaced a file, so this reports only the
+/// affected-file count and a commitment to the native call arguments.
+pub fn pi_file_change(name: &str, input: Option<&serde_json::Value>) -> Option<FileChange> {
+    use sha2::{Digest, Sha256};
+    let fields = input?.as_object()?;
+    let tool = name.to_ascii_lowercase();
+    if !matches!(tool.as_str(), "write" | "edit") {
+        return None;
+    }
+    let path = fields.get("path")?.as_str()?;
+    if path.is_empty() || path.len() > 512 || path.chars().any(char::is_control) {
+        return None;
+    }
+    match tool.as_str() {
+        "write"
+            if fields
+                .get("content")
+                .and_then(serde_json::Value::as_str)
+                .is_some() => {}
+        "edit"
+            if fields
+                .get("oldText")
+                .and_then(serde_json::Value::as_str)
+                .is_some()
+                && fields
+                    .get("newText")
+                    .and_then(serde_json::Value::as_str)
+                    .is_some() => {}
+        _ => return None,
+    }
+    let digest = format!(
+        "{:x}",
+        Sha256::digest(
+            serde_json::to_vec(&serde_json::json!({
+                "tool": name,
+                "arguments": input?,
+            }))
+            .ok()?
+        )
+    );
+    Some(FileChange { files: 1, digest })
+}
+
 /// Derives the edit-count summary for one recognized Claude Code file-edit
 /// tool_use block. Adapters emit the resulting `file_edit` fact, and private
 /// detail reveal re-recognizes the exact same shape before any disclosure.

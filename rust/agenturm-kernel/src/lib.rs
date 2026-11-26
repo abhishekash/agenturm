@@ -322,7 +322,8 @@ pub use agenturm_protocol::observation::{
     FileChange, FileEdit, McpMethod, NANOCREDITS_PER_CREDIT, NANOUNITS_PER_CURRENCY_UNIT,
     NativeCostBasis, RelationshipKind, ReportedCost, SpanTokenUsage, TraceProgress, TraceSpan,
     TraceSpanIdentity, TraceStatus, WorkerLaunch, WorkerSpawn, claude_file_edit_summary,
-    is_github_pull_request, is_valid_mcp_metadata, opencode_patch_change, parse_currency_nanounits,
+    is_github_pull_request, is_valid_mcp_metadata, mcp_tool_labels, opencode_patch_change,
+    parse_currency_nanounits, pi_file_change,
 };
 
 pub fn is_mcp_operation(identity: &ObservationIdentity) -> bool {

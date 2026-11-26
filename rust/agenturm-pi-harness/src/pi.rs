@@ -1,7 +1,7 @@
 //! A bounded, content-free translation of one actual Pi session JSONL line.
 //! Source text is parsed in the child and never placed in a process fact.
 
-use agenturm_protocol::observation::{NativeCostBasis, ReportedCost};
+use agenturm_protocol::observation::{NativeCostBasis, ReportedCost, pi_file_change};
 use serde::Deserialize;
 use serde_json::{Value, json, value::RawValue};
 use sha2::{Digest, Sha256};
@@ -582,6 +582,18 @@ pub(crate) fn translate_line(
                         json!({"category":category(name),"result":"started"}),
                         Some(&operation),
                     ));
+                    if !next.turn_id.is_empty()
+                        && let Some(change) = pi_file_change(name, block.get("arguments"))
+                    {
+                        facts.push(fact(
+                            format!("{base}:file-change-{index}"),
+                            "file_change",
+                            &time_ns,
+                            &next,
+                            json!(change),
+                            Some(&operation),
+                        ));
+                    }
                 }
             }
             match message.get("stopReason").and_then(Value::as_str) {
