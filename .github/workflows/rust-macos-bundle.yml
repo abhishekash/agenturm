@@ -31,7 +31,7 @@ jobs:
           scripts/build-rust-macos-bundle.sh "$RUNNER_TEMP/agenturm-macos-bundle"
           archive=("$RUNNER_TEMP"/agenturm-macos-bundle/agenturm-*-macos-aarch64.tar.gz)
           [[ ${#archive[@]} -eq 1 ]]
-          shasum -a 256 --check "${archive[0]}.sha256"
+          (cd "$(dirname "${archive[0]}")" && shasum -a 256 --check "$(basename "${archive[0]}").sha256")
           mkdir "$RUNNER_TEMP/unpacked"
           tar -xzf "${archive[0]}" -C "$RUNNER_TEMP/unpacked"
           bundle=("$RUNNER_TEMP"/unpacked/agenturm-*-macos-aarch64)
@@ -41,6 +41,7 @@ jobs:
             [[ $(lipo -archs "$binary") == arm64 ]]
             vtool -show-build "$binary" | grep -q 'minos 13.0'
           done
+          scripts/verify-rust-macos-candidate.sh "${archive[0]}"
           git rev-parse HEAD > "$RUNNER_TEMP/agenturm-macos-bundle/source-commit.txt"
       - uses: actions/upload-artifact@cf430e030ddbb5b0abf93d22962f4752f3646cd9 # v7.0.2
         with:
