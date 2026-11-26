@@ -320,7 +320,7 @@ pub(crate) const ACTIONS: &[Action] = &[
     ),
     action(
         id::PALETTE,
-        "Ctrl+P",
+        "Ctrl+P / :",
         "Command palette",
         "Search destinations, sessions, scopes, live controls and current-view actions",
         Group::System,

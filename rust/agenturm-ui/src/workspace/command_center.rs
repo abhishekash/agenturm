@@ -620,7 +620,7 @@ pub(super) fn draw(
     } else if !agents.search.is_empty() {
         "Enter / Esc search · a reset · q quit"
     } else if area.width >= 110 {
-        "Tab filter · T Today · O History · E Errors · S subtree · Ctrl+P sessions · Enter inspect · / search · F1 help"
+        "Tab filter · T Today · O History · E Errors · S subtree · Ctrl+P / : commands · Enter inspect · / search · F1 help"
     } else {
         "T Today · O History · E Errors · / search · Enter inspect"
     };
