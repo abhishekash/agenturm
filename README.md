@@ -105,6 +105,26 @@ To upgrade a pip installation, run `pip install --upgrade agenturm`.
 
 To upgrade, run `uv tool upgrade agenturm`, then restart Agenturm and any separately running receiver. [Other installation methods](docs/usage.md#install-and-launch-the-terminal-cockpit).
 
+## Standalone Rust preview (Linux and Apple Silicon Mac)
+
+The opt-in Rust 0.3.9 bundle runs without Python or a Rust toolchain. The
+installer detects Linux x86-64/ARM64 or Apple Silicon macOS 13 or newer; Intel
+Macs and Rosetta are unsupported. It installs the separate `agenturm-rust`
+command and does not replace `agenturm`.
+
+```sh
+curl --proto '=https' --tlsv1.2 -fsSL \
+  https://raw.githubusercontent.com/abhishekash/agenturm/b6cd2a2e72185fc46eb89fc667f966bf10a05863/scripts/install-rust-bootstrap.sh \
+  | bash
+agenturm-rust
+```
+
+The bootstrap pins the platform installer and downloads the exact Rust release
+assets over HTTPS. Apple Silicon is a preview pending independent clean-host
+acceptance. macOS builds are unsigned and not notarized; macOS may ask you to
+approve Agenturm in Privacy & Security on first launch. Keep Gatekeeper enabled.
+See the [Rust installation guide](docs/rfcs/rust-distribution-installation.md).
+
 ## From activity to understanding
 
 ### See the agent and its workers
