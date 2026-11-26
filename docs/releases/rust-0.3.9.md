@@ -16,9 +16,7 @@ The bootstrap detects the supported operating system and architecture, fetches
 the exact versioned installer, and verifies the installer SHA-256:
 
 ~~~sh
-curl --proto '=https' --tlsv1.2 -fsSL \
-  https://www.agenturm.dev/install-rust.sh \
-  | bash
+curl -fsSL https://www.agenturm.dev/install.sh | bash
 agenturm-rust
 ~~~
 

@@ -113,9 +113,7 @@ Macs and Rosetta are unsupported. It installs the separate `agenturm-rust`
 command and does not replace `agenturm`.
 
 ```sh
-curl --proto '=https' --tlsv1.2 -fsSL \
-  https://www.agenturm.dev/install-rust.sh \
-  | bash
+curl -fsSL https://www.agenturm.dev/install.sh | bash
 agenturm-rust
 ```
 

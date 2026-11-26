@@ -3,9 +3,7 @@
 </style></head><body><main><nav><strong>Agenturm / Rust 0.3.9 prerelease</strong><a href="https://www.agenturm.dev/#install">Install options ↗</a><a href="https://github.com/abhishekash/agenturm/blob/main/docs/releases/rust-0.3.9.md">Markdown source ↗</a></nav><h1>Agenturm Rust 0.3.9 prerelease</h1>
 <p>Rust 0.3.9 bundles the Agenturm app and its required companion processes. It installs beside the existing command as <code>agenturm-rust</code>; it does not replace the Python <code>agenturm</code> launcher.</p>
 <h2>Supported bundle targets</h2><ul><li>Linux x86-64 and ARM64 on the qualified glibc baseline.</li><li>Apple Silicon macOS 13 or newer as a preview. Intel Macs and Rosetta are unsupported. Independent clean-host acceptance remains open.</li></ul>
-<h2>Install</h2><p>The bootstrap detects the supported operating system and architecture, fetches the exact versioned installer, and verifies the installer SHA-256:</p><pre><code>curl --proto '=https' --tlsv1.2 -fsSL \
-  https://www.agenturm.dev/install-rust.sh \
-  | bash
+<h2>Install</h2><p>The bootstrap detects the supported operating system and architecture, fetches the exact versioned installer, and verifies the installer SHA-256:</p><pre><code>curl -fsSL https://www.agenturm.dev/install.sh | bash
 agenturm-rust</code></pre>
 <p>The installer downloads the matching release archive and checksum sidecar over HTTPS, verifies the checksum, and installs the separate launcher. macOS archives are unsigned and not notarized. If macOS blocks first launch, approve only Agenturm in Privacy &amp; Security; keep Gatekeeper enabled.</p>
 <h2>Release contents</h2><p>The release attaches these platform archives and <code>.sha256</code> sidecars:</p><ul><li><code>agenturm-0.3.9-linux-x86_64.tar.gz</code></li><li><code>agenturm-0.3.9-linux-aarch64.tar.gz</code></li><li><code>agenturm-0.3.9-macos-aarch64.tar.gz</code></li></ul><p>Each release workflow checks that the artifact was built from the tagged commit and refuses to replace an existing asset with different bytes.</p>
