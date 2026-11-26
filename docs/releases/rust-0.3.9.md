@@ -17,7 +17,7 @@ the exact versioned installer, and verifies the installer SHA-256:
 
 ~~~sh
 curl --proto '=https' --tlsv1.2 -fsSL \
-  https://raw.githubusercontent.com/abhishekash/agenturm/b6cd2a2e72185fc46eb89fc667f966bf10a05863/scripts/install-rust-bootstrap.sh \
+  https://www.agenturm.dev/install-rust.sh \
   | bash
 agenturm-rust
 ~~~
