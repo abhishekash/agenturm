@@ -81,9 +81,15 @@ expected=$(awk 'NR == 1 { print $1 }' "$checksum")
 actual=$(shasum -a 256 "$archive" | awk '{print $1}')
 [[ $actual == "$expected" ]] || fail "archive checksum mismatch"
 
-if [[ -e $root && ! -f $marker ]]; then fail "refusing to install over an unrecognized directory: $root"; fi
-if [[ -f $marker && $(cat "$marker") != agenturm-rust-macos-v1 ]]; then fail "invalid installer ownership marker"; fi
 [[ ! -L $root && (! -e $root || -d $root) ]] || fail "managed install root must be a real directory"
+if [[ -e $root ]]; then
+  [[ $(stat -f %u "$root") == $(id -u) ]] || fail "managed install root must be owned by the current user"
+fi
+if [[ -e $marker || -L $marker ]]; then
+  [[ -f $marker && ! -L $marker && $(cat "$marker") == agenturm-rust-macos-v1 ]] || fail "invalid installer ownership marker"
+else
+  [[ ! -e $root/releases && ! -L $root/releases ]] || fail "refusing to overwrite an unrecognized releases directory"
+fi
 if [[ -e $launcher && ! -L $launcher ]]; then fail "launcher exists and is not a symlink"; fi
 if [[ -L $launcher ]]; then
   current=$(readlink "$launcher")
