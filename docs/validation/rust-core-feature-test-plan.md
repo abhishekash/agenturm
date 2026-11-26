@@ -138,6 +138,7 @@ those remain in UI-Q. The full workspace build/check is tracked separately.
 | CF8 | Implemented: Claude private edit detail through the harness-generic operation contract — adapter `file_edit` summaries, schema-23 grants with a v22 upgrade path, bounded credential-screened reveal under a Claude fingerprint domain, cross-kind grant denial. | Development branch (see PR) | Separate test agent; not run on new source. |
 | CF9 | Implemented: Claude async launch attribution — a `worker_launch { child_worker_id }` fact from the real `isAsync`/`async_launched` record shape, with no completion claim and the checkpoint wire format unchanged. | Development branch (see PR) | Separate test agent; not run on new source. |
 | CF10 | Implemented: OpenCode patch-path evidence and independent schema-24 edit grants; canonical content commitment, provider-shaped local/broker proof and Review/turn selection. No invented diffs or add/delete counts. | `feature/opencode-edit-detail` | Installed/paired qualification remains with the separate test owner. |
+| CF11 | Proposed Codex JS `exec_command` wrapper checks. Recognition stays gated until native rollout evidence contains both an explicit exit-code-to-throw guard and a matching structured `isError` result. | `/tmp/agenturm-codex-check-wrapper` | BLOCKED: Nov rollout scan found zero qualifying guards and no structured `isError` on custom tool outputs; no check inference is qualified. |
 
 Worktree paths identify current ownership, not release artifacts. The developer
 must supply the final integrated commit before the test owner freezes a binary.
@@ -472,6 +473,59 @@ reveal and separate installed/paired acceptance matrix. It does not claim
 native diffs, add/delete counts, exact first-turn attribution or worker linkage.
 All installed/paired CF10 scenarios remain **not run** until the test owner
 records results against the final integrated source and artifact.
+
+## CF11 — Codex JS exec-wrapper check gate
+
+**Native evidence review (26 November 2026):** a structure-only scan of the
+available November Codex rollouts found no wrapper containing one literal
+`exec_command` with an explicit `exit_code`-to-throw guard (0 observed). The
+observed `custom_tool_call_output` rows did not contain a structured
+boolean `isError`; their output was represented as a list or string. Therefore
+the proposed JS-wrapper check signal has no observed native producer contract
+and cannot safely generate typed test/lint/build facts. Keep recognition
+disabled and do not infer check success or failure from command text, prose,
+or native exit text alone. The wrapper feature remains gated until a real
+serialized Codex example supplies both required witnesses on the same matched
+tool-call/result identity.
+
+The same scan found 2,341 `spawn_agent` function calls whose stringified
+arguments carry `task_name`, `message`, and sometimes `fork_turns`. Of 2,089
+outputs matched by native call ID, all were strings and none carried a typed
+child identity. Keep this collaboration family unsupported for relationship
+facts; names remain sourced from native Codex metadata, not task text.
+
+The following acceptance cases are intentionally **BLOCKED / not run** until
+such a native witness is captured. Synthetic fixtures can be used after a
+producer example establishes the shape; they cannot replace that evidence.
+
+| Acceptance case | Required behavior once the native contract is established | Status |
+| --- | --- | --- |
+| Literal test, lint and build command | One literal test/lint/build command plus an explicit nonzero `exit_code`-to-throw guard is eligible for a pending typed check. | Blocked: no qualifying native wrapper observed. |
+| Matched structured output | Emit only after the corresponding call ID receives a structured boolean `isError`; false means passed and true means failed. The call and check share one operation identity. | Blocked: native outputs expose no structured `isError` field. |
+| Checkpoint round-trip | A pending call/category survives a harness restart and emits only when the matching output arrives. | Not run; feature remains gated. |
+| Multiple/dynamic/template commands and absent guard | Multiple calls, dynamically computed or template commands, and missing guards do not fabricate checks. | Not run; feature remains gated. |
+| Unknown output, wrong call ID, other tool names | Unstructured text, mismatched output identity and tools other than exact `exec` cannot create or resolve a check. | Not run; feature remains gated. |
+| Content privacy | Raw command and output content never appears in projected check facts. | Not run; feature remains gated. |
+
+Do not use unit-test passes from the speculative implementation snapshot as
+qualification evidence. When a real producer sample becomes available, add
+test-only fixture coverage, run the focused Codex harness suite, strict harness
+Clippy and fmt, and update this section against the exact source commit.
+
+## Scoped CI fix confirmations — 26 November 2026
+
+These local checks confirm the specific follow-up commits only. Full PR CI and
+broader feature qualification remain pending.
+
+| PR / commit | Focused result | Exact local checks |
+| --- | --- | --- |
+| #398 / `54483d8` (Pi edit and Claude MCP content fixes) | PASS: strict workspace Clippy; Pi harness 28 tests; Pi edit reveal 2 tests; Claude MCP reveal 2 tests. | `cargo clippy --offline --locked --workspace --all-targets -- -D warnings`; `cargo test --offline --locked -p agenturm-pi-harness --quiet`; `cargo test --offline --locked -p agenturm-content --lib pi_edit_reveal --quiet`; `cargo test --offline --locked -p agenturm-content --lib claude_mcp_reveal --quiet`. |
+| #399 / `07e3691` (prompt-signals example lockfile) | PASS: locked standalone example test, including the host-compatibility integration test (1 passed). | `cargo test --locked --manifest-path examples/rust_prompt_signals_extension/Cargo.toml`. |
+| #400 / `2bdc1c5` (task CLI help assertion) | PASS: exact task CLI regression now sees the documented `agenturm task add` command (1 passed). | `cargo test --offline --locked -p agenturm-app --test task_cli tasks_refuse_missing_or_unrelated_history_without_creating_workspace -- --exact`. |
+| #401 / `000549b` (Workflow history rebased on current main) | PASS: 5 focused Workflow tests; full UI library 163 tests; strict Clippy, fmt and diff checks. | `cargo test --offline --locked -p agenturm-ui workbench::workflow_alerts::tests -- --nocapture`; `cargo test --offline --locked -p agenturm-ui --lib --quiet`; `cargo clippy --offline --locked -p agenturm-ui --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `git diff --check`. |
+
+These results do not replace the running/required PR CI, Linux bundle PTY
+rerun, or remaining feature and artifact acceptance checks.
 
 ## Related Review identity fixes — delegated regression
 
