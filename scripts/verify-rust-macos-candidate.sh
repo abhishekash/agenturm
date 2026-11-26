@@ -44,6 +44,7 @@ JSONL
 
 config="$state/sources.json"
 db="$home/Library/Application Support/Agenturm/Rust/history.sqlite"
+mkdir -p "$(dirname "$db")"
 "${isolated[@]}" discover --sessions-per-harness 1 > "$config"
 "${isolated[@]}" collect --config "$config" --db "$db"
 "${isolated[@]}" query --db "$db" > "$state/query.json"
