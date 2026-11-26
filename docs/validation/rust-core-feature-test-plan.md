@@ -488,6 +488,12 @@ or native exit text alone. The wrapper feature remains gated until a real
 serialized Codex example supplies both required witnesses on the same matched
 tool-call/result identity.
 
+The same scan found 2,341 `spawn_agent` function calls whose stringified
+arguments carry `task_name`, `message`, and sometimes `fork_turns`. Of 2,089
+outputs matched by native call ID, all were strings and none carried a typed
+child identity. Keep this collaboration family unsupported for relationship
+facts; names remain sourced from native Codex metadata, not task text.
+
 The following acceptance cases are intentionally **BLOCKED / not run** until
 such a native witness is captured. Synthetic fixtures can be used after a
 producer example establishes the shape; they cannot replace that evidence.
@@ -516,6 +522,7 @@ broader feature qualification remain pending.
 | #398 / `54483d8` (Pi edit and Claude MCP content fixes) | PASS: strict workspace Clippy; Pi harness 28 tests; Pi edit reveal 2 tests; Claude MCP reveal 2 tests. | `cargo clippy --offline --locked --workspace --all-targets -- -D warnings`; `cargo test --offline --locked -p agenturm-pi-harness --quiet`; `cargo test --offline --locked -p agenturm-content --lib pi_edit_reveal --quiet`; `cargo test --offline --locked -p agenturm-content --lib claude_mcp_reveal --quiet`. |
 | #399 / `07e3691` (prompt-signals example lockfile) | PASS: locked standalone example test, including the host-compatibility integration test (1 passed). | `cargo test --locked --manifest-path examples/rust_prompt_signals_extension/Cargo.toml`. |
 | #400 / `2bdc1c5` (task CLI help assertion) | PASS: exact task CLI regression now sees the documented `agenturm task add` command (1 passed). | `cargo test --offline --locked -p agenturm-app --test task_cli tasks_refuse_missing_or_unrelated_history_without_creating_workspace -- --exact`. |
+| #401 / `000549b` (Workflow history rebased on current main) | PASS: 5 focused Workflow tests; full UI library 163 tests; strict Clippy, fmt and diff checks. | `cargo test --offline --locked -p agenturm-ui workbench::workflow_alerts::tests -- --nocapture`; `cargo test --offline --locked -p agenturm-ui --lib --quiet`; `cargo clippy --offline --locked -p agenturm-ui --all-targets -- -D warnings`; `cargo fmt --all -- --check`; `git diff --check`. |
 
 These results do not replace the running/required PR CI, Linux bundle PTY
 rerun, or remaining feature and artifact acceptance checks.

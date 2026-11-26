@@ -52,8 +52,8 @@
 </tr>
 <tr>
 <td>Python 0.2.8 UI parity</td>
-<td>Isolated candidate <code>17206a4</code> integrates UI-01–UI-07 implementation and passed coordinator qualification. Follow-up <code>81c7357</code> adds prompt-only Activity filtering and explicit unreported worker detail. Separate PR #397 adds contextual navigation to the global unscoped Metrics catalog; its scoped PTY journey passed and it honestly states that metrics are not linked to the selected session.</td>
-<td>PR #397 remains open: both bundle CI failures are stale project-label predicates; protocol/plugin CI is unresolved. Session-scoped Metrics and other UI-05/UI-06 gaps remain. Not released or accepted as full parity; complete independent UI-Q. See the <a href="rust-ui-parity-plan.md">UI plan</a> and <a href="../validation/rust-core-feature-test-plan.md#ui-05-follow-up-handoff">test handoff</a>.</td>
+<td>PR #397 contextual Metrics navigation, PR #402 searchable palette, and PR #404 hierarchical trace details are merged. The test owner reports the trace feature's app library suite passed (189); new hierarchy edge cases still need direct regressions.</td>
+<td>Full parity remains open: interactive span-to-operation traversal, typed MCP aggregate metrics, session-linked Metrics, diagnostics/health/retry, and installed paired UI-Q acceptance. See the <a href="rust-ui-parity-plan.md">UI plan</a> and <a href="../validation/rust-core-feature-test-plan.md">test handoff</a>.</td>
 </tr>
 <tr>
 <td>Release/default switch</td>
@@ -62,6 +62,20 @@
 </tr>
 </tbody>
 </table></div>
+<h2>Consolidated session and PR handoff — 26 November 2026</h2>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead><tr><th>Workstream</th><th>Current result</th><th>Remaining gate</th></tr></thead>
+<tbody>
+<tr><td>UI palette follow-up, PR <a href="https://github.com/abhishekash/agenturm/pull/402">#402</a></td><td>Rebased change pushed; 161 UI library tests, focused palette/workspace cases, strict UI Clippy, fmt and diff checks passed on <code>8ee7f87</code>. Final docs-only test-plan commit: <code>e0d03f2</code>.</td><td>Draft PR CI reports adapter and Linux bundle failures; installed paired Python/Rust acceptance and palette PTY journey remain under UI-Q.</td></tr>
+<tr><td>Pi edit / Claude MCP, PR <a href="https://github.com/abhishekash/agenturm/pull/398">#398</a></td><td>Clippy corrections pushed as <code>54483d8</code>; strict workspace Clippy and focused Pi/Claude detail tests pass.</td><td>New full CI run in progress; artifact and installed private-detail acceptance remain open.</td></tr>
+<tr><td>Receiver route profiles, PR <a href="https://github.com/abhishekash/agenturm/pull/399">#399</a></td><td>Missing <code>sha2</code> example lock entry pushed as <code>07e3691</code>; locked standalone example test and host compatibility pass.</td><td>New full CI run in progress; installed/paired receiver and security review remain open.</td></tr>
+<tr><td>Task snapshot, PR <a href="https://github.com/abhishekash/agenturm/pull/400">#400</a></td><td>Task help now lists <code>agenturm task add</code>; focused regression passes on <code>2bdc1c5</code>.</td><td>Latest full CI run still reports adapter and Linux bundle failures; await completed logs and rerun after correction.</td></tr>
+<tr><td>Workflow completion history, PR <a href="https://github.com/abhishekash/agenturm/pull/401">#401</a></td><td>Rebased onto current main at <code>000549b</code>; five focused Workflow tests, 163 UI library tests, strict UI Clippy, fmt and diff checks pass.</td><td>Full PR CI triggered; broader paired UI acceptance remains separate.</td></tr>
+<tr><td>Codex JS wrapper checks, <a href="https://github.com/abhishekash/agenturm/pull/403">evidence-gate PR #403</a></td><td>Documentation records the negative native status scan and keeps status inference disabled. No speculative product code was retained.</td><td>Reopen only when a matched native call/output provides structured exit status; collaboration-layer relationship evidence also remains unimplemented.</td></tr>
+</tbody></table></div>
+<p>These scoped local results do not replace full PR CI, integrated artifact
+qualification, or the installed paired UI parity gate. No default switch or
+release publication is authorized by this status update.</p>
 <p>The 813, 819 and 833 test counts belong to successive source baselines and are <strong>not additive</strong>. The 833-test baseline includes the final Host chooser correction and predates CF1–CF5/schema 22; the separate UI-candidate count belongs to <code>17206a4</code>. No completion percentage is asserted while required workflow acceptance remains open. A real Kiro transcript and an approved production connector endpoint remain external inputs; macOS needs native runners and its D2-Mac checks. Comparative benchmarks remain deferred.</p>
 <h2>Remaining feature development — current scheduling</h2>
 <p>The five CF1–CF5 slices are implemented and merged in PR #382 (<code>3135060</code>);

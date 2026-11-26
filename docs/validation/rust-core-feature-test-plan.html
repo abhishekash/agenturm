@@ -813,6 +813,12 @@ disabled and do not infer check success or failure from command text, prose,
 or native exit text alone. The wrapper feature remains gated until a real
 serialized Codex example supplies both required witnesses on the same matched
 tool-call/result identity.</p>
+<p>The same scan found 2,341 <code>spawn_agent</code> function calls whose
+stringified arguments carry <code>task_name</code>, <code>message</code>, and sometimes
+<code>fork_turns</code>. Of 2,089 outputs matched by native call ID, all were
+strings and none carried a typed child identity. Keep this collaboration family
+unsupported for relationship facts; names remain sourced from native Codex
+metadata, not task text.</p>
 <p>The following acceptance cases are intentionally <strong>BLOCKED / not run</strong> until
 such a native witness is captured. Synthetic fixtures can be used after a
 producer example establishes the shape; they cannot replace that evidence.</p>
@@ -870,6 +876,7 @@ broader feature qualification remain pending.</p>
 <tr><td>#398 / <code>54483d8</code> (Pi edit and Claude MCP content fixes)</td><td>PASS: strict workspace Clippy; Pi harness 28 tests; Pi edit reveal 2 tests; Claude MCP reveal 2 tests.</td><td><code>cargo clippy --offline --locked --workspace --all-targets -- -D warnings</code>; <code>cargo test --offline --locked -p agenturm-pi-harness --quiet</code>; <code>cargo test --offline --locked -p agenturm-content --lib pi_edit_reveal --quiet</code>; <code>cargo test --offline --locked -p agenturm-content --lib claude_mcp_reveal --quiet</code>.</td></tr>
 <tr><td>#399 / <code>07e3691</code> (prompt-signals example lockfile)</td><td>PASS: locked standalone example test, including host compatibility (1 passed).</td><td><code>cargo test --locked --manifest-path examples/rust_prompt_signals_extension/Cargo.toml</code>.</td></tr>
 <tr><td>#400 / <code>2bdc1c5</code> (task CLI help assertion)</td><td>PASS: exact task CLI regression sees the documented <code>agenturm task add</code> command (1 passed).</td><td><code>cargo test --offline --locked -p agenturm-app --test task_cli tasks_refuse_missing_or_unrelated_history_without_creating_workspace -- --exact</code>.</td></tr>
+<tr><td>#401 / <code>000549b</code> (Workflow history rebased on current main)</td><td>PASS: 5 focused Workflow tests; full UI library 163 tests; strict Clippy, fmt and diff checks.</td><td><code>cargo test --offline --locked -p agenturm-ui workbench::workflow_alerts::tests -- --nocapture</code>; <code>cargo test --offline --locked -p agenturm-ui --lib --quiet</code>; <code>cargo clippy --offline --locked -p agenturm-ui --all-targets -- -D warnings</code>; <code>cargo fmt --all -- --check</code>; <code>git diff --check</code>.</td></tr>
 </tbody></table></div>
 <p>These results do not replace the running/required PR CI, Linux bundle PTY
 rerun, or remaining feature and artifact acceptance checks.</p>

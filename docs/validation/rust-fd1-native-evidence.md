@@ -159,6 +159,20 @@ completion status and exit code. Do not infer a passed/failed check from
 JavaScript output text or from a successful wrapper/tool call. Reopen only
 when a real matched native call/output provides structured exit evidence.
 
+### C2 — Collaboration calls do not provide a typed child edge (26 November)
+
+The same local scan found 2,341 `spawn_agent` function-call records. Their
+stringified arguments contained `task_name` and `message` (and sometimes
+`fork_turns`); those are requested-task inputs, not a child identity. Among
+these, 2,089 outputs matched by native call ID, and every matched output was a
+string rather than a structured result object. No typed child ID was present
+in the call arguments or matched output schema.
+
+**Disposition:** keep this collaboration family inventoried but unsupported
+for worker relationship facts. Do not derive child IDs, completion, liveness,
+or names from task text or output prose. The independent native Codex state
+database remains the supported source for its native conversation/task names.
+
 ## Outcome for FD1 scheduling
 
 | Shape | Evidence | Scheduling |
