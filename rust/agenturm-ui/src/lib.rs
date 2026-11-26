@@ -626,6 +626,13 @@ struct PageView {
     evaluation_picker: Option<ListState>,
     /// Exact origin for a trace-to-operation jump on this immutable page.
     trace_return: Option<(String, usize)>,
+    trace_picker: Option<TraceOperationPicker>,
+}
+
+struct TraceOperationPicker {
+    targets: Vec<TraceOperationTarget>,
+    selection: ListState,
+    origin: (String, usize),
 }
 
 impl PageView {
@@ -702,6 +709,27 @@ impl PageView {
             evaluation_traces,
             evaluation_picker: None,
             trace_return: None,
+            trace_picker: None,
+        }
+    }
+
+    fn jump_to_trace_operation(
+        &mut self,
+        target: &TraceOperationTarget,
+        origin: (String, usize),
+    ) -> Result<(), &'static str> {
+        if !self.ui.select_pane_title("Operations") {
+            return Err("Operations pane is unavailable on this page");
+        }
+        match self.operation_table.select_trace_target(&self.ui, target) {
+            Ok(()) => {
+                self.trace_return = Some(origin);
+                Ok(())
+            }
+            Err(message) => {
+                self.ui.restore_view(Some(&origin.0), origin.1);
+                Err(message)
+            }
         }
     }
     fn inherit_filters(&mut self, previous: &Self) {
@@ -950,6 +978,12 @@ fn draw(
         {
             table.draw_with_inspector_filtered(frame, body, rows, model.scroll, true);
             "↑↓ select · Enter inspect · o linked operation · / filter · ←/→ panes · ? help"
+        } else if model
+            .selected_trace_operation_targets()
+            .is_some_and(|targets| targets.len() > 1)
+        {
+            table.draw_with_inspector_filtered(frame, body, rows, model.scroll, true);
+            "↑↓ select · Enter inspect · o choose linked span · / filter · ←/→ panes · ? help"
         } else {
             table.draw_with_inspector_filtered(frame, body, rows, model.scroll, true);
             "↑↓ select · Enter inspect · / filter · ←/→ panes · ? help"

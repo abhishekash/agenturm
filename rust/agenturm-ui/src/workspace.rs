@@ -2323,6 +2323,38 @@ impl Workspace {
             }
             return false;
         }
+        if let Some(picker) = &mut view.page.trace_picker {
+            match code {
+                KeyCode::Char('q') => return true,
+                KeyCode::Esc => view.page.trace_picker = None,
+                KeyCode::Down | KeyCode::Char('j') => {
+                    move_selection(&mut picker.selection, picker.targets.len(), true);
+                    self.message = None;
+                }
+                KeyCode::Up | KeyCode::Char('k') => {
+                    move_selection(&mut picker.selection, picker.targets.len(), false);
+                    self.message = None;
+                }
+                KeyCode::Enter => {
+                    let target = picker
+                        .selection
+                        .selected()
+                        .and_then(|index| picker.targets.get(index))
+                        .cloned();
+                    let origin = picker.origin.clone();
+                    view.page.trace_picker = None;
+                    let result = target.map_or(Err("No linked span is selected"), |target| {
+                        view.page.jump_to_trace_operation(&target, origin)
+                    });
+                    match result {
+                        Ok(()) => self.message = None,
+                        Err(message) => self.message = Some(message.into()),
+                    }
+                }
+                _ => {}
+            }
+            return false;
+        }
         if let Some((kind, picker)) = &mut view.page.operation_picker {
             let review = match &view.selection {
                 HistorySelection::ReviewEdits(session) => Some(session),
@@ -2614,29 +2646,26 @@ impl Workspace {
                 .selected_trace_operation_targets()
                 .map(|targets| targets.to_vec())
                 .unwrap_or_default();
-            let result = match targets.as_slice() {
-                [target] => {
-                    if !view.page.ui.select_pane_title("Operations") {
-                        Err("Operations pane is unavailable on this page")
-                    } else {
-                        view.page
-                            .operation_table
-                            .select_trace_target(&view.page.ui, target)
+            match (targets.as_slice(), origin) {
+                ([], _) => {
+                    self.message = Some("The selected trace has no exact linked operation".into());
+                }
+                ([target], Some(origin)) => {
+                    match view.page.jump_to_trace_operation(target, origin) {
+                        Ok(()) => self.message = None,
+                        Err(message) => self.message = Some(message.into()),
                     }
                 }
-                [] => Err("The selected trace has no exact linked operation"),
-                _ => Err("This trace has several linked spans; select a single-span trace to jump"),
-            };
-            match result {
-                Ok(()) => {
-                    view.page.trace_return = origin;
+                ([_, _, ..], Some(origin)) => {
+                    view.page.trace_picker = Some(TraceOperationPicker {
+                        targets,
+                        selection: ListState::default().with_selected(Some(0)),
+                        origin,
+                    });
                     self.message = None;
                 }
-                Err(message) => {
-                    if let Some((title, position)) = &origin {
-                        view.page.ui.restore_view(Some(title), *position);
-                    }
-                    self.message = Some(message.into());
+                (_, None) => {
+                    self.message = Some("The selected trace row is unavailable".into());
                 }
             }
             return false;
@@ -4590,6 +4619,51 @@ fn draw_workspace_base(frame: &mut Frame, workspace: &mut Workspace) {
         return;
     }
     if let Some(view) = workspace.history.last_mut() {
+        if let Some(picker) = &mut view.page.trace_picker {
+            if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+                frame.render_widget(
+                    Paragraph::new("Terminal too small · widen the window or press Esc")
+                        .centered()
+                        .style(theme::foreground(theme::palette().primary)),
+                    area,
+                );
+                return;
+            }
+            let [body, footer] =
+                Layout::vertical([Constraint::Min(1), Constraint::Length(3)]).areas(area);
+            let items = picker.targets.iter().map(|target| {
+                let worker = target
+                    .worker_id
+                    .as_deref()
+                    .map_or_else(String::new, |worker| format!(" · worker {worker}"));
+                let turn = target
+                    .turn_id
+                    .as_deref()
+                    .map_or_else(String::new, |turn| format!(" · turn {turn}"));
+                ListItem::new(format!(
+                    "span {}  →  operation {} · source {} · session {}{}{}",
+                    visible_text(&target.span_id),
+                    visible_text(&target.operation_id),
+                    visible_text(&target.source_id),
+                    visible_text(&target.session_id),
+                    worker,
+                    turn,
+                ))
+            });
+            frame.render_stateful_widget(
+                List::new(items)
+                    .block(panel("Select linked operation · trace spans"))
+                    .highlight_symbol("› ")
+                    .highlight_style(selection_style()),
+                body,
+                &mut picker.selection,
+            );
+            frame.render_widget(
+                Paragraph::new("↑↓ choose span · Enter open operation · Esc back"),
+                footer,
+            );
+            return;
+        }
         if area.width >= MIN_WIDTH
             && area.height >= MIN_HEIGHT
             && let Some(selection) = &mut view.page.evaluation_picker
