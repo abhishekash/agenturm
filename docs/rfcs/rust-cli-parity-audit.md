@@ -6,9 +6,9 @@ Updated 23 November 2026. This is the **AP1** audit required by the
 Python 0.2.8 CLI entry point, cockpit keyboard journey, and selected SDK
 integration with its actual Rust code path. Every **implemented** row was
 verified by reading the Rust parse/dispatch code, not inferred from
-documentation. The audit records dispositions; it does not itself schedule
-development — confirmed missing behavior feeds the B1/D3 cutover-scope
-decision, and only that decision creates new development tasks.
+documentation. The audit records dispositions; confirmed missing journeys
+remain on the active Python-parity plan unless an explicit product decision
+retires them.
 
 ## Method and boundaries
 
@@ -57,7 +57,7 @@ decision, and only that decision creates new development tasks.
 | `review` | Exact-run evidence from receiver | Native `review --db --harness-id --session-id …`; attached Rust receiver; Python-receiver mode keeps exact Python flags (Linux) | implemented | lib.rs:1523-1586; remote_review.rs:33-110 |
 | `investigate path\|command\|instruction\|source` | Bounded retained search | Native kinds incl. `failures`; Python-receiver mode keeps Python flags (Linux) | implemented (adds `failures`) | investigate_cli.rs:149-219 |
 | `task create/list/show/update/archive` | Offline saved tasks | `task add/create/list/show/update/archive`; cursor paging via `--limit/--before` (no `--offset`) | implemented (paging model differs) | task_cli.rs:240-283 |
-| `task create --snapshot` | Capture Git at creation | none on `create`; separate `task snapshot` exists | scope decision needed | see dispositions |
+| `task create --snapshot` | Opt-in Git capture after creation | `--snapshot` captures the supplied local workspace; without it, create stays metadata-only. A capture failure returns the saved task plus `snapshot_error`. | Implemented on `feature/task-create-snapshot`; acceptance pending | task_cli.rs |
 | `task snapshot` | Bounded read-only Git capture | `task snapshot ID [--include-diff]` (patch ≤64 KiB) | implemented | task_cli.rs:276-283 |
 | `task link/unlink` | Link by trace ID or evidence file | Exact native identity only (`--source-id --session-id [--turn-id --worker-id]`) | implemented; trace-ID/evidence-file link forms confirmed missing (recorded, cutover:28) | task_cli.rs:379-391 |
 | `task handoff` | Markdown/HTML/JSON brief; `--endpoint` revalidation | `task handoff [--format] [--output] [--include-decision-history] [--include-diff]`; offline only | implemented; receiver-revalidation flag confirmed missing | task_cli.rs:356-367 |
@@ -90,10 +90,11 @@ decision, and only that decision creates new development tasks.
    confirmed missing flags. The Rust model is offline-first with explicit
    local-history anchors; receiver-revalidated handoff sections need a
    product decision before becoming development work.
-3. **`task create --snapshot`** — scope decision: the Rust flow separates
-   creation from capture (`task snapshot`). Keeping the split preserves
-   explicit capture approval; adopting the Python convenience flag is a
-   cutover-scope decision.
+3. **`task create --snapshot`** — implemented as an explicit opt-in to match
+   the Python convenience while preserving the safer default: task creation
+   alone does not inspect a workspace. The existing `task snapshot` command
+   remains available for later recaptures. A failed capture preserves the
+   task and reports its ID plus a `snapshot_error`.
 4. **`task list --offset`** — disposition: cursor paging (`--limit/--before`)
    is the retained model; offset paging is not planned.
 5. **`cockpit --no-local-agents` / `--metadata-only` / `--capability-config`**
@@ -108,9 +109,9 @@ decision, and only that decision creates new development tasks.
 
 ## Findings that gate the B1/D3 cutover decision
 
-Confirmed missing cockpit journeys and flags, to be scheduled or explicitly
-retired by the cutover-scope decision — this audit does not create
-development tasks by itself:
+Confirmed missing cockpit journeys and flags remain active parity work under
+the user's completion direction. The separate implementation plan assigns
+their development; this audit records the source-backed gaps:
 
 1. Ctrl+P action palette (choose session, save task, open workflow,
    investigate) beyond the theme selector.
@@ -118,10 +119,9 @@ development tasks by itself:
    version-chooser journey.
 3. Ctrl+R reload of a concurrently edited saved task.
 4. Workflow `h` include-older-completions toggle.
-5. `task create --snapshot` convenience flag.
-6. `task draft --workspace` binding and `task handoff` receiver
+5. `task draft --workspace` binding and `task handoff` receiver
    revalidation.
-7. Remote receiver deployment (`--allowed-host`, TLS) — already recorded open
+6. Remote receiver deployment (`--allowed-host`, TLS) — already recorded open
    in the cutover table.
 
 Scope decisions with no development implied: `o` sort menu (intentional

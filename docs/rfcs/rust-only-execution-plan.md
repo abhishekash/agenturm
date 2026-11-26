@@ -64,15 +64,15 @@ each surface, the six previously unrecorded items have explicit dispositions,
 and all five selected SDK families have real CI jobs exercising a Rust path
 (current-head results remain Q7's to record).
 
-The audit's confirmed-missing inventory (Ctrl+P action palette, saved-task
-Brief/Decisions cockpit editors, Ctrl+R concurrent-edit reload, Workflow `h`
-history toggle, `task create --snapshot`, `task draft --workspace` and handoff
-receiver revalidation, remote receiver deployment) gates the B1/D3
-cutover-scope decision — it does not create development tasks by itself.
-Only that decision, or an explicit retirement, schedules them. No workflow is
-retired by the audit. Focused spot-verification confirmed the audit's key
-anchors (theme-only Ctrl+P, no `--snapshot` on `task create`, Draft editor
-surface, attention-native verbs).
+The audit's confirmed-missing inventory includes the Ctrl+P action palette,
+saved-task Brief/Decisions cockpit editors, Ctrl+R concurrent-edit reload,
+Workflow `h` history toggle, `task draft --workspace` and handoff receiver
+revalidation, and remote receiver deployment. Under the user's direction to
+complete Rust feature and Python workflow parity, these are active planned
+gaps; none is silently retired. `task create --snapshot` is being implemented
+as an explicit opt-in on `feature/task-create-snapshot`, retaining metadata-only
+creation by default. Focused spot-verification confirmed the remaining audit
+anchors (theme-only Ctrl+P, Draft editor surface, attention-native verbs).
 
 ### Implemented code and qualification ownership
 

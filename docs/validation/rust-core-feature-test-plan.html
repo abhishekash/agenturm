@@ -41,10 +41,54 @@ validation records. Return defects with exact scope and reproduction.</li>
 for testing and fix returned defects. Do not duplicate the test agent's
 campaigns or call an implemented feature release-qualified prematurely.</li>
 </ul>
-<p>The base is merged <code>18aa7026be1041b93a0b8517874f5b518da44777</code> (PR #381).
-Its existing 833-test and development terminal/KVM results are historical
-baselines, not results for the new feature slices. Every new row starts
-<strong>not run</strong> until the test agent records evidence against the integrated head.</p>
+<h2>AP1 follow-up: <code>task create --snapshot</code></h2>
+<p>Implementation is on <code>feature/task-create-snapshot</code>. The flag is opt-in: a
+plain task create must remain metadata-only, while the flag captures Git only
+from the supplied local <code>--workspace</code>. If workspace capture or persistence
+fails after task creation, return the saved task and an explicit
+<code>snapshot_error</code>; do not hide the task ID or imply the snapshot succeeded.</p>
+<div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
+<thead>
+<tr>
+<th>Scenario</th>
+<th>Required result</th>
+<th>Status</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Create with <code>--snapshot</code> in a clean Git workspace</td>
+<td>Saved task includes the captured repository, head, branch and change state; returned task revision reflects the saved capture.</td>
+<td>PASS: integration fixture verifies top-level task ID, revision 2, repository/head/branch, zero change counts and persisted capture.</td>
+</tr>
+<tr>
+<td>Create with <code>--snapshot</code> in a dirty workspace</td>
+<td>Capture remains read-only, excludes untracked file contents, and reports tracked/staged/unstaged state without claiming agent attribution.</td>
+<td>PASS: staged/unstaged/untracked counts are exact; worktree status and Git index are unchanged; no private file body appears in output.</td>
+</tr>
+<tr>
+<td>Create without <code>--snapshot</code></td>
+<td>No Git capture occurs; existing task creation result and revision remain unchanged.</td>
+<td>PASS: task creation succeeds for a non-Git directory, revision remains 1, and later show has no Git snapshot.</td>
+</tr>
+<tr>
+<td>Capture unavailable or workspace missing</td>
+<td>Task remains saved and result includes its ID plus a clear <code>snapshot_error</code>; no false success claim.</td>
+<td>PASS: missing repository and omitted workspace both preserve task ID/revision and return top-level <code>snapshot_error</code>.</td>
+</tr>
+</tbody>
+</table></div>
+<p>Test-owner validation ran on <code>/tmp/agenturm-task-create-snapshot</code>, branch
+<code>feature/task-create-snapshot</code>, source base <code>afbdbdcf28f3e31f34eb3363c05b997cbad68526</code>
+plus the dirty implementation and test changes. The focused command
+<code>cargo test --offline --locked -p agenturm-app --test task_cli task_create_snapshot -- --nocapture</code> passed all 3 new tests. The app library command
+<code>cargo test --offline --locked -p agenturm-app --lib -- --quiet</code> passed 189
+tests. Strict lint passed with
+<code>cargo clippy --offline --locked -p agenturm-app --all-targets -- -D warnings</code>;
+<code>cargo fmt --all -- --check</code> also passed. These are local Git fixtures, not
+release-artifact qualification. The merged <code>18aa7026be1041b93a0b8517874f5b518da44777</code>
+(PR #381) and its existing 833-test / terminal-KVM results remain historical
+baselines, not results for this slice.</p>
 <h2>Feature handoff board</h2>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>

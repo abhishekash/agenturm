@@ -835,6 +835,220 @@ fn task_workspace_capture_is_revision_checked_and_cleared_when_remapped() {
 
 #[cfg(target_os = "linux")]
 #[test]
+fn task_create_snapshot_captures_clean_git_state_and_returns_saved_revision() {
+    let scratch = Scratch::new();
+    let db = scratch.0.join("history.sqlite");
+    Store::open(&db).unwrap();
+    let workspace = scratch.0.join("clean-repo");
+    init_git_workspace(&workspace);
+    let head = git_output(&workspace, &["rev-parse", "HEAD"]);
+    let branch = git_output(&workspace, &["branch", "--show-current"]);
+
+    let created = json(
+        &db,
+        &[
+            "create",
+            "--title",
+            "Snapshot a clean checkout",
+            "--notes",
+            "Saved before capture",
+            "--workspace",
+            workspace.to_str().unwrap(),
+            "--snapshot",
+        ],
+    );
+    assert_eq!(created["revision"], 2);
+    assert_eq!(created["title"], "Snapshot a clean checkout");
+    assert_eq!(created["notes"], "Saved before capture");
+    assert!(created["id"].as_u64().is_some());
+    assert_eq!(
+        created["git_snapshot"]["repository_root"],
+        workspace.to_str().unwrap()
+    );
+    assert_eq!(created["git_snapshot"]["head_commit"], head);
+    assert_eq!(created["git_snapshot"]["branch"], branch);
+    assert_eq!(created["git_snapshot"]["staged_changes"], 0);
+    assert_eq!(created["git_snapshot"]["unstaged_changes"], 0);
+    assert_eq!(created["git_snapshot"]["untracked_files"], 0);
+    assert!(
+        created["git_snapshot"]["captured_at_unix_ns"]
+            .as_u64()
+            .unwrap()
+            > 0
+    );
+    assert!(created.get("snapshot_error").is_none());
+
+    let id = created["id"].as_u64().unwrap().to_string();
+    let shown = json(&db, &["show", &id]);
+    assert_eq!(shown["task"]["revision"], 2);
+    assert_eq!(shown["git_snapshot"]["head_commit"], head);
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn task_create_snapshot_reads_dirty_state_without_changing_git_or_capturing_untracked_content() {
+    let scratch = Scratch::new();
+    let db = scratch.0.join("history.sqlite");
+    Store::open(&db).unwrap();
+    let workspace = scratch.0.join("dirty-repo");
+    init_git_workspace(&workspace);
+
+    std::fs::write(workspace.join("tracked.txt"), "staged-private-body\n").unwrap();
+    git_command(&workspace, &["add", "tracked.txt"]);
+    std::fs::write(workspace.join("tracked.txt"), "unstaged-private-body\n").unwrap();
+    std::fs::write(workspace.join("untracked.txt"), "untracked-private-body\n").unwrap();
+    let status_before = git_output(&workspace, &["status", "--porcelain=v1"]);
+    let index_before = std::fs::read(workspace.join(".git/index")).unwrap();
+
+    let created = json(
+        &db,
+        &[
+            "create",
+            "--title",
+            "Snapshot a dirty checkout",
+            "--workspace",
+            workspace.to_str().unwrap(),
+            "--snapshot",
+        ],
+    );
+    let snapshot = &created["git_snapshot"];
+    assert_eq!(created["revision"], 2);
+    assert_eq!(snapshot["staged_changes"], 1);
+    assert_eq!(snapshot["unstaged_changes"], 1);
+    assert_eq!(snapshot["untracked_files"], 1);
+    assert!(!created.to_string().contains("staged-private-body"));
+    assert!(!created.to_string().contains("unstaged-private-body"));
+    assert!(!created.to_string().contains("untracked-private-body"));
+    assert_eq!(
+        git_output(&workspace, &["status", "--porcelain=v1"]),
+        status_before
+    );
+    assert_eq!(
+        std::fs::read(workspace.join(".git/index")).unwrap(),
+        index_before
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("tracked.txt")).unwrap(),
+        "unstaged-private-body\n"
+    );
+    assert_eq!(
+        std::fs::read_to_string(workspace.join("untracked.txt")).unwrap(),
+        "untracked-private-body\n"
+    );
+}
+
+#[cfg(target_os = "linux")]
+#[test]
+fn task_create_snapshot_is_opt_in_and_capture_failures_preserve_created_tasks() {
+    let scratch = Scratch::new();
+    let db = scratch.0.join("history.sqlite");
+    Store::open(&db).unwrap();
+    let not_a_repository = scratch.0.join("plain-directory");
+    std::fs::create_dir(&not_a_repository).unwrap();
+
+    // Supplying a workspace alone preserves the metadata-only creation path;
+    // a non-Git directory must not be inspected unless --snapshot is present.
+    let plain = json(
+        &db,
+        &[
+            "create",
+            "--title",
+            "No implicit Git read",
+            "--workspace",
+            not_a_repository.to_str().unwrap(),
+        ],
+    );
+    assert_eq!(plain["revision"], 1);
+    assert!(plain.get("snapshot_error").is_none());
+    assert!(plain.get("git_snapshot").is_none());
+    let plain_id = plain["id"].as_u64().unwrap().to_string();
+    let plain_shown = json(&db, &["show", &plain_id]);
+    assert_eq!(plain_shown["task"]["revision"], 1);
+    assert!(plain_shown["git_snapshot"].is_null());
+
+    let missing = scratch.0.join("missing-repository");
+    let failed = json(
+        &db,
+        &[
+            "create",
+            "--title",
+            "Keep task when capture fails",
+            "--workspace",
+            missing.to_str().unwrap(),
+            "--snapshot",
+        ],
+    );
+    assert!(failed["id"].as_u64().is_some());
+    assert_eq!(failed["revision"], 1);
+    assert!(!failed["snapshot_error"].as_str().unwrap().is_empty());
+    assert!(failed.get("git_snapshot").is_none());
+    let failed_id = failed["id"].as_u64().unwrap().to_string();
+    let persisted = json(&db, &["show", &failed_id]);
+    assert_eq!(persisted["task"]["revision"], 1);
+    assert_eq!(persisted["task"]["title"], "Keep task when capture fails");
+
+    let no_workspace = json(
+        &db,
+        &[
+            "create",
+            "--title",
+            "Keep task without workspace",
+            "--snapshot",
+        ],
+    );
+    assert!(no_workspace["id"].as_u64().is_some());
+    assert_eq!(no_workspace["revision"], 1);
+    assert!(
+        no_workspace["snapshot_error"]
+            .as_str()
+            .unwrap()
+            .contains("Set a workspace")
+    );
+    let no_workspace_id = no_workspace["id"].as_u64().unwrap().to_string();
+    assert_eq!(
+        json(&db, &["show", &no_workspace_id])["task"]["revision"],
+        1
+    );
+}
+
+#[cfg(target_os = "linux")]
+fn init_git_workspace(path: &Path) {
+    std::fs::create_dir_all(path).unwrap();
+    git_command(path, &["init", "--quiet"]);
+    git_command(path, &["branch", "-M", "main"]);
+    git_command(path, &["config", "user.name", "Agenturm Test"]);
+    git_command(
+        path,
+        &["config", "user.email", "agenturm-test@example.invalid"],
+    );
+    std::fs::write(path.join("tracked.txt"), "initial fixture\n").unwrap();
+    git_command(path, &["add", "tracked.txt"]);
+    git_command(path, &["commit", "--quiet", "-m", "initial fixture"]);
+}
+
+#[cfg(target_os = "linux")]
+fn git_command(path: &Path, args: &[&str]) {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?}: {output:?}");
+}
+
+#[cfg(target_os = "linux")]
+fn git_output(path: &Path, args: &[&str]) -> String {
+    let output = Command::new("git")
+        .args(args)
+        .current_dir(path)
+        .output()
+        .unwrap();
+    assert!(output.status.success(), "git {args:?}: {output:?}");
+    String::from_utf8(output.stdout).unwrap().trim().to_owned()
+}
+
+#[cfg(target_os = "linux")]
+#[test]
 fn git_patches_are_revision_checked_private_and_explicitly_exported() {
     use std::os::unix::fs::PermissionsExt;
 

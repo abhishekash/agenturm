@@ -56,7 +56,7 @@ for new assignments. The older A–E IDs retain their original acceptance criter
 | FD5 / B8 | Remote package discovery/download and additional decoder formats; local lifecycle is complete. | Separate extension development |
 | FD6 / C6–C8 | Additional provider transports, credential provisioning and architecture isolation profiles. | Separate connector development |
 | FD7 / D2-Mac | Mac artifacts/install/paths/launchd/signing; Apple Silicon and Intel separate. | Separate platform development |
-| AP1 / B1, B5–B6 | Map SDK/CLI/keyboard inventory to implemented, test-only, genuinely missing, unavailable native evidence or scope decision. | Audit; do not count all rows as missing features |
+| AP1 / B1, B5–B6 | Map SDK/CLI/keyboard inventory to implemented, test-only, genuinely missing, unavailable native evidence or scope decision. `task create --snapshot` is implemented as an explicit opt-in on `feature/task-create-snapshot`; separate test owner has acceptance. | Audit; do not count all rows as missing features |
 | CF1–CF5 / Q1–Q10 | Qualify completed source, artifact, UI and authority behavior; obtain real Kiro/production/Mac evidence as applicable. | Separate test agent; not feature development |
 
 ## UI parity workstream snapshot
