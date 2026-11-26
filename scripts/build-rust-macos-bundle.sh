@@ -59,6 +59,10 @@ cat > "$bundle/release-metadata.json" <<'JSON'
   "target": "aarch64-apple-darwin",
   "architectures": ["arm64"],
   "minimum_macos": "13.0",
+  "distribution": "direct-github-release",
+  "signature": "unsigned",
+  "notarization": "none",
+  "integrity": "HTTPS download plus SHA-256 sidecar",
   "collection_mode": "foreground-cockpit",
   "unsupported": ["x86_64-apple-darwin", "Rosetta", "systemd", "managed-background-service", "Linux-only-process-inspection", "workspace-backup-restore", "private-content-capture"]
 }

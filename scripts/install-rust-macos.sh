@@ -6,12 +6,15 @@ fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 usage() {
   cat <<'HELP'
 Usage:
+  install-rust-macos.sh install --version X.Y.Z
+  install-rust-macos.sh update  --version X.Y.Z
   install-rust-macos.sh install --version X.Y.Z --archive FILE --checksum FILE
-  install-rust-macos.sh update  --version X.Y.Z --archive FILE --checksum FILE
   install-rust-macos.sh uninstall
 
 Installs an Apple Silicon release in ~/Library/Application Support/Agenturm/Rust
 and selects it through ~/.local/bin/agenturm-rust. macOS 13 or newer required.
+Install/update download the exact archive and SHA-256 sidecar from GitHub Releases
+unless local --archive and --checksum files are supplied.
 HELP
 }
 [[ $(uname -s) == Darwin && $(uname -m) == arm64 ]] || fail "Apple Silicon macOS is required; Intel and Rosetta are unsupported"
@@ -43,7 +46,7 @@ if [[ $action == uninstall ]]; then
   exit 0
 fi
 
-version= archive= checksum=
+version= archive= checksum= download_dir= stage=
 while (($#)); do
   case $1 in
     --version) (($# >= 2)) || fail "--version needs a value"; version=$2; shift 2;;
@@ -52,8 +55,27 @@ while (($#)); do
     *) fail "unknown option: $1";;
   esac
 done
-[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ && -f $archive && -f $checksum ]] || fail "an exact version, archive, and checksum file are required"
-[[ $(basename "$archive") == "agenturm-$version-macos-aarch64.tar.gz" ]] || fail "archive name does not match the requested version/target"
+[[ $version =~ ^[0-9]+\.[0-9]+\.[0-9]+$ ]] || fail "--version requires an exact X.Y.Z release"
+[[ -z $archive && -z $checksum || -n $archive && -n $checksum ]] || fail "--archive and --checksum must be supplied together"
+archive_name="agenturm-$version-macos-aarch64.tar.gz"
+if [[ -z $archive ]]; then
+  command -v curl >/dev/null 2>&1 || fail "curl is required to download the release"
+  download_dir=$(mktemp -d "${TMPDIR:-/tmp}/agenturm-macos-download.XXXXXXXX")
+  release_url="https://github.com/abhishekash/agenturm/releases/download/rust-v$version"
+  curl --fail --location --silent --show-error --retry 3 --proto '=https' --tlsv1.2 \
+    "$release_url/$archive_name" -o "$download_dir/$archive_name" || fail "could not download $archive_name"
+  curl --fail --location --silent --show-error --retry 3 --proto '=https' --tlsv1.2 \
+    "$release_url/$archive_name.sha256" -o "$download_dir/$archive_name.sha256" || fail "could not download the SHA-256 sidecar"
+  archive="$download_dir/$archive_name"
+  checksum="$archive.sha256"
+fi
+[[ -f $archive && -f $checksum ]] || fail "archive and checksum must be regular files"
+[[ $(basename "$archive") == "$archive_name" ]] || fail "archive name does not match the requested version/target"
+cleanup() {
+  [[ -z $stage ]] || rm -rf "$stage"
+  [[ -z $download_dir ]] || rm -rf "$download_dir"
+}
+trap cleanup EXIT
 expected=$(awk 'NR == 1 { print $1 }' "$checksum")
 [[ $expected =~ ^[0-9a-f]{64}$ ]] || fail "invalid SHA-256 sidecar"
 actual=$(shasum -a 256 "$archive" | awk '{print $1}')
@@ -85,8 +107,6 @@ for executable in "$bundle"/bin/*; do
   [[ -f $executable && ! -L $executable ]] || fail "bundle contains a non-regular executable"
   [[ $(lipo -archs "$executable") == arm64 ]] || fail "bundle contains a non-Apple-Silicon executable"
   vtool -show-build "$executable" | grep -q 'minos 13.0' || fail "binary does not declare the macOS 13 minimum"
-  codesign --verify --strict "$executable" >/dev/null 2>&1 || fail "bundle executable is not validly Developer ID signed"
-  spctl --assess --type execute "$executable" >/dev/null 2>&1 || fail "Gatekeeper did not accept the executable; obtain the signed and notarized release"
 done
 mkdir -p "$root/releases"
 chmod 700 "$root/releases"
@@ -98,3 +118,4 @@ ln -s "$release/bin/agenturm" "$link_stage"
 mv -f "$link_stage" "$launcher"
 printf 'Installed Agenturm Rust %s at %s\n' "$version" "$launcher"
 printf 'Add %s to PATH if needed; open a new terminal, then run agenturm-rust.\n' "$bin_dir"
+printf 'This direct-download build has no Apple Developer ID signature or notarization. If macOS blocks first launch, approve only Agenturm in Privacy & Security; keep Gatekeeper enabled.\n'

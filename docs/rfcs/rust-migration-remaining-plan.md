@@ -280,13 +280,16 @@ Ventura, native bundle workflow, local install/update/uninstall path, native
 Application Support/Preferences defaults, and foreground cockpit collection.
 Intel/Rosetta and managed background collection are explicitly unsupported.
 The candidate is not public macOS support: Developer ID signing/notarization
-credentials, native clean-host installation and runtime acceptance, and Q10
-remain open. Do not bypass Gatekeeper.
+is unavailable because this project has no Apple Developer account. The
+selected direct GitHub Release path is unsigned and uses HTTPS plus a SHA-256
+sidecar; the installer supports a per-app Gatekeeper exception without
+changing system-wide settings. Native clean-host installation and runtime
+acceptance, and Q10, remain open.
 
 The unsigned native candidate built and passed its focused Apple Silicon
 runtime/navigation check on 26 November 2026 in
 [run 45868463836](../validation/rust-macos-candidate.md). This does not close
-the signed install/upgrade/uninstall gate or Q10.
+the direct-download install/upgrade/uninstall gate or Q10.
 
 **Development complete when:** the selected macOS artifact, path, installer,
 service and signing configuration is implemented for each intended target.
