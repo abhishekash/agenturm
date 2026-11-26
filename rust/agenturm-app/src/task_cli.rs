@@ -20,7 +20,8 @@ const MAX_TEXT_INPUT: u64 = 4 * 1024;
 const MAX_BRIEF_INPUT: u64 = 128 * 1024;
 pub(super) const USAGE: &str = concat!(
     "usage: agenturm task list --db <history> [--all] [--search <text>] [--limit <1..200>] [--before <id>]\n",
-    "       agenturm task <add|create> --db <history> --title <title> [--notes <text>|--notes-file <path>] [--workspace <directory>] [--snapshot]\n",
+    "       agenturm task add --db <history> --title <title> [--notes <text>|--notes-file <path>] [--workspace <directory>] [--snapshot]\n",
+    "       agenturm task create --db <history> --title <title> [--notes <text>|--notes-file <path>] [--workspace <directory>] [--snapshot]\n",
     "       agenturm task show <task-id> --db <history>\n",
     "       agenturm task <complete|reopen> <task-id> --db <history> [--expected-revision <n>]\n",
     "       agenturm task snapshot <task-id> --db <history> [--include-diff] [--expected-revision <n>]\n",
