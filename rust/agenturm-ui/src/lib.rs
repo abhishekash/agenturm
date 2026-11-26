@@ -25,6 +25,7 @@ pub use findings::{
     FindingEvaluation, FindingGroup, FindingOccurrence, FindingSource, FindingsPage,
 };
 pub use operation_table::{ConfiguredMcpServer, McpInventory, OperationRow, OperationTables};
+pub use operation_table::{OperationIdentity, TraceOperationTarget};
 
 pub use live_receiver::{
     LiveFindingKind, LiveFindingMember, LiveFindingMemberKind, LiveFindingPage, LiveFindingRow,
@@ -420,6 +421,26 @@ impl UiModel {
         ))
     }
 
+    pub(crate) fn selected_trace_operation_targets(&self) -> Option<&[TraceOperationTarget]> {
+        let table = self.selected_evidence()?;
+        if table.spec.title != "Traces" {
+            return None;
+        }
+        let actual = *self.evidence_visible().get(self.scroll)?;
+        table.operation_targets.get(actual).map(Vec::as_slice)
+    }
+
+    pub(crate) fn select_pane_title(&mut self, title: &str) -> bool {
+        let Some(index) = self.panes.iter().position(|pane| pane.title == title) else {
+            return false;
+        };
+        self.selected = index;
+        self.scroll = 0;
+        self.evidence_inspection = None;
+        self.update_scroll_limit();
+        true
+    }
+
     /// Routes input to the active metadata inspector before regular history keys.
     fn evidence_key(&mut self, key: KeyCode) -> bool {
         if self.help {
@@ -603,6 +624,8 @@ struct PageView {
     telemetry_spans: Vec<TelemetrySpanEntry>,
     evaluation_traces: Vec<TraceEvaluationEntry>,
     evaluation_picker: Option<ListState>,
+    /// Exact origin for a trace-to-operation jump on this immutable page.
+    trace_return: Option<(String, usize)>,
 }
 
 impl PageView {
@@ -678,6 +701,7 @@ impl PageView {
             telemetry_spans,
             evaluation_traces,
             evaluation_picker: None,
+            trace_return: None,
         }
     }
     fn inherit_filters(&mut self, previous: &Self) {
@@ -920,6 +944,12 @@ fn draw(
         } else if table.spec.title == "Activity" {
             table.draw_with_inspector_filtered(frame, body, rows, model.scroll, true);
             "↑↓ select · Enter inspect · / filter · F prompts only · ←/→ panes · ? help"
+        } else if model
+            .selected_trace_operation_targets()
+            .is_some_and(|targets| targets.len() == 1)
+        {
+            table.draw_with_inspector_filtered(frame, body, rows, model.scroll, true);
+            "↑↓ select · Enter inspect · o linked operation · / filter · ←/→ panes · ? help"
         } else {
             table.draw_with_inspector_filtered(frame, body, rows, model.scroll, true);
             "↑↓ select · Enter inspect · / filter · ←/→ panes · ? help"

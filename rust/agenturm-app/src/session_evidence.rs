@@ -3,7 +3,10 @@ use agenturm_kernel::{
     RelationshipKind, Snapshot, SpanTokenUsage, TraceProgress, TraceSpan, format_credits,
     format_reported_cost,
 };
-use agenturm_ui::{EvidenceTable, EvidenceTables, OperationRow, OperationTables, RecordedSession};
+use agenturm_ui::{
+    EvidenceTable, EvidenceTables, OperationIdentity, OperationRow, OperationTables,
+    RecordedSession,
+};
 
 mod table;
 use std::collections::{BTreeMap, BTreeSet};
@@ -776,7 +779,24 @@ fn mcp_rows(evidence: &[&Observation], scope: ViewScope) -> (Vec<MetricRow>, Vec
             }
             _ => false,
         })
-        .map(|row| (activity_row(row, scope), operation_summary(row, &[row])))
+        .map(|row| {
+            let identity = row
+                .identity
+                .session_id
+                .as_ref()
+                .zip(row.identity.operation_id.as_ref())
+                .map(|(session_id, operation_id)| OperationIdentity {
+                    source_id: row.harness_id.as_str().to_owned(),
+                    session_id: session_id.clone(),
+                    worker_id: row.identity.worker_id.clone(),
+                    turn_id: row.identity.turn_id.clone(),
+                    operation_id: operation_id.clone(),
+                });
+            (
+                activity_row(row, scope),
+                operation_summary(row, &[row], identity),
+            )
+        })
         .unzip()
 }
 
@@ -901,8 +921,11 @@ fn trace_presentation(
 
     let mut rows = Vec::new();
     let mut trace_rows = Vec::with_capacity(groups.len());
+    let mut trace_targets = Vec::with_capacity(groups.len());
     for ((source, session, trace), evidence) in groups {
-        trace_rows.push(table::trace(source, session, trace, &evidence));
+        let (trace_row, operation_targets) = table::trace(source, session, trace, &evidence);
+        trace_rows.push(trace_row);
+        trace_targets.push(operation_targets);
         let label = match scope {
             ViewScope::Workspace => format!("{trace} · {source} · session {session}"),
             ViewScope::Session => trace.to_owned(),
@@ -933,7 +956,9 @@ fn trace_presentation(
             ));
         }
     }
-    (rows, table::TRACES.table(trace_rows))
+    let mut table = table::TRACES.table(trace_rows);
+    table.operation_targets = trace_targets;
+    (rows, table)
 }
 
 fn progress_description(progress: &TraceProgress) -> String {
@@ -998,9 +1023,21 @@ fn operation_rows(
 
     let summaries = groups
         .iter()
-        .map(|(_, _, _, _, rows)| {
+        .map(|(source, session, worker, operation, rows)| {
             let latest = rows.last().expect("operation group has observations");
-            operation_summary(latest, rows)
+            operation_summary(
+                latest,
+                rows,
+                Some(OperationIdentity {
+                    source_id: (*source).to_owned(),
+                    session_id: (*session).to_owned(),
+                    worker_id: worker.map(str::to_owned),
+                    turn_id: rows
+                        .iter()
+                        .find_map(|observation| observation.identity.turn_id.clone()),
+                    operation_id: (*operation).to_owned(),
+                }),
+            )
         })
         .collect();
     let metrics = groups
@@ -1022,7 +1059,11 @@ fn operation_rows(
     (metrics, summaries)
 }
 
-fn operation_summary(row: &Observation, group: &[&Observation]) -> OperationRow {
+fn operation_summary(
+    row: &Observation,
+    group: &[&Observation],
+    identity: Option<OperationIdentity>,
+) -> OperationRow {
     let mut result = None;
     let mut name = None;
     let mut server = None;
@@ -1086,6 +1127,7 @@ fn operation_summary(row: &Observation, group: &[&Observation]) -> OperationRow 
         latency: duration,
         evidence: details,
         mcp_event,
+        identity,
     }
 }
 

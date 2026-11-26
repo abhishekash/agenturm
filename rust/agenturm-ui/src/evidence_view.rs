@@ -1,5 +1,6 @@
 //! Tables for the app's already-scoped, metadata-only evidence projections.
 
+use super::TraceOperationTarget;
 use super::{draw_view_bar, heading_style, label_style, panel, selection_style};
 use super::{surface, visible_text, wrap_display_width};
 use crate::theme;
@@ -19,6 +20,9 @@ pub struct EvidenceTable {
     pub spec: EvidenceSpec,
     pub rows: Vec<EvidenceRow>,
     pub context: Vec<MetricRow>,
+    /// Exact operation identities reported by each trace group, aligned with
+    /// `rows`. Other evidence tables leave these lists empty.
+    pub operation_targets: Vec<Vec<TraceOperationTarget>>,
 }
 
 #[derive(Debug, Eq, PartialEq, Clone, Copy)]
@@ -39,6 +43,7 @@ impl EvidenceSpec {
     pub fn table(self, rows: Vec<EvidenceRow>) -> EvidenceTable {
         EvidenceTable {
             spec: self,
+            operation_targets: vec![Vec::new(); rows.len()],
             rows,
             context: Vec::new(),
         }
