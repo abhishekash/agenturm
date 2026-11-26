@@ -46,6 +46,8 @@ pub struct OperationIdentity {
 /// Exact operation target reported by a trace span.
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub struct TraceOperationTarget {
+    pub trace_id: String,
+    pub span_id: String,
     pub source_id: String,
     pub session_id: String,
     pub worker_id: Option<String>,

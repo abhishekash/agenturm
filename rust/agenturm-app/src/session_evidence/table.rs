@@ -251,6 +251,8 @@ pub(super) fn trace(
             span.target_operation_id.clone(),
         ) {
             let target = TraceOperationTarget {
+                trace_id: span.trace_id.clone(),
+                span_id: span.span_id.clone(),
                 source_id,
                 session_id,
                 worker_id: row.identity.worker_id.clone(),
