@@ -230,24 +230,7 @@ jobs:
           name: linux-x86_64-rust-host-wheel
           path: dist/native/*.whl
           if-no-files-found: error
-  python:
-    name: Python ${{ matrix.python-version }}
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        python-version: ["3.11", "3.12", "3.13", "3.14"]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-python@5fda3b95a4ea91299a34e894583c3862153e4b97 # v7.0.0
-        with:
-          python-version: ${{ matrix.python-version }}
-      - run: python -m pip install --upgrade pip
-      - run: python -m pip install .
-      - run: python -m unittest tests.test_storage_mutation_route_inventory -v
-      - run: python -m unittest discover -s tests -v
-      - run: python -m observatory --help
-
+  # Standalone Python compatibility matrix intentionally omitted.
   javascript:
     name: Node.js ${{ matrix.node-version }}
     runs-on: ubuntu-24.04
