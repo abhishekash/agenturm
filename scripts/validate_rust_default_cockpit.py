@@ -159,7 +159,12 @@ def filter_roster(cockpit, session):
         f"confirmed filter for {session}",
         lambda cells: (
             "Agenturm command center" in cells and roster_search(cells) == session
-            and "Enter inspect" in cells and "› " in cells
+            # A non-empty search replaces the ordinary inspect hint even
+            # after Enter has finished editing the filter. Enter still opens
+            # the selected row; check the filtered row and then verify that
+            # journey below.
+            and ("Enter / Esc search" in cells or "Enter inspect" in cells)
+            and "› " in cells
             and re.search(r"Project unavailable\s+1\b", cells)
         ),
     )
