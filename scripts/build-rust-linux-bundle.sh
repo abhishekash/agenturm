@@ -47,8 +47,15 @@ install -m 0644 -- docs/rfcs/rust-linux-bundle.html "$bundle/README.html"
     for adapter in "${adapters[@]}"; do
         executable="bin/agenturm-$adapter-harness"
         digest=$(sha256sum < "$bundle/$executable")
-        printf '%s{"plugin_id":"example.rust-%s-harness","adapter":"%s","sha256":"%s","protocol":1,"features":["source-adapter/1","configured-root/1"],"observation_format":"agenturm-observations/1"}' \
-            "$separator" "$adapter" "$executable" "${digest%% *}"
+        case "$adapter" in
+            codex) discovery='"namespace":"codex","root_env":"CODEX_HOME","default_root":".codex/sessions","env_suffix":"sessions","shape":"codex_jsonl_tree"' ;;
+            pi) discovery='"namespace":"pi","root_env":"PI_CODING_AGENT_DIR","default_root":".pi/agent/sessions","env_suffix":"sessions","shape":"jsonl_tree"' ;;
+            claude) discovery='"namespace":"claude","root_env":"CLAUDE_CONFIG_DIR","default_root":".claude/projects","env_suffix":"projects","shape":"jsonl_tree"' ;;
+            kiro) discovery='"namespace":"kiro","root_env":"KIRO_HOME","default_root":".kiro/sessions","env_suffix":"sessions","shape":"kiro_jsonl_tree"' ;;
+            opencode) discovery='"namespace":"opencode","root_env":"OPENCODE_DB","default_root":".local/share/opencode/opencode.db","macos_default_root":"Library/Application Support/opencode/opencode.db","fallback_base_env":"XDG_DATA_HOME","fallback_suffix":"opencode/opencode.db","shape":"sqlite_file"' ;;
+        esac
+        printf '%s{"plugin_id":"example.rust-%s-harness","adapter":"%s","sha256":"%s","protocol":1,"features":["source-adapter/1","configured-root/1"],"observation_format":"agenturm-observations/1","discovery":{%s}}' \
+            "$separator" "$adapter" "$executable" "${digest%% *}" "$discovery"
         separator=$',\n'
     done
     printf '\n]}\n'

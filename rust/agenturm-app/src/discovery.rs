@@ -112,7 +112,13 @@ struct Candidate {
 #[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
 #[serde(deny_unknown_fields)]
 pub(crate) struct FollowDiscovery {
+    /// Registry-backed declarations. New bundled sources use this list; the
+    /// named fields below remain solely to read configs written by v2 builds.
+    #[serde(default, skip_serializing_if = "Vec::is_empty")]
+    pub(crate) targets: Vec<FollowTarget>,
+    #[serde(default, skip_serializing_if = "path_buf_is_empty")]
     pub(crate) codex_root: PathBuf,
+    #[serde(default, skip_serializing_if = "path_buf_is_empty")]
     pub(crate) pi_root: PathBuf,
     #[serde(default, skip_serializing_if = "Option::is_none")]
     claude_root: Option<PathBuf>,
@@ -123,74 +129,322 @@ pub(crate) struct FollowDiscovery {
     pub(crate) sessions_per_harness: usize,
 }
 
+fn path_buf_is_empty(path: &Path) -> bool {
+    path.as_os_str().is_empty()
+}
+
+/// Data-only discovery contribution shipped in the adapter catalog. Parsing
+/// stays in the child adapter; the app only needs to know how to find bounded
+/// candidate files and assign their stable host-owned source identities.
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct FollowTarget {
+    pub(crate) namespace: String,
+    pub(crate) plugin_id: String,
+    pub(crate) root: PathBuf,
+    pub(crate) shape: SourceShape,
+}
+
+#[derive(Clone, Copy, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(rename_all = "snake_case")]
+pub(crate) enum SourceShape {
+    JsonlTree,
+    CodexJsonlTree,
+    KiroJsonlTree,
+    SqliteFile,
+}
+
+impl DiscoveryRegistration {
+    pub(crate) fn validate(&self) -> Result<(), String> {
+        let slug = |value: &str| {
+            !value.is_empty()
+                && value.len() <= 32
+                && value.as_bytes()[0].is_ascii_lowercase()
+                && value.bytes().all(|byte| {
+                    byte.is_ascii_lowercase() || byte.is_ascii_digit() || b"-_".contains(&byte)
+                })
+        };
+        if !slug(&self.namespace)
+            || !safe_relative_path(&self.default_root)
+            || self
+                .macos_default_root
+                .as_ref()
+                .is_some_and(|path| !safe_relative_path(path))
+            || !safe_optional_relative_path(&self.env_suffix)
+            || !safe_optional_relative_path(&self.fallback_suffix)
+            || self
+                .root_env
+                .as_deref()
+                .is_some_and(|name| !valid_env_name(name))
+            || self
+                .fallback_base_env
+                .as_deref()
+                .is_some_and(|name| !valid_env_name(name))
+        {
+            return Err("invalid adapter discovery registration".into());
+        }
+        Ok(())
+    }
+}
+
+fn safe_relative_path(path: &Path) -> bool {
+    !path.as_os_str().is_empty()
+        && !path.is_absolute()
+        && path
+            .components()
+            .all(|component| matches!(component, std::path::Component::Normal(_)))
+        && path.to_string_lossy().len() <= 1_024
+}
+
+fn safe_optional_relative_path(path: &Path) -> bool {
+    path.as_os_str().is_empty() || safe_relative_path(path)
+}
+
+fn valid_env_name(name: &str) -> bool {
+    !name.is_empty()
+        && name.len() <= 64
+        && name
+            .bytes()
+            .all(|byte| byte.is_ascii_uppercase() || byte.is_ascii_digit() || byte == b'_')
+}
+
+fn discovery_root(registration: &DiscoveryRegistration) -> Result<PathBuf, String> {
+    registration.validate()?;
+    let root = if let Some(value) = registration
+        .root_env
+        .as_deref()
+        .and_then(env::var_os)
+        .filter(|value| !value.is_empty())
+    {
+        let root = PathBuf::from(value);
+        if !root.is_absolute() {
+            return Err(format!(
+                "discovery root environment variable for {} must be absolute",
+                registration.namespace
+            ));
+        }
+        root.join(&registration.env_suffix)
+    } else if let Some(value) = registration
+        .fallback_base_env
+        .as_deref()
+        .and_then(env::var_os)
+        .filter(|value| !value.is_empty())
+    {
+        let root = PathBuf::from(value);
+        if !root.is_absolute() {
+            return Err(format!(
+                "discovery root environment variable for {} must be absolute",
+                registration.namespace
+            ));
+        }
+        root.join(&registration.fallback_suffix)
+    } else {
+        let home = env::var_os("HOME").ok_or("set HOME for default harness discovery")?;
+        let home = PathBuf::from(home);
+        if !home.is_absolute() {
+            return Err("HOME must be an absolute path for harness discovery".into());
+        }
+        #[cfg(target_os = "macos")]
+        if let Some(default_root) = &registration.macos_default_root {
+            home.join(default_root)
+        } else {
+            home.join(&registration.default_root)
+        }
+        #[cfg(not(target_os = "macos"))]
+        home.join(&registration.default_root)
+    };
+    if root.to_string_lossy().len() > 4_096 {
+        return Err("resolved discovery root exceeds the path limit".into());
+    }
+    Ok(root)
+}
+
+#[derive(Clone, Debug, Deserialize, Serialize, Eq, PartialEq)]
+#[serde(deny_unknown_fields)]
+pub(crate) struct DiscoveryRegistration {
+    pub(crate) namespace: String,
+    pub(crate) root_env: Option<String>,
+    /// Relative to HOME when `root_env` is unset.
+    pub(crate) default_root: PathBuf,
+    pub(crate) macos_default_root: Option<PathBuf>,
+    /// Appended to `root_env` when that variable names a base directory.
+    #[serde(default)]
+    pub(crate) env_suffix: PathBuf,
+    pub(crate) fallback_base_env: Option<String>,
+    #[serde(default)]
+    pub(crate) fallback_suffix: PathBuf,
+    pub(crate) shape: SourceShape,
+}
+
 impl FollowDiscovery {
     pub(crate) fn roots(&self) -> impl Iterator<Item = &Path> {
-        self.targets().map(|(_, _, path, _)| path)
+        self.targets().into_iter().map(|(_, _, path, _)| path)
     }
 
     pub(crate) fn resolve_paths(&mut self, resolve: impl Fn(PathBuf) -> PathBuf) {
-        for path in [
-            Some(&mut self.codex_root),
-            Some(&mut self.pi_root),
-            self.claude_root.as_mut(),
-            self.kiro_root.as_mut(),
-            self.opencode_db.as_mut(),
-        ]
-        .into_iter()
-        .flatten()
-        {
-            *path = resolve(std::mem::take(path));
+        for target in &mut self.targets {
+            target.root = resolve(std::mem::take(&mut target.root));
+        }
+        if self.targets.is_empty() {
+            for path in [
+                Some(&mut self.codex_root),
+                Some(&mut self.pi_root),
+                self.claude_root.as_mut(),
+                self.kiro_root.as_mut(),
+                self.opencode_db.as_mut(),
+            ]
+            .into_iter()
+            .flatten()
+            {
+                *path = resolve(std::mem::take(path));
+            }
         }
     }
 
-    pub(crate) fn plugins(&self) -> impl Iterator<Item = &'static str> {
-        self.targets().map(|(_, plugin, _, _)| plugin)
+    pub(crate) fn plugins(&self) -> impl Iterator<Item = String> + '_ {
+        self.targets()
+            .into_iter()
+            .map(|(_, plugin, _, _)| plugin.to_owned())
     }
 
-    fn targets(&self) -> impl Iterator<Item = (&'static str, &'static str, &Path, SourceShape)> {
+    pub(crate) fn validate_catalog_targets(
+        &self,
+        catalog: &BTreeMap<String, super::ValidatedAdapter>,
+    ) -> Result<(), String> {
+        if self.targets.is_empty() {
+            return Ok(());
+        }
+        let mut namespaces = BTreeSet::new();
+        for target in &self.targets {
+            let adapter = catalog.get(&target.plugin_id).ok_or_else(|| {
+                format!(
+                    "follow discovery requires plugin {} in the catalog",
+                    target.plugin_id
+                )
+            })?;
+            let registration = adapter.discovery.as_ref().ok_or_else(|| {
+                format!(
+                    "plugin {} does not declare discovery support",
+                    target.plugin_id
+                )
+            })?;
+            if target.namespace != registration.namespace || target.shape != registration.shape {
+                return Err(format!(
+                    "follow discovery declaration differs from catalog for {}",
+                    target.plugin_id
+                ));
+            }
+            if !namespaces.insert(target.namespace.as_str()) {
+                return Err("follow discovery contains a duplicate namespace".into());
+            }
+        }
+        Ok(())
+    }
+
+    fn targets(&self) -> Vec<(&str, &str, &Path, SourceShape)> {
+        if !self.targets.is_empty() {
+            return self
+                .targets
+                .iter()
+                .map(|target| {
+                    (
+                        target.namespace.as_str(),
+                        target.plugin_id.as_str(),
+                        target.root.as_path(),
+                        target.shape,
+                    )
+                })
+                .collect();
+        }
         [
             (
                 "codex",
                 agenturm_runtime::CODEX_PLUGIN_ID,
                 Some(self.codex_root.as_path()),
-                SourceShape::Codex,
+                SourceShape::CodexJsonlTree,
             ),
             (
                 "pi",
                 PI_PLUGIN_ID,
                 Some(self.pi_root.as_path()),
-                SourceShape::Transcript,
+                SourceShape::JsonlTree,
             ),
             (
                 "claude",
                 CLAUDE_PLUGIN_ID,
                 self.claude_root.as_deref(),
-                SourceShape::Transcript,
+                SourceShape::JsonlTree,
             ),
             (
                 "kiro",
                 KIRO_PLUGIN_ID,
                 self.kiro_root.as_deref(),
-                SourceShape::Kiro,
+                SourceShape::KiroJsonlTree,
             ),
             (
                 "opencode",
                 OPENCODE_PLUGIN_ID,
                 self.opencode_db.as_deref(),
-                SourceShape::Database,
+                SourceShape::SqliteFile,
             ),
         ]
         .into_iter()
-        .filter_map(|(kind, plugin, path, shape)| Some((kind, plugin, path?, shape)))
+        .filter_map(|(name, plugin, path, shape)| Some((name, plugin, path?, shape)))
+        .collect()
+    }
+
+    pub(crate) fn from_catalog(
+        plugins: &BTreeMap<String, super::ValidatedAdapter>,
+        sessions_per_harness: usize,
+    ) -> Result<Self, String> {
+        let mut targets = Vec::new();
+        for (plugin_id, adapter) in plugins {
+            let Some(registration) = &adapter.discovery else {
+                continue;
+            };
+            let root = discovery_root(registration)?;
+            targets.push(FollowTarget {
+                namespace: registration.namespace.clone(),
+                plugin_id: plugin_id.clone(),
+                root,
+                shape: registration.shape,
+            });
+        }
+        targets.sort_by(|left, right| left.namespace.cmp(&right.namespace));
+        if targets
+            .windows(2)
+            .any(|pair| pair[0].namespace == pair[1].namespace)
+        {
+            return Err("plugin catalog contains duplicate discovery namespaces".into());
+        }
+        Ok(Self {
+            targets,
+            codex_root: PathBuf::new(),
+            pi_root: PathBuf::new(),
+            claude_root: None,
+            kiro_root: None,
+            opencode_db: None,
+            sessions_per_harness,
+        })
     }
 
     pub(crate) fn claude_root(&self) -> Option<&Path> {
-        self.claude_root.as_deref()
+        self.targets()
+            .into_iter()
+            .find(|(namespace, _, _, _)| *namespace == "claude")
+            .map(|(_, _, root, _)| root)
+            .or(self.claude_root.as_deref())
     }
 
     pub(crate) fn codex_home(&self) -> Option<PathBuf> {
-        (self.codex_root.file_name()? == "sessions")
-            .then(|| self.codex_root.parent().map(Path::to_owned))
+        let root = self
+            .targets()
+            .into_iter()
+            .find(|(namespace, _, _, _)| *namespace == "codex")
+            .map(|(_, _, root, _)| root)
+            .unwrap_or(self.codex_root.as_path());
+        (root.file_name()? == "sessions")
+            .then(|| root.parent().map(Path::to_owned))
             .flatten()
     }
 
@@ -226,13 +480,26 @@ impl FollowDiscovery {
         let mut coverage = DiscoveryCoverage::default();
         let mut sources = Vec::new();
         for (kind, plugin, root, shape) in self.targets() {
-            if !matches!(plugin, agenturm_runtime::CODEX_PLUGIN_ID | CLAUDE_PLUGIN_ID)
-                || !wanted.iter().any(|id| {
-                    id.strip_prefix("harness.")
-                        .and_then(|rest| rest.split_once('.'))
-                        .is_some_and(|(provider, _)| provider == kind)
-                })
-            {
+            if !wanted.iter().any(|id| {
+                id.strip_prefix("harness.")
+                    .and_then(|rest| rest.split_once('.'))
+                    .is_some_and(|(provider, _)| provider == kind)
+            }) {
+                continue;
+            }
+            if shape == SourceShape::SqliteFile {
+                for path in regular_database(root)
+                    .map_err(|error| format!("scan {kind} sessions failed: {error}"))?
+                {
+                    let entry = source_entry(kind, plugin, &path)?;
+                    if wanted.contains(&entry.source_id) {
+                        sources.push(AuthorizedSource {
+                            source_id: entry.source_id,
+                            plugin_id: entry.plugin_id,
+                            source_root: entry.source_root,
+                        });
+                    }
+                }
                 continue;
             }
             let mut scan = TranscriptScan {
@@ -276,7 +543,7 @@ impl FollowDiscovery {
         let mut available = BTreeSet::new();
         for (kind, plugin, root, shape) in self.targets() {
             let candidates = match shape {
-                SourceShape::Database => regular_database(root).map(|paths| {
+                SourceShape::SqliteFile => regular_database(root).map(|paths| {
                     coverage.eligible += paths.len();
                     paths
                         .into_iter()
@@ -287,7 +554,9 @@ impl FollowDiscovery {
                         })
                         .collect()
                 }),
-                SourceShape::Codex | SourceShape::Transcript | SourceShape::Kiro => {
+                SourceShape::JsonlTree
+                | SourceShape::CodexJsonlTree
+                | SourceShape::KiroJsonlTree => {
                     let mut scan = TranscriptScan {
                         harness: kind,
                         shape,
@@ -322,9 +591,11 @@ impl FollowDiscovery {
             ));
         }
         let mut sources = Vec::with_capacity(capacity);
-        let first = (schedule.epoch % openings.len() as u64) as usize;
-        openings.rotate_left(first);
-        catch_up.rotate_left(first);
+        if !openings.is_empty() {
+            let first = (schedule.epoch % openings.len() as u64) as usize;
+            openings.rotate_left(first);
+            catch_up.rotate_left(first);
+        }
         allocate(&mut openings, capacity, &mut sources)?;
         coverage.open_selected = sources.len();
         allocate(&mut catch_up, capacity, &mut sources)?;
@@ -342,9 +613,16 @@ impl FollowDiscovery {
             )
         });
         for (path, _) in review_paths.into_iter().take(2) {
-            let mut source = source_entry("codex", agenturm_runtime::CODEX_PLUGIN_ID, path)?;
+            let Some((namespace, plugin, _, _)) =
+                self.targets().into_iter().find(|(_, _, root, shape)| {
+                    *shape == SourceShape::CodexJsonlTree && path.starts_with(root)
+                })
+            else {
+                continue;
+            };
+            let mut source = source_entry(namespace, plugin, path)?;
             source.source_id = format!(
-                "review.codex.{:x}",
+                "review.{namespace}.{:x}",
                 Sha256::digest(config_path(path)?.as_bytes())
             );
             available.insert(path.clone());
@@ -385,14 +663,6 @@ fn allocate(
     Ok(())
 }
 
-#[derive(Clone, Copy)]
-enum SourceShape {
-    Codex,
-    Transcript,
-    Kiro,
-    Database,
-}
-
 pub fn execute_discover(sessions_per_harness: usize) -> Result<String, String> {
     discover(sessions_per_harness, false)
 }
@@ -420,23 +690,7 @@ pub fn discover(sessions_per_harness: usize, follow: bool) -> Result<String, Str
     }
 
     let installed = super::load_adapter_catalog(&catalog)?;
-    let selection = FollowDiscovery {
-        codex_root: data_root("CODEX_HOME", ".codex")?.join("sessions"),
-        pi_root: data_root("PI_CODING_AGENT_DIR", ".pi/agent")?.join("sessions"),
-        claude_root: installed
-            .contains_key(CLAUDE_PLUGIN_ID)
-            .then(|| data_root("CLAUDE_CONFIG_DIR", ".claude").map(|path| path.join("projects")))
-            .transpose()?,
-        kiro_root: installed
-            .contains_key(KIRO_PLUGIN_ID)
-            .then(|| data_root("KIRO_HOME", ".kiro").map(|path| path.join("sessions")))
-            .transpose()?,
-        opencode_db: installed
-            .contains_key(OPENCODE_PLUGIN_ID)
-            .then(opencode_db)
-            .transpose()?,
-        sessions_per_harness,
-    };
+    let selection = FollowDiscovery::from_catalog(&installed, sessions_per_harness)?;
     let mut config = json!({
         "version": 2,
         "plugin_host": config_path(&plugin_host)?,
@@ -458,54 +712,6 @@ pub fn discover(sessions_per_harness: usize, follow: bool) -> Result<String, Str
         .map_err(|error| format!("write collection config failed: {error}"))
 }
 
-fn data_root(variable: &str, default_home: &str) -> Result<PathBuf, String> {
-    let base = if let Some(value) = env::var_os(variable).filter(|value| !value.is_empty()) {
-        PathBuf::from(value)
-    } else {
-        let home = env::var_os("HOME").ok_or_else(|| format!("set HOME or {variable}"))?;
-        PathBuf::from(home).join(default_home)
-    };
-    if !base.is_absolute() {
-        return Err(format!("{variable} or HOME must be an absolute path"));
-    }
-    Ok(base)
-}
-
-fn opencode_db() -> Result<PathBuf, String> {
-    let path = env::var_os("OPENCODE_DB")
-        .filter(|value| !value.is_empty())
-        .map(PathBuf::from);
-    if let Some(absolute) = path.as_ref().filter(|path| path.is_absolute()) {
-        return Ok(absolute.clone());
-    }
-    Ok(data_home_root()?
-        .join("opencode")
-        .join(path.unwrap_or_else(|| PathBuf::from("opencode.db"))))
-}
-
-fn data_home_root() -> Result<PathBuf, String> {
-    if let Some(value) = env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
-        let path = PathBuf::from(value);
-        if !path.is_absolute() {
-            return Err("XDG_DATA_HOME must be an absolute path".into());
-        }
-        return Ok(path);
-    }
-    #[cfg(target_os = "macos")]
-    {
-        let home = env::var_os("HOME").ok_or("set HOME or XDG_DATA_HOME")?;
-        let home = PathBuf::from(home);
-        if !home.is_absolute() {
-            return Err("HOME must be an absolute path".into());
-        }
-        Ok(home.join("Library/Application Support"))
-    }
-    #[cfg(not(target_os = "macos"))]
-    {
-        data_root("XDG_DATA_HOME", ".local/share")
-    }
-}
-
 fn regular_database(path: &Path) -> Result<Vec<PathBuf>, String> {
     match fs::canonicalize(path) {
         Ok(path) if path.is_file() => Ok(vec![path]),
@@ -516,7 +722,7 @@ fn regular_database(path: &Path) -> Result<Vec<PathBuf>, String> {
 }
 
 struct TranscriptScan<'a> {
-    harness: &'static str,
+    harness: &'a str,
     shape: SourceShape,
     open: &'a open_transcripts::OpenTranscripts,
     reviews: &'a BTreeMap<PathBuf, HeaderStamp>,
@@ -552,7 +758,7 @@ impl TranscriptScan<'_> {
             let kind = entry.file_type().map_err(|error| error.to_string())?;
             let path = entry.path();
             if kind.is_dir() {
-                if matches!(self.shape, SourceShape::Kiro)
+                if matches!(self.shape, SourceShape::KiroJsonlTree)
                     && matches!(
                         entry.file_name().to_str(),
                         Some("cli" | "snapshots" | ".index")
@@ -596,7 +802,7 @@ impl TranscriptScan<'_> {
             }
             paths += 1;
             path_bytes += valid_path.len();
-            if matches!(self.shape, SourceShape::Codex)
+            if matches!(self.shape, SourceShape::CodexJsonlTree)
                 && self.is_review(
                     &path,
                     HeaderStamp {
@@ -698,7 +904,7 @@ fn is_transcript(path: &Path, shape: SourceShape) -> bool {
     if path.extension().is_none_or(|ext| ext != "jsonl") {
         return false;
     }
-    if !matches!(shape, SourceShape::Kiro) {
+    if !matches!(shape, SourceShape::KiroJsonlTree) {
         return true;
     }
     let Some(parent) = path.parent() else {
@@ -796,6 +1002,7 @@ mod tests {
         );
         write(&pi_retained, r#"{"type":"session","id":"native-pi"}"#, 1);
         let selection = FollowDiscovery {
+            targets: vec![],
             codex_root: directory.join("codex/sessions"),
             pi_root: pi,
             claude_root: Some(directory.join("claude/projects")),
@@ -808,6 +1015,7 @@ mod tests {
         let expected = [
             source_entry("codex", agenturm_runtime::CODEX_PLUGIN_ID, &retained).unwrap(),
             source_entry("claude", CLAUDE_PLUGIN_ID, &claude_retained).unwrap(),
+            source_entry("pi", PI_PLUGIN_ID, &pi_retained).unwrap(),
         ];
         let mut wanted = expected
             .iter()
@@ -856,6 +1064,7 @@ mod tests {
             }
         };
         let selection = FollowDiscovery {
+            targets: vec![],
             codex_root: directory.join("codex"),
             pi_root: directory.join("pi"),
             claude_root: Some(directory.join("claude")),
@@ -933,6 +1142,7 @@ mod tests {
         std::os::unix::fs::symlink(root.join("newer.jsonl"), root.join("link.jsonl")).unwrap();
 
         let mut selection = FollowDiscovery {
+            targets: vec![],
             codex_root: root.clone(),
             pi_root: directory.join("pi-missing"),
             claude_root: None,
@@ -1006,6 +1216,7 @@ mod tests {
         open_files.push(review.clone());
         let open = open_transcripts::OpenTranscripts::from_files("codex", &open_files);
         let selection = FollowDiscovery {
+            targets: vec![],
             codex_root: codex.clone(),
             pi_root: pi.clone(),
             claude_root: None,

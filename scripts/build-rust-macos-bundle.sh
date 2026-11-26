@@ -43,13 +43,33 @@ python3 - "$bundle/agenturm-plugins.json" "$bundle/bin" "${adapters[@]}" <<'PY'
 import hashlib, json, pathlib, sys
 output, bindir, *adapters = sys.argv[1:]
 plugins = []
+discovery = {
+    "codex": {"namespace": "codex", "root_env": "CODEX_HOME",
+              "default_root": ".codex/sessions", "env_suffix": "sessions",
+              "shape": "codex_jsonl_tree"},
+    "pi": {"namespace": "pi", "root_env": "PI_CODING_AGENT_DIR",
+           "default_root": ".pi/agent/sessions", "env_suffix": "sessions",
+           "shape": "jsonl_tree"},
+    "claude": {"namespace": "claude", "root_env": "CLAUDE_CONFIG_DIR",
+               "default_root": ".claude/projects", "env_suffix": "projects",
+               "shape": "jsonl_tree"},
+    "kiro": {"namespace": "kiro", "root_env": "KIRO_HOME",
+             "default_root": ".kiro/sessions", "env_suffix": "sessions",
+             "shape": "kiro_jsonl_tree"},
+    "opencode": {"namespace": "opencode", "root_env": "OPENCODE_DB",
+                 "default_root": ".local/share/opencode/opencode.db",
+                 "macos_default_root": "Library/Application Support/opencode/opencode.db",
+                 "fallback_base_env": "XDG_DATA_HOME",
+                 "fallback_suffix": "opencode/opencode.db", "shape": "sqlite_file"},
+}
 for adapter in adapters:
     relative = f"bin/agenturm-{adapter}-harness"
     digest = hashlib.sha256((pathlib.Path(bindir) / relative.removeprefix("bin/")).read_bytes()).hexdigest()
     plugins.append({"plugin_id": f"example.rust-{adapter}-harness", "adapter": relative,
                     "sha256": digest, "protocol": 1,
                     "features": ["source-adapter/1", "configured-root/1"],
-                    "observation_format": "agenturm-observations/1"})
+                    "observation_format": "agenturm-observations/1",
+                    "discovery": discovery[adapter]})
 pathlib.Path(output).write_text(json.dumps({"version": 1, "plugins": plugins}, indent=2) + "\n")
 PY
 

@@ -408,6 +408,8 @@ struct AdapterCatalogEntry {
     features: Vec<String>,
     #[serde(default = "default_observation_format")]
     observation_format: String,
+    #[serde(default)]
+    discovery: Option<discovery::DiscoveryRegistration>,
 }
 
 #[derive(Debug)]
@@ -416,6 +418,7 @@ struct ValidatedAdapter {
     sha256: String,
     features: Vec<String>,
     observation_format: ObservationFormat,
+    discovery: Option<discovery::DiscoveryRegistration>,
 }
 
 fn default_observation_format() -> String {
@@ -3934,6 +3937,7 @@ fn validate_collection_config(
 
     let (sources, follow) = match config.follow {
         Some(mut selection) => {
+            selection.validate_catalog_targets(&catalog)?;
             if !(1..=discovery::MAX_SESSIONS_PER_HARNESS).contains(&selection.sessions_per_harness)
                 || selection.roots().any(|root| !valid_config_path(root))
             {
@@ -3947,7 +3951,7 @@ fn validate_collection_config(
                 return Err("follow discovery roots must resolve to bounded absolute paths".into());
             }
             for plugin in selection.plugins() {
-                if !catalog.contains_key(plugin) {
+                if !catalog.contains_key(&plugin) {
                     return Err(format!(
                         "follow discovery requires plugin {plugin} in the catalog"
                     ));
@@ -4134,6 +4138,9 @@ fn decode_adapter_catalog(
             .observation_format
             .parse()
             .map_err(|_| format!("unsupported observation format for {}", plugin.plugin_id))?;
+        if let Some(discovery) = &plugin.discovery {
+            discovery.validate()?;
+        }
         if plugin.sha256.len() != 64
             || !plugin
                 .sha256
@@ -4178,6 +4185,7 @@ fn decode_adapter_catalog(
             sha256: plugin.sha256,
             features: plugin.features,
             observation_format,
+            discovery: plugin.discovery,
         };
         if plugins.insert(plugin.plugin_id, adapter).is_some() {
             return Err("plugin catalog contains duplicate plugin IDs".into());
