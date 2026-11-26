@@ -67,12 +67,11 @@ PY
 "${isolated[@]}" collect --config "$config" --db "$db" > "$state/reopen.log"
 "${isolated[@]}" query --db "$db" > "$state/reopened-query.json"
 cmp "$state/query.json" "$state/reopened-query.json"
-"${isolated[@]}" backup --db "$db" --bundle "$state/backup.bundle"
-"${isolated[@]}" restore --bundle "$state/backup.bundle" --output "$state/restored"
-"${isolated[@]}" query --db "$state/restored/history.sqlite" > "$state/restored-query.json"
-cmp "$state/query.json" "$state/restored-query.json"
+"${isolated[@]}" backup --db "$db" --output "$state/backup.sqlite"
+"${isolated[@]}" query --db "$state/backup.sqlite" > "$state/backup-query.json"
+cmp "$state/query.json" "$state/backup-query.json"
 
 python3 "$(dirname "$0")/validate_rust_default_cockpit.py" \
     --agenturm "$app" --home "$home" --empty-path "$empty_path" --history "$db" \
     --transcript "$state/inspect-pty.txt" --inspect-source "$source_id"
-printf 'Verified native Apple Silicon candidate %s: isolated CLI, collection, query, reopen, backup/restore, inspector navigation and terminal restoration\n' "$version"
+printf 'Verified native Apple Silicon candidate %s: isolated CLI, collection, query, reopen, database backup, inspector navigation and terminal restoration\n' "$version"

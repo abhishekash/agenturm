@@ -10,6 +10,8 @@ terminal and leave it open while collection is needed. Closing the cockpit
 stops collection; reopen it to resume. There is no managed background service
 on macOS in this release lane. Linux-only systemd, `/proc`, and process
 inspection commands are unavailable. Release metadata lists these limits.
+The single-file history backup command is supported; workspace backup/restore
+and private-content capture remain disabled on macOS.
 
 ## Install and update
 
