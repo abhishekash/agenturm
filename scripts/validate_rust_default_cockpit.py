@@ -165,7 +165,7 @@ def filter_roster(cockpit, session):
             # journey below.
             and ("Enter / Esc search" in cells or "Enter inspect" in cells)
             and "› " in cells
-            and re.search(r"Project unavailable\s+1\b", cells)
+            and re.search(r"(?:Project unavailable|No recorded project)\s+1\b", cells)
         ),
     )
 
