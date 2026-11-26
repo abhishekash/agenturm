@@ -479,7 +479,7 @@ records results against the final integrated source and artifact.
 **Native evidence review (26 November 2026):** a structure-only scan of the
 available November Codex rollouts found no wrapper containing one literal
 `exec_command` with an explicit `exit_code`-to-throw guard (0 observed). The
-corresponding `custom_tool_call_output` rows did not contain a structured
+observed `custom_tool_call_output` rows did not contain a structured
 boolean `isError`; their output was represented as a list or string. Therefore
 the proposed JS-wrapper check signal has no observed native producer contract
 and cannot safely generate typed test/lint/build facts. Keep recognition

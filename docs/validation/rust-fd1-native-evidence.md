@@ -149,7 +149,7 @@ A follow-up structure-only scan of the local November Codex rollouts found
 58,919 `exec` custom-tool calls. Of these, 30,580 used a single literal
 `exec_command` call in a JavaScript binding; none had an observed guard that
 turns that command's native nonzero `exit_code` into a thrown wrapper error.
-The matched `custom_tool_call_output` records expose their output as text or
+The observed `custom_tool_call_output` records expose their output as text or
 content arrays and do not carry a structured exit/status field. The scan did
 not inspect or retain command text or output content.
 
