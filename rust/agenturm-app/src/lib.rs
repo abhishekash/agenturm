@@ -3228,7 +3228,6 @@ pub struct ConfiguredCollector<S = Store> {
     plugin_host: PathBuf,
     follow: Option<FollowSources>,
     authorized_sources: Vec<discovery::AuthorizedSource>,
-    #[cfg(target_os = "linux")]
     database: PathBuf,
     #[cfg(target_os = "linux")]
     validate_local_database: bool,
@@ -3285,8 +3284,6 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
         store: S,
         stop: Option<&Arc<AtomicBool>>,
     ) -> Result<Self, String> {
-        #[cfg(not(target_os = "linux"))]
-        let _ = database;
         let mut collector = Self {
             kernel: Kernel::new(),
             store,
@@ -3297,7 +3294,6 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
             plugin_host: config.plugin_host,
             follow: config.follow,
             authorized_sources: Vec::new(),
-            #[cfg(target_os = "linux")]
             database,
             #[cfg(target_os = "linux")]
             validate_local_database: true,

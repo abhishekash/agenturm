@@ -17,6 +17,7 @@ serde_json = "1.0"
 sha2 = "0.10"
 unicode-segmentation = "1.12"
 signal-hook = "0.3"
+time = { version = "0.3", features = ["parsing", "local-offset"] }
 
 [target.'cfg(unix)'.dependencies]
 libc = "0.2"
@@ -28,7 +29,6 @@ agenturm-storage-service = { path = "../agenturm-storage-service" }
 agenturm-jsonl-source = { path = "../agenturm-jsonl-source" }
 agenturm-opencode-harness = { path = "../agenturm-opencode-harness" }
 rustix = { version = "1.1", features = ["fs"] }
-time = { version = "0.3", features = ["parsing"] }
 
 [dev-dependencies]
 agenturm-lifecycle-extension-example = { path = "../../examples/rust_lifecycle_extension" }
