@@ -2624,7 +2624,7 @@ mod cf11_cf12_operation_proof_tests {
         ]}});
         let (prefix, cursor) = make_prefix(
             json!({"type":"session","id":"pi-session"}),
-            &[row.clone()],
+            std::slice::from_ref(&row),
             Harness::Pi,
         );
         let summary = agenturm_kernel::pi_file_change("edit", Some(&args)).unwrap();
@@ -2791,7 +2791,9 @@ mod cf11_cf12_operation_proof_tests {
         );
         let wrong_index = CodexOperationSelection {
             event_id: Box::leak(
-                format!("{}", selection.event_id.replace("mcp-use-1", "mcp-use-0"))
+                selection
+                    .event_id
+                    .replace("mcp-use-1", "mcp-use-0")
                     .into_boxed_str(),
             ),
             ..selection
@@ -2815,7 +2817,7 @@ mod cf11_cf12_operation_proof_tests {
         let header = json!({"sessionId":"claude-session"});
         let header_bytes = serde_json::to_vec(&header).unwrap();
         let offset = (header_bytes.len() + 1) as u32;
-        let (prefix, cursor) = make_prefix(header, &[row.clone()], Harness::Claude);
+        let (prefix, cursor) = make_prefix(header, std::slice::from_ref(&row), Harness::Claude);
         let selection =
             claude_selection(&prefix.cursor.generation, "assistant-uuid", offset, call_id);
         let operation = operation_definition(Harness::Claude, OperationDetailKind::Mcp).unwrap();
