@@ -77,6 +77,14 @@ fn operation_detail(row: &Observation) -> Option<OperationDetailEntry> {
                 server.as_deref().unwrap_or("server unavailable")
             ),
         ),
+        ObservationKind::Tool { category, .. }
+            if category == "mcp" && row.event_id.starts_with("pi:") =>
+        {
+            (
+                OperationDetailKind::Mcp,
+                crate::session_evidence::describe_observation(&row.kind).1,
+            )
+        }
         ObservationKind::FileEdit(_)
             if row.event_id.starts_with("codex:") || row.event_id.starts_with("claude:") =>
         {

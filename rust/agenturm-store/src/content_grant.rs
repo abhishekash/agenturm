@@ -17,6 +17,8 @@ pub enum ContentKind {
     PiUserText,
     #[serde(rename = "pi.edit_detail")]
     PiEditDetail,
+    #[serde(rename = "pi.mcp_payload")]
+    PiMcpDetail,
     #[serde(rename = "claude.mcp_payload")]
     ClaudeMcpPayload,
     #[serde(rename = "codex.user_text")]
@@ -50,6 +52,7 @@ impl ContentKind {
         match self {
             Self::PiUserText => "pi.user_text",
             Self::PiEditDetail => "pi.edit_detail",
+            Self::PiMcpDetail => "pi.mcp_payload",
             Self::ClaudeMcpPayload => "claude.mcp_payload",
             Self::CodexUserText => "codex.user_text",
             Self::ClaudeUserText => "claude.user_text",
@@ -205,8 +208,11 @@ pub(super) fn create_schema(connection: &Connection, version: i64) -> Result<()>
         25 => {
             "kind IN ('pi.user_text', 'pi.edit_detail', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'codex.edit_detail', 'claude.edit_detail', 'opencode.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')"
         }
-        26..=SCHEMA_VERSION => {
+        26 => {
             "kind IN ('pi.user_text', 'pi.edit_detail', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'claude.mcp_payload', 'codex.edit_detail', 'claude.edit_detail', 'opencode.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')"
+        }
+        27..=SCHEMA_VERSION => {
+            "kind IN ('pi.user_text', 'pi.edit_detail', 'pi.mcp_payload', 'codex.user_text', 'claude.user_text', 'kiro.user_text', 'opencode.user_text', 'codex.mcp_payload', 'claude.mcp_payload', 'codex.edit_detail', 'claude.edit_detail', 'opencode.edit_detail', 'codex.command_detail', 'telemetry.span_payload', 'eval.result_detail', 'telemetry.log_text')"
         }
         _ => return Err(StoreError::UnsupportedSchema(version)),
     };
@@ -506,6 +512,7 @@ impl Store {
             ContentKind::ClaudeMcpPayload => "mcp_call",
             ContentKind::CodexEditDetail if selection.turn_id.is_some() => "file_edit",
             ContentKind::PiEditDetail if selection.turn_id.is_some() => "file_change",
+            ContentKind::PiMcpDetail if selection.turn_id.is_some() => "tool",
             ContentKind::ClaudeEditDetail if selection.turn_id.is_some() => "file_edit",
             ContentKind::OpenCodeEditDetail if selection.turn_id.is_some() => "file_change",
             ContentKind::CodexCommandDetail if selection.turn_id.is_some() => "tool",
@@ -535,7 +542,8 @@ impl Store {
                        WHERE receipt.source_id = o.source_id ORDER BY newest.sequence DESC LIMIT 1
                    )))))
                    AND json_extract(o.kind_json, '$.kind') = ?7
-                   AND (?7 <> 'tool' OR json_extract(o.kind_json, '$.category') = 'shell')
+                   AND (?7 <> 'tool' OR json_extract(o.kind_json, '$.category') =
+                        CASE WHEN ?9 THEN 'mcp' ELSE 'shell' END)
                    AND NOT EXISTS (
                        SELECT 1 FROM agenturm_observations AS newer
                        WHERE newer.source_id = o.source_id AND newer.event_id = o.event_id
@@ -554,6 +562,7 @@ impl Store {
                     selection.turn_id,
                     observation_kind,
                     matches!(scope.kind, ContentKind::OpenCodeEditDetail),
+                    matches!(scope.kind, ContentKind::PiMcpDetail),
                 ],
                 |row| {
                     Ok(CodexOperationEvidence {
@@ -593,6 +602,7 @@ impl Store {
         if matches!(
             scope.kind,
             ContentKind::PiEditDetail
+                | ContentKind::PiMcpDetail
                 | ContentKind::ClaudeMcpPayload
                 | ContentKind::CodexMcpPayload
                 | ContentKind::CodexEditDetail

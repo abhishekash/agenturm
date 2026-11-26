@@ -102,7 +102,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 26;
+const SCHEMA_VERSION: i64 = 27;
 pub const MAX_HOST_HISTORY_PAGE: usize = 64;
 const MAX_BATCH_EVENTS: usize = 2_048;
 pub const MAX_OTLP_BATCH_SPANS: usize = 1_024;
@@ -128,7 +128,8 @@ const STORE_MARKER_V22: &str = "agenturm.observation-store.v22";
 const STORE_MARKER_V23: &str = "agenturm.observation-store.v23";
 const STORE_MARKER_V24: &str = "agenturm.observation-store.v24";
 const STORE_MARKER_V25: &str = "agenturm.observation-store.v25";
-const STORE_MARKER: &str = "agenturm.observation-store.v26";
+const STORE_MARKER_V26: &str = "agenturm.observation-store.v26";
+const STORE_MARKER: &str = "agenturm.observation-store.v27";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -681,7 +682,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         23 => STORE_MARKER_V23,
         24 => STORE_MARKER_V24,
         25 => STORE_MARKER_V25,
-        26..=SCHEMA_VERSION => STORE_MARKER,
+        26 => STORE_MARKER_V26,
+        27..=SCHEMA_VERSION => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -1523,6 +1525,18 @@ impl Store {
             let transaction =
                 connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
             content_grant::migrate_grant_schema(&transaction, 26)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V26],
+            )?;
+            transaction.pragma_update(None, "user_version", 26)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 26)?;
+        }
+        if (2..27).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            content_grant::migrate_grant_schema(&transaction, 27)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],

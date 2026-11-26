@@ -27,6 +27,7 @@ const OPENCODE_PLUGIN_ID: &str = "example.rust-opencode-harness";
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub enum OperationDetailKind {
     Mcp,
+    PiMcp,
     Edit,
     Command,
 }
@@ -236,6 +237,15 @@ fn operation_definition(
             description: "MCP payload",
             unavailable: "The selected MCP operation has no verified payload",
             label: "Codex",
+        }),
+        (Harness::Pi, OperationDetailKind::PiMcp) => Ok(OperationDefinition {
+            grant: ContentKind::PiMcpDetail,
+            fingerprint_domain: b"agenturm.pi-mcp-payload/1",
+            event_suffix: ":tool-",
+            native_kind: "toolCall",
+            description: "MCP payload",
+            unavailable: "The selected Pi MCP operation has no verified payload",
+            label: "Pi",
         }),
         (Harness::Codex, OperationDetailKind::Edit) => Ok(OperationDefinition {
             grant: ContentKind::CodexEditDetail,
@@ -507,6 +517,53 @@ pub fn with_verified_edit<T>(
                 observed_at_unix_ns: evidence.observed_at_unix_ns,
                 grant_binding,
             }))
+        },
+    )
+}
+
+/// Delivers a retained MCP payload only after the current provider-specific
+/// grant and exact native operation proof have both been rechecked.
+pub fn with_verified_mcp<T>(
+    store: &Store,
+    resolver: &SourceResolver<'_>,
+    source_id: &ExtensionId,
+    selection: &CodexOperationSelection<'_>,
+    consume: impl FnOnce(&serde_json::Map<String, serde_json::Value>) -> Result<T, String>,
+) -> Result<T, String> {
+    with_verified_operation(
+        store,
+        resolver,
+        source_id,
+        OperationDetailKind::Mcp,
+        selection,
+        |operation, payload, _, _| {
+            let OperationPayload::Mcp(fields) = payload else {
+                return Err(operation.unavailable.into());
+            };
+            consume(&fields)
+        },
+    )
+}
+
+/// Pi-only MCP route; this selector cannot fall through to a Codex grant.
+pub fn with_verified_pi_mcp<T>(
+    store: &Store,
+    resolver: &SourceResolver<'_>,
+    source_id: &ExtensionId,
+    selection: &CodexOperationSelection<'_>,
+    consume: impl FnOnce(&serde_json::Map<String, serde_json::Value>) -> Result<T, String>,
+) -> Result<T, String> {
+    with_verified_operation(
+        store,
+        resolver,
+        source_id,
+        OperationDetailKind::PiMcp,
+        selection,
+        |operation, payload, _, _| {
+            let OperationPayload::Mcp(fields) = payload else {
+                return Err(operation.unavailable.into());
+            };
+            consume(&fields)
         },
     )
 }
@@ -1169,6 +1226,9 @@ impl VerifiedPrefix {
             Header::Pi(_) if kind == OperationDetailKind::Edit => {
                 self.pi_edit_payload(operation, selection, evidence)
             }
+            Header::Pi(_) if kind == OperationDetailKind::PiMcp => {
+                self.pi_mcp_payload(operation, selection, evidence)
+            }
             Header::Claude(_) if kind == OperationDetailKind::Edit => {
                 self.claude_edit_payload(operation, selection, evidence)
             }
@@ -1483,6 +1543,98 @@ impl VerifiedPrefix {
         pi_edit_detail(name, arguments)
             .map(OperationPayload::PiEdit)
             .ok_or_else(|| unavailable.to_owned())
+    }
+
+    /// Verifies one exact retained Pi MCP toolCall before disclosing its
+    /// bounded arguments under the independent Pi MCP grant.
+    fn pi_mcp_payload(
+        &self,
+        operation: &OperationDefinition,
+        selection: &CodexOperationSelection<'_>,
+        evidence: &CodexOperationEvidence,
+    ) -> Result<OperationPayload, String> {
+        let unavailable = operation.unavailable;
+        let Header::Pi(header) = &self.header else {
+            return Err(unavailable.into());
+        };
+        if header.session_id.as_deref().unwrap_or(&header.id) != selection.session_id
+            || header
+                .agent_id
+                .as_deref()
+                .is_some_and(|worker| !worker.is_empty())
+            || selection.revision != 0
+        {
+            return Err(unavailable.into());
+        }
+        let member = selection
+            .event_id
+            .strip_prefix("pi:")
+            .and_then(|event| event.strip_prefix(&self.cursor.generation))
+            .and_then(|event| event.strip_prefix(':'))
+            .ok_or(unavailable)?;
+        let (native_row, tail) = member
+            .rsplit_once(operation.event_suffix)
+            .ok_or(unavailable)?;
+        let index: usize = tail
+            .parse()
+            .ok()
+            .filter(|index| *index < MAX_CLAUDE_BLOCKS)
+            .ok_or(unavailable)?;
+        if !valid_id(native_row) {
+            return Err(unavailable.into());
+        }
+        let proofs = self.admitted_offsets(std::iter::once(evidence.admitted_cursor.as_str()));
+        let proof_end = proofs
+            .get(evidence.admitted_cursor.as_str())
+            .ok_or(unavailable)?;
+        let rows = self.rows(std::iter::once(native_row.to_owned()))?;
+        let line = match rows.get(native_row) {
+            Some(RowMatch::Exact { line, end }) if end <= proof_end => *line,
+            _ => return Err(unavailable.into()),
+        };
+        let row: serde_json::Value = serde_json::from_slice(line).map_err(|_| unavailable)?;
+        if row.get("type").and_then(serde_json::Value::as_str) != Some("message")
+            || row.get("id").and_then(serde_json::Value::as_str) != Some(native_row)
+            || row["message"]["role"].as_str() != Some("assistant")
+            || observed_timestamp(
+                row.get("timestamp")
+                    .and_then(serde_json::Value::as_str)
+                    .unwrap_or_default(),
+            ) != Some(evidence.observed_at_unix_ns)
+        {
+            return Err(unavailable.into());
+        }
+        let block = row["message"]["content"]
+            .as_array()
+            .and_then(|blocks| blocks.get(index))
+            .ok_or(unavailable)?;
+        let call_id = block
+            .get("id")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(unavailable)?;
+        let name = block
+            .get("name")
+            .and_then(serde_json::Value::as_str)
+            .ok_or(unavailable)?;
+        if block.get("type").and_then(serde_json::Value::as_str) != Some("toolCall")
+            || pi_operation_id(call_id).as_deref() != Some(selection.operation_id)
+            || !name.starts_with("mcp__")
+            || agenturm_kernel::mcp_tool_labels(name).is_none()
+        {
+            return Err(unavailable.into());
+        }
+        let arguments = block.get("arguments").ok_or(unavailable)?;
+        let encoded = serde_json::to_string(arguments).map_err(|_| unavailable)?;
+        if text_preview(UserContent::Text(encoded.clone()))
+            .ok()
+            .as_deref()
+            != Some(&encoded)
+        {
+            return Err(unavailable.into());
+        }
+        let mut fields = serde_json::Map::new();
+        fields.insert("arguments".into(), arguments.clone());
+        Ok(OperationPayload::Mcp(fields))
     }
 
     fn admitted_offsets<'a>(

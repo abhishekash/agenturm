@@ -891,6 +891,16 @@ fn execute_private_cockpit(
         }
         WorkCommand::RevealOperation(operation, mut output) => {
             let kind = match operation.kind {
+                OperationDetailKind::Mcp
+                    if operation.event_id.starts_with("pi:")
+                        || operation.source_id == "harness.pi"
+                        || operation.source_id.starts_with("harness.pi.") =>
+                {
+                    PrivateEvidenceKind::PiMcpPayload {
+                        turn_id: operation.turn_id,
+                        operation_id: operation.operation_id,
+                    }
+                }
                 OperationDetailKind::Mcp => PrivateEvidenceKind::CodexMcpPayload {
                     turn_id: operation.turn_id,
                     operation_id: operation.operation_id,
