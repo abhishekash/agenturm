@@ -129,7 +129,7 @@ pub(crate) struct FollowDiscovery {
     pub(crate) sessions_per_harness: usize,
 }
 
-fn path_buf_is_empty(path: &PathBuf) -> bool {
+fn path_buf_is_empty(path: &Path) -> bool {
     path.as_os_str().is_empty()
 }
 
