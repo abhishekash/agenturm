@@ -3297,7 +3297,7 @@ mod tests {
     }
 
     #[test]
-    fn v24_to_v26_preserves_legacy_grants_and_separates_pi_edit_from_claude_mcp() {
+    fn v24_to_v27_preserves_legacy_grants_and_separates_pi_edit_from_claude_mcp() {
         use agenturm_kernel::{
             FileChange, McpMethod, Observation, ObservationIdentity, ObservationKind,
         };
@@ -3317,7 +3317,7 @@ mod tests {
 
         // Recreate the v24 grant constraint while retaining exactly the rows
         // that v24 could represent, then exercise Store::open's real two-step
-        // v24 -> v25 -> v26 upgrade path.
+        // v24 -> v25 -> v26 -> v27 upgrade path.
         let transaction = store.connection.transaction().unwrap();
         content_grant::migrate_grant_schema(&transaction, 24).unwrap();
         transaction
@@ -3336,7 +3336,7 @@ mod tests {
                 .connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            26
+            27
         );
         store
             .verify_content_grant(&codex_mcp, &prior_codex_mcp)
@@ -3477,6 +3477,86 @@ mod tests {
         let renewed = store.grant_content(&pi_edit).unwrap();
         assert_ne!(renewed, grant);
         store.verify_content_grant(&pi_edit, &renewed).unwrap();
+    }
+
+    #[test]
+    fn pi_mcp_detail_grant_is_independent_default_denied_and_revocable() {
+        let mut store = Store::open(":memory:").unwrap();
+        let source = ExtensionId::parse("harness.pi.mcp-fixture").unwrap();
+        let pi_mcp = ContentGrantScope::new(source.clone(), ContentKind::PiMcpDetail, [9; 32]);
+        let other_source = ContentGrantScope::new(
+            ExtensionId::parse("harness.other").unwrap(),
+            ContentKind::PiMcpDetail,
+            [9; 32],
+        );
+        let changed_fingerprint =
+            ContentGrantScope::new(source.clone(), ContentKind::PiMcpDetail, [10; 32]);
+        let pi_edit = ContentGrantScope::new(source.clone(), ContentKind::PiEditDetail, [7; 32]);
+        let codex_mcp =
+            ContentGrantScope::new(source.clone(), ContentKind::CodexMcpPayload, [8; 32]);
+        assert!(store.current_content_grant(&pi_mcp).unwrap().is_none());
+
+        let grant = store.grant_content(&pi_mcp).unwrap();
+        store.verify_content_grant(&pi_mcp, &grant).unwrap();
+        assert!(store.verify_content_grant(&other_source, &grant).is_err());
+        assert!(
+            store
+                .verify_content_grant(&changed_fingerprint, &grant)
+                .is_err()
+        );
+        assert!(store.verify_content_grant(&pi_edit, &grant).is_err());
+        assert!(store.verify_content_grant(&codex_mcp, &grant).is_err());
+        assert!(
+            store
+                .revoke_content(&source, ContentKind::PiMcpDetail)
+                .unwrap()
+        );
+        assert!(store.current_content_grant(&pi_mcp).unwrap().is_none());
+        assert!(store.verify_content_grant(&pi_mcp, &grant).is_err());
+        let renewed = store.grant_content(&pi_mcp).unwrap();
+        assert_ne!(renewed, grant);
+        store.verify_content_grant(&pi_mcp, &renewed).unwrap();
+    }
+
+    #[test]
+    fn v26_to_v27_adds_pi_mcp_grant_without_changing_existing_grants() {
+        let db = TempDb::new();
+        let source = ExtensionId::parse("harness.pi.mcp-migration").unwrap();
+        let codex_mcp =
+            ContentGrantScope::new(source.clone(), ContentKind::CodexMcpPayload, [1; 32]);
+        let pi_edit = ContentGrantScope::new(source.clone(), ContentKind::PiEditDetail, [2; 32]);
+        let pi_mcp = ContentGrantScope::new(source.clone(), ContentKind::PiMcpDetail, [3; 32]);
+        let mut store = Store::open(&db.0).unwrap();
+        let codex_grant = store.grant_content(&codex_mcp).unwrap();
+        let pi_edit_grant = store.grant_content(&pi_edit).unwrap();
+
+        let transaction = store.connection.transaction().unwrap();
+        content_grant::migrate_grant_schema(&transaction, 26).unwrap();
+        transaction
+            .execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V26],
+            )
+            .unwrap();
+        transaction.pragma_update(None, "user_version", 26).unwrap();
+        transaction.commit().unwrap();
+        drop(store);
+
+        let upgraded = Store::open(&db.0).unwrap();
+        assert_eq!(
+            upgraded
+                .connection
+                .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
+                .unwrap(),
+            27
+        );
+        upgraded
+            .verify_content_grant(&codex_mcp, &codex_grant)
+            .unwrap();
+        upgraded
+            .verify_content_grant(&pi_edit, &pi_edit_grant)
+            .unwrap();
+        assert!(upgraded.current_content_grant(&pi_mcp).unwrap().is_none());
     }
 
     #[test]

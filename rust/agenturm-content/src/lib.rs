@@ -2884,6 +2884,176 @@ mod cf11_cf12_operation_proof_tests {
         );
     }
 
+    fn pi_mcp_selection(
+        generation: &str,
+        row: &str,
+        index: usize,
+        operation_id: &str,
+    ) -> CodexOperationSelection<'static> {
+        CodexOperationSelection {
+            session_id: "pi-session",
+            event_id: Box::leak(format!("pi:{generation}:{row}:tool-{index}").into_boxed_str()),
+            revision: 0,
+            operation_id: Box::leak(operation_id.to_owned().into_boxed_str()),
+            turn_id: Some("turn-1"),
+        }
+    }
+
+    #[test]
+    fn pi_mcp_reveal_requires_exact_admitted_tool_row_and_cursor() {
+        let arguments = json!({"query":"private query"});
+        let row = json!({"type":"message","id":"assistant-row","timestamp":TIME,
+        "message":{"role":"assistant","content":[
+            {"type":"toolCall","id":"call_1|ctc_1","name":"mcp__catalog__search","arguments":arguments}
+        ]}});
+        let (prefix, cursor) = make_prefix(
+            json!({"type":"session","id":"pi-session"}),
+            std::slice::from_ref(&row),
+            Harness::Pi,
+        );
+        let operation = operation_definition(Harness::Pi, OperationDetailKind::PiMcp).unwrap();
+        let selection = pi_mcp_selection(
+            &prefix.cursor.generation,
+            "assistant-row",
+            0,
+            &pi_operation_id("call_1|ctc_1").unwrap(),
+        );
+        let proof = evidence(&cursor, TIME);
+        let OperationPayload::Mcp(fields) = prefix
+            .operation_payload(OperationDetailKind::PiMcp, &operation, &selection, &proof)
+            .unwrap()
+        else {
+            panic!("expected verified MCP payload");
+        };
+        assert_eq!(fields.get("arguments"), Some(&arguments));
+
+        let wrong_session = CodexOperationSelection {
+            session_id: "other-session",
+            ..selection
+        };
+        let wrong_call =
+            pi_mcp_selection(&prefix.cursor.generation, "assistant-row", 0, "wrong-call");
+        let wrong_index = pi_mcp_selection(
+            &prefix.cursor.generation,
+            "assistant-row",
+            1,
+            &pi_operation_id("call_1|ctc_1").unwrap(),
+        );
+        let wrong_row = pi_mcp_selection(
+            &prefix.cursor.generation,
+            "other-row",
+            0,
+            &pi_operation_id("call_1|ctc_1").unwrap(),
+        );
+        for rejected in [wrong_session, wrong_call, wrong_index, wrong_row] {
+            assert!(
+                prefix
+                    .operation_payload(OperationDetailKind::PiMcp, &operation, &rejected, &proof)
+                    .is_err()
+            );
+        }
+
+        let mut stale = proof.clone();
+        stale.admitted_cursor = stale_receipt(&stale.admitted_cursor);
+        assert!(
+            prefix
+                .operation_payload(OperationDetailKind::PiMcp, &operation, &selection, &stale)
+                .is_err()
+        );
+        let mut wrong_time = proof.clone();
+        wrong_time.observed_at_unix_ns += 1;
+        assert!(
+            prefix
+                .operation_payload(
+                    OperationDetailKind::PiMcp,
+                    &operation,
+                    &selection,
+                    &wrong_time
+                )
+                .is_err()
+        );
+
+        let changed_name = json!({"type":"message","id":"assistant-row","timestamp":TIME,
+        "message":{"role":"assistant","content":[
+            {"type":"toolCall","id":"call_1|ctc_1","name":"private_tool","arguments":arguments}
+        ]}});
+        let (changed, changed_cursor) = make_prefix(
+            json!({"type":"session","id":"pi-session"}),
+            &[changed_name],
+            Harness::Pi,
+        );
+        let changed_proof = evidence(&changed_cursor, TIME);
+        assert!(
+            changed
+                .operation_payload(
+                    OperationDetailKind::PiMcp,
+                    &operation,
+                    &pi_mcp_selection(
+                        &changed.cursor.generation,
+                        "assistant-row",
+                        0,
+                        &pi_operation_id("call_1|ctc_1").unwrap()
+                    ),
+                    &changed_proof
+                )
+                .is_err()
+        );
+    }
+
+    #[test]
+    fn pi_mcp_reveal_rejects_workers_and_ambiguous_native_rows() {
+        let row = json!({"type":"message","id":"assistant-row","timestamp":TIME,
+        "message":{"role":"assistant","content":[
+            {"type":"toolCall","id":"call_1|ctc_1","name":"mcp__catalog__search","arguments":{"q":"private"}}
+        ]}});
+        let operation = operation_definition(Harness::Pi, OperationDetailKind::PiMcp).unwrap();
+        let (worker, worker_cursor) = make_prefix(
+            json!({"type":"session","id":"pi-session","agentId":"worker-1"}),
+            std::slice::from_ref(&row),
+            Harness::Pi,
+        );
+        let worker_proof = evidence(&worker_cursor, TIME);
+        let worker_selection = pi_mcp_selection(
+            &worker.cursor.generation,
+            "assistant-row",
+            0,
+            &pi_operation_id("call_1|ctc_1").unwrap(),
+        );
+        assert!(
+            worker
+                .operation_payload(
+                    OperationDetailKind::PiMcp,
+                    &operation,
+                    &worker_selection,
+                    &worker_proof
+                )
+                .is_err()
+        );
+
+        let (ambiguous, ambiguous_cursor) = make_prefix(
+            json!({"type":"session","id":"pi-session"}),
+            &[row.clone(), row],
+            Harness::Pi,
+        );
+        let ambiguous_proof = evidence(&ambiguous_cursor, TIME);
+        let ambiguous_selection = pi_mcp_selection(
+            &ambiguous.cursor.generation,
+            "assistant-row",
+            0,
+            &pi_operation_id("call_1|ctc_1").unwrap(),
+        );
+        assert!(
+            ambiguous
+                .operation_payload(
+                    OperationDetailKind::PiMcp,
+                    &operation,
+                    &ambiguous_selection,
+                    &ambiguous_proof
+                )
+                .is_err()
+        );
+    }
+
     fn claude_selection(
         generation: &str,
         uuid: &str,
