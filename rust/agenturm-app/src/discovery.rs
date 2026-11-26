@@ -478,9 +478,32 @@ fn opencode_db() -> Result<PathBuf, String> {
     if let Some(absolute) = path.as_ref().filter(|path| path.is_absolute()) {
         return Ok(absolute.clone());
     }
-    Ok(data_root("XDG_DATA_HOME", ".local/share")?
+    Ok(data_home_root()?
         .join("opencode")
         .join(path.unwrap_or_else(|| PathBuf::from("opencode.db"))))
+}
+
+fn data_home_root() -> Result<PathBuf, String> {
+    if let Some(value) = env::var_os("XDG_DATA_HOME").filter(|value| !value.is_empty()) {
+        let path = PathBuf::from(value);
+        if !path.is_absolute() {
+            return Err("XDG_DATA_HOME must be an absolute path".into());
+        }
+        return Ok(path);
+    }
+    #[cfg(target_os = "macos")]
+    {
+        let home = env::var_os("HOME").ok_or("set HOME or XDG_DATA_HOME")?;
+        let home = PathBuf::from(home);
+        if !home.is_absolute() {
+            return Err("HOME must be an absolute path".into());
+        }
+        Ok(home.join("Library/Application Support"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        data_root("XDG_DATA_HOME", ".local/share")
+    }
 }
 
 fn regular_database(path: &Path) -> Result<Vec<PathBuf>, String> {
