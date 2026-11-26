@@ -123,7 +123,8 @@ The bootstrap pins the platform installer and downloads the exact Rust release
 assets over HTTPS. Apple Silicon is a preview pending independent clean-host
 acceptance. macOS builds are unsigned and not notarized; macOS may ask you to
 approve Agenturm in Privacy & Security on first launch. Keep Gatekeeper enabled.
-See the [Rust installation guide](docs/rfcs/rust-distribution-installation.md).
+See the [Rust 0.3.9 prerelease notes](docs/releases/rust-0.3.9.md) and the
+[Rust installation guide](docs/rfcs/rust-distribution-installation.md).
 
 ## From activity to understanding
 
