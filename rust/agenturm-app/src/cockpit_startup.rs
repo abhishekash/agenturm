@@ -326,11 +326,15 @@ pub(super) fn state_directory(
 ) -> Result<PathBuf, String> {
     let state_home = state_home.map(Path::new).filter(|path| path.is_absolute());
     let home = home.map(Path::new).filter(|path| path.is_absolute());
-    let base = state_home
-        .map(Path::to_owned)
-        .or_else(|| home.map(|path| path.join(".local/state")))
+    if let Some(state_home) = state_home {
+        return Ok(state_home.join("agenturm-rust"));
+    }
+    let home = home
         .ok_or_else(|| "set an absolute XDG_STATE_HOME or HOME to launch the cockpit".to_owned())?;
-    Ok(base.join("agenturm-rust"))
+    #[cfg(target_os = "macos")]
+    return Ok(home.join("Library/Application Support/Agenturm/Rust"));
+    #[cfg(not(target_os = "macos"))]
+    Ok(home.join(".local/state/agenturm-rust"))
 }
 
 #[cfg(test)]
@@ -344,11 +348,29 @@ mod tests {
         let home = cwd.join("home");
         assert_eq!(
             state_directory(Some(state_home.as_os_str()), Some(home.as_os_str())).unwrap(),
-            state_home.join("agenturm-rust"),
+            {
+                #[cfg(target_os = "macos")]
+                {
+                    state_home.join("agenturm-rust")
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    state_home.join("agenturm-rust")
+                }
+            },
         );
         assert_eq!(
             state_directory(Some(OsStr::new("relative-state")), Some(home.as_os_str())).unwrap(),
-            home.join(".local/state/agenturm-rust"),
+            {
+                #[cfg(target_os = "macos")]
+                {
+                    home.join("Library/Application Support/Agenturm/Rust")
+                }
+                #[cfg(not(target_os = "macos"))]
+                {
+                    home.join(".local/state/agenturm-rust")
+                }
+            },
         );
         assert!(state_directory(None, Some(OsStr::new("relative-home"))).is_err());
     }

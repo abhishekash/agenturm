@@ -274,12 +274,14 @@ and unqualified production activation disabled. See the
 
 **Existing task:** D2-Mac. **Owner:** platform/distribution.
 
-Provide Apple Silicon and Intel artifacts separately when native runners are
-available. Define minimum macOS version, bundle/install/update/uninstall flows,
-configuration/state paths, supported harness roots and foreground versus
-`launchd` collection. Remove Linux path, `/proc`, process-control and systemd
-assumptions from the advertised macOS path. Define signing/notarization and
-normal Gatekeeper behavior.
+Implementation candidate on branch `feature/rust-macos-apple-silicon` (base
+`fd398c1`): Apple Silicon (`aarch64-apple-darwin`) only, minimum macOS 13
+Ventura, native bundle workflow, local install/update/uninstall path, native
+Application Support/Preferences defaults, and foreground cockpit collection.
+Intel/Rosetta and managed background collection are explicitly unsupported.
+The candidate is not public macOS support: Developer ID signing/notarization
+credentials, native clean-host installation and runtime acceptance, and Q10
+remain open. Do not bypass Gatekeeper.
 
 **Development complete when:** the selected macOS artifact, path, installer,
 service and signing configuration is implemented for each intended target.

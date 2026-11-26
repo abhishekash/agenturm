@@ -165,10 +165,22 @@ pub(super) fn footer() -> Style {
 }
 
 pub(super) fn preference_path() -> Option<PathBuf> {
-    let directory = std::env::var_os("XDG_CONFIG_HOME")
-        .map(PathBuf::from)
-        .or_else(|| std::env::var_os("HOME").map(|home| PathBuf::from(home).join(".config")))?;
-    Some(directory.join("agenturm-rust").join("ui.json"))
+    if let Some(config_home) = std::env::var_os("XDG_CONFIG_HOME") {
+        return Some(
+            PathBuf::from(config_home)
+                .join("agenturm-rust")
+                .join("ui.json"),
+        );
+    }
+    let home = PathBuf::from(std::env::var_os("HOME")?);
+    #[cfg(target_os = "macos")]
+    {
+        Some(home.join("Library/Preferences/Agenturm/ui.json"))
+    }
+    #[cfg(not(target_os = "macos"))]
+    {
+        Some(home.join(".config/agenturm-rust/ui.json"))
+    }
 }
 
 pub(super) fn preferences_enabled() -> bool {

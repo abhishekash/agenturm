@@ -999,7 +999,7 @@ pub fn execute_service(action: &ServiceCommand) -> Result<String, String> {
     #[cfg(not(target_os = "linux"))]
     {
         let _ = action;
-        Err("Agenturm systemd user service management currently supports Linux only".into())
+        Err("Agenturm managed background collection is unavailable on this platform; use the foreground cockpit".into())
     }
 }
 
