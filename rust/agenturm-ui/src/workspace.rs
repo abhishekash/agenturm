@@ -2602,6 +2602,58 @@ impl Workspace {
         if view.page.ui.evidence_key(code) {
             return false;
         }
+        if code == KeyCode::Char('o') && view.page.ui.selected_title() == Some("Traces") {
+            let origin = view
+                .page
+                .ui
+                .selected_evidence_export()
+                .map(|(title, _, position, _)| (title.to_owned(), position));
+            let targets = view
+                .page
+                .ui
+                .selected_trace_operation_targets()
+                .map(|targets| targets.to_vec())
+                .unwrap_or_default();
+            let result = match targets.as_slice() {
+                [target] => {
+                    if !view.page.ui.select_pane_title("Operations") {
+                        Err("Operations pane is unavailable on this page")
+                    } else {
+                        view.page
+                            .operation_table
+                            .select_trace_target(&view.page.ui, target)
+                    }
+                }
+                [] => Err("The selected trace has no exact linked operation"),
+                _ => Err("This trace has several linked spans; select a single-span trace to jump"),
+            };
+            match result {
+                Ok(()) => {
+                    view.page.trace_return = origin;
+                    self.message = None;
+                }
+                Err(message) => {
+                    if let Some((title, position)) = &origin {
+                        view.page.ui.restore_view(Some(title), *position);
+                    }
+                    self.message = Some(message.into());
+                }
+            }
+            return false;
+        }
+        if code == KeyCode::Esc
+            && view.page.trace_return.is_some()
+            && view
+                .page
+                .operation_table
+                .active_ref(&view.page.ui)
+                .is_some_and(|table| !table.expanded())
+        {
+            if let Some((title, position)) = view.page.trace_return.take() {
+                view.page.ui.restore_view(Some(&title), position);
+            }
+            return false;
+        }
         if let Some(table) = view.page.operation_table.active(&view.page.ui) {
             if code == KeyCode::Char('t')
                 && table
@@ -4721,7 +4773,14 @@ fn draw_workspace_base(frame: &mut Frame, workspace: &mut Workspace) {
                 body,
                 view.page.ui.selected_title().unwrap_or("Operations"),
             );
-            frame.render_widget(Paragraph::new(table.key_hint()), keys);
+            let hint = if view.page.trace_return.is_some() && table.expanded() {
+                "↑↓ scroll · Esc close detail · Esc return to trace"
+            } else if view.page.trace_return.is_some() {
+                "↑↓ select · Enter inspect · Esc return to trace"
+            } else {
+                table.key_hint()
+            };
+            frame.render_widget(Paragraph::new(hint), keys);
         } else {
             draw(
                 frame,
@@ -5304,6 +5363,7 @@ mod tests {
                     latency: None,
                     evidence: Vec::new(),
                     mcp_event: Some((source.into(), event.into(), revision)),
+                    identity: None,
                 })
                 .collect(),
         );

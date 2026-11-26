@@ -1,6 +1,6 @@
 use super::{describe_observation, duration_millis, metric, progress_description, timestamp};
 use agenturm_kernel::{MetricRow, Observation, ObservationKind, TraceSpan};
-use agenturm_ui::{EvidenceRow, EvidenceSpec, EvidenceTable};
+use agenturm_ui::{EvidenceRow, EvidenceSpec, EvidenceTable, TraceOperationTarget};
 use std::collections::HashMap;
 
 pub(super) const ACTIVITY: EvidenceSpec = EvidenceSpec {
@@ -197,7 +197,7 @@ pub(super) fn trace(
     session: &str,
     trace: &str,
     evidence: &super::TraceEvidence<'_>,
-) -> EvidenceRow {
+) -> (EvidenceRow, Vec<TraceOperationTarget>) {
     let mut root_spans = evidence
         .spans
         .iter()
@@ -243,10 +243,32 @@ pub(super) fn trace(
     }));
     details.extend([metric("Source", source), metric("Session", session)]);
     details.extend(trace_span_tree(&evidence.spans));
-    EvidenceRow {
-        cells: vec![status.into(), trace.into(), count, tokens],
-        details,
+    let mut targets = Vec::new();
+    for (row, span) in &evidence.spans {
+        if let (Some(source_id), Some(session_id), Some(operation_id)) = (
+            span.target_source_id.clone(),
+            row.identity.session_id.clone(),
+            span.target_operation_id.clone(),
+        ) {
+            let target = TraceOperationTarget {
+                source_id,
+                session_id,
+                worker_id: row.identity.worker_id.clone(),
+                turn_id: row.identity.turn_id.clone(),
+                operation_id,
+            };
+            if !targets.contains(&target) {
+                targets.push(target);
+            }
+        }
     }
+    (
+        EvidenceRow {
+            cells: vec![status.into(), trace.into(), count, tokens],
+            details,
+        },
+        targets,
+    )
 }
 
 fn token_count(value: Option<u64>) -> String {

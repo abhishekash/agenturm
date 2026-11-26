@@ -29,6 +29,28 @@ pub struct OperationRow {
     pub evidence: Vec<MetricRow>,
     /// Source-scoped event and revision for the recorded MCP call, when present.
     pub mcp_event: Option<(String, String, u32)>,
+    /// Provider-neutral operation identity. UI navigation uses this typed
+    /// identity and never parses the display/evidence strings.
+    pub identity: Option<OperationIdentity>,
+}
+
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct OperationIdentity {
+    pub source_id: String,
+    pub session_id: String,
+    pub worker_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub operation_id: String,
+}
+
+/// Exact operation target reported by a trace span.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub struct TraceOperationTarget {
+    pub source_id: String,
+    pub session_id: String,
+    pub worker_id: Option<String>,
+    pub turn_id: Option<String>,
+    pub operation_id: String,
 }
 
 pub(super) struct Browser {
@@ -143,6 +165,57 @@ impl Browser {
     pub(super) fn active_ref(&self, ui: &UiModel) -> Option<&OperationList> {
         self.panes.get(ui.panes.get(ui.selected)?.id.as_ref()?)
     }
+
+    pub(super) fn select_trace_target(
+        &mut self,
+        ui: &UiModel,
+        target: &TraceOperationTarget,
+    ) -> Result<(), &'static str> {
+        let pane = self
+            .panes
+            .get_mut(
+                ui.panes
+                    .get(ui.selected)
+                    .and_then(|pane| pane.id.as_ref())
+                    .ok_or("Operations pane is unavailable")?,
+            )
+            .ok_or("Operations pane is unavailable")?;
+        let matches = pane
+            .rows
+            .iter()
+            .enumerate()
+            .filter(|(_, row)| {
+                row.identity.as_ref().is_some_and(|identity| {
+                    identity.source_id == target.source_id
+                        && identity.session_id == target.session_id
+                        && identity.operation_id == target.operation_id
+                        && target
+                            .worker_id
+                            .as_ref()
+                            .is_none_or(|worker| identity.worker_id.as_ref() == Some(worker))
+                        && target
+                            .turn_id
+                            .as_ref()
+                            .is_none_or(|turn| identity.turn_id.as_ref() == Some(turn))
+                })
+            })
+            .map(|(index, _)| index)
+            .collect::<Vec<_>>();
+        match matches.as_slice() {
+            [] => Err("No exact recorded operation matches this trace span"),
+            [index] => {
+                let Some(visible_index) = pane.visible.iter().position(|visible| visible == index)
+                else {
+                    return Err("The matching operation is hidden by the current filter");
+                };
+                pane.selection.select(Some(visible_index));
+                pane.expanded = false;
+                pane.offset = 0;
+                Ok(())
+            }
+            _ => Err("This trace span matches multiple operations; refusing an ambiguous jump"),
+        }
+    }
 }
 
 impl OperationList {
@@ -156,6 +229,10 @@ impl OperationList {
         }
         self.rows
             .get(*self.visible.get(self.selection.selected()?)?)
+    }
+
+    pub(super) fn expanded(&self) -> bool {
+        self.expanded
     }
 
     pub(super) fn key_hint(&self) -> &'static str {
@@ -761,6 +838,7 @@ mod tests {
                 latency: None,
                 evidence: vec![],
                 mcp_event: Some(("source".into(), format!("event-{i}"), 0)),
+                identity: None,
             })
             .collect();
         let mut browser = Browser::new([(id.clone(), rows)].into(), None);
@@ -800,6 +878,7 @@ mod tests {
                 value: if i == 1 { "worker-a" } else { "" }.into(),
             }],
             mcp_event: None,
+            identity: None,
         })
         .collect();
         let mut browser = Browser::new([(id.clone(), rows)].into(), None);
@@ -882,6 +961,7 @@ mod tests {
                 latency: None,
                 evidence: vec![],
                 mcp_event: None,
+                identity: None,
             })
             .collect();
         let mut older = Browser::new([(id, next_rows)].into(), None);
@@ -906,6 +986,7 @@ mod tests {
             latency: None,
             evidence: vec![],
             mcp_event: Some(("source".into(), "call-event".into(), 2)),
+            identity: None,
         }];
         let configured = McpInventory {
             servers: vec![
