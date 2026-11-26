@@ -3442,6 +3442,30 @@ mod tests {
     }
 
     #[test]
+    fn pi_edit_detail_grant_is_independent_default_denied_and_revocable() {
+        let mut store = Store::open(":memory:").unwrap();
+        let source = ExtensionId::parse("harness.pi.review-fixture").unwrap();
+        let pi_edit = ContentGrantScope::new(source.clone(), ContentKind::PiEditDetail, [7; 32]);
+        let codex_edit =
+            ContentGrantScope::new(source.clone(), ContentKind::CodexEditDetail, [8; 32]);
+        assert!(store.current_content_grant(&pi_edit).unwrap().is_none());
+
+        let grant = store.grant_content(&pi_edit).unwrap();
+        store.verify_content_grant(&pi_edit, &grant).unwrap();
+        assert!(store.verify_content_grant(&codex_edit, &grant).is_err());
+        assert!(
+            store
+                .revoke_content(&source, ContentKind::PiEditDetail)
+                .unwrap()
+        );
+        assert!(store.current_content_grant(&pi_edit).unwrap().is_none());
+        assert!(store.verify_content_grant(&pi_edit, &grant).is_err());
+        let renewed = store.grant_content(&pi_edit).unwrap();
+        assert_ne!(renewed, grant);
+        store.verify_content_grant(&pi_edit, &renewed).unwrap();
+    }
+
+    #[test]
     fn native_cost_requires_the_exact_assistant_in_its_admitted_batch() {
         use agenturm_kernel::{NativeCostBasis, ReportedCost};
         let db = TempDb::new();
