@@ -439,6 +439,18 @@ mod tests {
             assert!(text.contains("Workflow incidents · partial"));
             assert!(text.contains("USD threshold"));
             assert!(text.contains("T retry delivery"));
+            assert!(
+                text.contains("h older"),
+                "default retry footer clipped at {width} columns: {text}"
+            );
+            assert!(
+                text.contains("R refresh"),
+                "default retry footer clipped at {width} columns: {text}"
+            );
+            assert!(
+                text.contains("Esc back"),
+                "default retry footer clipped at {width} columns: {text}"
+            );
             browser.key(KeyCode::Enter);
             terminal
                 .draw(|frame| browser.draw(frame, false, None))
