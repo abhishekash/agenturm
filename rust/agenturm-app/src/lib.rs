@@ -2727,6 +2727,7 @@ fn load_workspace_history(
                 SessionView::Details => |ids| ids.details,
                 SessionView::Activity => |ids| ids.activity,
                 SessionView::Review => |ids| ids.review,
+                SessionView::Metrics => |ids| ids.overview,
                 SessionView::Usage => |ids| ids.usage,
                 SessionView::Traces => {
                     let page = if session.harness_id.starts_with("otlp.") {
@@ -2773,6 +2774,12 @@ fn load_workspace_history(
                             .map_err(|e| e.to_string())?,
                     ),
                     Some(session.session_id.clone()),
+                    page.snapshot.history_snapshot_id,
+                )?));
+            }
+            if matches!(view, SessionView::Metrics) {
+                page.features.metric_history = Some(Box::new(metric_history::initial(
+                    store,
                     page.snapshot.history_snapshot_id,
                 )?));
             }

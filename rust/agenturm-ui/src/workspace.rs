@@ -152,6 +152,7 @@ pub enum SessionView {
     Details,
     Activity,
     Review,
+    Metrics,
     Usage,
     Traces,
 }
@@ -824,7 +825,11 @@ impl HistoryView {
     fn new(selection: HistorySelection, mut page: HistoryPage) -> Self {
         let analytics = analytics::HistoryAnalytics::take(&selection, &mut page);
         let mut page = Self::make_page(&selection, page);
-        if matches!(selection, HistorySelection::All(WorkspaceView::Metrics)) {
+        if matches!(
+            selection,
+            HistorySelection::All(WorkspaceView::Metrics)
+                | HistorySelection::Session(_, SessionView::Metrics)
+        ) {
             page.ui.select_metrics();
         }
         if let HistorySelection::McpSearch { query, .. } = &selection {
@@ -1110,6 +1115,7 @@ impl Workspace {
                         && matches!(
                             view.selection,
                             HistorySelection::All(WorkspaceView::Metrics)
+                                | HistorySelection::Session(_, SessionView::Metrics)
                         );
                     let restored = if metrics {
                         next.ui.select_metrics();
@@ -1531,6 +1537,16 @@ impl Workspace {
         );
     }
 
+    fn open_inspector_metrics(&mut self, sender: &mpsc::Sender<WorkspaceRequest>) {
+        let Some((session, _)) = self.inspector_session() else {
+            return;
+        };
+        self.open(
+            sender,
+            HistorySelection::Session(session, SessionView::Metrics),
+        );
+    }
+
     /// Inspector key handling. The tab strip is one focus stop; content owns
     /// scrolling. Ctrl+Left/Right and `m` switch sections from content, and
     /// plain Left/Right never steals a reader's horizontal keys.
@@ -1544,6 +1560,10 @@ impl Workspace {
         }
         let control = key.modifiers == KeyModifiers::CONTROL;
         let code = keymap::plain(key).unwrap_or(KeyCode::Null);
+        if code == KeyCode::Char('K') {
+            self.open_inspector_metrics(sender);
+            return true;
+        }
         if control && matches!(key.code, KeyCode::Left | KeyCode::Right) {
             self.move_inspector_tab(
                 sender,
@@ -3146,7 +3166,7 @@ impl Workspace {
                         self.inspector.tab.label()
                     ));
                     current.push(
-                        "Overview links: s Activity · Ctrl+R Review · t Traces · u Usage · P Prompts"
+                        "Overview links: s Activity · Ctrl+R Review · t Traces · u Usage · K Metrics · P Prompts"
                             .into(),
                     );
                     current.push(
@@ -3358,9 +3378,10 @@ impl Workspace {
             | keymap::id::TREE
             | keymap::id::RESET
             | keymap::id::HOST_NOW => (!catalog_ready).then_some("No session page is loaded"),
-            keymap::id::OVERVIEW | keymap::id::SESSION_ACTIVITY | keymap::id::SESSION_USAGE => {
-                (!session).then_some("Select an exact session first")
-            }
+            keymap::id::OVERVIEW
+            | keymap::id::SESSION_ACTIVITY
+            | keymap::id::SESSION_USAGE
+            | keymap::id::SESSION_METRICS => (!session).then_some("Select an exact session first"),
             keymap::id::INSPECTOR_MODE => (!matches!(
                 self.history.last().map(|view| &view.selection),
                 Some(HistorySelection::Session(_, _))
@@ -3855,6 +3876,7 @@ impl Workspace {
                 }
             }
             keymap::id::SESSION_USAGE => return self.send_key(sender, plain_key('u')),
+            keymap::id::SESSION_METRICS => return self.send_key(sender, plain_key('K')),
             keymap::id::HOST_NOW => return self.send_key(sender, plain_key('H')),
             keymap::id::INSPECTOR_MODE => return self.send_key(sender, plain_key('m')),
             keymap::id::INSPECTOR_SECTIONS => self.focus_inspector_tabs(),
@@ -4009,12 +4031,13 @@ impl Workspace {
                     );
                 }
             }
-            KeyCode::Enter | KeyCode::Char('e' | 'm' | 'A' | 's' | 'V' | 'u' | 't') => {
+            KeyCode::Enter | KeyCode::Char('e' | 'm' | 'A' | 's' | 'V' | 'u' | 'K' | 't') => {
                 if let Some(session) = self.agents.current().cloned() {
                     let view = match key {
                         KeyCode::Char('A' | 's') => SessionView::Activity,
                         KeyCode::Char('V') => SessionView::Review,
                         KeyCode::Char('u') => SessionView::Usage,
+                        KeyCode::Char('K') => SessionView::Metrics,
                         KeyCode::Char('t') => SessionView::Traces,
                         _ => SessionView::Overview,
                     };
@@ -4308,6 +4331,9 @@ fn pending_evidence_titles(selection: &HistorySelection) -> Option<(&'static str
         HistorySelection::All(WorkspaceView::Host) => Some(("Host now", "Collection status")),
         HistorySelection::All(WorkspaceView::Usage)
         | HistorySelection::Session(_, SessionView::Usage) => Some(("Usage", "Metric inspector")),
+        HistorySelection::Session(_, SessionView::Metrics) => {
+            Some(("Metrics", "All authorized OTLP sources"))
+        }
         HistorySelection::All(WorkspaceView::Traces)
         | HistorySelection::Session(_, SessionView::Traces)
         | HistorySelection::McpTraces { .. } => Some(("Traces", "Execution tree")),

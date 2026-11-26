@@ -122,10 +122,11 @@ baselines, not results for the new feature slices. Every new row starts
 must supply the final integrated commit before the test owner freezes a binary.
 Do not build different sources concurrently into one Cargo target directory.</p>
 <h2>UI-05 follow-up handoff — not run</h2>
-<p>The separate UI implementation candidate <code>17206a4</code> was coordinator-qualified
-for its recorded scope, but this follow-up changes Activity evidence behavior.
-Use commit <code>81c7357</code> on branch <code>feature/ui-parity-next</code> after it is integrated;
-the prior 991-test and PTY results do not qualify these changes.</p>
+<p>PR #396 (<code>afbdbdc</code>) merged the integrated UI candidate and Activity evidence
+filter to <code>main</code>. The current unmerged branch
+<code>feature/ui05-session-metrics</code> adds contextual session-to-Metrics navigation
+into the global catalog. Do not count the prior 991-test and PTY evidence as qualification for
+these follow-up changes.</p>
 <div class="table-wrap" tabindex="0" role="region" aria-label="Scrollable comparison table"><table>
 <thead>
 <tr>
@@ -148,8 +149,20 @@ the prior 991-test and PTY results do not qualify these changes.</p>
 <td>Inspect ordinary activity with a recorded worker, no worker, WorkerSpawn and WorkerLaunch. Show exact worker, <code>Worker: Unreported</code>, or separately named <code>Parent worker: Unreported</code> as appropriate. Verify the same rows at all three sizes; do not infer a parent or child ID.</td>
 <td>Not run; implementation <code>81c7357</code>.</td>
 </tr>
+<tr>
+<td>UI05-C</td>
+<td>Session-to-Metrics navigation and honest scope</td>
+<td>From roster and inspector, press <code>K</code> or invoke the palette action and open the global Metrics catalog. Verify its query is unscoped (<code>source_id=None</code>), the UI does not imply these series belong to the selected session, and Escape returns to the same session selection. Record that current <code>otlp.*</code> source IDs do not link to ordinary <code>harness.*</code> session IDs, so true per-session Metrics is still pending typed linkage.</td>
+<td>Passed scoped PTY on <code>b57af26</code> at 100×26: K and palette opened the global catalog, explicit non-link scope was shown, Escape restored the same row, normal quit restored terminal. True per-session metric linkage remains open. Evidence: <code>/tmp/agenturm-ui05-k-navigation.txt</code>.</td>
+</tr>
 </tbody>
 </table></div>
+<p>The merged bundle PTY failure is a stale test expectation in
+<code>scripts/validate_rust_default_cockpit.py</code>: it checks for <code>Project unavailable 1</code>
+but the latest command center copy is <code>No recorded project 1</code>. The evidence
+shows the requested search and selected row. The test owner updates and reruns
+that assertion against the frozen source; this implementation branch does not
+edit the test script.</p>
 <p>Run these against a frozen integrated source and binary. Keep UI-Q's paired
 screen matrix, live broker/private grant cases, release archive and independent
 sign-off as separate gates.</p>

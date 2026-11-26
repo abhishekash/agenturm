@@ -14,7 +14,8 @@ impl HistoryAnalytics {
     pub(super) fn take(selection: &HistorySelection, page: &mut HistoryPage) -> Option<Self> {
         let snapshot = page.snapshot.history_snapshot_id;
         match selection {
-            HistorySelection::All(WorkspaceView::Metrics) => {
+            HistorySelection::All(WorkspaceView::Metrics)
+            | HistorySelection::Session(_, SessionView::Metrics) => {
                 let series = page.features.metric_history.take()?;
                 if !matches!(series.as_ref(), MetricHistoryPage::Series { snapshot_id, .. } if *snapshot_id == snapshot)
                 {

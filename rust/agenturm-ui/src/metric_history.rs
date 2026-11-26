@@ -568,7 +568,13 @@ impl MetricBrowser {
     }
 
     pub(super) fn loaded_view(&self) -> LoadedView {
-        let snapshot = format!("Retained metric metadata · Snapshot {}", self.snapshot_id);
+        let snapshot = format!(
+            "Retained metric metadata{} · Snapshot {}",
+            self.source_id.as_ref().map_or_else(String::new, |source| {
+                format!(" · Source {}", source.as_str())
+            }),
+            self.snapshot_id
+        );
         if let Some(trace) = &self.trace {
             let scope = self.point().map_or(snapshot.clone(), |row| {
                 format!(
