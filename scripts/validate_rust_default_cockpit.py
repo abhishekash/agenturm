@@ -148,6 +148,40 @@ def selected_task(frame):
     )
 
 
+def selected_title(frame):
+    match = re.match(r"^›\s+[▸▾!●○]\s+(.*)$", selected_task(frame))
+    assert match, "the filtered roster has no selected task title"
+    return match.group(1).strip()
+
+
+def provider_for_source(source):
+    if source.startswith("harness.pi."):
+        return "Pi"
+    if source.startswith("harness.codex."):
+        return "Codex"
+    raise AssertionError(f"unsupported fixture source: {source}")
+
+
+def inspector_matches_session(cells, title, provider):
+    def field_value(label):
+        prefix = f"{label} "
+        return next(
+            (
+                normalized[len(prefix):].strip()
+                for line in cells.splitlines()
+                if (normalized := line.strip().removeprefix("│").removesuffix("│").strip())
+                .startswith(prefix)
+            ),
+            None,
+        )
+
+    return (
+        field_value("Session name") == title
+        and field_value("Provider") == provider
+        and field_value("Project") == "No recorded project"
+    )
+
+
 def roster_search(cells):
     return next((line.strip()[2:] for line in cells.splitlines() if line.startswith(" / ")), "")
 
@@ -164,7 +198,7 @@ def filter_roster(cockpit, session):
             # the selected row; check the filtered row and then verify that
             # journey below.
             and ("Enter / Esc search" in cells or "Enter inspect" in cells)
-            and "› " in cells
+            and sum(line.startswith("› ") for line in cells.splitlines()) == 1
             and re.search(r"(?:Project unavailable|No recorded project)\s+1\b", cells)
         ),
     )
@@ -183,25 +217,25 @@ def check_sessions(cockpit, sources):
                 "unfiltered command center on the same page",
                 lambda cells: (
                     "Agenturm command center" in cells and not roster_search(cells)
-                    and re.search(r"Project unavailable\s+2\b", cells)
+                    and re.search(r"(?:Project unavailable|No recorded project)\s+2\b", cells)
                 ),
             )
         roster = filter_roster(cockpit, session)
         selected = selected_task(roster)
+        title = selected_title(roster)
+        provider = provider_for_source(source)
         cockpit.send(b"\r")
         cockpit.frame(
-            f"the exact Overview of {session}",
-            lambda cells: (
-                re.search(rf"\bSource\s+{re.escape(source)}\b", cells)
-                and re.search(rf"\bSession\s+{re.escape(session)}\b", cells)
-            ),
+            f"the Inspector for selected session {title}",
+            lambda cells: inspector_matches_session(cells, title, provider),
         )
         cockpit.send(b"\x1b")
         returned = cockpit.frame(
             f"the same filtered roster after closing {session}",
             lambda cells: (
                 "Agenturm command center" in cells and roster_search(cells) == session
-                and "Enter inspect" in cells and "› " in cells
+                and ("Enter / Esc search" in cells or "Enter inspect" in cells)
+                and "› " in cells
             ),
         )
         assert selected_task(returned) == selected, "the selected task changed on return"
