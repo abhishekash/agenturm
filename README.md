@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://www.agenturm.dev/#demo"><strong>Explore the workflow →</strong></a> &nbsp;·&nbsp;
   <a href="docs/usage.md">Documentation</a> &nbsp;·&nbsp;
-  <a href="https://github.com/abhishekash/agenturm/releases/tag/v0.3.11">What’s new in 0.3.11</a>
+  <a href="https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.11">What’s new in 0.3.11</a>
 </p>
 
 <p align="center">

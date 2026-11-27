@@ -1,6 +1,6 @@
 # Install Agenturm
 
-Agenturm 0.3.10 is a native Rust application. The installer detects your system,
+Agenturm 0.3.11 is a native Rust application. The installer detects your system,
 fetches the matching release, verifies its pinned SHA-256, and installs the
 `agenturm` command. Python and a Rust toolchain are not required.
 
