@@ -157,15 +157,14 @@ fn supporting_context(row: &RecordedSession, grouping: Grouping, duplicate: bool
     if duplicate {
         parts.push("Same name".into());
     }
-    if has_specific_name {
-        if let Some(value) = row
+    if has_specific_name
+        && let Some(value) = row
             .native_context
             .as_deref()
             .and_then(|context| context.agent_role.as_deref())
             .filter(|value| !value.is_empty())
-        {
-            parts.push(visible_text(value));
-        }
+    {
+        parts.push(visible_text(value));
     }
     if has_specific_name && grouping != Grouping::Project && row.project_origin.is_some() {
         let path = project(row);
