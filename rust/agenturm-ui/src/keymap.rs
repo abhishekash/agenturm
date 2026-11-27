@@ -38,14 +38,6 @@ pub(crate) const EXTRA_NAVIGATION: &[(char, Destination, &str)] = &[
     ('U', Destination::Usage, "Usage"),
 ];
 
-pub(crate) fn navigation_hints(items: &[(char, Destination, &str)]) -> String {
-    items
-        .iter()
-        .map(|(key, _, label)| format!("{key} {label}"))
-        .collect::<Vec<_>>()
-        .join(" · ")
-}
-
 pub(crate) fn destination(code: KeyCode) -> Option<Destination> {
     let KeyCode::Char(character) = code else {
         return None;
@@ -1209,8 +1201,8 @@ mod tests {
             self::destination(KeyCode::Char('U')),
             Some(Destination::Usage)
         );
-        assert!(navigation_hints(NAVIGATION).contains("7 Findings"));
-        assert!(navigation_hints(EXTRA_NAVIGATION).contains("U Usage"));
+        assert!(NAVIGATION.contains(&('7', Destination::Findings, "Findings")));
+        assert!(EXTRA_NAVIGATION.contains(&('U', Destination::Usage, "Usage")));
     }
 
     #[test]

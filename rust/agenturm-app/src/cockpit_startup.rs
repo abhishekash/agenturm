@@ -55,10 +55,7 @@ impl CockpitStartup {
             .and_then(|collection| {
                 let notice = collection.notice.lock().ok()?.clone();
                 let receiver = collection.receiver_notice.lock().ok()?.clone();
-                match (notice, receiver) {
-                    (Some(notice), Some(receiver)) => Some(format!("{notice}. {receiver}")),
-                    (notice, receiver) => notice.or(receiver),
-                }
+                merge_collection_notices(notice, receiver)
             })
             .or_else(|| self.notice.clone())
     }
@@ -332,23 +329,77 @@ pub(super) fn prepare_cockpit_store(db: Option<&Path>) -> Result<CockpitStartup,
 }
 
 fn collection_notice(report: &CollectionReport) -> Option<String> {
-    let coverage = report.discovery.map(discovery::DiscoveryCoverage::notice);
     if report.has_failures() {
+        let mut failures = Vec::new();
+        if report.failed_sources > 0 {
+            failures.push(format!(
+                "{} source {}",
+                report.failed_sources,
+                if report.failed_sources == 1 {
+                    "failure"
+                } else {
+                    "failures"
+                }
+            ));
+        }
+        if !report.global_failures.is_empty() {
+            failures.push(format!(
+                "{} collection {}",
+                report.global_failures.len(),
+                if report.global_failures.len() == 1 {
+                    "failure"
+                } else {
+                    "failures"
+                }
+            ));
+        }
         let mut notice = format!(
-            "Showing available history. {}",
-            report
-                .summary
-                .lines()
-                .next()
-                .unwrap_or("Collection failed.")
+            "{}\nShowing available history.\n{}",
+            failures.join(" · "),
+            report.summary.trim_end()
         );
-        if let Some(coverage) = coverage {
-            notice.push(' ');
-            notice.push_str(&coverage);
+        if let Some(coverage) = report.discovery {
+            notice.push('\n');
+            notice.push_str(&coverage.notice());
         }
         Some(notice)
     } else {
-        coverage
+        report.discovery.map(|discovery| {
+            let summary = if discovery.scan_partial || discovery.handles_partial {
+                "Discovery incomplete · history available".into()
+            } else {
+                let queued = discovery.eligible.saturating_sub(discovery.selected);
+                if queued > 0 {
+                    format!("Discovering sessions · {queued} queued")
+                } else {
+                    "Collection complete".into()
+                }
+            };
+            format!("{summary}\n{}", discovery.notice())
+        })
+    }
+}
+
+/// The footer displays the first line, so receiver failures must remain there
+/// even when a successful discovery notice already has a detailed second line.
+fn merge_collection_notices(
+    collection: Option<String>,
+    receiver: Option<String>,
+) -> Option<String> {
+    match (collection, receiver) {
+        (Some(collection), Some(receiver)) => {
+            let collection_summary = collection.lines().next().unwrap_or_default();
+            let receiver_summary = receiver.lines().next().unwrap_or_default();
+            // Keep both failure counts and receiver health visible. Discovery
+            // counters can stay in the full scrollable collection status.
+            let summary = if collection_summary.contains("failure") {
+                format!("{collection_summary} · OTLP unavailable")
+            } else {
+                receiver_summary.to_owned()
+            };
+            Some(format!("{summary}\n{receiver}\n{collection}"))
+        }
+        (collection, receiver) => collection.or(receiver),
     }
 }
 
@@ -372,6 +423,93 @@ pub(super) fn state_directory(
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn collection_notice_keeps_failure_counts_brief_and_full_diagnostics_readable() {
+        let report = CollectionReport {
+            summary: "18 sources checked; 2 source failures; 1 global failure\nsource-a: permission denied\nsource-b: failed to read\nstorage: write failed\n".into(),
+            failed_sources: 2,
+            global_failures: vec!["write failed".into()],
+            discovery: Some(discovery::DiscoveryCoverage {
+                selected: 16,
+                eligible: 341,
+                ..Default::default()
+            }),
+        };
+        let notice = collection_notice(&report).unwrap();
+        assert_eq!(
+            notice.lines().next(),
+            Some("2 source failures · 1 collection failure")
+        );
+        for detail in [
+            "source-a: permission denied",
+            "source-b: failed to read",
+            "storage: write failed",
+            "Discovery: 16/341 selected",
+            "325 queued",
+        ] {
+            assert!(notice.contains(detail), "missing {detail}: {notice}");
+        }
+    }
+
+    #[test]
+    fn healthy_discovery_notice_does_not_hide_partial_or_queued_coverage() {
+        let mut report = CollectionReport {
+            summary: String::new(),
+            failed_sources: 0,
+            global_failures: vec![],
+            discovery: None,
+        };
+        assert!(collection_notice(&report).is_none());
+        report.discovery = Some(discovery::DiscoveryCoverage {
+            selected: 3,
+            eligible: 5,
+            ..Default::default()
+        });
+        let notice = collection_notice(&report).unwrap();
+        assert_eq!(
+            notice.lines().next(),
+            Some("Discovering sessions · 2 queued")
+        );
+        assert!(notice.contains("Discovery: 3/5 selected"));
+        report.discovery.as_mut().unwrap().scan_partial = true;
+        assert_eq!(
+            collection_notice(&report).unwrap().lines().next(),
+            Some("Discovery incomplete · history available")
+        );
+        report.discovery = Some(discovery::DiscoveryCoverage {
+            selected: 5,
+            eligible: 5,
+            ..Default::default()
+        });
+        assert_eq!(
+            collection_notice(&report).unwrap().lines().next(),
+            Some("Collection complete")
+        );
+    }
+
+    #[test]
+    fn receiver_failure_remains_on_the_visible_notice_line() {
+        let receiver = "The local OTLP port is unavailable. History is open.".to_owned();
+        let healthy = "Collection complete\nDiscovery: 3/3 selected".to_owned();
+        let notice =
+            merge_collection_notices(Some(healthy.clone()), Some(receiver.clone())).unwrap();
+        assert_eq!(notice.lines().next(), Some(receiver.as_str()));
+        assert!(notice.contains(&healthy));
+        let failed = "1 source failure\nsource-a: permission denied".to_owned();
+        let notice =
+            merge_collection_notices(Some(failed.clone()), Some(receiver.clone())).unwrap();
+        assert_eq!(
+            notice.lines().next(),
+            Some("1 source failure · OTLP unavailable")
+        );
+        assert!(notice.contains(&failed));
+        assert!(notice.contains(&receiver));
+        assert_eq!(
+            merge_collection_notices(None, Some(receiver.clone())),
+            Some(receiver)
+        );
+    }
 
     #[test]
     fn cockpit_uses_xdg_state_home_or_the_standard_home_directory() {
