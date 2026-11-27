@@ -129,9 +129,6 @@ fn supporting_context(row: &RecordedSession, grouping: Grouping, duplicate: bool
             .and_then(|context| context.agent_name.as_deref())
             .is_some_and(|value| !value.trim().is_empty());
     let mut parts = Vec::new();
-    if has_specific_name {
-        parts.push(provider(row).to_owned());
-    }
     if has_specific_name
         && let Some(value) = row
             .native_context
@@ -207,71 +204,91 @@ fn filter_lines(agents: &AgentList, width: u16) -> Vec<Line<'static>> {
         .count();
     let history = sessions.iter().filter(|row| scoped(row)).count();
     let in_time = |row: &RecordedSession| agents.in_session_scope(row);
-    let mut chips: Vec<(String, ratatui::style::Style)> = Vec::new();
+    let mut time = Vec::new();
     let time_chip = |label: &str, value: String, active: bool| {
         (
-            format!("{label} {value}"),
             if active {
-                selection_style()
+                format!(" [{label} {value}] ")
             } else {
-                label_style()
+                format!(" {label} {value} ")
+            },
+            if active {
+                active_control_style()
+            } else {
+                theme::muted()
             },
         )
     };
-    chips.push(time_chip(
-        "Today",
+    time.push(time_chip(
+        "T Today",
         count(today),
         agents.time_scope == TimeScope::Today,
     ));
-    chips.push(time_chip(
-        "History",
+    time.push(time_chip(
+        "O History",
         count(history),
         agents.time_scope == TimeScope::All,
     ));
-    for filter in FILTERS {
+    let mut spans = Vec::new();
+    for (text, style) in time {
+        spans.push(Span::styled(text, style));
+        spans.push(Span::raw(" "));
+    }
+    let time_width = spans.iter().map(Span::width).sum::<usize>();
+    let grouping = format!("G Group: {}", agents.grouping.label());
+    let gap = usize::from(width).saturating_sub(time_width + grouping.len() + 1);
+    spans.push(Span::raw(" ".repeat(gap)));
+    spans.push(Span::styled(grouping, theme::muted()));
+    let mut lines = vec![Line::from(spans)];
+    let mut chips = Vec::new();
+    // Small terminals show the active state explicitly. Tab still cycles the
+    // complete filter inventory; zero-value counters never crowd out tasks.
+    let filters = if width < 90 {
+        vec![agents.filter]
+    } else {
+        let mut filters = FILTERS.to_vec();
+        if agents.filter == Filter::ToReview {
+            filters.push(Filter::ToReview);
+        }
+        filters
+    };
+    for filter in filters {
         let matching = sessions
             .iter()
             .filter(|row| in_time(row) && filter.accepts(row))
             .count();
         chips.push((
-            format!("{} {}", filter.label(), count(matching)),
             if filter == agents.filter {
-                selection_style()
+                format!(" [{} {}] ", filter.label(), count(matching))
             } else {
-                label_style()
+                format!(" {} {} ", filter.label(), count(matching))
+            },
+            if filter == agents.filter {
+                active_control_style()
+            } else {
+                theme::muted()
             },
         ));
     }
-    if agents.filter == Filter::ToReview {
-        let matching = sessions
-            .iter()
-            .filter(|row| in_time(row) && Filter::ToReview.accepts(row))
-            .count();
-        chips.push((format!("To review {}", count(matching)), selection_style()));
+    if width < 90 {
+        chips.push((" Tab change ".into(), theme::muted()));
     }
     let errors = sessions
         .iter()
         .filter(|row| in_time(row) && errors_only(row))
         .count();
-    chips.push((
-        format!("Errors {}", count(errors)),
-        if agents.errors_only {
-            selection_style()
-        } else {
-            label_style()
-        },
-    ));
-    let unknown = sessions
-        .iter()
-        .filter(|row| in_time(row))
-        .filter(|row| !FILTERS[1..].iter().any(|f| f.accepts(row)))
-        .count();
-    if unknown != 0 {
-        chips.push((format!("Unknown {}", count(unknown)), label_style()));
+    if errors > 0 || agents.errors_only {
+        chips.push((
+            format!(" E Errors {} ", count(errors)),
+            if agents.errors_only {
+                active_control_style()
+            } else {
+                theme::status("Error")
+            },
+        ));
     }
-    let mut lines = Vec::new();
-    let mut spans = vec![Span::raw(" ")];
-    let mut occupied = 1;
+    let mut spans = vec![Span::styled(" State ", theme::muted())];
+    let mut occupied = 7;
     for (text, style) in chips {
         let cells = text.cell_width() + 1;
         if occupied + cells > width && occupied > 1 {
@@ -326,29 +343,29 @@ pub(super) fn draw(
     // preserving a useful task column. Keep the inspector out of short
     // terminals, where it would compete with the roster for vertical space.
     let show_task_detail = area.width >= 118 && area.height >= 24;
-    let [brand, filters, navigation, body, footer] = Layout::vertical([
+    let [brand, navigation, filters, body, footer] = Layout::vertical([
         Constraint::Length(1),
+        Constraint::Length(3),
         Constraint::Length(lines.len() as u16),
-        Constraint::Length(1),
         Constraint::Min(1),
-        Constraint::Length(if show_task_detail { 3 } else { 4 }),
+        Constraint::Length(2),
     ])
     .areas(area);
     let [identity, appearance] =
         Layout::horizontal([Constraint::Fill(1), Constraint::Length(17)]).areas(brand);
     frame.render_widget(
-        Paragraph::new("F2 Themes")
+        Paragraph::new("F2 Themes  ? Help")
             .right_aligned()
-            .style(label_style()),
+            .style(theme::muted()),
         appearance,
     );
     frame.render_widget(
         Paragraph::new(Line::from(vec![
-            Span::styled(" Agenturm command center", heading_style()),
             Span::styled(
-                format!("   Group: {} · G", agents.grouping.label()),
-                label_style(),
+                " Agenturm",
+                theme::foreground(theme::palette().text).add_modifier(Modifier::BOLD),
             ),
+            Span::styled(" command center", theme::muted()),
         ])),
         identity,
     );
@@ -356,22 +373,32 @@ pub(super) fn draw(
         Paragraph::new(lines).style(surface(theme::palette().surface)),
         filters,
     );
-    let navigation_text = if agents.editing || !agents.search.is_empty() {
-        format!(
-            " / {}{}",
-            visible_text(&agents.search),
-            if agents.editing { "▏" } else { "" }
-        )
-    } else if area.width >= 110 {
-        format!(" {}", keymap::navigation_hints(keymap::NAVIGATION))
-    } else {
-        format!(
-            " {} · F1 more",
-            keymap::navigation_hints(&keymap::NAVIGATION[..5])
-        )
-    };
+    let mut navigation_spans = Vec::new();
+    let shown = if area.width >= 100 { 7 } else { 3 };
+    for (index, (key, _, label)) in keymap::NAVIGATION[..shown].iter().enumerate() {
+        if index == 3 {
+            navigation_spans.push(Span::styled(" │ ", theme::muted()));
+        } else if index > 0 {
+            navigation_spans.push(Span::raw("  "));
+        }
+        navigation_spans.push(Span::styled(
+            if index == 0 {
+                format!(" [{key} {label}] ")
+            } else {
+                format!(" {key} {label} ")
+            },
+            if index == 0 {
+                active_control_style()
+            } else {
+                theme::muted()
+            },
+        ));
+    }
+    if shown < 7 {
+        navigation_spans.push(Span::styled("   : More views", theme::muted()));
+    }
     frame.render_widget(
-        Paragraph::new(navigation_text).style(label_style()),
+        Paragraph::new(Line::from(navigation_spans)).block(contour(" Workspace ")),
         navigation,
     );
     if agents.help {
@@ -391,17 +418,58 @@ pub(super) fn draw(
         .as_ref()
         .map(|catalog| catalog.sessions.as_slice());
     let (roster_area, detail_area) = if show_task_detail {
-        let [roster, detail] =
-            Layout::horizontal([Constraint::Percentage(64), Constraint::Percentage(36)])
-                .areas(body);
+        let [roster, _, detail] = Layout::horizontal([
+            Constraint::Fill(2),
+            Constraint::Length(1),
+            Constraint::Fill(1),
+        ])
+        .areas(body);
         (roster, Some(detail))
     } else {
         (body, None)
     };
+    let has_more = agents
+        .catalog
+        .as_ref()
+        .is_some_and(|catalog| catalog.older.is_some());
+    let mixed_providers = sessions.is_some_and(|rows| {
+        rows.first()
+            .is_some_and(|first| rows.iter().any(|row| provider(row) != provider(first)))
+    });
+    let roster_title = sessions
+        .and_then(|rows| rows.first())
+        .filter(|_| !mixed_providers)
+        .map_or_else(
+            || " Tasks ".to_owned(),
+            |row| format!(" Tasks · {} ", provider(row)),
+        );
+    let roster_panel = contour(&roster_title).title_bottom(Line::styled(
+        if agents.editing || !agents.search.is_empty() {
+            format!(
+                " / {}{} ",
+                visible_text(&agents.search),
+                if agents.editing { "▏" } else { "" }
+            )
+        } else {
+            format!(
+                " {} shown{} · recorded states ",
+                agents.visible.len(),
+                if has_more { " · more available" } else { "" }
+            )
+        },
+        theme::muted(),
+    ));
+    let table_area = roster_panel.inner(roster_area);
+    frame.render_widget(roster_panel, roster_area);
+    let show_provider = mixed_providers;
+    // In a narrow mixed-provider list, identity wins over recency. The exact
+    // update time remains available in the task inspector.
+    let show_updated = !mixed_providers || table_area.width >= 72;
     let mut rows = Vec::new();
     let mut selected_display = None;
     let mut previous_project = None;
-    let task_width = roster_area.width.saturating_sub(26);
+    let fixed_width = 13 + if show_provider { 11 } else { 0 } + if show_updated { 9 } else { 0 };
+    let task_width = table_area.width.saturating_sub(fixed_width);
     for (position, item) in agents.visible.iter().enumerate() {
         let Some(row) = sessions.and_then(|rows| rows.get(item.index)) else {
             continue;
@@ -420,14 +488,15 @@ pub(super) fn draw(
                 .count();
             rows.push(
                 Row::new([
-                    format!(
-                        " {}  {count}",
-                        roster_cell(&visible_text(group_name), task_width)
+                    roster_cell(
+                        &format!(" {} · {count}", group_label(group_name, agents)),
+                        task_width,
                     ),
                     String::new(),
                     String::new(),
+                    String::new(),
                 ])
-                .style(label_style()),
+                .style(theme::muted().add_modifier(Modifier::BOLD)),
             );
             previous_project = Some(group_name);
         }
@@ -464,29 +533,41 @@ pub(super) fn draw(
                 > 1
         });
         let supporting = supporting_context(row, agents.grouping, duplicate);
+        let mut title = vec![Line::styled(
+            roster_cell(&text, task_width),
+            theme::foreground(theme::palette().text),
+        )];
+        if !supporting.is_empty() {
+            title.push(Line::styled(
+                roster_cell(&format!("{indent}  {supporting}"), task_width),
+                theme::muted(),
+            ));
+        }
+        let height = title.len() as u16;
+        let mut cells = vec![Text::from(title)];
+        if show_provider {
+            cells.push(Text::styled(roster_cell(provider(row), 10), theme::muted()));
+        }
+        cells.push(Text::styled(
+            status(row),
+            if matches!(status(row), "Ready" | "Inactive" | "Unknown") {
+                theme::muted()
+            } else {
+                theme::status(status(row))
+            },
+        ));
+        if show_updated {
+            cells.push(Text::styled(
+                roster_cell(&age(row.updated_at_unix_ns), 8),
+                theme::muted(),
+            ));
+        }
         rows.push(
-            Row::new(vec![
-                Text::from(vec![
-                    Line::styled(
-                        roster_cell(&text, task_width),
-                        theme::foreground(theme::palette().text).add_modifier(Modifier::BOLD),
-                    ),
-                    Line::styled(
-                        roster_cell(&format!("{indent}  {supporting}"), task_width),
-                        theme::muted(),
-                    ),
-                ]),
-                Text::styled(status(row), theme::status(status(row))),
-                Text::styled(age(row.updated_at_unix_ns), theme::muted()),
-            ])
-            .height(2)
-            .style(theme::row(position)),
+            Row::new(cells)
+                .height(height)
+                .style(surface(theme::palette().surface)),
         );
     }
-    let has_more = agents
-        .catalog
-        .as_ref()
-        .is_some_and(|catalog| catalog.older.is_some());
     if has_more {
         if agents.show_more_selected {
             selected_display = Some(rows.len());
@@ -496,20 +577,25 @@ pub(super) fn draw(
     let mut selection = TableState::default()
         .with_selected(selected_display)
         .with_offset(agents.display_offset);
+    let mut widths = vec![Constraint::Fill(1)];
+    let mut headings = vec![" Task"];
+    if show_provider {
+        widths.push(Constraint::Length(10));
+        headings.push("Agent");
+    }
+    widths.push(Constraint::Length(10));
+    headings.push("Status");
+    if show_updated {
+        widths.push(Constraint::Length(8));
+        headings.push("Updated↓");
+    }
     frame.render_stateful_widget(
-        Table::new(
-            rows,
-            [
-                Constraint::Fill(1),
-                Constraint::Length(11),
-                Constraint::Length(9),
-            ],
-        )
-        .header(Row::new([" Tasks", "Status", "Updated↓"]).style(heading_style()))
-        .column_spacing(1)
-        .highlight_symbol("› ")
-        .row_highlight_style(selection_style()),
-        roster_area,
+        Table::new(rows, widths)
+            .header(Row::new(headings).style(theme::muted()).bottom_margin(1))
+            .column_spacing(1)
+            .highlight_symbol("› ")
+            .row_highlight_style(selection_style()),
+        table_area,
         &mut selection,
     );
     agents.display_offset = selection.offset();
@@ -530,10 +616,10 @@ pub(super) fn draw(
         frame.render_widget(
             Paragraph::new(empty).wrap(Wrap { trim: false }),
             Rect::new(
-                roster_area.x + 1,
-                roster_area.y + 1,
-                roster_area.width.saturating_sub(2),
-                roster_area.height.saturating_sub(1),
+                table_area.x + 1,
+                table_area.y + 2,
+                table_area.width.saturating_sub(2),
+                table_area.height.saturating_sub(2),
             ),
         );
     }
@@ -556,146 +642,140 @@ pub(super) fn draw(
             agents.show_more_selected,
         );
     }
-    let identity = agents.current().map_or_else(
-        || {
-            if agents.show_more_selected {
-                "Show more · next recorded page".into()
-            } else {
-                format!(
-                    "{} · {} · page counts",
-                    agents.time_scope.label(),
-                    if agents.errors_only {
-                        "errors only"
-                    } else {
-                        "all recorded states"
-                    }
-                )
-            }
-        },
-        |row| {
-            format!(
-                "{} · {} · recorded {}",
-                visible_text(&name(row)),
-                supporting_context(row, agents.grouping, false),
-                visible_text(recorded_state(row))
-            )
-        },
-    );
-    let connection = if agents.paused {
-        "Paused · p resume"
-    } else if pending {
-        "Loading…"
-    } else {
-        "Loaded page · R refresh"
-    };
-    let complete = agents
+    let loaded = agents
         .catalog
         .as_ref()
-        .is_some_and(|catalog| catalog.older.is_none());
-    let coverage = if complete {
-        "page counts · newest retained page"
+        .map_or(0, |catalog| catalog.sessions.len());
+    let mut scope = if agents.paused {
+        "Paused · p resume".to_owned()
+    } else if pending {
+        "Loading session evidence…".to_owned()
     } else {
-        "page counts · older sessions not loaded"
+        format!(
+            "{} · {loaded} loaded{}",
+            agents.time_scope.label(),
+            if has_more { " · more available" } else { "" }
+        )
     };
-    let mut scope_line = format!(
-        "{} · {} · {} · recorded lifecycle, not live process state",
-        agents.time_scope.label(),
-        coverage,
-        if agents.errors_only {
-            "errors only"
+    if agents.session_scope.is_some() {
+        scope.push_str(if agents.subtree_scope {
+            " · agent + subtree"
         } else {
-            "all states"
-        }
-    );
-    if !agents.search.is_empty() {
-        scope_line.push_str(&format!(
-            " · {} match{} for /{}",
-            agents.visible.len(),
-            if agents.visible.len() == 1 { "" } else { "es" },
-            visible_text(&agents.search)
-        ));
-    }
-    if let Some((source, id)) = &agents.session_scope {
-        let scoped_name = agents
-            .catalog
-            .as_ref()
-            .and_then(|catalog| {
-                catalog
-                    .sessions
-                    .iter()
-                    .find(|row| row.harness_id == *source && row.session_id == *id)
-            })
-            .map(|row| name(row).into_owned())
-            .unwrap_or_else(|| "selected session".into());
-        scope_line.push_str(&format!(
-            " · scope {} · {}",
-            if agents.subtree_scope {
-                "exact agent + delegated subtree"
-            } else {
-                "exact agent"
-            },
-            visible_text(&scoped_name)
-        ));
-        if agents.subtree_unsupported > 0 {
-            scope_line.push_str(&format!(
-                " · {} relationship(s) excluded",
-                agents.subtree_unsupported
-            ));
-        }
-        if agents.subtree_outside_page > 0 {
-            scope_line.push_str(&format!(
-                " · {} parent(s) outside page",
-                agents.subtree_outside_page
-            ));
+            " · selected agent"
+        });
+        if agents.subtree_unsupported > 0 || agents.subtree_outside_page > 0 {
+            scope.push_str(" · partial relationships · ? details");
         }
     }
-    let detail = message.map(visible_text).unwrap_or_else(|| {
-        if show_task_detail {
-            return connection.into();
-        }
-        agents
-            .current()
-            .filter(|row| row.project_origin.is_some() && row.project_path.is_some())
-            .map_or_else(
-                || connection.into(),
-                |row| {
-                    format!(
-                        "{} · {}",
-                        match row.project_origin {
-                            Some(ProjectOrigin::OperatorTaskWorkspace) => "Operator task workspace",
-                            Some(ProjectOrigin::NativeRecordedWorkspace) =>
-                                "Native session workspace",
-                            None => "No recorded project",
-                        },
-                        visible_text(project(row))
-                    )
-                },
-            )
+    if agents.errors_only {
+        scope.push_str(" · errors only");
+    }
+    // The first notice line is a concise, typed collection summary. The full
+    // notice and scope provenance remain available in the scrollable help.
+    let status_line = message.map_or(scope, |message| {
+        let brief = visible_text(message.lines().next().unwrap_or(message));
+        let brief = if agents.paused {
+            format!("Paused · p resume · {brief}")
+        } else if pending {
+            format!("Refreshing… · {brief}")
+        } else {
+            brief
+        };
+        format!(
+            "{} · ? details",
+            roster_cell(&brief, area.width.saturating_sub(13))
+        )
     });
     let hints = if agents.editing {
-        "Enter / Esc done · Backspace edit"
+        "Enter / Esc keep search   Backspace edit"
     } else if !agents.search.is_empty() {
-        "Enter / Esc search · a reset · q quit"
-    } else if area.width >= 110 {
-        "Tab filter · T Today · O History · E Errors · S subtree · Ctrl+P / : commands · Enter inspect · / search · F1 help"
+        "Enter inspect   / edit search   a reset   ? help"
+    } else if area.width >= 80 {
+        "Enter inspect   / search   Tab filter   : commands   ? help"
     } else {
-        "T Today · O History · E Errors · / search · Enter inspect"
+        "Enter inspect   / search   Tab filter   ? help"
     };
-    let footer_lines = if show_task_detail {
-        vec![
-            Line::styled(roster_cell(&scope_line, area.width), theme::muted()),
+    frame.render_widget(
+        Paragraph::new(vec![
+            Line::styled(roster_cell(&status_line, area.width), theme::muted()),
             Line::from(hints),
-            Line::from(detail),
-        ]
+        ]),
+        footer,
+    );
+}
+
+/// One contour per region. There is deliberately no outer application frame.
+fn contour(title: &str) -> Block<'_> {
+    panel(title)
+        .border_type(ratatui::widgets::BorderType::Rounded)
+        .title_style(theme::muted())
+}
+
+fn active_control_style() -> Style {
+    theme::foreground(theme::palette().text).add_modifier(Modifier::BOLD)
+}
+
+fn preview_lines(text: &str, width: u16, limit: usize) -> Vec<String> {
+    let mut lines = theme::wrap_cells(text, usize::from(width));
+    if lines.len() > limit {
+        lines.truncate(limit);
+        if let Some(last) = lines.last_mut() {
+            *last = roster_cell(&format!("{last}…"), width);
+        }
+    }
+    lines
+}
+
+/// Keep the full path as the grouping key; shorten only its presentation. Add
+/// parent components until equal project basenames can be told apart.
+fn group_label(key: &str, agents: &AgentList) -> String {
+    if agents.grouping != Grouping::Project || key == "No recorded project" {
+        return visible_text(key);
+    }
+    let paths = agents
+        .catalog
+        .as_ref()
+        .map(|catalog| catalog.sessions.as_slice())
+        .unwrap_or(&[]);
+    let parts = key
+        .split('/')
+        .filter(|part| !part.is_empty())
+        .collect::<Vec<_>>();
+    for depth in 1..=parts.len() {
+        let suffix = parts[parts.len() - depth..].join("/");
+        let collision = paths.iter().any(|row| {
+            let other = project(row);
+            other != key && (other == suffix || other.ends_with(&format!("/{suffix}")))
+        });
+        if !collision {
+            return visible_text(&suffix);
+        }
+    }
+    visible_text(key)
+}
+
+fn short_path(path: &str, width: u16) -> String {
+    let path = visible_text(path);
+    if path.cell_width() <= width {
+        return path;
+    }
+    let mut tail = String::new();
+    for part in path.split('/').rev() {
+        let next = if tail.is_empty() {
+            part.to_owned()
+        } else {
+            format!("{part}/{tail}")
+        };
+        if next.cell_width() + 2 > width {
+            break;
+        }
+        tail = next;
+    }
+    if tail.is_empty() {
+        roster_cell(&path, width)
     } else {
-        vec![
-            Line::styled(roster_cell(&identity, area.width), label_style()),
-            Line::styled(roster_cell(&scope_line, area.width), theme::muted()),
-            Line::from(hints),
-            Line::from(detail),
-        ]
-    };
-    frame.render_widget(Paragraph::new(footer_lines), footer);
+        format!("…/{tail}")
+    }
 }
 
 fn draw_task_detail(
@@ -725,70 +805,84 @@ fn draw_task_detail(
         return;
     };
 
-    let mut lines = vec![Line::styled(visible_text(&name(session)), heading_style())];
+    let block = contour(" Selected task ");
+    let inner = block.inner(area).inner(ratatui::layout::Margin::new(1, 0));
+    frame.render_widget(block, area);
+    let [summary, actions] =
+        Layout::vertical([Constraint::Min(1), Constraint::Length(4)]).areas(inner);
+    let title = visible_text(&name(session));
+    let mut lines = preview_lines(&title, summary.width, 2)
+        .into_iter()
+        .map(|line| {
+            Line::styled(
+                line,
+                theme::foreground(theme::palette().text).add_modifier(Modifier::BOLD),
+            )
+        })
+        .collect::<Vec<_>>();
+    lines.push(Line::from(""));
     lines.push(Line::from(vec![
-        Span::styled(provider(session).to_owned(), label_style()),
-        Span::styled("  ·  ", theme::muted()),
         Span::styled(status(session).to_owned(), theme::status(status(session))),
+        Span::styled(format!("  ·  {}", provider(session)), theme::muted()),
     ]));
-    let project_origin = match session.project_origin {
-        Some(ProjectOrigin::OperatorTaskWorkspace) => "Operator task workspace",
-        Some(ProjectOrigin::NativeRecordedWorkspace) => "Native session workspace",
-        None => "Project unavailable",
-    };
-    lines.push(detail_pair(
-        "Project",
-        &format!("{project_origin} · {}", project(session)),
+    lines.push(Line::styled(
+        format!("Updated {}", age(session.updated_at_unix_ns)),
+        theme::muted(),
     ));
-    if let Some(model) = session
-        .native_context
-        .as_deref()
-        .and_then(|context| context.model_provider.as_deref())
-        .filter(|model| !model.trim().is_empty())
-    {
-        lines.push(detail_pair("Model", model));
+    let unseen = session
+        .pending_requests
+        .iter()
+        .filter(|request| !request.seen)
+        .count();
+    if unseen > 0 {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            format!("{} pending request(s)", unseen),
+            theme::status("Needs you"),
+        ));
     }
+    lines.push(Line::from(""));
+    lines.push(Line::styled("Project", theme::muted()));
+    lines.push(Line::from(short_path(project(session), summary.width)));
     if let Some(activity) = session
         .native_context
         .as_deref()
         .and_then(|context| context.last_activity.as_deref())
         .filter(|activity| !activity.trim().is_empty())
+        .filter(|_| usize::from(summary.height).saturating_sub(lines.len()) >= 3)
     {
         lines.push(Line::from(""));
-        lines.push(Line::styled("Recent activity", label_style()));
-        lines.push(Line::from(visible_text(activity)));
+        lines.push(Line::styled("Recent activity", theme::muted()));
+        lines.extend(
+            preview_lines(
+                &visible_text(activity),
+                summary.width,
+                usize::from(summary.height)
+                    .saturating_sub(lines.len())
+                    .min(3),
+            )
+            .into_iter()
+            .map(Line::from),
+        );
     }
-    if let Some(reason) = session
-        .reason
-        .as_deref()
-        .filter(|reason| !reason.trim().is_empty())
-    {
-        lines.push(Line::from(""));
-        lines.push(Line::styled("Reason", label_style()));
-        lines.push(Line::from(visible_text(reason)));
-    }
-    if !session.pending_requests.is_empty() {
-        lines.push(Line::from(""));
-        lines.push(Line::styled(
-            format!(
-                "{} request(s) need attention",
-                session.pending_requests.len()
-            ),
-            theme::foreground(theme::palette().primary),
-        ));
-    }
+    frame.render_widget(Paragraph::new(lines), summary);
     frame.render_widget(
-        Paragraph::new(lines)
-            .wrap(Wrap { trim: false })
-            .block(panel("Selected task")),
-        area,
+        Paragraph::new(vec![
+            Line::styled("Open task", theme::muted()),
+            action_hint("Enter", "Overview & details"),
+            action_hint("P", "Prompt history"),
+            action_hint("s", "Session activity"),
+        ]),
+        actions,
     );
 }
 
-fn detail_pair(label: &str, value: &str) -> Line<'static> {
+fn action_hint(key: &str, label: &str) -> Line<'static> {
     Line::from(vec![
-        Span::styled(label.to_owned(), label_style()),
-        Span::raw("  "),
-        Span::raw(visible_text(value)),
+        Span::styled(
+            format!("{key:<7}"),
+            theme::foreground(theme::palette().text).add_modifier(Modifier::BOLD),
+        ),
+        Span::styled(label.to_owned(), theme::muted()),
     ])
 }

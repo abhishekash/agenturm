@@ -18,6 +18,9 @@ use std::time::{Duration, Instant, SystemTime, UNIX_EPOCH};
 
 mod analytics;
 mod command_center;
+#[cfg(test)]
+#[path = "workspace/command_center_visual_tests.rs"]
+mod command_center_visual_tests;
 mod inspector;
 pub(crate) mod prompt;
 mod review_visibility;
@@ -3269,6 +3272,42 @@ impl Workspace {
         };
         let mut sections = keymap::help_sections(context);
         let mut current = Vec::new();
+        if context == keymap::Context::CommandCenter {
+            current.push("Counts cover the loaded page. Status is recorded lifecycle evidence, not live process state. T Today · O History · Tab / Shift+Tab state filter · G grouping · E errors only".into());
+            if let Some(row) = self.agents.current() {
+                current.push(format!(
+                    "Selected project: {}",
+                    visible_text(command_center::project(row))
+                ));
+            }
+            if self.agents.session_scope.is_some() {
+                current.push(format!(
+                    "Scope: {} · {} relationship(s) excluded · {} parent(s) outside page",
+                    if self.agents.subtree_scope {
+                        "exact agent + delegated subtree"
+                    } else {
+                        "exact agent"
+                    },
+                    self.agents.subtree_unsupported,
+                    self.agents.subtree_outside_page
+                ));
+            }
+            let notice = self.message.as_deref().or_else(|| {
+                self.agents
+                    .catalog
+                    .as_ref()
+                    .and_then(|catalog| catalog.notice.as_deref())
+            });
+            if let Some(notice) = notice {
+                sections.insert(
+                    0,
+                    (
+                        "COLLECTION STATUS",
+                        notice.lines().map(str::to_owned).collect(),
+                    ),
+                );
+            }
+        }
         if let Some(help) = self
             .history
             .last()
@@ -3383,6 +3422,13 @@ impl Workspace {
         if !current.is_empty() {
             // The current workflow appears first, mirroring the reference.
             sections.insert(0, ("THIS VIEW", current));
+        }
+        if let Some(position) = sections
+            .iter()
+            .position(|(heading, _)| *heading == "COLLECTION STATUS")
+        {
+            let status = sections.remove(position);
+            sections.insert(0, status);
         }
         self.help.open(title, sections);
     }
@@ -6857,14 +6903,7 @@ mod tests {
                 .iter()
                 .map(|cell| cell.symbol())
                 .collect::<String>();
-            for expected in [
-                "Release checks",
-                "Codex",
-                "Mira",
-                "Sol",
-                "/work/agenturm",
-                "Same name",
-            ] {
+            for expected in ["Release checks", "Mira", "Sol", "agenturm", "Same name"] {
                 assert!(
                     text.contains(expected),
                     "{width}x{height}: {expected}: {text}"
@@ -6915,9 +6954,10 @@ mod tests {
             "Repair retry handling",
             "Selected task",
             "Project",
-            "Native session workspace",
             "/work/agenturm",
-            "openai",
+            "Open task",
+            "Prompt history",
+            "Session activity",
             "Recent activity",
             "Recorded shell activity",
         ] {
@@ -7017,6 +7057,10 @@ mod tests {
         alpha.task_title = Some("First task".into());
         let mut beta = session("harness.codex", "beta", "completed", None);
         beta.task_title = Some("Second task".into());
+        beta.native_context = Some(Box::new(NativeSessionContext {
+            agent_role: Some("reviewer".into()),
+            ..Default::default()
+        }));
         let mut agents = AgentList::default();
         agents.update(catalog(vec![alpha, beta]));
         for (width, height) in [(120, 32), (60, 18)] {
@@ -7518,7 +7562,7 @@ mod tests {
             for text in [
                 "Agenturm command center",
                 "Codex session",
-                "interrupted",
+                "Needs you",
                 "Enter inspect",
             ] {
                 assert!(screen.contains(text), "{text} missing at {width} columns");
@@ -7560,19 +7604,25 @@ mod tests {
                 "Agenturm command center",
                 "Group: Project",
                 "All 5",
-                "Needs you 1",
-                "Working 1",
-                "Ready 1",
-                "Inactive 1",
-                "/projects/alpha",
-                "/projects/beta",
-                "No recorded project",
-                "Unknown",
+                "alpha · 1",
+                "Implement checkpoint ordering",
+                "Working",
+                "recorded states",
             ] {
                 assert!(
                     text.contains(expected),
                     "{expected} absent at {width}: {text}"
                 );
+            }
+            if width >= 120 {
+                for count in ["Needs you 1", "Working 1", "Ready 1", "Inactive 1"] {
+                    assert!(text.contains(count), "{text}");
+                }
+                for group in ["beta · 1", "No recorded project", "Unknown"] {
+                    assert!(text.contains(group), "{text}");
+                }
+            } else {
+                assert!(text.contains("Tab change"), "{text}");
             }
             assert!(!text.contains("Session inspector"));
             assert_eq!(agents.current().unwrap().session_id, "a-session");
@@ -7612,6 +7662,41 @@ mod tests {
         assert_eq!(workspace.agents.grouping, command_center::Grouping::Source);
         press(&mut workspace, &sender, KeyCode::BackTab);
         assert_eq!(workspace.agents.filter, Filter::All);
+    }
+
+    #[test]
+    fn command_center_help_reveals_full_collection_status_and_project_without_moving_selection() {
+        let (sender, _) = mpsc::channel();
+        let mut workspace = Workspace::new();
+        let mut row = session("harness.codex", "exact-selection", "completed", None);
+        row.task_title = Some("Inspect collection".into());
+        row.project_path = Some("/home/developer/a/long/workspace/agenturm".into());
+        row.project_origin = Some(ProjectOrigin::NativeRecordedWorkspace);
+        let mut page = catalog(vec![row.clone()]);
+        page.notice = Some("2 source failures\nsource-a: permission denied\nDiscovery: 16/341 selected · 325 queued".into());
+        workspace.agents.update(page);
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let before = workspace_text(&mut workspace, width, height);
+            assert!(before.contains("2 source failures"), "{before}");
+            assert!(
+                !before.contains("325 queued"),
+                "diagnostics should not crowd the roster"
+            );
+            press(&mut workspace, &sender, KeyCode::Char('?'));
+            assert_eq!(
+                workspace.help.lines().first().unwrap().text,
+                "COLLECTION STATUS"
+            );
+            let help = workspace_text(&mut workspace, width, height);
+            assert!(help.contains("permission denied"), "{help}");
+            assert!(workspace.help.lines().iter().any(|line| {
+                line.text
+                    .contains("/home/developer/a/long/workspace/agenturm")
+            }));
+            press(&mut workspace, &sender, KeyCode::Esc);
+            assert_eq!(workspace.agents.current(), Some(&row));
+            assert_eq!(before, workspace_text(&mut workspace, width, height));
+        }
     }
 
     #[test]
