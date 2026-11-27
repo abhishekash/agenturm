@@ -481,9 +481,16 @@ impl Store {
         grant: &ContentGrant,
         event_id: &str,
         revision: u32,
+        worker_id: Option<&str>,
     ) -> Result<Option<UserTextEvidence>> {
-        let mut found =
-            self.current_user_text_candidates(scope, grant, Some(event_id), None, Some(revision))?;
+        let mut found = self.current_user_text_candidates(
+            scope,
+            grant,
+            Some(event_id),
+            None,
+            worker_id,
+            Some(revision),
+        )?;
         Ok(found.pop().map(|(_, evidence)| evidence))
     }
 
@@ -494,8 +501,9 @@ impl Store {
         scope: &ContentGrantScope,
         grant: &ContentGrant,
         session_id: &str,
+        worker_id: Option<&str>,
     ) -> Result<Vec<(String, UserTextEvidence)>> {
-        self.current_user_text_candidates(scope, grant, None, Some(session_id), None)
+        self.current_user_text_candidates(scope, grant, None, Some(session_id), worker_id, None)
     }
 
     /// Joins the selected occurrence to its byte proof while the disclosure
@@ -596,6 +604,7 @@ impl Store {
         grant: &ContentGrant,
         event_id: Option<&str>,
         session_id: Option<&str>,
+        worker_id: Option<&str>,
         revision: Option<u32>,
     ) -> Result<Vec<(String, UserTextEvidence)>> {
         self.verify_content_writer()?;
@@ -631,14 +640,15 @@ impl Store {
              JOIN agenturm_source_state AS state ON state.source_id = o.source_id
              JOIN agenturm_history_batches AS admission ON admission.request_id = o.request_id
              LEFT JOIN agenturm_content_cursor_proofs AS proof ON proof.request_id = o.request_id
-                AND ((?6 AND proof.cursor GLOB 'oc4:*') OR (NOT ?6 AND proof.cursor GLOB 'v2:*'))
+                AND ((?7 AND proof.cursor GLOB 'oc4:*') OR (NOT ?7 AND proof.cursor GLOB 'v2:*'))
              WHERE o.source_id = ?1 AND (?2 IS NULL OR o.event_id = ?2) AND (?3 IS NULL OR o.revision = ?3)
-               AND (?4 IS NULL OR o.session_id = ?4)
+               AND (?4 IS NULL OR o.session_id = ?4 OR (?5 IS NOT NULL AND o.session_id = ?5))
+               AND (?5 IS NULL OR o.worker_id = ?5)
                AND o.scope = 'session' AND o.turn_id IS NOT NULL AND o.operation_id IS NULL
                AND json_extract(o.kind_json, '$.kind') = 'message'
                AND json_extract(o.kind_json, '$.role') = 'user'
-               AND admission.sequence <= ?7
-               AND (proof.request_id IS NOT NULL OR ((NOT ?6 OR state.cursor GLOB 'oc3:*') AND o.request_id = (
+               AND admission.sequence <= ?8
+               AND (proof.request_id IS NOT NULL OR ((NOT ?7 OR state.cursor GLOB 'oc3:*') AND o.request_id = (
                    SELECT newest.request_id FROM agenturm_history_batches AS newest
                    JOIN agenturm_ingest_receipts AS receipt USING (request_id)
                    WHERE receipt.source_id = ?1 ORDER BY newest.sequence DESC LIMIT 1
@@ -647,14 +657,14 @@ impl Store {
                    SELECT 1 FROM agenturm_observations AS newer
                    WHERE newer.source_id = o.source_id AND newer.event_id = o.event_id
                          AND newer.revision > o.revision
-                         AND NOT (?6 AND ?2 IS NOT NULL AND proof.request_id IS NOT NULL)
+                         AND NOT (?7 AND ?2 IS NOT NULL AND proof.request_id IS NOT NULL)
                    UNION ALL
                    SELECT 1 FROM agenturm_retired_observations AS newer
                    WHERE newer.source_id = o.source_id AND newer.event_id = o.event_id
                          AND newer.revision > o.revision
                )
              ORDER BY o.observed_at_unix_ns DESC, o.event_id DESC
-             LIMIT ?5",
+             LIMIT ?6",
         )?;
         let rows = statement.query_map(
             params![
@@ -662,6 +672,7 @@ impl Store {
                 event_id,
                 revision,
                 session_id,
+                worker_id,
                 MAX_PROMPT_REFERENCES,
                 opencode,
                 watermark,
@@ -691,6 +702,87 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    #[test]
+    fn worker_prompt_candidates_exclude_siblings_and_root_messages() {
+        use agenturm_kernel::{
+            Observation, ObservationIdentity, ObservationKind, ObservationStore,
+        };
+
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "agenturm-worker-prompt-candidates-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let db = directory.join("history.sqlite");
+        let mut store = Store::open(&db).unwrap();
+        let source = ExtensionId::parse("harness.codex").unwrap();
+        let scope = ContentGrantScope::new(source.clone(), ContentKind::CodexUserText, [6; 32]);
+        let grant = store.grant_content(&scope).unwrap();
+        let observations = [
+            ("root-message", None, "root-turn", 1),
+            ("worker-a-message", Some("worker-a"), "worker-a-turn", 2),
+            ("worker-b-message", Some("worker-b"), "worker-b-turn", 3),
+        ]
+        .into_iter()
+        .map(|(event_id, worker, turn, timestamp)| {
+            let mut identity = ObservationIdentity::session("root-session");
+            identity.worker_id = worker.map(str::to_owned);
+            identity.turn_id = Some(turn.into());
+            Observation {
+                harness_id: source.clone(),
+                event_id: event_id.into(),
+                revision: 0,
+                identity,
+                observed_at_unix_ns: timestamp,
+                kind: ObservationKind::Message {
+                    role: "user".into(),
+                },
+            }
+        })
+        .collect::<Vec<_>>();
+        let cursor = format!(
+            "v2:1:2:3:{}:{}:{}:opaque",
+            "a".repeat(64),
+            "b".repeat(64),
+            "c".repeat(64)
+        );
+        store
+            .commit(source.as_str(), None, &cursor, &observations)
+            .unwrap();
+        let references = store
+            .with_user_content_fence(|store| {
+                store
+                    .current_user_text_references(&scope, &grant, "root-session", Some("worker-a"))
+                    .unwrap()
+            })
+            .unwrap();
+        assert_eq!(references.len(), 1);
+        assert_eq!(references[0].0, "worker-a-message");
+        assert_eq!(references[0].1.worker_id.as_deref(), Some("worker-a"));
+        assert!(
+            store
+                .with_user_content_fence(|store| {
+                    store
+                        .current_user_text_evidence(
+                            &scope,
+                            &grant,
+                            "worker-b-message",
+                            0,
+                            Some("worker-a"),
+                        )
+                        .unwrap()
+                })
+                .unwrap()
+                .is_none()
+        );
+        drop(store);
+        fs::remove_dir_all(directory).unwrap();
+    }
 
     #[test]
     fn command_only_receipts_remain_provable_after_followup_and_unrelated_pruning() {

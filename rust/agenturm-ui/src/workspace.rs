@@ -6765,6 +6765,9 @@ mod tests {
                     "{width}x{height}: {expected}: {text}"
                 );
             }
+            assert!(!text.contains('●'), "{width}x{height}: {text}");
+            assert!(!text.contains('○'), "{width}x{height}: {text}");
+            assert!(!text.contains("! "), "{width}x{height}: {text}");
             assert!(
                 !text.contains("opaque-one"),
                 "IDs belong in inspector/copy: {text}"
@@ -6774,6 +6777,133 @@ mod tests {
                 "IDs belong in inspector/copy: {text}"
             );
         }
+    }
+
+    #[test]
+    fn wide_command_center_keeps_task_list_and_selected_details_visible() {
+        let mut task = session("harness.codex", "private-session-id", "running", None);
+        task.task_title = Some("Repair retry handling".into());
+        task.project_path = Some("/work/agenturm".into());
+        task.project_origin = Some(ProjectOrigin::NativeRecordedWorkspace);
+        task.native_context = Some(Box::new(NativeSessionContext {
+            model_provider: Some("openai".into()),
+            last_activity: Some("Recorded shell activity".into()),
+            ..NativeSessionContext::default()
+        }));
+        let mut agents = AgentList::default();
+        agents.update(catalog(vec![task]));
+        let mut terminal = Terminal::new(TestBackend::new(160, 32)).unwrap();
+        terminal
+            .draw(|frame| draw_agents(frame, &mut agents, false, None))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        for expected in [
+            "Tasks",
+            "Status",
+            "Updated",
+            "Repair retry handling",
+            "Selected task",
+            "Project",
+            "Native session workspace",
+            "/work/agenturm",
+            "openai",
+            "Recent activity",
+            "Recorded shell activity",
+        ] {
+            assert!(text.contains(expected), "missing {expected}: {text}");
+        }
+        assert_eq!(text.matches("Repair retry handling").count(), 2, "{text}");
+        assert!(!text.contains("private-session-id"), "{text}");
+    }
+
+    #[test]
+    fn command_center_layout_switches_cleanly_at_the_master_detail_breakpoint() {
+        for (width, height, split) in [
+            (119, 32, false),
+            (120, 32, true),
+            (121, 32, true),
+            (160, 23, false),
+            (160, 24, true),
+            (160, 18, false),
+        ] {
+            let mut task = session("harness.codex", "layout-session", "running", None);
+            task.task_title = Some("Keep title readable".into());
+            let mut agents = AgentList::default();
+            agents.update(catalog(vec![task]));
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| draw_agents(frame, &mut agents, false, None))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(text.contains("Keep title readable"), "{width}: {text}");
+            assert_eq!(text.contains("Selected task"), split, "{width}: {text}");
+        }
+    }
+
+    #[test]
+    fn command_center_explains_its_minimum_terminal_size() {
+        for (width, height) in [(59, 24), (60, 17)] {
+            let mut agents = AgentList::default();
+            let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
+            terminal
+                .draw(|frame| draw_agents(frame, &mut agents, false, None))
+                .unwrap();
+            let text = terminal
+                .backend()
+                .buffer()
+                .content()
+                .iter()
+                .map(|cell| cell.symbol())
+                .collect::<String>();
+            assert!(
+                text.contains("Terminal too small"),
+                "{width}x{height}: {text}"
+            );
+            assert!(text.contains("60×18"), "{width}x{height}: {text}");
+            assert!(
+                !text.contains("Agenturm command center"),
+                "{width}x{height}: {text}"
+            );
+        }
+    }
+
+    #[test]
+    fn show_more_selection_does_not_leave_the_previous_task_in_the_detail_pane() {
+        let mut page = catalog(vec![session("harness.codex", "older-row", "running", None)]);
+        page.older = Some(SessionCursor {
+            harness_id: "harness.codex".into(),
+            session_id: "older-row".into(),
+            updated_at_unix_ns: 1,
+            snapshot_id: 9.into(),
+        });
+        let mut agents = AgentList::default();
+        agents.update(page);
+        agents.show_more_selected = true;
+        let mut terminal = Terminal::new(TestBackend::new(160, 32)).unwrap();
+        terminal
+            .draw(|frame| draw_agents(frame, &mut agents, false, None))
+            .unwrap();
+        let text = terminal
+            .backend()
+            .buffer()
+            .content()
+            .iter()
+            .map(|cell| cell.symbol())
+            .collect::<String>();
+        assert!(text.contains("Older tasks"), "{text}");
+        assert!(!text.contains("Selected task"), "{text}");
     }
 
     #[test]
@@ -6849,8 +6979,9 @@ mod tests {
         row.task_title = Some("Finish migration".into());
         assert_eq!(row.display_name(), "Finish migration");
         row.task_title = None;
+        row.worker_id = Some("opaque-id".into());
         row.native_context.as_mut().unwrap().agent_name = None;
-        assert_eq!(row.display_name(), "Codex session · worker");
+        assert_eq!(row.display_name(), "Codex worker");
         assert!(!row.display_name().contains("opaque-id"));
     }
 
@@ -7401,7 +7532,7 @@ mod tests {
 
     #[test]
     fn command_center_empty_loading_unavailable_and_cached_error_are_distinct() {
-        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+        for (width, height) in [(160, 32), (120, 32), (80, 24), (60, 18)] {
             let mut terminal = Terminal::new(TestBackend::new(width, height)).unwrap();
             for (loaded, pending, message, expected) in [
                 (false, true, None, "Loading session evidence"),
@@ -8418,6 +8549,10 @@ mod tests {
         unnamed.project_path = Some("/work/payments-api".into());
         unnamed.project_origin = Some(ProjectOrigin::NativeRecordedWorkspace);
         unnamed.worker_id = Some("w-1".into());
+        unnamed.native_context = Some(Box::new(NativeSessionContext {
+            last_activity: Some("Checking budget race".into()),
+            ..NativeSessionContext::default()
+        }));
         let mut nickname_only = session("harness.claude", "nickname", "running", None);
         nickname_only.native_context = Some(Box::new(NativeSessionContext {
             agent_name: Some("payments-helper".into()),
@@ -8440,11 +8575,19 @@ mod tests {
                 .map(|cell| cell.symbol())
                 .collect();
             assert!(
-                text.contains("Codex worker w-1 · payments-api"),
+                text.contains("Codex worker · payments-api"),
                 "{width}: {text}"
             );
+            assert!(text.contains("Checking budget race"), "{width}: {text}");
+            assert!(!text.contains("w-1"), "{width}: {text}");
             assert!(text.contains("payments-helper"), "{width}: {text}");
             assert!(!text.contains("Name unavailable"), "{width}: {text}");
+            if width < 120 {
+                assert!(
+                    !text.contains("Codex · Checking budget race"),
+                    "{width}: {text}"
+                );
+            }
         }
     }
 

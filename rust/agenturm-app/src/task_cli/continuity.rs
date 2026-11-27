@@ -422,6 +422,7 @@ fn with_source<T>(
         let selected = &source.anchor;
         let selection = PromptSelection {
             session_id: &selected.session_id,
+            worker_id: selected.worker_id.as_deref(),
             event_id: &source.event_id,
             revision: source.revision,
             snapshot_id: source.review.as_ref().map(|review| review.snapshot_id),

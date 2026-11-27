@@ -714,6 +714,11 @@ pub(crate) struct PromptNavigator {
 impl PromptNavigator {
     pub(crate) fn new(scope: PromptScope) -> Self {
         let focus = PromptFocus::Navigator;
+        let status = if scope.capture == PromptCapture::Disabled {
+            PromptStatus::CaptureDisabled
+        } else {
+            PromptStatus::Loading { older: false }
+        };
         Self {
             scope,
             requests: Vec::new(),
@@ -724,7 +729,7 @@ impl PromptNavigator {
             reader_key: None,
             reading: false,
             original: BTreeSet::new(),
-            status: PromptStatus::Loading { older: false },
+            status,
             notice: None,
             retained_cap: None,
             earlier_available: false,
@@ -1395,8 +1400,8 @@ impl PromptNavigator {
         line
     }
 
-    pub(crate) fn hints(&self) -> &'static str {
-        match self.focus {
+    pub(crate) fn hints(&self) -> String {
+        let mut hints = match self.focus {
             PromptFocus::Reader => {
                 "↑↓ / PgUp/PgDn Scroll · z Readable/Original · ← Prompts · Esc Back"
             }
@@ -1408,17 +1413,29 @@ impl PromptNavigator {
                 "↑↓ Choose · Enter/→ Read · Home/End · [ ] Older/Newer · l Latest · Esc Back"
             }
         }
+        .to_owned();
+        self.append_retry_hint(&mut hints);
+        hints
     }
 
-    pub(crate) fn hints_for(&self, width: u16) -> &'static str {
+    pub(crate) fn hints_for(&self, width: u16) -> String {
         if width >= 70 {
             return self.hints();
         }
-        match self.focus {
+        let mut hints = match self.focus {
             PromptFocus::Reader => "↑↓ Scroll · z Mode · ← Prompts · Esc Back",
             PromptFocus::Chooser if self.chooser.open => "↑↓ · Enter Read · Esc Cancel",
             PromptFocus::Chooser => "↑↓ Enter Choose · → Read · Esc Back",
             PromptFocus::Navigator => "↑↓ Choose · Enter Read · Esc Back",
+        }
+        .to_owned();
+        self.append_retry_hint(&mut hints);
+        hints
+    }
+
+    fn append_retry_hint(&self, hints: &mut String) {
+        if self.retry_available() && self.focus != PromptFocus::Reader && !self.chooser.open {
+            hints.push_str(" · R Retry");
         }
     }
 
@@ -1433,7 +1450,9 @@ impl PromptNavigator {
         self.set_layout(area.width);
         let [body, status] =
             Layout::vertical([Constraint::Min(1), Constraint::Length(1)]).areas(area);
-        if self.wide {
+        if self.requests.is_empty() {
+            self.draw_empty(frame, body);
+        } else if self.wide {
             self.draw_wide(frame, body);
         } else {
             self.draw_compact(frame, body);
@@ -1453,6 +1472,65 @@ impl PromptNavigator {
             Layout::horizontal([Constraint::Length(index_width), Constraint::Min(10)]).areas(area);
         self.draw_index(frame, index);
         self.draw_reader(frame, reader);
+    }
+
+    fn draw_empty(&self, frame: &mut Frame, area: Rect) {
+        let mut lines = vec![Line::styled(self.empty_label(), heading_style())];
+        match &self.status {
+            PromptStatus::Loading { .. } => {
+                lines.push(Line::from(
+                    "Requests will appear here when they are captured.",
+                ));
+            }
+            PromptStatus::CaptureDisabled => {
+                lines.push(Line::from("Content capture is disabled for this source."));
+                lines.push(Line::styled(
+                    "Recorded metadata remains in Activity.",
+                    theme::muted(),
+                ));
+            }
+            PromptStatus::EmptyScope => {
+                lines.push(Line::from(
+                    "No user prompts were captured for this session.",
+                ));
+                lines.push(Line::styled(
+                    "Recorded events remain available in Activity.",
+                    theme::muted(),
+                ));
+            }
+            PromptStatus::MissingIdentity => {
+                lines.push(Line::from(
+                    "Return to the session list and select a recorded session.",
+                ));
+            }
+            PromptStatus::Error(_) => {
+                lines.push(Line::from("Retry prompts from the shared action."));
+            }
+            PromptStatus::Unavailable(_) => {
+                lines.push(Line::from(
+                    "Retry prompts or inspect recorded metadata in Activity.",
+                ));
+            }
+            _ => {
+                lines.push(Line::from("Prompt text is unavailable for this session."));
+                lines.push(Line::styled(
+                    "Check the status below or return to Activity.",
+                    theme::muted(),
+                ));
+            }
+        }
+        if self.scope.capture != PromptCapture::Disabled
+            && let Some(disclosure) = self.disclosure()
+        {
+            lines.push(Line::styled(disclosure, theme::muted()));
+        }
+        frame.render_widget(
+            Paragraph::new(lines)
+                .centered()
+                .wrap(Wrap { trim: false })
+                .block(panel("Prompt history")),
+            area,
+        );
     }
 
     fn draw_index(&mut self, frame: &mut Frame, area: Rect) {
@@ -1878,6 +1956,36 @@ mod tests {
             .map(|row| row.iter().map(|cell| cell.symbol()).collect::<String>())
             .collect::<Vec<_>>()
             .join("\n")
+    }
+
+    #[test]
+    fn empty_prompt_history_uses_one_clear_panel_at_wide_and_compact_sizes() {
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let mut navigator = PromptNavigator::new(scope());
+            let token = navigator.begin_load();
+            assert!(navigator.accept_page(token, Vec::new(), PromptPageMeta::default()));
+            let rendered = draw(&mut navigator, width, height);
+            assert!(rendered.contains("Prompt history"));
+            assert!(rendered.contains("No user prompts were captured for this session."));
+            assert!(rendered.contains("Recorded events remain available in Activity."));
+            assert!(!rendered.contains("Requests ·"));
+            assert!(!rendered.contains("Prompt  "));
+        }
+
+        let mut worker_scope = scope();
+        worker_scope.worker = Some("exact-worker".into());
+        worker_scope.main_session = Some(WorkAnchor {
+            source: worker_scope.source.clone(),
+            session: worker_scope.session.clone(),
+            worker: None,
+            turn: None,
+        });
+        let mut worker = PromptNavigator::new(worker_scope);
+        let token = worker.begin_load();
+        assert!(worker.accept_page(token, Vec::new(), PromptPageMeta::default()));
+        let rendered = draw(&mut worker, 120, 32);
+        assert!(rendered.contains("Worker-scoped"));
+        assert!(rendered.contains("main-session requests are not included"));
     }
 
     fn granted(navigator: &mut PromptNavigator, epoch: u64, text: String) -> PromptAccepted {
@@ -2312,6 +2420,7 @@ mod tests {
             let framed = draw(&mut failed, width, height);
             assert!(framed.contains("receiver unavailable"));
             assert!(framed.contains("Retry") || framed.contains("retry"));
+            assert!(failed.hints_for(width).contains("R Retry"));
 
             let mut metadata = PromptNavigator::new(PromptScope {
                 capture: PromptCapture::MetadataOnly,

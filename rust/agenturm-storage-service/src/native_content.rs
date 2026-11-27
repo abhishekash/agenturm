@@ -26,6 +26,8 @@ const MAX_PAYLOAD: usize = 16 * 1024;
 pub struct PrivateEvidenceSelection {
     pub source_id: ExtensionId,
     pub session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub worker_id: Option<String>,
     pub event_id: String,
     pub revision: u32,
     pub kind: PrivateEvidenceKind,
@@ -36,6 +38,8 @@ pub struct PrivateEvidenceSelection {
 pub(crate) struct PrivatePromptSelection {
     pub(crate) source_id: ExtensionId,
     pub(crate) session_id: String,
+    #[serde(default, skip_serializing_if = "Option::is_none")]
+    pub(crate) worker_id: Option<String>,
     pub(crate) event_id: String,
     pub(crate) revision: u32,
     #[serde(default, skip_serializing_if = "Option::is_none")]
@@ -315,10 +319,17 @@ pub(crate) fn list(
     allowed: &BTreeSet<ExtensionId>,
     source_id: &ExtensionId,
     session_id: &str,
+    worker_id: Option<&str>,
 ) -> Result<Vec<PromptReference>, PrivateEvidenceFailure> {
     let config = config.ok_or(PrivateEvidenceFailure::Unavailable)?;
-    agenturm_content::list(store, &config.resolver(allowed), source_id, session_id)
-        .map_err(|_| PrivateEvidenceFailure::Unavailable)
+    agenturm_content::list_for_worker(
+        store,
+        &config.resolver(allowed),
+        source_id,
+        session_id,
+        worker_id,
+    )
+    .map_err(|_| PrivateEvidenceFailure::Unavailable)
 }
 
 pub(crate) fn disclose(
@@ -348,6 +359,7 @@ pub(crate) fn disclose(
             &selection.source_id,
             agenturm_content::PromptSelection {
                 session_id: Some(&selection.session_id),
+                worker_id: selection.worker_id.as_deref(),
                 event_id: &selection.event_id,
                 revision: selection.revision,
                 snapshot_id: *snapshot_id,
@@ -691,6 +703,7 @@ mod tests {
             let selection = PrivateEvidenceSelection {
                 source_id,
                 session_id: "proof-session".into(),
+                worker_id: None,
                 event_id,
                 revision: 0,
                 kind: PrivateEvidenceKind::UserText {
@@ -797,6 +810,7 @@ mod tests {
                 &fixture.sources,
                 &fixture.selection.source_id,
                 &fixture.selection.session_id,
+                None,
             )
             .unwrap();
             assert_eq!(rows.len(), 1);
@@ -964,6 +978,7 @@ mod tests {
                 selection: PrivatePromptSelection {
                     source_id: fixture.selection.source_id.clone(),
                     session_id: session_id.into(),
+                    worker_id: None,
                     event_id: fixture.selection.event_id.clone(),
                     revision: fixture.selection.revision,
                     snapshot_id,
@@ -1076,7 +1091,8 @@ mod tests {
                 Some(&fixture.config),
                 &fixture.sources,
                 &fixture.selection.source_id,
-                "proof-session"
+                "proof-session",
+                None,
             )
             .unwrap()
             .len(),

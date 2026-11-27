@@ -515,6 +515,7 @@ fn prompt_history_page(
             crate::prompt_history::PromptReadScope {
                 source: &source,
                 session: &owner.session,
+                worker: owner.worker.as_deref(),
                 turn: owner.turn.as_deref(),
             },
             cursor,
@@ -549,15 +550,6 @@ pub(super) fn prompt_history_with(
     };
     if owner.session.trim().is_empty() {
         result.availability = Availability::MissingIdentity;
-        return WorkResult::PromptHistory(result);
-    }
-    // The listing proof currently has no worker field. Never relabel main-
-    // session references with an unproven requested worker identity.
-    if owner.worker.is_some() {
-        result.availability = Availability::Unavailable(
-            "This prompt capability cannot prove exact worker scope; use exact worker Activity"
-                .into(),
-        );
         return WorkResult::PromptHistory(result);
     }
     let cursor = before
@@ -650,6 +642,7 @@ pub(super) fn execute_prompt(
                 &source,
                 super::content_preview::PromptSelection {
                     session_id: &prompt.anchor.session,
+                    worker_id: prompt.anchor.worker.as_deref(),
                     event_id: &prompt.event_id,
                     revision: prompt.revision,
                     snapshot_id: prompt.snapshot_id,
@@ -1464,26 +1457,35 @@ mod tests {
     }
 
     #[test]
-    fn worker_prompt_scope_without_worker_listing_proof_is_explicitly_unavailable() {
-        let result = prompt_history_page(
-            Path::new("/nonexistent"),
-            None,
-            WorkAnchor {
-                source: "harness.fixture".into(),
-                session: "main-session".into(),
-                worker: Some("worker-a".into()),
-                turn: Some("turn-a".into()),
-            },
-            None,
-        )
-        .unwrap();
+    fn worker_prompt_scope_reaches_the_exact_scoped_reader() {
+        let anchor = WorkAnchor {
+            source: "harness.fixture".into(),
+            session: "main-session".into(),
+            worker: Some("worker-a".into()),
+            turn: Some("turn-a".into()),
+        };
+        let result = prompt_history_with(anchor, None, |owner, cursor| {
+            assert_eq!(owner.worker.as_deref(), Some("worker-a"));
+            assert!(cursor.is_none());
+            Ok(crate::prompt_history::scoped_window(
+                vec![crate::content_preview::PromptReference {
+                    event_id: "worker-a-event".into(),
+                    revision: 0,
+                    turn_id: "turn-a".into(),
+                    observed_at_unix_ns: 1,
+                    snapshot_id: Some(9.into()),
+                    history_identity: Some("history".into()),
+                }],
+                owner.turn.as_deref(),
+                cursor,
+                crate::prompt_history::DEFAULT_PROMPT_PAGE,
+            ))
+        });
         let WorkResult::PromptHistory(page) = result else {
             panic!("typed prompt result");
         };
-        assert!(page.entries.is_empty());
-        assert!(
-            matches!(page.availability, agenturm_ui::PromptAvailability::Unavailable(reason) if reason.contains("cannot prove exact worker"))
-        );
+        assert_eq!(page.entries.len(), 1);
+        assert_eq!(page.entries[0].anchor.worker.as_deref(), Some("worker-a"));
     }
 
     #[test]

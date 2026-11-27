@@ -184,19 +184,26 @@ pub fn list_user_prompts(
     config: &Path,
     source_id: &ExtensionId,
     session_id: &str,
+    worker_id: Option<&str>,
     writer: Option<&Store>,
 ) -> Result<Vec<PromptReference>, String> {
     #[cfg(target_os = "linux")]
     {
         if let Some(writer) = writer {
-            linux::list(writer, config, source_id, session_id)
+            linux::list(writer, config, source_id, session_id, worker_id)
         } else {
-            linux::list(&linux::open_store(db)?, config, source_id, session_id)
+            linux::list(
+                &linux::open_store(db)?,
+                config,
+                source_id,
+                session_id,
+                worker_id,
+            )
         }
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (db, config, source_id, session_id, writer);
+        let _ = (db, config, source_id, session_id, worker_id, writer);
         Err("Prompt preview is available on Linux".into())
     }
 }
@@ -205,6 +212,7 @@ pub fn list_user_prompts(
 /// and authorization fence is held. The sink must complete delivery on flush.
 pub(super) struct PromptSelection<'a> {
     pub session_id: &'a str,
+    pub worker_id: Option<&'a str>,
     pub event_id: &'a str,
     pub revision: u32,
     pub snapshot_id: Option<ReadSnapshot>,
@@ -241,6 +249,7 @@ pub(super) fn with_verified_prompt<T>(
         source_id,
         agenturm_content::PromptSelection {
             session_id: Some(selection.session_id),
+            worker_id: selection.worker_id,
             event_id: selection.event_id,
             revision: selection.revision,
             snapshot_id: selection.snapshot_id,
@@ -273,6 +282,7 @@ pub(super) fn reveal_user_prompt(
             source_id,
             agenturm_content::PromptSelection {
                 session_id: Some(selection.session_id),
+                worker_id: selection.worker_id,
                 event_id: selection.event_id,
                 revision: selection.revision,
                 snapshot_id: selection.snapshot_id,
@@ -480,7 +490,7 @@ mod linux {
             }
             Action::List { config, session_id } => {
                 let store = open_store(&options.db)?;
-                let references = list(&store, config, &options.source_id, session_id)?;
+                let references = list(&store, config, &options.source_id, session_id, None)?;
                 let mut line = serde_json::to_vec(&references)
                     .map_err(|_| "cannot encode prompt references")?;
                 line.push(b'\n');
@@ -634,8 +644,9 @@ mod linux {
         config: &Path,
         source: &ExtensionId,
         session: &str,
+        worker: Option<&str>,
     ) -> Result<Vec<PromptReference>, String> {
-        agenturm_content::list(store, &resolver(config), source, session)
+        agenturm_content::list_for_worker(store, &resolver(config), source, session, worker)
     }
     pub(super) fn reveal_fenced(
         store: &Store,

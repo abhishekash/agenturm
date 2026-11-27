@@ -718,7 +718,11 @@ pub(crate) fn translate_line(
                     if role == "user" {
                         // Do not attach an unmarked new user message to the
                         // previous turn's exact drilldown key.
-                        turn_from(payload, &mut next, true)?;
+                        if kind == "response_item" && payload.get("turn_id").is_none() {
+                            next.turn_id = format!("codex-user:{offset}");
+                        } else {
+                            turn_from(payload, &mut next, true)?;
+                        }
                         row_context = next.clone();
                     }
                     facts.push(fact(
