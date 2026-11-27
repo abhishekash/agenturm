@@ -32,14 +32,16 @@ describe the emitted signals and optional content capture.
 
 ## Install and launch the terminal cockpit
 
-Python 3.11+ is required. Install the published CLI in an isolated environment with [uv tools](https://docs.astral.sh/uv/guides/tools/):
+The current native Agenturm release requires no Python or Rust toolchain. On Apple Silicon macOS 13+ or Linux with glibc 2.39+ (x86-64 or ARM64), install with:
 
-```bash
-uv tool install --force agenturm
+```sh
+curl -fsSL https://www.agenturm.dev/install.sh | bash
 agenturm
 ```
 
-To try it without installing, run `uvx agenturm`. If uv is not installed, use its [official installation instructions](https://docs.astral.sh/uv/getting-started/installation/). If the installed command is missing from your PATH, run `uv tool update-shell` and open a new terminal. You can also install into an active Python environment with `python -m pip install agenturm`.
+Homebrew is also available: `brew install abhishekash/tap/agenturm`. Upgrade with `brew upgrade agenturm`; for curl installs, rerun the install command. See the full [installation guide](install.md). Intel Macs are unsupported.
+
+The Python package and source remain documented for SDK integrations and developers; they are not required to run the current native app.
 
 The cockpit opens Agents, Activity, MCP Calls, and Traces as primary views; use **More** or **5–7** for Host, Metrics, and Findings. Agents opens to **Today**: current work, sessions that need you, and reported completions awaiting human review. The filter also offers **Running**, **History**, and **Errors**. History includes earlier work, including yesterday’s unreviewed completions. Task-first rows have an evidence inspector. Its website-aligned **Observation** palette is the default; change themes with **Ctrl+P**. Findings provides a searchable, paged review queue with occurrence counts, evidence links, and direct navigation to the source trace. Session counts and live process counts are separate; approval reviews are hidden by default. The cockpit attaches to a receiver on **127.0.0.1:14318**, or starts one there. Run `agenturm` for full-screen panels in your current terminal. From this checkout, `python3 -m observatory` also works without installation.
 

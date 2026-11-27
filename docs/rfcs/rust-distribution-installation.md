@@ -1,6 +1,8 @@
-# Rust distribution and installation
+# Historical: opt-in Rust bundle installer
 
-Rust 0.3.9 is the current prerelease: Linux x86-64/ARM64 and an Apple Silicon
+> This guide documents the earlier `agenturm-rust` preview installer. For the current `agenturm` app and supported install methods, see the [installation guide](../install.md).
+
+At the time this opt-in installer was prepared, Rust 0.3.9 was the current prerelease: Linux x86-64/ARM64 and an Apple Silicon
 macOS preview are available. Intel Macs are out of scope. The opt-in
 installer keeps the app, process host, five adapters, connector driver,
 storage service and pinned catalog together under **agenturm-rust**. The
@@ -13,25 +15,13 @@ The qualified opt-in installer is available in
 a package, replace the existing installer, change the default command, or
 start a service. Its release-download path uses an exact Rust tag.
 
-## One-command installer
+## Current installation
 
-[`scripts/install-rust-bootstrap.sh`](../../scripts/install-rust-bootstrap.sh)
-detects Linux x86-64 or ARM64, downloads the exact installer from the immutable
-`rust-v0.3.9` source tag, verifies its pinned SHA-256, and runs it with an
-independent per-architecture archive digest. It installs the opt-in
-`agenturm-rust` launcher and does not replace `agenturm`.
+The former hosted `agenturm-rust` bootstrap is not the current install path. Use the [current installation guide](../install.md) for the `agenturm` command and supported package managers. The commands below document the earlier source installer for existing preview installations.
 
-Run the hosted bootstrap:
+## Earlier packaging decision
 
-~~~sh
-curl -fsSL https://www.agenturm.dev/install.sh | bash
-~~~
-
-It installs the opt-in `agenturm-rust` launcher. The bootstrap supports Linux
-x86-64 and ARM64 and Apple Silicon macOS 13 or newer. Intel Macs are rejected.
-The macOS bundle is unsigned and remains a preview; see the [release notes](../releases/rust-0.3.9.md).
-
-## Choose the delivery path
+The table records the packaging options considered for the 0.3.9 preview; it is retained as historical context.
 
 | Path | Decision | Reason |
 | --- | --- | --- |

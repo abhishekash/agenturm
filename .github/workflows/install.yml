@@ -1,0 +1,21 @@
+name: Curl installation
+on:
+  pull_request:
+    paths: ['scripts/install-rust-bootstrap.sh', 'scripts/verify-curl-install.sh', '.github/workflows/install.yml']
+  push:
+    branches: [main]
+    paths: ['scripts/install-rust-bootstrap.sh', 'scripts/verify-curl-install.sh', '.github/workflows/install.yml']
+  workflow_dispatch:
+permissions:
+  contents: read
+jobs:
+  install:
+    name: Install on ${{ matrix.runner }}
+    strategy:
+      fail-fast: false
+      matrix:
+        runner: [macos-15, ubuntu-24.04, ubuntu-24.04-arm]
+    runs-on: ${{ matrix.runner }}
+    steps:
+      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
+      - run: bash scripts/verify-curl-install.sh

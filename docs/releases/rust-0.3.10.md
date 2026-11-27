@@ -1,8 +1,8 @@
 # Agenturm Rust 0.3.10 prerelease
 
 Rust 0.3.10 bundles the Agenturm app and its required companion processes. It
-installs beside the existing command as `agenturm-rust`; it does not replace
-the Python `agenturm` launcher.
+installs the `agenturm` command. The Python source and SDK documentation remain
+available for developers.
 
 ## Changes since 0.3.9
 
@@ -21,16 +21,16 @@ the Python `agenturm` launcher.
 
 ## Install
 
-The bootstrap detects the supported operating system and architecture, fetches
-the exact versioned installer, and verifies the installer SHA-256:
+Install with the environment-detecting bootstrap, then run `agenturm`:
 
 ~~~sh
 curl -fsSL https://www.agenturm.dev/install.sh | bash
-agenturm-rust
+agenturm
 ~~~
 
-The installer downloads the matching release archive and checksum sidecar over
-HTTPS, verifies the checksum, and installs the separate launcher. macOS
+Homebrew is also available with `brew install abhishekash/tap/agenturm`; update
+with `brew upgrade agenturm`. The bootstrap verifies the pinned release and
+installs the `agenturm` launcher. See [installation details](../install.md). macOS
 archives are unsigned and not notarized. If macOS blocks first launch, approve
 only Agenturm in Privacy & Security; keep Gatekeeper enabled.
 
