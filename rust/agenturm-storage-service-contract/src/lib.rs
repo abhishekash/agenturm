@@ -679,7 +679,7 @@ mod local {
 
         fn sample_v2() -> crate::v2::Request {
             let fixture: Value = serde_json::from_str(include_str!(
-                "../../../tests/fixtures/rust_storage_mutation_v2.json"
+                "../../../rust/agenturm-test-support/fixtures/rust_storage_mutation_v2.json"
             ))
             .unwrap();
             crate::v2::Request::from_json(&serde_json::to_vec(&fixture["request"]).unwrap())

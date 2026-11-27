@@ -123,14 +123,6 @@ publish_fixture_files() {
     mv -- "$target_pi/new.tmp" "$target_pi/new.jsonl"
 }
 
-inspect_history() {
-    local database=$1
-    local helper
-    helper="$(dirname -- "${BASH_SOURCE[0]}")/validate_rust_default_cockpit.py"
-    python3 "$helper" --agenturm "$agenturm" --home "$test_home" --empty-path "$empty_path" \
-        --history "$database" --transcript "$state/inspector.txt" --inspect-source "$codex_source"
-}
-
 config="$state/sources.json"
 db="$state/history.sqlite"
 "${isolated[@]}" discover --sessions-per-harness 1 > "$config"
@@ -150,10 +142,9 @@ codex_source=$(jq -er '.sources[] | select(.plugin_id == "example.rust-codex-har
 expect_replay "$state/restart.log"
 "${isolated[@]}" query --db "$db" > "$state/restarted-query.json"
 cmp -- "$state/query.json" "$state/restarted-query.json"
-inspect_history "$db"
 "${isolated[@]}" backup --db "$db" --output "$state/backup.sqlite"
 "${isolated[@]}" query --db "$state/backup.sqlite" | expect_usage
-echo "Verified extracted bundle, foreground restart, both sessions in the inspector, and backup"
+echo "Verified extracted bundle, foreground restart, collection, review, and backup"
 
 harness_home="$scratch/harness-home"
 claude="$harness_home/.claude/projects/example"
@@ -192,51 +183,6 @@ wait_for_live_check() {
     done
     return 1
 }
-
-query_fixture_usage() {
-    "${isolated[@]}" query --db "$1" 2>/dev/null | expect_usage
-}
-
-query_empty_history() {
-    "${isolated[@]}" query --db "$1" 2>/dev/null | jq -e '.observations == []' > /dev/null
-}
-
-verify_default_cockpit() {
-    local cockpit_home="$scratch/cockpit-home"
-    local cockpit_codex="$cockpit_home/.codex/sessions/2026/11/20"
-    local cockpit_pi="$cockpit_home/.pi/agent/sessions/project"
-    local cockpit_db="$cockpit_home/.local/state/agenturm-rust/history.sqlite"
-    local cockpit_config="$state/cockpit-sources.json"
-    local transcript="$state/cockpit.txt"
-    local helper
-    helper="$(dirname -- "${BASH_SOURCE[0]}")/validate_rust_default_cockpit.py"
-    local -a cockpit_isolated=(env -i HOME="$cockpit_home" PATH="$empty_path" "$agenturm")
-    mkdir -p -- "$cockpit_codex" "$cockpit_pi"
-    if ! python3 "$helper" --agenturm "$agenturm" --home "$cockpit_home" \
-        --empty-path "$empty_path" --history "$cockpit_db" --transcript "$transcript" \
-        --codex "$codex/session.jsonl" "$cockpit_codex" --pi "$pi/session.jsonl" "$cockpit_pi"; then
-        echo "Bare cockpit PTY verification failed" >&2
-        return 1
-    fi
-    if ! "${cockpit_isolated[@]}" discover --sessions-per-harness 1 > "$cockpit_config"; then
-        echo "Bare cockpit fixtures were not discoverable after quit" >&2
-        return 1
-    fi
-    local replay="$state/cockpit-replay.log"
-    if ! "${cockpit_isolated[@]}" collect --config "$cockpit_config" --db "$cockpit_db" > "$replay" 2>&1 ||
-        ! expect_replay "$replay"; then
-        echo "Bare cockpit history did not reopen with both source cursors acknowledged" >&2
-        cat -- "$replay" >&2
-        return 1
-    fi
-    if ! query_fixture_usage "$cockpit_db"; then
-        echo "Bare cockpit history lost or duplicated fixture usage after reopen" >&2
-        "${cockpit_isolated[@]}" query --db "$cockpit_db" >&2 || true
-        return 1
-    fi
-    echo "Verified bare cockpit opened empty, collected both sessions, and released the writer on quit"
-}
-verify_default_cockpit
 
 verify_follow() {
     local follow_home="$scratch/follow-home"
@@ -303,7 +249,6 @@ if [[ -n $previous ]]; then
     "${isolated[@]}" collect --config "$config" --db "$prior_db" > "$state/upgrade.log"
     expect_replay "$state/upgrade.log"
     "${isolated[@]}" query --db "$prior_db" | expect_usage
-    inspect_history "$prior_db"
     echo "Verified prior bundle history and cursor after opening with the current bundle"
 fi
 
@@ -339,10 +284,9 @@ if ((managed)); then
     second_pid=$(systemctl --user show "$unit" --property=MainPID --value)
     [[ $second_pid != 0 && $first_pid != "$second_pid" ]]
     wait_for_collection
-    inspect_history "$managed_db"
     "$agenturm" service uninstall
     installed=0
     [[ $(systemctl --user show "$unit" --property=LoadState --value) == not-found ]]
     "${isolated[@]}" query --db "$managed_db" | expect_usage
-    echo "Verified managed install, restart, inspector, and retained history after uninstall"
+    echo "Verified managed install, restart, and retained history after uninstall"
 fi

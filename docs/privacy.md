@@ -26,10 +26,6 @@ agenturm serve --metadata-only
 
 This does not erase content already stored. To stop native session discovery, use `--no-local-agents`.
 
-## SDK capture
-
-The SDK launcher omits prompts and model responses by default. Content capture is opt-in. The metadata-only setting for native session discovery is separate from SDK capture options.
-
 ## Local UI preferences and exports
 
 The cockpit saves only theme, active view, and non-sensitive filter flags in its

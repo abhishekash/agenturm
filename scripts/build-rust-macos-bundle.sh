@@ -36,42 +36,28 @@ for binary in "${binaries[@]}"; do
     install -m 0755 "$target_dir/$target/release/$binary" "$bundle/bin/$binary"
 done
 install -m 0644 LICENSE "$bundle/LICENSE"
-install -m 0644 docs/rfcs/rust-macos-bundle.md "$bundle/README.md"
+install -m 0644 docs/install.md "$bundle/INSTALL.md"
 install -m 0755 scripts/install-rust-macos.sh "$bundle/install-rust-macos.sh"
 
-python3 - "$bundle/agenturm-plugins.json" "$bundle/bin" "${adapters[@]}" <<'PY'
-import hashlib, json, pathlib, sys
-output, bindir, *adapters = sys.argv[1:]
-plugins = []
-discovery = {
-    "codex": {"namespace": "codex", "root_env": "CODEX_HOME",
-              "default_root": ".codex/sessions", "env_suffix": "sessions",
-              "shape": "codex_jsonl_tree"},
-    "pi": {"namespace": "pi", "root_env": "PI_CODING_AGENT_DIR",
-           "default_root": ".pi/agent/sessions", "env_suffix": "sessions",
-           "shape": "jsonl_tree"},
-    "claude": {"namespace": "claude", "root_env": "CLAUDE_CONFIG_DIR",
-               "default_root": ".claude/projects", "env_suffix": "projects",
-               "shape": "jsonl_tree"},
-    "kiro": {"namespace": "kiro", "root_env": "KIRO_HOME",
-             "default_root": ".kiro/sessions", "env_suffix": "sessions",
-             "shape": "kiro_jsonl_tree"},
-    "opencode": {"namespace": "opencode", "root_env": "OPENCODE_DB",
-                 "default_root": ".local/share/opencode/opencode.db",
-                 "macos_default_root": "Library/Application Support/opencode/opencode.db",
-                 "fallback_base_env": "XDG_DATA_HOME",
-                 "fallback_suffix": "opencode/opencode.db", "shape": "sqlite_file"},
-}
-for adapter in adapters:
-    relative = f"bin/agenturm-{adapter}-harness"
-    digest = hashlib.sha256((pathlib.Path(bindir) / relative.removeprefix("bin/")).read_bytes()).hexdigest()
-    plugins.append({"plugin_id": f"example.rust-{adapter}-harness", "adapter": relative,
-                    "sha256": digest, "protocol": 1,
-                    "features": ["source-adapter/1", "configured-root/1"],
-                    "observation_format": "agenturm-observations/1",
-                    "discovery": discovery[adapter]})
-pathlib.Path(output).write_text(json.dumps({"version": 1, "plugins": plugins}, indent=2) + "\n")
-PY
+{
+    printf '{"version":1,"plugins":[\n'
+    separator=""
+    for adapter in "${adapters[@]}"; do
+        executable="bin/agenturm-$adapter-harness"
+        digest=$(shasum -a 256 "$bundle/$executable" | awk '{print $1}')
+        case "$adapter" in
+            codex) discovery='"namespace":"codex","root_env":"CODEX_HOME","default_root":".codex/sessions","env_suffix":"sessions","shape":"codex_jsonl_tree"' ;;
+            pi) discovery='"namespace":"pi","root_env":"PI_CODING_AGENT_DIR","default_root":".pi/agent/sessions","env_suffix":"sessions","shape":"jsonl_tree"' ;;
+            claude) discovery='"namespace":"claude","root_env":"CLAUDE_CONFIG_DIR","default_root":".claude/projects","env_suffix":"projects","shape":"jsonl_tree"' ;;
+            kiro) discovery='"namespace":"kiro","root_env":"KIRO_HOME","default_root":".kiro/sessions","env_suffix":"sessions","shape":"kiro_jsonl_tree"' ;;
+            opencode) discovery='"namespace":"opencode","root_env":"OPENCODE_DB","default_root":".local/share/opencode/opencode.db","macos_default_root":"Library/Application Support/opencode/opencode.db","fallback_base_env":"XDG_DATA_HOME","fallback_suffix":"opencode/opencode.db","shape":"sqlite_file"' ;;
+        esac
+        printf '%s{"plugin_id":"example.rust-%s-harness","adapter":"%s","sha256":"%s","protocol":1,"features":["source-adapter/1","configured-root/1"],"observation_format":"agenturm-observations/1","discovery":{%s}}' \
+            "$separator" "$adapter" "$executable" "$digest" "$discovery"
+        separator=$',\n'
+    done
+    printf '\n]}\n'
+} > "$bundle/agenturm-plugins.json"
 
 cat > "$bundle/release-metadata.json" <<'JSON'
 {

@@ -17,7 +17,7 @@ unicode-width = "0.2"
 rustix = { version = "1.1.6", features = ["event", "fs", "termios"] }
 
 [dev-dependencies]
-agenturm-lifecycle-extension-example = { path = "../../examples/rust_lifecycle_extension" }
+agenturm-lifecycle-extension-fixture = { path = "../agenturm-test-support/lifecycle-extension" }
 
 [target.'cfg(target_os = "linux")'.dev-dependencies]
 rustix = { version = "1.1.6", features = ["pipe"] }

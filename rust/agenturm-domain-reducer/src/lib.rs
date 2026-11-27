@@ -1084,7 +1084,7 @@ mod tests {
     #[test]
     fn shared_golden_fixtures_match_and_invalid_inputs_fail() {
         let corpus: Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/rust-domain-reducer-v1.json"
+            "../../../rust/agenturm-test-support/fixtures/rust-domain-reducer-v1.json"
         ))
         .unwrap();
         assert_eq!(corpus["fixture_version"], 1);
@@ -1105,7 +1105,7 @@ mod tests {
     #[test]
     fn relationship_and_activity_goldens_match_and_invalid_inputs_fail() {
         let corpus: Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/rust-domain-reducer-v2.json"
+            "../../../rust/agenturm-test-support/fixtures/rust-domain-reducer-v2.json"
         ))
         .unwrap();
         assert_eq!(corpus["fixture_version"], 2);
@@ -1123,7 +1123,7 @@ mod tests {
     #[test]
     fn source_gap_goldens_match_and_invalid_inputs_fail() {
         let corpus: Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/rust-domain-reducer-v3.json"
+            "../../../rust/agenturm-test-support/fixtures/rust-domain-reducer-v3.json"
         ))
         .unwrap();
         assert_eq!(corpus["fixture_version"], 3);

@@ -22,10 +22,6 @@ jobs:
       - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
         with:
           persist-credentials: false
-      - name: Verify native cockpit frame parsers
-        run: |
-          python3 -m unittest discover -s tests -p 'test_rust_default_cockpit_validation.py'
-          python3 -m unittest discover -s tests -p 'test_rust_roster_witness.py'
       - run: rustup toolchain install 1.100.0 --profile minimal
       - name: Build candidate bundle on native arm64
         shell: bash

@@ -80,7 +80,7 @@ receipt_text=agenturm-rust-install-v1
 release_pattern='^agenturm-([0-9]+\.[0-9]+\.[0-9]+)-linux-(x86_64|aarch64)$'
 releases="$prefix/releases"
 owner=$(id -u)
-resources='LICENSE README.md README.html agenturm-plugins.json'
+resources='LICENSE INSTALL.md agenturm-plugins.json'
 binaries='agenturm agenturm-plugin-host agenturm-connector agenturm-storage-service agenturm-codex-harness agenturm-pi-harness agenturm-claude-harness agenturm-kiro-harness agenturm-opencode-harness'
 
 present() { [[ -e "$1" || -L "$1" ]]; }

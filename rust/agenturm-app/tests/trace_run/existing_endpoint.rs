@@ -61,12 +61,15 @@ impl Listener {
     }
 }
 
-fn launch(directory: &Path, endpoint: &str, token: &Path, extra: &[&str]) -> Command {
+fn launch(directory: &Path, endpoint: &str, token: &Path, mode: &str, extra: &[&str]) -> Command {
     let mut command = Command::new(env!("CARGO_BIN_EXE_agenturm"));
     command
         .current_dir(directory)
-        .env("PYTHONPATH", directory.join("sdk"))
-        .env("PYTHONDONTWRITEBYTECODE", "1")
+        .env("AGENTURM_TEST_TRACE_PRODUCER", mode)
+        .env(
+            "AGENTURM_TEST_TRACE_READY",
+            directory.join("producer-ready"),
+        )
         .env("HOME", directory)
         .env("XDG_STATE_HOME", directory.join("state"))
         .env(
@@ -78,86 +81,39 @@ fn launch(directory: &Path, endpoint: &str, token: &Path, extra: &[&str]) -> Com
         .args(["run", "--endpoint", endpoint, "--token-file"])
         .arg(token)
         .args(extra)
-        .args([
-            "--instrument",
-            "python",
-            "--service",
-            "exact-launch",
-            "--",
-            "python3",
-            "target.py",
-            "literal arg",
-        ]);
+        .arg("--")
+        .arg(std::env::current_exe().unwrap())
+        .args(["--exact", "native_otlp_producer", "--nocapture"]);
     command
-}
-
-fn sdk_fixture(directory: &Path) {
-    let sdk = directory.join("sdk/observatory");
-    fs::create_dir_all(&sdk).unwrap();
-    fs::write(sdk.join("__init__.py"), "").unwrap();
-    fs::write(
-        sdk.join("auto.py"),
-        r#"
-import http.client
-import json
-import os
-import runpy
-import sys
-from urllib.parse import unquote, urlsplit
-
-class SetupError(Exception):
-    pass
-
-def run_agent(target, arguments, *, endpoint, service, module, capture_content, transport,
-              session_id, managed_launcher):
-    assert sys.flags.safe_path and managed_launcher
-    assert transport == "otlp" and not capture_content and not module
-    assert service == "exact-launch" and session_id.startswith("launch-")
-    assert endpoint == os.environ["OTEL_EXPORTER_OTLP_TRACES_ENDPOINT"]
-    assert not os.environ.get("OTEL_EXPORTER_OTLP_HEADERS")
-    assert "127.0.0.2" in os.environ["NO_PROXY"].split(",")
-    location = urlsplit(endpoint)
-    assert location.hostname == "127.0.0.2" and location.path == "/v1/traces"
-    header = os.environ["OTEL_EXPORTER_OTLP_TRACES_HEADERS"]
-    assert os.environ["OTEL_EXPORTER_OTLP_METRICS_HEADERS"] == header
-    assert os.environ["OTEL_EXPORTER_OTLP_LOGS_HEADERS"] == header
-    key, value = header.split("=", 1)
-    assert key == "authorization"
-    connection = http.client.HTTPConnection(location.hostname, location.port, timeout=4)
-    span = dict(traceId="1"*32, spanId="2"*16, startTimeUnixNano="5", endTimeUnixNano="10",
-                attributes=[dict(key="session.id", value=dict(stringValue=session_id))])
-    batch = dict(resourceSpans=[dict(scopeSpans=[dict(spans=[span])])])
-    connection.request("POST", location.path, json.dumps(batch), {
-        "Content-Type": "application/json", "Authorization": unquote(value),
-    })
-    response = connection.getresponse()
-    assert response.status == 200 and response.read() == b"{}"
-    connection.close()
-    sys.argv = [target, *arguments]
-    runpy.run_path(target, run_name="__main__")
-"#,
-    )
-    .unwrap();
-    fs::write(directory.join("target.py"), "import sys\nassert sys.argv[1:] == ['literal arg']\nprint('child-observed')\nraise SystemExit(23)\n").unwrap();
 }
 
 #[test]
 fn existing_authenticated_receiver_owns_the_source_and_retains_the_explicit_session() {
-    if !python_available() {
-        return;
-    }
     let scratch = Scratch::new();
     let receiver = Listener::start(&scratch.0, true);
-    let child_dir = scratch.0.join("program");
-    sdk_fixture(&child_dir);
-    let output = launch(&child_dir, &receiver.endpoint, &receiver.token_file, &[])
-        .output()
+    let mut child = launch(
+        &scratch.0,
+        &receiver.endpoint,
+        &receiver.token_file,
+        "exit",
+        &[],
+    )
+    .stdin(Stdio::piped())
+    .stdout(Stdio::piped())
+    .stderr(Stdio::piped())
+    .spawn()
+    .unwrap();
+    child
+        .stdin
+        .take()
+        .unwrap()
+        .write_all(b"native-stdin")
         .unwrap();
+    let output = child.wait_with_output().unwrap();
     assert_eq!(output.status.code(), Some(23), "{output:?}");
-    assert_eq!(output.stdout, b"child-observed\n");
+    assert!(String::from_utf8_lossy(&output.stderr).contains("native-stderr"));
     assert!(!String::from_utf8_lossy(&output.stderr).contains(BEARER));
-    assert!(!child_dir.join("state").exists());
-    assert!(!child_dir.join("history.sqlite").exists());
+    assert!(!scratch.0.join("state").exists());
     let store = Store::open_read_only(&receiver.database).unwrap();
     let rows = store
         .query_observations(&ObservationQuery::latest(10))
@@ -170,13 +126,7 @@ fn existing_authenticated_receiver_owns_the_source_and_retains_the_explicit_sess
     );
     assert!(rows.iter().all(|row| row.harness_id.as_str() == SOURCE));
     let identity = &rows[0].identity;
-    assert!(
-        identity
-            .session_id
-            .as_deref()
-            .unwrap()
-            .starts_with("launch-")
-    );
+    assert_eq!(identity.session_id.as_deref(), Some("launched-session"));
     assert!(identity.turn_id.is_none() && identity.worker_id.is_none());
     assert!(rows.iter().all(|row| &row.identity == identity));
     assert!(rows.iter().any(|row| matches!(&row.kind, ObservationKind::TraceSpan(span) if span.target_source_id.is_none())));
@@ -184,7 +134,7 @@ fn existing_authenticated_receiver_owns_the_source_and_retains_the_explicit_sess
     let forged = scratch.0.join("wrong.token");
     fs::write(&forged, "a".repeat(64)).unwrap();
     fs::set_permissions(&forged, fs::Permissions::from_mode(0o600)).unwrap();
-    let denied = launch(&child_dir, &receiver.endpoint, &forged, &[])
+    let denied = launch(&scratch.0, &receiver.endpoint, &forged, "exit", &[])
         .output()
         .unwrap();
     assert!(!denied.status.success());
@@ -198,23 +148,44 @@ fn existing_authenticated_receiver_owns_the_source_and_retains_the_explicit_sess
 fn existing_receiver_rejects_unauthenticated_listeners_and_conflicting_flags_before_launch() {
     let scratch = Scratch::new();
     let receiver = Listener::start(&scratch.0, false);
-    let no_auth = launch(&scratch.0, &receiver.endpoint, &receiver.token_file, &[])
-        .output()
-        .unwrap();
+    let no_auth = launch(
+        &scratch.0,
+        &receiver.endpoint,
+        &receiver.token_file,
+        "exit",
+        &[],
+    )
+    .output()
+    .unwrap();
     assert!(!no_auth.status.success() && no_auth.stdout.is_empty());
     assert!(String::from_utf8_lossy(&no_auth.stderr).contains("must require producer bearer"));
     for extra in [
         &["--db", "unwanted.sqlite"][..],
         &["--source-id", "otlp.wrong"],
         &["--payload-scope", "standalone"],
-        &["--capture-content"],
     ] {
-        let output = launch(&scratch.0, &receiver.endpoint, &receiver.token_file, extra)
-            .output()
-            .unwrap();
+        let output = launch(
+            &scratch.0,
+            &receiver.endpoint,
+            &receiver.token_file,
+            "exit",
+            extra,
+        )
+        .output()
+        .unwrap();
         assert!(!output.status.success() && output.stdout.is_empty());
         assert!(String::from_utf8_lossy(&output.stderr).contains("cannot be combined"));
     }
+    let removed_flag = launch(
+        &scratch.0,
+        &receiver.endpoint,
+        &receiver.token_file,
+        "exit",
+        &["--capture-content"],
+    )
+    .output()
+    .unwrap();
+    assert!(!removed_flag.status.success());
     assert!(!scratch.0.join("unwanted.sqlite").exists());
     for endpoint in [
         "http://localhost:4318",
@@ -225,7 +196,7 @@ fn existing_receiver_rejects_unauthenticated_listeners_and_conflicting_flags_bef
         "http://127.0.0.1:4318/v1/traces?x=1",
         "http://[::1%4]:4318",
     ] {
-        let output = launch(&scratch.0, endpoint, &receiver.token_file, &[])
+        let output = launch(&scratch.0, endpoint, &receiver.token_file, "exit", &[])
             .output()
             .unwrap();
         assert!(!output.status.success() && output.stdout.is_empty());
@@ -235,48 +206,49 @@ fn existing_receiver_rejects_unauthenticated_listeners_and_conflicting_flags_bef
         );
     }
     fs::set_permissions(&receiver.token_file, fs::Permissions::from_mode(0o644)).unwrap();
-    let unsafe_token = launch(&scratch.0, &receiver.endpoint, &receiver.token_file, &[])
-        .output()
-        .unwrap();
+    let unsafe_token = launch(
+        &scratch.0,
+        &receiver.endpoint,
+        &receiver.token_file,
+        "exit",
+        &[],
+    )
+    .output()
+    .unwrap();
     assert!(!unsafe_token.status.success() && unsafe_token.stdout.is_empty());
     assert!(String::from_utf8_lossy(&unsafe_token.stderr).contains("owner-only regular file"));
 }
 
 #[test]
 fn existing_receiver_outlives_a_signaled_launch() {
-    if !python_available() {
-        return;
-    }
     let scratch = Scratch::new();
     let receiver = Listener::start(&scratch.0, true);
-    let child_dir = scratch.0.join("program");
-    sdk_fixture(&child_dir);
-    fs::write(
-        child_dir.join("target.py"),
-        r#"
-from pathlib import Path
-import os
-import time
-Path("ready").write_text(str(os.getpid()) + "\n")
-while True:
-    time.sleep(0.1)
-"#,
-    )
-    .unwrap();
     let mut launcher = ChildGuard(
-        launch(&child_dir, &receiver.endpoint, &receiver.token_file, &[])
-            .stdin(Stdio::null())
-            .stdout(Stdio::null())
-            .stderr(Stdio::null())
-            .spawn()
-            .unwrap(),
+        launch(
+            &scratch.0,
+            &receiver.endpoint,
+            &receiver.token_file,
+            "wait",
+            &[],
+        )
+        .stdin(Stdio::null())
+        .stdout(Stdio::null())
+        .stderr(Stdio::null())
+        .spawn()
+        .unwrap(),
     );
+    let ready = scratch.0.join("producer-ready");
     let deadline = Instant::now() + Duration::from_secs(8);
     let producer = loop {
-        if let Ok(value) = fs::read_to_string(child_dir.join("ready"))
+        if let Ok(value) = fs::read_to_string(&ready)
             && value.ends_with('\n')
         {
-            break value.trim().parse::<libc::pid_t>().unwrap();
+            break value
+                .lines()
+                .nth(1)
+                .unwrap()
+                .parse::<libc::pid_t>()
+                .unwrap();
         }
         assert!(Instant::now() < deadline && launcher.0.try_wait().unwrap().is_none());
         thread::sleep(Duration::from_millis(20));
