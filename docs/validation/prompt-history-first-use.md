@@ -15,8 +15,8 @@ Linux qualification for Agenturm Rust 0.3.12, 2026-11-27.
 - 8 private-content integration tests passed with pinned native Codex and Pi adapters enabled.
 - All-target Clippy passed with warnings denied.
 - Fresh unapproved-source PTY journeys passed at 120×32, 80×24 and 60×18. Each starts without prompt approval, enables the source from the UI, reads and redacts the captured prompt, inspects MCP and Tools, and restores terminal modes.
-- The synthetic fixture includes a 20 KiB native metadata header, more than 600 retained events and a transcript larger than 8 MiB. A deliberately stale sibling sources.json is also present.
-- A database copy made from the real local history reproduced the permission dead end and the valid 18,745-byte native header rejection. With the fix, the UI enable action loaded three prompt references; an exact captured prompt was read successfully. No private body was printed in validation logs.
+- The synthetic fixture includes a native metadata header over 20 KiB, more than 600 retained events and a transcript larger than 8 MiB. A deliberately stale sibling sources.json is also present.
+- A database copy made from the real local history reproduced the permission dead end and the valid 18,745-byte native header rejection. With the fix, the UI enable action loaded three prompt references; the exact captured prompt was read in the TUI and then redacted. A second real transcript of 19.49 MiB yielded 31 eligible prompt references and a successful exact prompt reveal. No private body was printed in validation logs.
 
 The live user database was not granted access or modified by these checks. Test approvals were confined to isolated databases. The old running app was not killed or restarted.
 

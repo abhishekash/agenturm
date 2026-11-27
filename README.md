@@ -12,7 +12,7 @@
 <p align="center">
   <a href="https://www.agenturm.dev/#demo"><strong>Explore the workflow →</strong></a> &nbsp;·&nbsp;
   <a href="docs/usage.md">Documentation</a> &nbsp;·&nbsp;
-  <a href="https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.11">What’s new in 0.3.11</a>
+  <a href="https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.12">What’s new in 0.3.12</a>
 </p>
 
 <p align="center">
@@ -44,7 +44,7 @@ Agenturm reads supported local agent records and configured OpenTelemetry signal
 
 Reply to agents and approve their requests in their own terminals. Agenturm monitors their work; it does not launch or control them. Request capture and terminal routing depend on the runtime and environment, so an unavailable route is not a successful return.
 
-**In 0.3.11:** The Rust release brings a task-first roster, exact worker-scoped prompt history, and selected-agent scoped MCP and Activity views. [Release notes](docs/releases/rust-0.3.11.md).
+**In 0.3.12:** Enable Linux prompt history directly from the selected agent, read normal Codex metadata and longer transcripts, and inspect scoped Activity, MCP and Tools. [Release notes](docs/releases/rust-0.3.12.md).
 
 ## See it in action
 
@@ -62,7 +62,7 @@ Follow a refresh-token fix: find a worker that needs input, read the requests, i
 
 ## Install Agenturm
 
-Agenturm 0.3.11 is a native Rust application. It needs no Python or Rust toolchain.
+Agenturm 0.3.12 is a native Rust application. It needs no Python or Rust toolchain.
 
 **macOS (Apple Silicon, macOS 13+) and Linux (glibc 2.39+, x86-64 or ARM64):**
 
@@ -170,7 +170,7 @@ Choose **Current (Alpine Ember), Bright, Dark, or Solarized** through `Ctrl+P �
 
 ## Status and contributing
 
-Agenturm is open source under the [MIT license](LICENSE). Version **0.3.11** is the current Rust release for Apple Silicon macOS and supported Linux systems. Signal coverage depends on the source. See the [current quality report](docs/validation/quality-completion.html) for measured performance, stability and remaining acceptance limits.
+Agenturm is open source under the [MIT license](LICENSE). Version **0.3.12** is the current Rust release for Apple Silicon macOS and supported Linux systems. Signal coverage depends on the source. See the [current quality report](docs/validation/quality-completion.html) for measured performance, stability and remaining acceptance limits.
 
 ```sh
 git clone https://github.com/abhishekash/agenturm.git
