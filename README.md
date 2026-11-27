@@ -12,19 +12,16 @@
 <p align="center">
   <a href="https://www.agenturm.dev/#demo"><strong>Explore the workflow →</strong></a> &nbsp;·&nbsp;
   <a href="docs/usage.md">Documentation</a> &nbsp;·&nbsp;
-  <a href="https://github.com/abhishekash/agenturm/releases/tag/v0.2.8">What’s new in 0.2.8</a>
+  <a href="https://github.com/abhishekash/agenturm/releases/tag/v0.3.10">What’s new in 0.3.10</a>
 </p>
 
 <p align="center">
   <a href="https://github.com/abhishekash/agenturm/actions/workflows/ci.yml"><img src="https://img.shields.io/github/actions/workflow/status/abhishekash/agenturm/ci.yml?branch=main&amp;label=CI&amp;labelColor=191621" alt="CI status on main"></a>
-  <a href="https://pypi.org/project/agenturm/"><img src="https://img.shields.io/pypi/v/agenturm?color=ffbd69&amp;labelColor=191621" alt="PyPI version"></a>
-  <a href="https://pypi.org/project/agenturm/"><img src="https://img.shields.io/pypi/pyversions/agenturm?logo=python&amp;logoColor=white&amp;color=c5adff&amp;labelColor=191621" alt="Supported Python versions"></a>
   <a href="docs/privacy.md"><img src="https://img.shields.io/badge/data-local_by_default-c5adff?labelColor=191621" alt="Local by default"></a>
   <a href="LICENSE"><img src="https://img.shields.io/badge/license-MIT-b9afc5?labelColor=191621" alt="MIT license"></a>
 </p>
 
 <p align="center">
-  <a href="https://pypistats.org/packages/agenturm"><img src="https://img.shields.io/pypi/dm/agenturm?label=downloads%2Fmonth&amp;color=ffbd69&amp;labelColor=191621" alt="PyPI downloads per month"></a>
   <a href="https://github.com/abhishekash/agenturm/stargazers"><img src="https://img.shields.io/github/stars/abhishekash/agenturm?style=flat&amp;logo=github&amp;color=c5adff&amp;labelColor=191621" alt="GitHub stars"></a>
 </p>
 
@@ -47,7 +44,7 @@ Agenturm reads supported local agent records and configured OpenTelemetry signal
 
 Reply to agents and approve their requests in their own terminals. Agenturm monitors their work; it does not launch or control them. Request capture and terminal routing depend on the runtime and environment, so an unavailable route is not a successful return.
 
-**In 0.2.8:** Follow agents in a simpler workspace with compact navigation and fewer repeated summaries. Inspect recorded interruption reasons and keep the header stable while switching views. Detailed evidence remains in Details and Activity. [What’s new](docs/releases/0.2.8.md).
+**In 0.3.10:** The Rust release brings a task-first roster, exact worker-scoped prompt history, and selected-agent scoped MCP and Activity views. [Release notes](docs/releases/rust-0.3.10.md).
 
 ## See it in action
 
@@ -63,66 +60,29 @@ Reply to agents and approve their requests in their own terminals. Agenturm moni
 
 Follow a refresh-token fix: find a worker that needs input, read the requests, inspect a reported test result alongside a later edit, investigate a failed MCP call, and preview a handoff. The browser walkthrough is a simplified, interactive explanation. Screenshots are captured from the actual v0.2.0 terminal. All demo records are synthetic.
 
-## Get your first useful view
+## Install Agenturm
 
-<p>
-  <a href="https://www.agenturm.dev/#demo"><img src="https://img.shields.io/badge/demo-interactive-ffbd69?labelColor=191621" alt="Try the interactive demo"></a>
-  <a href="docs/usage.md#install-and-launch-the-terminal-cockpit"><img src="https://img.shields.io/badge/launch-uvx_agenturm-c5adff?labelColor=191621" alt="Launch with uvx agenturm"></a>
-</p>
+Agenturm 0.3.10 is a native Rust application. It needs no Python or Rust toolchain.
 
-Requires **Python 3.11+**. Use [uv](https://docs.astral.sh/uv/getting-started/installation/) or pip to install.
-
-Keep your coding agents open. In another terminal, run:
-
-```sh
-uvx agenturm
-```
-
-Agenturm starts or attaches to its local receiver. Recent supported **Codex, Claude Code, OpenCode, Pi, and Kiro** records are discovered locally; those agents do not need a restart. No Agenturm account, subscription, or provider API key is needed for local monitoring.
-
-1. In **Agents**, select a session with `↑` / `↓`. Expand a recorded delegation with `→`.
-2. Press `w` to open **Workflow** and inspect recorded requests. Select one to see its owner, reason and whether it remains pending or its observation is stale.
-3. Use **Locate terminal** to attempt the supported route; Agenturm selects a terminal only after exact identity is verified. Then respond in the native terminal. **Seen** only acknowledges locally; it does not resolve or approve a request.
-4. Use **Review** for captured checks and edits, or `b` to save a task for later.
-
-An empty screen means no supported recent records have been discovered yet. Run a supported agent and open collection diagnostics with `d`. Agenturm does not seed your workspace with example sessions. See [discovery, custom paths, and troubleshooting](docs/usage.md#local-agent-discovery).
-
-For a persistent command:
-
-```sh
-uv tool install agenturm
-agenturm
-```
-
-Or install with pip in your Python environment:
-
-```sh
-pip install agenturm
-agenturm
-```
-
-To upgrade a pip installation, run `pip install --upgrade agenturm`.
-
-To upgrade, run `uv tool upgrade agenturm`, then restart Agenturm and any separately running receiver. [Other installation methods](docs/usage.md#install-and-launch-the-terminal-cockpit).
-
-## Standalone Rust preview (Linux and Apple Silicon Mac)
-
-The opt-in Rust 0.3.10 bundle runs without Python or a Rust toolchain. The
-installer detects Linux x86-64/ARM64 or Apple Silicon macOS 13 or newer; Intel
-Macs and Rosetta are unsupported. It installs the separate `agenturm-rust`
-command and does not replace `agenturm`.
+**macOS (Apple Silicon, macOS 13+) and Linux (glibc 2.39+, x86-64 or ARM64):**
 
 ```sh
 curl -fsSL https://www.agenturm.dev/install.sh | bash
-agenturm-rust
+agenturm
 ```
 
-The bootstrap pins the platform installer and downloads the exact Rust release
-assets over HTTPS. Apple Silicon is a preview pending independent clean-host
-acceptance. macOS builds are unsigned and not notarized; macOS may ask you to
-approve Agenturm in Privacy & Security on first launch. Keep Gatekeeper enabled.
-See the [Rust 0.3.10 prerelease notes](docs/releases/rust-0.3.10.md) and the
-[Rust installation guide](docs/rfcs/rust-distribution-installation.md).
+Or install and update with Homebrew:
+
+```sh
+brew install abhishekash/tap/agenturm
+agenturm
+# Later
+brew upgrade agenturm
+```
+
+To upgrade a curl installation, rerun the `curl` command above. The installer detects your OS and architecture, verifies the pinned release, and installs the `agenturm` command. It backs up a pre-existing launcher before replacing it. Add `~/.local/bin` to your `PATH` if the command is not found. Intel Macs are unsupported.
+
+See [installation and upgrade details](docs/install.md) or the [interactive walkthrough](https://www.agenturm.dev/#demo). The Python source and SDK integration documentation remain available for developers.
 
 ## From activity to understanding
 
@@ -210,7 +170,7 @@ Choose **Current (Alpine Ember), Bright, Dark, or Solarized** through `Ctrl+P �
 
 ## Status and contributing
 
-Agenturm is open source under the [MIT license](LICENSE). Version **0.2.8** includes the agent hierarchy, navigable attention list, readable evidence panels, request-focused Workflow, completion review, and saved-task continuity workflows. Signal coverage depends on the source. See the [current quality report](docs/validation/quality-completion.html) for measured performance, stability and remaining acceptance limits.
+Agenturm is open source under the [MIT license](LICENSE). Version **0.3.10** is the current Rust release for Apple Silicon macOS and supported Linux systems. Signal coverage depends on the source. See the [current quality report](docs/validation/quality-completion.html) for measured performance, stability and remaining acceptance limits.
 
 ```sh
 git clone https://github.com/abhishekash/agenturm.git
