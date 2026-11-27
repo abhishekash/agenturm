@@ -1,9 +1,11 @@
-"""Metadata-only native observations while the initial history index is pending.
+"""Bounded native observations while the initial history index is pending.
 
-No task, path, project, prompt, tool/input reason, raw event or stored context is
-copied. This is a display projection, never evidence that history is complete.
+Only an opt-in, per-session first-request label is copied. Paths, full prompts,
+tool/input reason, raw events and stored context remain excluded. This is a
+display projection, never evidence that history is complete.
 """
 from .agent_hierarchy import AGENT_ID
+from .session_text import task_description
 import re
 
 MAX_ROWS=500
@@ -21,6 +23,24 @@ _ENUMS={'relationship_kind':{'delegated','review','unknown'},
     'discovery_state':{'observed','announced'},'coverage':{'complete','partial','unknown'}}
 _INDEX_STAGES={'Preparing indexed history','Refreshing ownership and run summaries',
     'Refreshing incoming finding evidence','Indexing incoming source changes'}
+_MAX_TASK_LABEL_BYTES=4096
+_MAX_TASK_LABEL_CHARS=500
+
+
+def _task_label(value):
+    if not isinstance(value,str):return ''
+    try:
+        if len(value.encode('utf-8'))>_MAX_TASK_LABEL_BYTES:return ''
+    except UnicodeEncodeError:return ''
+    return task_description(value)[:_MAX_TASK_LABEL_CHARS]
+
+
+def _capture_allowed(entry, global_capture):
+    # The row is the opt-in. An explicitly disabled or malformed global policy
+    # must never be overridden by a stale/contradictory positive row.
+    return entry.get('capture_content') is True and (
+        global_capture is None or global_capture is True
+    )
 
 
 def indexing_in_progress(indexing):
@@ -93,7 +113,9 @@ def native_metadata(health):
         row['run_state']=state if current and isinstance(state,str)and state in _STATES else 'unknown'
         row['collector_updated_ns']=read
         row['diagnostics']=safe
-        row.update(project='',model='',working_directory='',branch='',task='',initial_task='',last_activity={},waiting_for='')
+        capture_allowed=_capture_allowed(entry,original.get('capture_content'))
+        title=_task_label(entry.get('initial_task'))if capture_allowed else ''
+        row.update(project='',model='',working_directory='',branch='',task='',initial_task=title,last_activity={},waiting_for='')
         # No waiting_for text: it can contain a command or user input reason.
         result['sessions'].append(row)
     result['sessions']=[row for row in result['sessions']if row['source_id']not in conflicted]
@@ -110,7 +132,8 @@ def published_metadata(local):
     """
     result={key:local[key]for key in ('enabled','initial_poll_complete','capture_content',
         'capture_policy_schema','capture_global_revision','bootstrap_omitted_rows')
-        if type(local.get(key))in(bool,int)and 0<=local[key]<_CLOCK_MAX}
+        if (key=='capture_content'and type(local.get(key))is bool)or
+        (key!='capture_content'and type(local.get(key))in(bool,int)and 0<=local[key]<_CLOCK_MAX)}
     fields=(*_TIMES,'collector_updated_ns','run_state','capture_content','capture_safety_revision')
     rows=[]
     for entry in local.get('sessions',())[:MAX_ROWS]:
@@ -123,7 +146,9 @@ def published_metadata(local):
         diagnostics=entry.get('diagnostics')or {}
         row['diagnostics']={key:diagnostics[key]for key in ('last_success_ns','backlog_bytes','pending_storage_records','read_error')
             if type(diagnostics.get(key))in(bool,int)and 0<=diagnostics[key]<_CLOCK_MAX}
-        row.update(project='',model='',working_directory='',branch='',task='',initial_task='',last_activity={},waiting_for='')
+        capture_allowed=_capture_allowed(entry,local.get('capture_content'))
+        title=_task_label(entry.get('initial_task'))if capture_allowed else ''
+        row.update(project='',model='',working_directory='',branch='',task='',initial_task=title,last_activity={},waiting_for='')
         rows.append(row)
     result['sessions']=rows
     revisions=[]

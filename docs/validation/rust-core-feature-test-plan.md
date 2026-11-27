@@ -124,6 +124,257 @@ Focused qualification completed on the rebased source head. These unit tests do
 not establish installed paired Python/Rust parity or palette PTY journeys;
 those remain in UI-Q. The full workspace build/check is tracked separately.
 
+## Linux bundle PTY filter assertion follow-up
+
+PRs #398/#399 reported `cockpit did not show confirmed filter for
+bundle-pi-session`. The captured terminal showed the expected command center,
+`/ bundle-pi-session`, one selected `Pi session` row, and `Project unavailable
+1`. The failing assertion was the helper's `Enter inspect` footer check:
+filtered rosters display `Enter / Esc search` even after Enter finishes search
+editing. Enter remains handled by the selected-row inspector route after
+editing ends; the helper's subsequent Enter and exact Overview check cover
+that behavior. This is a stale PTY expectation, not evidence of a product
+navigation regression. `scripts/validate_rust_default_cockpit.py` now accepts
+the filtered-search footer and either `Project unavailable 1` or `No recorded
+project 1`, while retaining the exact search, selected-row and one-project
+count checks. Linux bundle PTY reruns are still required to close failed CI
+results.
+
+## Scoped CI fix confirmations — 26 November 2026
+
+These local checks confirm the specific follow-up commits only. Full PR CI and
+broader feature qualification remain pending.
+
+| PR / commit | Focused result | Exact local checks |
+| --- | --- | --- |
+| #398 / source `54483d8`, filter fix `d66af1a`, Inspector fix `303f654` | PASS: strict workspace Clippy; Pi harness 28 tests; Pi edit reveal 2 tests; Claude MCP reveal 2 tests. Validation-only fixes pushed. | `cargo clippy --offline --locked --workspace --all-targets -- -D warnings`; `cargo test --offline --locked -p agenturm-pi-harness --quiet`; `cargo test --offline --locked -p agenturm-content --lib pi_edit_reveal --quiet`; `cargo test --offline --locked -p agenturm-content --lib claude_mcp_reveal --quiet`. |
+| #399 / source `07e3691`, filter fix `e9a823a`, Inspector fix `8474a5d` | PASS: locked standalone example test, including host compatibility (1 passed); validation-only fixes pushed. | `cargo test --locked --manifest-path examples/rust_prompt_signals_extension/Cargo.toml`. |
+| #400 / source `2bdc1c5`, filter fix `505baaa`, Inspector fix `64fbf6a` | PASS: exact task CLI regression sees documented `agenturm task add` (1 passed); validation-only fixes pushed. | `cargo test --offline --locked -p agenturm-app --test task_cli tasks_refuse_missing_or_unrelated_history_without_creating_workspace -- --exact`. |
+| #402 / source `e0d03f2`, filter fix `f834074`, Inspector fix `f6ff4d9` | Helper journey check passes; validation-only fixes pushed. A full verifier smoke run exited 0 on an available 0.3.9 archive, but that archive predates this branch and is not #402 artifact provenance or qualification. | Synthetic two-session helper journey; `python3 -m py_compile scripts/validate_rust_default_cockpit.py`; `git diff --check`; `scripts/verify-rust-linux-bundle.sh /tmp/agenturm-039-workflow-release-candidate/agenturm-0.3.9-linux-x86_64.tar.gz`. |
+
+The latest script-only Inspector correction was applied and pushed to #398
+(`303f654`), #399 (`8474a5d`), #400 (`64fbf6a`), #401 (`e921b0b`), and #402
+(`f6ff4d9`). On all five branches the focused synthetic two-session journey
+passed: exact ID search yields exactly one selected row; its displayed human
+title must equal the Inspector's `Session name`; the expected `Provider` and
+`Project No recorded project` fields must match exactly; Escape returns to the
+same selection. The helper strips the Inspector's `│` box border when reading
+field values. Both `Project unavailable` and `No recorded project` group
+labels are accepted at exact counts one and two. `python3 -m py_compile` and
+`git diff --check` pass for each worktree. Full current-bundle verifier runs
+remain pending in CI for #398–#402; the stale #402 0.3.9 smoke artifact is not
+qualification evidence.
+
+These results do not replace the running/required PR CI, Linux bundle PTY rerun,
+or remaining feature and artifact acceptance checks.
+
+## Lockfile and metric-verifier follow-ups — 26 November 2026
+
+Each PR received a follow-up lockfile correction and a validation-only change
+to `scripts/validate_rust_metric_descriptions.py`. The verifier now reads
+exactly one guarded positive integer `SCHEMA_VERSION` from that branch's
+`rust/agenturm-store/src/lib.rs`, rejects missing, duplicate or out-of-range
+values, and compares SQLite `PRAGMA user_version` to the parsed value. It does
+not weaken the schema assertion.
+
+| PR | Lockfile correction | Schema-verifier correction | Source schema |
+| --- | --- | --- | ---: |
+| #398 | `0de2acc` | `1c20f8b` | 26 |
+| #399 | `07e3691` | `3c822ee` | 24 |
+| #400 | `1ce358f` | `3202fc4` | 24 |
+| #401 | `a8de0cd` | `6413e96` | 24 |
+| #402 | `c6fb111` | `1260295` | 24 |
+
+The following focused source checks were run on the listed earlier source
+heads; they are recorded for context and do not qualify the later lockfile
+commits. Full CI reruns against all five updated heads are pending.
+
+| PR | Prior targeted check and result |
+| --- | --- |
+| #398 (`54483d8`) | `cargo clippy --offline --locked --workspace --all-targets -- -D warnings`; `cargo test --offline --locked -p agenturm-pi-harness --quiet` (28 passed); `cargo test --offline --locked -p agenturm-content --lib pi_edit_reveal --quiet` (2 passed); `cargo test --offline --locked -p agenturm-content --lib claude_mcp_reveal --quiet` (2 passed). |
+| #399 (`07e3691`) | `cargo test --locked --manifest-path examples/rust_prompt_signals_extension/Cargo.toml` (host compatibility test passed). |
+| #400 (`2bdc1c5`) | `cargo test --offline --locked -p agenturm-app --test task_cli tasks_refuse_missing_or_unrelated_history_without_creating_workspace -- --exact` (1 passed). |
+
+## UI-05 focused handoff — trace-linked session evidence — 26 November 2026
+
+PR #404 (`feature/rust-trace-linked-evidence`, commit `11bee013`) changes the
+session Evidence trace detail rows in
+`rust/agenturm-app/src/session_evidence/table.rs`. This is a focused
+implementation handoff, separate from UI-Q paired Python/Rust journey and
+screen acceptance. UI-Q remains pending.
+
+| Acceptance case | Focused result |
+| --- | --- |
+| Preserve source, session, and trace identity in the selected trace details | PASS by source review: the trace row emits `Trace`, `Source`, and `Session` details from the selected trace context. |
+| Preserve target source and linked operation identity per span | PASS by source review: span detail includes `target` and `linked operation` fields when explicitly present. |
+| Render roots before their descendants and retain multiple roots | PASS by source review: roots are visited in input order, with each reachable subtree traversed before the next root. |
+| Represent a parent omitted by the bounded page as detached | PASS by source review: rows with an unresolved parent are labeled `Detached span · parent not on this page`; their children remain visible. |
+| Keep cyclic or malformed duplicate-ID rows visible without looping | PASS by source review: traversal tracks visited row indices; duplicate span IDs bind parent lookup to the first row deterministically, while cycles/unvisited rows are emitted through the detached fallback. |
+
+Focused test evidence on the exact PR head:
+
+| Check | Result |
+| --- | --- |
+| `cargo test --offline --locked -p agenturm-app --lib session_evidence::tests::trace_table_reports_only_an_exact_root_spans_recorded_tokens -- --exact` | PASS, 1 test. Existing exact-root token/trace-pane behavior remains green. |
+| `cargo test --offline --locked -p agenturm-app --lib` | PASS, 189 tests. |
+
+Limitation: the current app test suite has no direct regression test for the new
+hierarchical span-row rendering cases (multiple roots, a bounded-page detached
+parent, parent cycles, or duplicate IDs). Those cases above are code-review
+findings, not runtime test results; add focused fixture coverage before treating
+those edge cases as fully qualified. No UI-Q paired journeys, terminal-size
+matrix, or installed-bundle checks were run in this focused handoff.
+
+## UI-05 follow-up — trace-to-operation navigation — 26 November 2026
+
+PR #405 was merged as `d97be0f` (`feat: navigate from traces to linked
+operations (#405)`). Its tree hash matches feature commit `ac1bac0` exactly.
+The change adds an `o` jump from a selected trace span to its linked operation.
+The implementation touches `rust/agenturm-app/src/session_evidence.rs`,
+`rust/agenturm-app/src/session_evidence/table.rs`,
+`rust/agenturm-ui/src/evidence_view.rs`, `rust/agenturm-ui/src/lib.rs`,
+`rust/agenturm-ui/src/operation_table.rs`, and
+`rust/agenturm-ui/src/workspace.rs`.
+
+| Acceptance case | Status |
+| --- | --- |
+| Resolve by typed target source, session, and operation ID; additionally match reported worker and turn | PASS: focused UI regression selects the exact typed row even when operation IDs collide across workers and sources. |
+| Fail closed for zero, multiple, or filter-hidden matching operations with a clear message | PASS: focused regressions assert each specific error. |
+| Select the exact operation row | PASS: focused regression checks the selected row's worker and turn identity. |
+| After collapsing detail, Escape restores the originating Traces pane, row, and filter position | PASS: workspace key-sequence regression opens the filtered trace row, chooses a linked span, enters and collapses operation detail, then Esc returns to the same Traces row and filter. |
+
+Focused tests and checks ran on test-only PR #407,
+`test/trace-span-picker-acceptance`, based on merged main `4948ac5` (PR #406).
+Test commit `bc4aa6eb6c1ababebe3c64cd35cac63747266952` was merged as
+`fa74cb6b975391db8b7557bb29fc1f16e9699ac6`. It changes only tests in
+`rust/agenturm-ui/src/operation_table.rs` and
+`rust/agenturm-ui/src/workspace.rs`; it adds typed operation target cases and
+the chooser/cancel/detail-collapse/Escape key sequence.
+
+| Command | Result |
+| --- | --- |
+| `cargo test --offline --locked -p agenturm-ui trace_target -- --nocapture` | PASS, 2 focused tests: exact typed selection and zero/ambiguous/filter-hidden failures. |
+| `cargo test --offline --locked -p agenturm-ui trace_span_picker_cancel_and_jump_restore_exact_filtered_origin -- --nocapture` | PASS, 1 workspace key-sequence test; confirms picker labels, cancellation preserves origin, chosen operation is exact, detail collapse, and Escape restores filtered trace row/position. |
+| `cargo test --offline --locked -p agenturm-ui --lib` | PASS, 168 tests including the three new regressions. |
+| `cargo clippy --offline --locked -p agenturm-ui --all-targets -- -D warnings` | PASS. |
+| `cargo fmt --all -- --check` | PASS. |
+| `cargo test --offline --locked -p agenturm-app --lib session_evidence::tests::trace_table_reports_only_an_exact_root_spans_recorded_tokens -- --exact` | PASS, 1 test on merged main `4948ac5`. |
+| `git diff --check` | PASS. |
+
+No UI-Q paired Python/Rust journeys, full terminal-size matrix, or
+installed-bundle checks were run. Keep this focused navigation result separate
+from broader UI parity qualification.
+
+## FD1/FD2 audit note — Claude/Pi evidence and private edit proof — 26 November 2026
+
+This section records the feature audit and the follow-on test-only handoffs.
+No product implementation was changed by these test tasks.
+
+| Slice / evidence | Status and next validation |
+| --- | --- |
+| FD1 Claude async worker links | Implemented and tested. Keep native exact Claude check/lint/build attribution unknown: available `is_error` evidence is generic and does not prove a native command result. |
+| FD1 Pi parent/child semantics | Native evidence has no same-session parent/child field. Distinct-session `parentSessionId` and sibling fork handling are implemented; do not infer same-session ancestry. |
+| FD2 Claude Review edit detail | Implemented on current main with exact retained source/session/turn/operation binding and current-grant gates. Feature work is complete; Claude-specific proof/current-grant regression cases remain delegated. |
+| FD2 exact Claude edit proof | Pending test coverage: accept only the selected Claude edit under its exact retained source, session, turn, and operation identity; reject another edit sharing a path or display label but differing in one identity component. |
+| FD2 current authorization grant | Pending test coverage: require the current grant at reveal and deny absent, stale, replaced, or revoked grants; recheck after staging and before text display. |
+| FD2 private-content handling | Pending test coverage: failed or cancelled proof must not reveal text; verify no private text enters row labels, generic metadata, logs, or the UI when the grant changes before delivery. |
+| PR #408 Pi Review edit route | Implemented on `abac29c`: exact Pi `FileChange` occurrences are projected into the existing `RevealReviewEdit` path, using the independent `PiEditDetail` grant and native event/index proof. |
+| Pi Review edit proof and grant | Test-only PR #409 (`7ffe3d8`) is merged. App row preserves exact source/session/turn/operation/event/revision; missing session/turn/operation and wrong native event prefix produce no route. Content proof tests reject wrong session/operation/index, changed summary, stale receipt and unsafe inputs. Pi grant test verifies default denial, separation from Codex edit grant, revoke denial and fresh regrant. These focused tests do not replace installed private-source/UI privacy acceptance. |
+| Pi MCP payload detail | Implemented by PR #410 (`c715b5d`) with a distinct `PiMcpDetail` grant and exact native payload proof route. Focused test-only regressions are in progress on current main; see the CF12 table below. |
+
+
+Test-only PR #409 (`test/pi-review-edit-proof`, head
+`7ffe3d879bf3c0f99b03011b1522c785e90bd5f2`) is merged into `main`; it changes
+only `rust/agenturm-app/src/inspector_activity.rs` and
+`rust/agenturm-store/src/lib.rs`.
+
+| Focused command on base `abac29c` | Result |
+| --- | --- |
+| `cargo test --offline --locked -p agenturm-app --lib inspector_activity::tests::pi_review_edit_route_keeps_exact_private_occurrence_identity -- --exact` | PASS, 1 test. |
+| `cargo test --offline --locked -p agenturm-content pi_edit_reveal -- --nocapture` | PASS, 2 native proof tests. |
+| `cargo test --offline --locked -p agenturm-store pi_edit_detail_grant_is_independent_default_denied_and_revocable -- --nocapture` | PASS, 1 test. |
+| `cargo test --offline --locked -p agenturm-store v24_to_v26_preserves_legacy_grants_and_separates_pi_edit_from_claude_mcp -- --nocapture` | PASS, 1 test. |
+| `cargo clippy --offline --locked -p agenturm-app --all-targets -- -D warnings` | PASS. |
+| `cargo fmt --all -- --check`; `git diff --check` | PASS. |
+
+## CF12 — Pi MCP private payload proof and grant
+
+PR #410 (`c715b5d`) adds `PiMcpDetail`; it remains a supported private-detail
+feature. Test-only PR #411 (`test/pi-mcp-payload-acceptance`, head
+`4c7fe6e`) is open against current main `fcb9768` (after #409). The focused
+regressions cover an exact
+admitted assistant row/cursor, session, operation ID, content index, native
+call ID, tool-name shape and timestamp; stale/missing receipt, absent row,
+duplicate row, and worker evidence fail closed. Store tests cover an
+independent default-off Pi MCP grant, separation from PiEdit and Codex MCP
+grants, wrong source/fingerprint denial, revocation and regrant, and the
+v26→v27 migration preserving existing Codex MCP/Pi Edit grants while leaving
+Pi MCP unapproved.
+
+| Focused command on base `fcb9768` | Result |
+| --- | --- |
+| `cargo test --offline --locked -p agenturm-content pi_mcp_reveal -- --nocapture` | PASS, 2 native proof tests. |
+| `cargo test --offline --locked -p agenturm-store pi_mcp_detail_grant_is_independent_default_denied_and_revocable -- --nocapture` | PASS, 1 grant test. |
+| `cargo test --offline --locked -p agenturm-store v26_to_v27_adds_pi_mcp_grant_without_changing_existing_grants -- --nocapture` | PASS, 1 migration test. |
+| `cargo test --offline --locked -p agenturm-content --lib` | PASS, 8 tests. |
+| `cargo test --offline --locked -p agenturm-store --lib` | PASS, 152 tests after updating the existing v24 migration assertion from v26 to v27. The first full run exposed that stale version expectation; no product defect. |
+| `cargo clippy --offline --locked -p agenturm-content -p agenturm-store --all-targets -- -D warnings` | PASS. |
+| `cargo fmt --all -- --check`; `git diff --check` | PASS. |
+
+Still pending: end-to-end host authorization through the private reveal
+command with a real retained Pi JSONL fixture; explicit source-configuration
+fingerprint replacement and worker-null selection checks through the Store
+route; and a captured UI/log assertion proving private arguments never appear
+in generic row metadata or logs. The core proof unit test is not installed
+artifact or complete privacy qualification.
+
+OpenCode MCP payload remains pending, not retired. A native audit found 9,471
+standalone tool parts and 18,331 assistant messages, with zero `mcp__` records;
+the adapter has only coarse metadata and no bounded input reference or
+commitment. No payload feature should be inferred until a native OpenCode
+record provides a testable argument-retention shape.
+
+The Claude-specific cases are delegated validation requirements, not feature
+development tasks. Existing generic Pi edit and Claude MCP reveal checks do not
+substitute for these Claude Review edit proof/current-grant cases.
+
+## Codex native outcome attribution audit — 26 November 2026
+
+The read-only November 2026 rollout audit covered 284 Codex rollout files and
+33,683 native `CommandExecution` completion rows. These rows contain exact item,
+thread, turn, status, and exit identity. The current parser handles supported
+direct test/lint/build outcomes. One `exit_code = -1` completion remains generic;
+three `turn_aborted` rows have no turn identity and remain session scoped.
+Compound JS/exec and collaboration outputs lack structured result and child
+IDs, so there is no safe additional outcome implementation to claim from this
+evidence. Codex harness compile passed. No source PR was needed for this audit.
+| #401 (`000549b`) | `cargo test --offline --locked -p agenturm-ui workbench::workflow_alerts::tests -- --nocapture` (5 passed); full UI lib (163 passed); strict UI Clippy and fmt check passed. |
+| #402 (`8ee7f87`) | Palette tests (10 passed), focused Ctrl+P/F2, `:` focus isolation, chooser/Escape and footer tests (1 each); full UI lib (161 passed); strict UI Clippy and fmt check passed. |
+
+On every updated branch, `python3 -m py_compile
+scripts/validate_rust_metric_descriptions.py` and `git diff --check` passed. A
+guarded source-constant parse found exactly one integer schema constant in
+each branch: 26 for #398 and 24 for #399–#402. The database-creation verifier
+itself has not been rerun on a current branch artifact; CI must execute it.
+
+## PR #401 Workflow completion history check — 26 November 2026
+
+Validated the rebased branch `feature/rust-workflow-history-toggle` at
+`000549b` (based on current `origin/main`); the shared PTY correction is pushed
+as `e921b0b`. Five focused Workflow alert tests
+passed, covering the `h` reveal/hide behavior, recent completions and other
+incident visibility, selection preservation/fallback, same-history refresh and
+stale-detail clearing, `h` being ignored in detail, and footer controls at
+120×32, 80×24 and 60×18.
+
+Exact results: `cargo test --offline --locked -p agenturm-ui
+workbench::workflow_alerts::tests -- --nocapture` (5 passed);
+`cargo test --offline --locked -p agenturm-ui --lib --quiet` (163 passed);
+`cargo clippy --offline --locked -p agenturm-ui --all-targets -- -D warnings`;
+`cargo fmt --all -- --check`; and `git diff --check` all passed. This qualifies
+the focused rebased UI source tests only; installed paired Python/Rust parity
+and broader PR #401 CI remain separate gates.
+
 ## Feature handoff board
 
 | ID | Developer scope | Implementation worktree | Test owner/status |

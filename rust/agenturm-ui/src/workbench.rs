@@ -2790,7 +2790,7 @@ impl Workbench {
                     .get(selected)
                     .map(|item| anchor_details(&item.anchor))
                     .unwrap_or_default(),
-                "No eligible prompts",
+                "No prompt references for this exact session. Collection must record a user turn; reading its text also needs a source grant.",
             ),
             WorkResult::TelemetrySpans(spans) => (
                 "Captured span text",

@@ -43,6 +43,51 @@ def bootstrap():
 
 
 class NativeBootstrapTests(unittest.TestCase):
+    def test_bootstrap_task_label_requires_current_per_session_opt_in_and_is_sanitized(self):
+        health=NativeApi().health()
+        local=health['local_agents'];local['capture_content']=True
+        row=local['sessions'][0];row['capture_content']=True
+        row['initial_task']='<environment_context>private context</environment_context>\nFix token refresh.'
+        snapshot=native_metadata(health)
+        self.assertEqual(snapshot['sessions'][0]['initial_task'],'Fix token refresh.')
+        self.assertNotIn('private context',repr(snapshot))
+
+        row['capture_content']=False
+        self.assertEqual(native_metadata(health)['sessions'][0]['initial_task'],'')
+        row['capture_content']=True;local['capture_content']=False
+        self.assertEqual(native_metadata(health)['sessions'][0]['initial_task'],'')
+
+        for malformed_policy in (0,1,'enabled'):
+            local['capture_content']=malformed_policy
+            self.assertEqual(native_metadata(health)['sessions'][0]['initial_task'],'')
+
+        local['capture_content']=True;row.pop('capture_content')
+        self.assertEqual(native_metadata(health)['sessions'][0]['initial_task'],'')
+
+    def test_published_bootstrap_drops_label_when_global_policy_denies_capture(self):
+        health=NativeApi().health();local=health['local_agents']
+        local['capture_content']=True
+        row=local['sessions'][0];row['capture_content']=True
+        row['initial_task']='Repair retry handling'
+        published=published_metadata(native_metadata(health))
+        self.assertEqual(published['sessions'][0]['initial_task'],'Repair retry handling')
+        local_snapshot=native_metadata(health)
+        local_snapshot['capture_content']=False
+        self.assertEqual(published_metadata(local_snapshot)['sessions'][0]['initial_task'],'')
+        local_snapshot['capture_content']=0
+        published=published_metadata(local_snapshot)
+        self.assertNotIn('capture_content',published)
+        self.assertEqual(published['sessions'][0]['initial_task'],'')
+
+    def test_bootstrap_task_label_rejects_oversized_untrusted_input(self):
+        health=NativeApi().health();local=health['local_agents']
+        local['capture_content']=True
+        row=local['sessions'][0];row['capture_content']=True
+        row['initial_task']='private marker '+('x'*5000)
+        snapshot=native_metadata(health)
+        self.assertEqual(snapshot['sessions'][0]['initial_task'],'')
+        self.assertNotIn('private marker',repr(snapshot))
+
     def test_health_first_independent_final_and_no_history_reads_or_content(self):
         api,feed=bootstrap();snapshot=feed.snapshot
         self.assertEqual(api.calls,['/api/health?probe=1','/api/health','/api/health'])
