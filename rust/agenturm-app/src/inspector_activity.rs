@@ -445,6 +445,7 @@ mod tests {
             snapshot_id: snapshot,
             state: None,
             reason: None,
+            worker_id: None,
             turn_id: None,
             parent_session_id: None,
             relationship_kind: None,
@@ -454,7 +455,6 @@ mod tests {
             },
             reviewed: false,
             history_identity: Some(store.history_identity().unwrap()),
-            worker_id: None,
             pending_requests: Vec::new(),
         };
         let query = ObservationQuery {

@@ -15,6 +15,7 @@ pub(super) struct SessionPaneIds {
     pub(super) overview: ExtensionId,
     pub(super) details: ExtensionId,
     pub(super) activity: ExtensionId,
+    pub(super) mcp: ExtensionId,
     pub(super) tables: OperationTables,
     pub(super) evidence: EvidenceTables,
     pub(super) review: ExtensionId,
@@ -178,9 +179,11 @@ pub(super) fn add_session_panes(
     let mut activity_table = table::activity(&evidence);
     activity_table.spec.empty = "No observations for this session on this page.";
     let usage_table = table::usage(&evidence);
-    if !mcp.is_empty() {
-        tables.insert(insert_pane(snapshot, "app.session-mcp", "MCP", mcp), calls);
-    }
+    // Keep an MCP pane available for a selected agent even when its page has
+    // no recorded calls; the UI can show an honest empty state without falling
+    // back to workspace-wide evidence.
+    let mcp = insert_pane(snapshot, "app.session-mcp", "MCP", mcp);
+    tables.insert(mcp.clone(), calls);
     if !operations.is_empty() {
         tables.insert(
             insert_pane(snapshot, "app.session-operations", "Operations", operations),
@@ -208,6 +211,7 @@ pub(super) fn add_session_panes(
         ),
         details: insert_pane(snapshot, "app.session-details", "Session details", details),
         activity,
+        mcp,
         review: insert_pane(snapshot, "app.session-review", "Review", review),
         usage,
     }

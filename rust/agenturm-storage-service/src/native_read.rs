@@ -55,6 +55,9 @@ pub enum HistorySelection<'a> {
         turn_id: &'a str,
         worker_id: Option<&'a str>,
     },
+    Worker {
+        worker_id: Option<&'a str>,
+    },
     AllWorkers {
         turn_id: &'a str,
     },
@@ -109,6 +112,9 @@ pub fn query_history(
         }
         HistorySelection::Turn { turn_id, worker_id } => {
             store.query_worker_turn_observations(&query, turn_id, worker_id)
+        }
+        HistorySelection::Worker { worker_id } => {
+            store.query_worker_observations(&query, worker_id)
         }
         HistorySelection::AllWorkers { turn_id } => store.query_turn_observations(&query, turn_id),
         HistorySelection::LinkedTraces => {

@@ -441,6 +441,19 @@ impl ObservationStore for RemoteStore {
         )
     }
 
+    fn query_worker_observations(
+        &self,
+        query: &ObservationQuery,
+        worker_id: Option<&str>,
+    ) -> Result<ObservationPage, String> {
+        self.history(
+            query,
+            NativeSelection::WorkerScope {
+                worker_id: worker_id.map(str::to_owned),
+            },
+        )
+    }
+
     fn commit(
         &mut self,
         _: &str,
