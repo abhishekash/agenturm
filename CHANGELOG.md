@@ -4,6 +4,16 @@
 
 - Discover Kiro sessions from `$KIRO_HOME/sessions` (default `~/.kiro`): prompts, replies, shell commands with their recorded exit codes, file edits, MCP calls, turn outcomes and errors. Kiro tool approvals become waiting requests until answered. Delegated workers link to the session or worker that spawned them and take their outcome from it. List Kiro MCP servers from user and workspace `mcp.json`, and offer `kiro-cli chat --resume-id` for top-level sessions. Show Kiro-reported credits for each run, each session and all stored history, where other runtimes show tokens. List the tool-approval answers recorded in each Kiro session in the inspector, with rule-blocked calls, the standing user, workspace and agent rules that apply, and the folders trusted in Kiro.
 
+## Rust 0.3.12 — prompt history
+
+- Read Codex metadata headers up to 256 KiB and verified transcript prefixes up to 64 MiB, preserving exact inode, checkpoint and content proofs. Normal native headers previously exceeded the 8 KiB row bound and were incorrectly reported as changed sources.
+- Let Linux users enable saved prompt history for the selected local source directly from Prompts, without quitting the app or running a grant command. The action grants user-text access for that source only; tool payload permissions remain separate.
+- Use the default collector’s validated source configuration for prompt and private evidence reads, including retained sources. Display the actual failure reason when a source cannot be read.
+- Open captured text when an adapter has no readable normalization. Keep Activity, MCP and Tools in the selected-agent inspector, with MCP filtering applied before the history page limit.
+- Test fresh, unapproved prompt sources at 120×32, 80×24 and 60×18, including enable, reveal, redaction, MCP and Tools navigation.
+
+[Rust 0.3.12 release notes](docs/releases/rust-0.3.12.md)
+
 ## Rust 0.3.11 — stable
 
 - Publish the native Rust app as a stable release for Apple Silicon macOS 13+ and Linux x86-64/ARM64.

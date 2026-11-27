@@ -471,6 +471,7 @@ pub(super) fn is_prompt_command(command: &WorkCommand) -> bool {
     matches!(
         command,
         WorkCommand::Prompts(_)
+            | WorkCommand::EnablePromptHistory(_)
             | WorkCommand::PromptPage { .. }
             | WorkCommand::RevealPrompt(_, _)
             | WorkCommand::RevealOperation(_, _)
@@ -605,6 +606,9 @@ pub(super) fn prompt_history_with(
         Err(crate::prompt_history::PromptHistoryError::MissingIdentity) => {
             result.availability = Availability::MissingIdentity
         }
+        Err(crate::prompt_history::PromptHistoryError::ApprovalRequired(reason)) => {
+            result.availability = Availability::ApprovalRequired(reason)
+        }
         Err(crate::prompt_history::PromptHistoryError::Denied(reason)) => {
             result.availability = Availability::Denied(reason)
         }
@@ -650,6 +654,19 @@ pub(super) fn execute_prompt_with_config(
         WorkCommand::Investigate(_) | WorkCommand::RevealInvestigation { .. } => {
             Err("Retained investigations require Linux".into())
         }
+        #[cfg(target_os = "linux")]
+        WorkCommand::EnablePromptHistory(owner) => {
+            if writer.is_some() {
+                return Err("Enable prompt history through the active collector".into());
+            }
+            let config = config()?;
+            let mut store = Store::open_collector(db).map_err(string)?;
+            let scope = super::content_preview::prompt_grant_scope(&store, config, &owner)?;
+            store.grant_content(&scope).map_err(string)?;
+            prompt_history_page(db, Some(&store), owner, None, Ok(config))
+        }
+        #[cfg(not(target_os = "linux"))]
+        WorkCommand::EnablePromptHistory(_) => Err("Prompt history is available on Linux".into()),
         WorkCommand::Prompts(owner) => prompt_history_page(db, writer, owner, None, config()),
         WorkCommand::PromptPage { anchor, before } => {
             prompt_history_page(db, writer, anchor, before, config())

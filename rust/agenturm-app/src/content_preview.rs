@@ -209,33 +209,54 @@ pub(crate) fn parse(args: &[String]) -> Result<ContentOptions, String> {
     })
 }
 
-pub fn list_user_prompts(
+#[cfg(target_os = "linux")]
+pub(crate) fn list_user_prompts_with_access(
     db: &Path,
     config: &(impl ContentSourceConfig + ?Sized),
-    source_id: &ExtensionId,
-    session_id: &str,
-    worker_id: Option<&str>,
+    source: &ExtensionId,
+    session: &str,
+    worker: Option<&str>,
     writer: Option<&Store>,
-) -> Result<Vec<PromptReference>, String> {
-    #[cfg(target_os = "linux")]
-    {
-        if let Some(writer) = writer {
-            linux::list(writer, config, source_id, session_id, worker_id)
-        } else {
-            linux::list(
-                &linux::open_store(db)?,
-                config,
-                source_id,
-                session_id,
-                worker_id,
-            )
-        }
+) -> Result<agenturm_content::PromptListing, String> {
+    let opened;
+    let store = if let Some(writer) = writer {
+        writer
+    } else {
+        opened = linux::open_store(db)?;
+        &opened
+    };
+    agenturm_content::list_for_worker_with_access(
+        store,
+        &linux::resolver(config),
+        source,
+        session,
+        worker,
+    )
+}
+
+/// Mint a user-text-only grant for the exact retained source selected in the UI.
+#[cfg(target_os = "linux")]
+pub(crate) fn prompt_grant_scope(
+    store: &Store,
+    config: &(impl ContentSourceConfig + ?Sized),
+    owner: &agenturm_ui::WorkAnchor,
+) -> Result<agenturm_store::ContentGrantScope, String> {
+    if owner.session.trim().is_empty() {
+        return Err("Select a recorded session first".into());
     }
-    #[cfg(not(target_os = "linux"))]
-    {
-        let _ = (db, config, source_id, session_id, worker_id, writer);
-        Err("Prompt preview is available on Linux".into())
+    let source = ExtensionId::parse(&owner.source).map_err(|error| error.to_string())?;
+    let page = store
+        .query_observations(&agenturm_kernel::ObservationQuery {
+            harness_id: Some(owner.source.clone()),
+            session_id: Some(owner.session.clone()),
+            ..agenturm_kernel::ObservationQuery::latest(1)
+        })
+        .map_err(|error| error.to_string())?;
+    if page.observations.is_empty() {
+        return Err("This session is no longer recorded for the selected source".into());
     }
+    let bound = agenturm_content::bind(&linux::resolver(config), &source, None)?;
+    Ok(bound.scope().clone())
 }
 
 /// Sends an exact user-selected prompt to its final sink while the proof

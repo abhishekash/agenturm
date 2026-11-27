@@ -198,7 +198,10 @@ impl Harness {
         }
     }
 }
-const MAX_PREFIX: u64 = 8 * 1024 * 1024;
+const MAX_PREFIX: u64 = 64 * 1024 * 1024;
+// Codex session metadata carries base instructions and is often larger than
+// an individual revealable row. Match the bounded native metadata reader.
+const MAX_HEADER: usize = 256 * 1024;
 const MAX_ROW: usize = 8 * 1024;
 const MAX_TEXT_BYTES: usize = 2 * 1024;
 /// Per-string bound for revealed Claude edit detail, matching the shared
@@ -334,6 +337,26 @@ pub fn list_for_worker(
     session_id: &str,
     worker_id: Option<&str>,
 ) -> Result<Vec<PromptReference>, String> {
+    match list_for_worker_with_access(store, resolver, source_id, session_id, worker_id)? {
+        PromptListing::Granted(references) => Ok(references),
+        PromptListing::ApprovalRequired(reason) => Err(reason),
+    }
+}
+
+/// A missing approval is a recoverable UI state, separate from source/proof errors.
+#[derive(Clone, Debug, Eq, PartialEq)]
+pub enum PromptListing {
+    Granted(Vec<PromptReference>),
+    ApprovalRequired(String),
+}
+
+pub fn list_for_worker_with_access(
+    store: &Store,
+    resolver: &SourceResolver<'_>,
+    source_id: &ExtensionId,
+    session_id: &str,
+    worker_id: Option<&str>,
+) -> Result<PromptListing, String> {
     if !valid_id(session_id) {
         return Err("invalid selected session ID".into());
     }
@@ -343,15 +366,19 @@ pub fn list_for_worker(
     store
         .with_user_content_fence(|store| {
             let mut source = BoundSource::open(resolver, source_id)?;
-            let grant = store
+            let Some(grant) = store
                 .current_content_grant(&source.scope)
                 .map_err(|error| error.to_string())?
-                .ok_or_else(|| missing_approval(source.harness))?;
+            else {
+                return Ok(PromptListing::ApprovalRequired(missing_approval(
+                    source.harness,
+                )));
+            };
             let evidence = store
                 .current_user_text_references(&source.scope, &grant, session_id, worker_id)
                 .map_err(|error| error.to_string())?;
             let Some((_, first)) = evidence.first() else {
-                return Ok(Vec::new());
+                return Ok(PromptListing::Granted(Vec::new()));
             };
             let texts = source.prove(&evidence, false)?;
             let identity = store
@@ -381,7 +408,7 @@ pub fn list_for_worker(
                 .verify_content_grant(&fresh.scope, &grant)
                 .map_err(|error| error.to_string())?;
             source.verify_additional_checkpoint()?;
-            Ok(references)
+            Ok(PromptListing::Granted(references))
         })
         .map_err(|error| error.to_string())?
 }
@@ -1109,10 +1136,15 @@ impl BoundSource {
                 cursor.version == 2
                     && cursor.device == self.stamp.device
                     && cursor.inode == self.stamp.inode
-                    && (1..=MAX_PREFIX).contains(&cursor.offset)
+                    && cursor.offset > 0
                     && cursor.offset <= self.stamp.bytes
             })
             .ok_or(SOURCE_CHANGED)?;
+        if cursor.offset > MAX_PREFIX {
+            return Err(
+                "Prompt history for this source exceeds the supported size (64 MiB)".into(),
+            );
+        }
         let canonical = hash(
             format!(
                 "{}:{}:{}",
@@ -1139,7 +1171,7 @@ impl BoundSource {
             .split_inclusive(|byte| *byte == b'\n')
             .next()
             .ok_or(SOURCE_CHANGED)?;
-        if header.len() > MAX_ROW || hash(header) != cursor.header_digest {
+        if header.len() > MAX_HEADER || hash(header) != cursor.header_digest {
             return Err(SOURCE_CHANGED.into());
         }
         let header_len = header.len();
@@ -2705,7 +2737,17 @@ mod codex_guardian_tests {
     #[test]
     fn exact_open_inode_and_checkpoint_cannot_authorize_guardian_content() {
         static NEXT_FILE: AtomicUsize = AtomicUsize::new(0);
+        let large_header = format!(
+            r#"{{"id":"same-thread","source":"cli","base_instructions":"{}"}}"#,
+            "x".repeat(20 * 1024)
+        );
+        let oversized_header = format!(
+            r#"{{"id":"same-thread","source":"cli","base_instructions":"{}"}}"#,
+            "x".repeat(MAX_HEADER)
+        );
         for (payload, permitted_worker) in [
+            (large_header.as_str(), Some(None)),
+            (oversized_header.as_str(), None),
             (r#"{"id":"same-thread","source":"cli"}"#, Some(None)),
             (
                 r#"{"id":"worker-thread","session_id":"root-thread","source":{"subagent":{"thread_spawn":{"parent_thread_id":"root-thread"}}}}"#,

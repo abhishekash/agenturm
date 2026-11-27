@@ -39,7 +39,7 @@ def validate(app, bundle):
         session = "01a21c90-1111-7111-8111-111111111111"
         source = sessions / f"rollout-2026-11-27T10-00-00-{session}.jsonl"
         rows = [
-            {"type": "session_meta", "payload": {"id": session, "cwd": str(work), "source": "cli"}},
+            {"type": "session_meta", "payload": {"id": session, "cwd": str(work), "source": "cli", "base_instructions": "Header fixture " * 1500}},
             {"type": "event_msg", "timestamp": "2026-11-27T10:00:00Z", "payload": {"type": "task_started", "turn_id": "turn-1"}},
             {"type": "event_msg", "timestamp": "2026-11-27T10:00:01Z", "payload": {
                 "type": "item_completed", "thread_id": session, "turn_id": "turn-1",
@@ -52,9 +52,10 @@ def validate(app, bundle):
         for index in range(600):
             rows.append({"type": "event_msg", "timestamp": "2026-11-27T10:01:00Z", "payload": {
                 "type": "item_completed", "thread_id": session, "turn_id": "turn-1",
-                "item": {"type": "CommandExecution", "id": f"command-{index}", "command": "echo fixture", "status": "completed", "exit_code": 0}}})
+                "item": {"type": "CommandExecution", "id": f"command-{index}", "command": "echo fixture", "status": "completed", "exit_code": 0, "aggregated_output": "fixture output " * 1000}}})
         source.write_text("".join(json.dumps(row) + "\n" for row in rows), encoding="utf-8")
         source.chmod(0o600)
+        assert source.stat().st_size > 8 * 1024 * 1024, "Exercise a real-sized transcript above the previous 8 MiB cap"
         env = environment(SimpleNamespace(codex_home=codex, claude_home=work / "missing-claude"), work)
         config = json.loads(run(binary, env, work, "discover"))
         source_id = config["sources"][0]["source_id"]
@@ -69,20 +70,19 @@ def validate(app, bundle):
                 break
             run(binary, env, work, "cockpit", "--once", "--json")
         assert len(retained) > 600, f"Fixture must exceed the general history page limit: {len(retained)}"
-        for kind in (None, "codex.mcp_payload"):
-            args = ["content", "grant", "--db", db, "--config", config_file, "--source-id", source_id]
-            if kind:
-                args.extend(["--kind", kind])
-            run(binary, env, work, *args)
         # This intentionally reproduces the stale sibling file from the report.
         write_json(db.with_name("sources.json"), {"version": 2, "plugin_host": "/missing/old-build/host", "plugin_catalog": "/missing/old-build/catalog.json", "sources": config["sources"]})
         for width, height in ((120, 32), (80, 24), (60, 18)):
+            run(binary, env, work, "content", "grant", "--db", db, "--config", config_file, "--source-id", source_id, "--kind", "codex.mcp_payload")
             with Cockpit(binary, env, work, width, height) as cockpit:
                 try:
                     cockpit.markers("roster", "Agenturm command center", "All 1")
                     tap(cockpit, b"\r")
                     cockpit.markers("inspector", "Overview", "Prompts", "Details", "Activity", "MCP", "Tools")
                     tap(cockpit, b"P")
+                    cockpit.markers("first-use prompt permission", "Enable prompt history", "a Enable this source")
+                    assert "INSPECTOR_PROMPT_MARKER" not in cockpit.screen.contents()
+                    tap(cockpit, b"a")
                     cockpit.markers("active prompt authority", "1 loaded")
                     assert "Metadata only" not in cockpit.screen.contents()
                     tap(cockpit, b"\x1b[C")
@@ -120,7 +120,8 @@ def validate(app, bundle):
                 except Exception:
                     print(cockpit.screen.contents(), file=sys.stderr)
                     raise
-            print(f"Verified default inspector, stale config, prompt/MCP delivery, activity/tools and terminal restoration at {width}x{height}", flush=True)
+            run(binary, env, work, "content", "revoke", "--db", db, "--source-id", source_id)
+            print(f"Verified fresh prompt permission, stale config, prompt/MCP delivery, activity/tools and terminal restoration at {width}x{height}", flush=True)
 
 
 if __name__ == "__main__":

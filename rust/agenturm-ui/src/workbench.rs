@@ -91,6 +91,7 @@ pub struct PromptHistoryCursor {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub enum PromptAvailability {
     Granted,
+    ApprovalRequired(String),
     MissingIdentity,
     Denied(String),
     Unavailable(String),
@@ -517,6 +518,8 @@ pub enum WorkCommand {
     Seen(RequestEntry),
     Locate(RequestEntry),
     Prompts(WorkAnchor),
+    /// Explicit user consent, limited to user text from this exact local source.
+    EnablePromptHistory(WorkAnchor),
     PromptPage {
         anchor: WorkAnchor,
         before: Option<PromptHistoryCursor>,

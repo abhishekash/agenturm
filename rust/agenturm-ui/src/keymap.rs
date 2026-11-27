@@ -126,6 +126,7 @@ pub(crate) mod id {
     pub(crate) const ACTIVITY_PROMPTS: &str = "activity.prompts-only";
     pub(crate) const EVIDENCE_HOME_END: &str = "evidence.home-end";
     pub(crate) const EVIDENCE_PAGE: &str = "evidence.page";
+    pub(crate) const PROMPT_ENABLE: &str = "prompt.enable";
     pub(crate) const PROMPT_READ: &str = "prompt.read";
     pub(crate) const PROMPT_OLDER: &str = "prompt.older";
     pub(crate) const PROMPT_NEWER: &str = "prompt.newer";
@@ -525,6 +526,14 @@ pub(crate) const ACTIONS: &[Action] = &[
         "Read recorded requests for the selected session",
         Group::Review,
         &[Context::CommandCenter, Context::History],
+    ),
+    action(
+        id::PROMPT_ENABLE,
+        "a",
+        "Enable prompt history for this source",
+        "Allow user-text reads from this exact local source; tool payload permissions stay separate",
+        Group::Review,
+        &[Context::History],
     ),
     action(
         id::PROMPT_READ,
