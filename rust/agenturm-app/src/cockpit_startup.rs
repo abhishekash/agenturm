@@ -1,8 +1,8 @@
 //! Default cockpit launch and session-owned collection for a bundled install.
 
 use super::{
-    CollectionConfigFile, CollectionReport, ConfiguredCollector, Store, discovery,
-    validate_collection_config,
+    CollectionConfigFile, CollectionReport, ConfiguredCollector, ProcessConfig, ProcessSource,
+    Store, discovery, validate_collection_config,
 };
 use agenturm_kernel::{ExtensionId, Observation};
 use agenturm_store::StoreError;
@@ -11,7 +11,7 @@ use std::env;
 use std::ffi::OsStr;
 use std::io::ErrorKind;
 use std::path::{Path, PathBuf};
-use std::sync::atomic::{AtomicBool, Ordering};
+use std::sync::atomic::{AtomicBool, AtomicU64, Ordering};
 use std::sync::{Arc, Mutex, mpsc};
 use std::thread::{self, JoinHandle};
 use std::time::{Duration, Instant};
@@ -73,14 +73,29 @@ enum CollectorRequest {
     },
 }
 
+struct SourceStartResult {
+    source: ExtensionId,
+    config: ProcessConfig,
+    result: Result<ProcessSource, String>,
+}
+
 struct ActiveCollector {
     stop: Arc<AtomicBool>,
     worker: Option<JoinHandle<()>>,
     receiver: Option<JoinHandle<()>>,
     requests: Option<mpsc::SyncSender<CollectorRequest>>,
+    timings: StartupTimings,
+    first_refresh_ms: Arc<AtomicU64>,
     notice: Arc<Mutex<Option<String>>>,
     receiver_notice: Arc<Mutex<Option<String>>>,
     authority: Arc<Mutex<discovery::SourceAuthority>>,
+}
+
+#[derive(Clone, Copy, Default)]
+struct StartupTimings {
+    discovery: Duration,
+    store: Duration,
+    source_queue: Duration,
 }
 
 impl ActiveCollector {
@@ -88,8 +103,11 @@ impl ActiveCollector {
         mut collector: ConfiguredCollector,
         stop: Arc<AtomicBool>,
         initial_report: CollectionReport,
+        timings: StartupTimings,
     ) -> Result<Self, String> {
         let worker_stop = Arc::clone(&stop);
+        let first_refresh_ms = Arc::new(AtomicU64::new(u64::MAX));
+        let worker_first_refresh_ms = Arc::clone(&first_refresh_ms);
         let notice = Arc::new(Mutex::new(collection_notice(&initial_report)));
         let worker_notice = Arc::clone(&notice);
         let mut native_members = super::native_session_context::StartupMembers::default();
@@ -100,53 +118,116 @@ impl ActiveCollector {
         ));
         let worker_authority = Arc::clone(&authority);
         let (requests, work) = mpsc::sync_channel::<CollectorRequest>(2);
+        let (source_starts, source_start_results) = mpsc::sync_channel::<SourceStartResult>(16);
         let receiver_notice = Arc::new(Mutex::new(None));
         let bound_receiver = super::trace_receiver::TraceReceiver::bind_cockpit();
         let worker = thread::Builder::new()
             .name("agenturm-cockpit-collector".into())
             .spawn(move || {
                 let interval = Duration::from_secs(1);
+                let mut first_refresh = true;
+                // Let the first workspace read use the already-persisted
+                // history before competing with a fresh collection pass.
                 let mut refresh = Instant::now() + interval;
-                while !worker_stop.load(Ordering::Relaxed) {
-                    match work.recv_timeout(refresh.saturating_duration_since(Instant::now())) {
-                        Ok(CollectorRequest::Prompt { command, reply }) => {
-                            let result = match *command {
-                                WorkCommand::EnablePromptHistory(owner) => {
-                                    enable_prompt_history(&mut collector, owner)
-                                }
-                                command => super::cockpit_workflows::execute_prompt_with_config(
-                                    &collector.database,
-                                    Some(&collector.store),
-                                    command,
-                                    Some(&collector),
-                                ),
-                            };
-                            let _ = reply.send(result);
-                        }
-                        Ok(CollectorRequest::Trace {
-                            source,
-                            observations,
-                            reply,
-                        }) => {
-                            let result = super::trace_import::commit_with_store(
-                                &mut collector.store,
-                                &source,
-                                &observations,
-                            )
-                            .map(|_| ());
-                            let _ = reply.send(result);
-                        }
-                        Err(mpsc::RecvTimeoutError::Timeout) => {}
-                        Err(mpsc::RecvTimeoutError::Disconnected) => break,
+                loop {
+                    let mut source_start_completed = false;
+                    while let Ok(result) = source_start_results.try_recv() {
+                        collector.complete_pending_source_start(
+                            result.source,
+                            result.config,
+                            result.result,
+                        );
+                        source_start_completed = true;
                     }
-                    if worker_stop.load(Ordering::Relaxed) {
+                    if source_start_completed {
+                        refresh = Instant::now();
+                    }
+                    let mut disconnected = false;
+                    let request = if worker_stop.load(Ordering::Relaxed) {
+                        match work.recv() {
+                            Ok(request) => Some(request),
+                            Err(_) => {
+                                disconnected = true;
+                                None
+                            }
+                        }
+                    } else {
+                        let mut wait = refresh.saturating_duration_since(Instant::now());
+                        if collector.source_start_in_flight() {
+                            wait = wait.min(Duration::from_millis(50));
+                        }
+                        match work.recv_timeout(wait) {
+                            Ok(request) => Some(request),
+                            Err(mpsc::RecvTimeoutError::Timeout) => None,
+                            Err(mpsc::RecvTimeoutError::Disconnected) => {
+                                disconnected = true;
+                                None
+                            }
+                        }
+                    };
+                    if disconnected {
                         break;
                     }
+                    if let Some(request) = request {
+                        match request {
+                            CollectorRequest::Prompt { reply, .. }
+                                if worker_stop.load(Ordering::Relaxed) =>
+                            {
+                                let _ = reply.send(Err("Cockpit is shutting down".into()));
+                            }
+                            CollectorRequest::Prompt { command, reply } => {
+                                let result = match *command {
+                                    WorkCommand::EnablePromptHistory(owner) => {
+                                        enable_prompt_history(&mut collector, owner)
+                                    }
+                                    command => {
+                                        super::cockpit_workflows::execute_prompt_with_config(
+                                            &collector.database,
+                                            Some(&collector.store),
+                                            command,
+                                            Some(&collector),
+                                        )
+                                    }
+                                };
+                                let _ = reply.send(result);
+                            }
+                            CollectorRequest::Trace {
+                                source,
+                                observations,
+                                reply,
+                            } => {
+                                // A request already handed to this worker is
+                                // committed before its receiver can return a
+                                // success response, including during shutdown.
+                                let result = super::trace_import::commit_with_store(
+                                    &mut collector.store,
+                                    &source,
+                                    &observations,
+                                )
+                                .map(|_| ());
+                                let _ = reply.send(result);
+                            }
+                        }
+                    }
+                    if worker_stop.load(Ordering::Relaxed) {
+                        // Drain accepted trace commits until the receiver
+                        // drops its sender.
+                        continue;
+                    }
+                    launch_pending_sources(&mut collector, &source_starts);
                     if Instant::now() < refresh {
                         continue;
                     }
                     refresh = Instant::now() + interval;
+                    let refresh_started = Instant::now();
                     let report = collector.refresh();
+                    if first_refresh {
+                        worker_first_refresh_ms.store(
+                            refresh_started.elapsed().as_millis().min(u64::MAX as u128) as u64,
+                            Ordering::Relaxed,
+                        );
+                        first_refresh = false;
+                    }
                     if let Ok(mut authority) = worker_authority.lock() {
                         *authority = native_members
                             .update(Some(collector.source_authority()))
@@ -205,10 +286,42 @@ impl ActiveCollector {
             worker: Some(worker),
             receiver,
             requests: Some(requests),
+            timings,
+            first_refresh_ms,
             notice,
             receiver_notice,
             authority,
         })
+    }
+}
+
+fn launch_pending_sources(
+    collector: &mut ConfiguredCollector,
+    results: &mpsc::SyncSender<SourceStartResult>,
+) {
+    for (source, config) in collector.take_pending_source_starts() {
+        let worker_config = config.clone();
+        let event_config = config.clone();
+        let retry_config = config;
+        let source_for_event = source.clone();
+        let results = results.clone();
+        let started = thread::Builder::new()
+            .name("agenturm-source-start".into())
+            .spawn(move || {
+                let result = ProcessSource::spawn(worker_config).map_err(|error| error.to_string());
+                let _ = results.send(SourceStartResult {
+                    source: source_for_event,
+                    config: event_config,
+                    result,
+                });
+            });
+        if let Err(error) = started {
+            collector.complete_pending_source_start(
+                source,
+                retry_config,
+                Err(format!("start source adapter worker failed: {error}")),
+            );
+        }
     }
 }
 
@@ -242,11 +355,32 @@ impl Drop for ActiveCollector {
     fn drop(&mut self) {
         self.stop.store(true, Ordering::Relaxed);
         self.requests.take();
+        let timings_enabled = env::var_os("AGENTURM_TIMINGS").is_some();
+        let receiver_started = Instant::now();
         if let Some(receiver) = self.receiver.take() {
             let _ = receiver.join();
         }
+        let receiver_join = receiver_started.elapsed();
+        let worker_started = Instant::now();
         if let Some(worker) = self.worker.take() {
             let _ = worker.join();
+        }
+        if timings_enabled {
+            let first_refresh_ms = self.first_refresh_ms.load(Ordering::Relaxed);
+            let first_refresh_duration = if first_refresh_ms == u64::MAX {
+                "not_completed".to_owned()
+            } else {
+                first_refresh_ms.to_string()
+            };
+            eprintln!(
+                "agenturm timing: startup_discovery_ms={} startup_store_ms={} startup_source_queue_ms={} background_first_refresh_duration_ms={} shutdown_receiver_join_ms={} shutdown_collector_join_ms={}",
+                self.timings.discovery.as_millis(),
+                self.timings.store.as_millis(),
+                self.timings.source_queue.as_millis(),
+                first_refresh_duration,
+                receiver_join.as_millis(),
+                worker_started.elapsed().as_millis(),
+            );
         }
     }
 }
@@ -260,6 +394,8 @@ pub(super) fn prepare_cockpit_store(db: Option<&Path>) -> Result<CockpitStartup,
         });
     }
 
+    let mut timings = StartupTimings::default();
+    let discovery_started = Instant::now();
     let state_home = env::var_os("XDG_STATE_HOME");
     let home = env::var_os("HOME");
     let directory = state_directory(state_home.as_deref(), home.as_deref())?;
@@ -282,12 +418,14 @@ pub(super) fn prepare_cockpit_store(db: Option<&Path>) -> Result<CockpitStartup,
         }
         Err(error) => return Err(error),
     };
+    timings.discovery = discovery_started.elapsed();
 
     #[cfg(target_os = "linux")]
     if let Some(follow) = &config.follow {
         super::validate_source_root_isolation(&db, follow.selection.roots())?;
     }
 
+    let store_started = Instant::now();
     let mut builder = std::fs::DirBuilder::new();
     builder.recursive(true);
     #[cfg(unix)]
@@ -316,11 +454,22 @@ pub(super) fn prepare_cockpit_store(db: Option<&Path>) -> Result<CockpitStartup,
     store
         .initialize_managed_retention()
         .map_err(|_| "Could not initialize the managed retention policy")?;
+    timings.store = store_started.elapsed();
     let stop = Arc::new(AtomicBool::new(false));
-    let mut collector =
-        ConfiguredCollector::with_local_store(config, db.clone(), store, Some(&stop))?;
-    let report = collector.refresh();
-    let collection = ActiveCollector::start(collector, stop, report)?;
+    let source_start_started = Instant::now();
+    let collector =
+        ConfiguredCollector::with_local_store_deferred(config, db.clone(), store, Some(&stop))?;
+    // Opening the cockpit should not wait for a full discovery/collection
+    // refresh. Existing saved history is useful immediately; the collector
+    // starts refreshing in its worker as soon as the workspace is available.
+    let report = CollectionReport {
+        summary: "Collection starting".into(),
+        failed_sources: 0,
+        global_failures: Vec::new(),
+        discovery: None,
+    };
+    timings.source_queue = source_start_started.elapsed();
+    let collection = ActiveCollector::start(collector, stop, report, timings)?;
     Ok(CockpitStartup {
         db,
         notice: None,
@@ -329,6 +478,9 @@ pub(super) fn prepare_cockpit_store(db: Option<&Path>) -> Result<CockpitStartup,
 }
 
 fn collection_notice(report: &CollectionReport) -> Option<String> {
+    if report.summary == "Collection starting" {
+        return Some("Starting collection · saved history available".into());
+    }
     if report.has_failures() {
         let mut failures = Vec::new();
         if report.failed_sources > 0 {
@@ -450,6 +602,28 @@ mod tests {
         ] {
             assert!(notice.contains(detail), "missing {detail}: {notice}");
         }
+    }
+
+    #[test]
+    fn startup_notice_is_replaced_by_the_first_collection_result() {
+        let starting = CollectionReport {
+            summary: "Collection starting".into(),
+            failed_sources: 0,
+            global_failures: vec![],
+            discovery: None,
+        };
+        assert_eq!(
+            collection_notice(&starting).as_deref(),
+            Some("Starting collection · saved history available")
+        );
+
+        let complete = CollectionReport {
+            summary: "Collection complete".into(),
+            failed_sources: 0,
+            global_failures: vec![],
+            discovery: None,
+        };
+        assert_eq!(collection_notice(&complete), None);
     }
 
     #[test]
