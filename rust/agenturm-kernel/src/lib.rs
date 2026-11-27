@@ -607,6 +607,14 @@ pub trait ObservationStore {
     ) -> Result<ObservationPage, String> {
         Err("observation store does not support exact worker turn history queries".into())
     }
+    /// Queries one exact worker across a native session, across all turns.
+    fn query_worker_observations(
+        &self,
+        _query: &ObservationQuery,
+        _worker_id: Option<&str>,
+    ) -> Result<ObservationPage, String> {
+        Err("observation store does not support exact worker history queries".into())
+    }
     fn commit(
         &mut self,
         source_id: &str,
@@ -919,6 +927,7 @@ impl Kernel {
             store,
             &ObservationQuery::latest(MAX_DURABLE_SNAPSHOT_OBSERVATIONS),
             None,
+            None,
         );
         self.evaluate_extensions(&mut snapshot, selection_scope);
         snapshot
@@ -932,7 +941,21 @@ impl Kernel {
         query: ObservationQuery,
     ) -> Snapshot {
         let mut snapshot = Snapshot::default();
-        let selection_scope = self.load_observations(&mut snapshot, store, &query, None);
+        let selection_scope = self.load_observations(&mut snapshot, store, &query, None, None);
+        self.evaluate_extensions(&mut snapshot, selection_scope);
+        snapshot
+    }
+
+    /// Rebuilds extension state from one exact worker across a native session.
+    pub fn refresh_worker_history_with_store(
+        &mut self,
+        store: &impl ObservationStore,
+        query: ObservationQuery,
+        worker_id: Option<&str>,
+    ) -> Snapshot {
+        let mut snapshot = Snapshot::default();
+        let selection_scope =
+            self.load_observations(&mut snapshot, store, &query, None, Some(worker_id));
         self.evaluate_extensions(&mut snapshot, selection_scope);
         snapshot
     }
@@ -951,6 +974,7 @@ impl Kernel {
                 turn_id,
                 worker_filter: None,
             },
+            None,
         )
     }
 
@@ -970,6 +994,7 @@ impl Kernel {
                 turn_id,
                 worker_filter: Some(worker_id),
             },
+            None,
         )
     }
 
@@ -978,9 +1003,11 @@ impl Kernel {
         store: &impl ObservationStore,
         query: ObservationQuery,
         turn: TurnSelection<'_>,
+        worker_scope: Option<Option<&str>>,
     ) -> Snapshot {
         let mut snapshot = Snapshot::default();
-        let selection_scope = self.load_observations(&mut snapshot, store, &query, Some(turn));
+        let selection_scope =
+            self.load_observations(&mut snapshot, store, &query, Some(turn), worker_scope);
         self.evaluate_extensions(&mut snapshot, selection_scope);
         snapshot
     }
@@ -991,22 +1018,36 @@ impl Kernel {
         store: &impl ObservationStore,
         query: &ObservationQuery,
         turn: Option<TurnSelection<'_>>,
+        worker_scope: Option<Option<&str>>,
     ) -> ObservationSelectionScope {
         let selection_scope = if query.before.is_some() {
             ObservationSelectionScope::Continuation
-        } else if query.harness_id.is_some() || query.session_id.is_some() || turn.is_some() {
+        } else if query.harness_id.is_some()
+            || query.session_id.is_some()
+            || turn.is_some()
+            || worker_scope.is_some()
+        {
             ObservationSelectionScope::Filtered
         } else {
             ObservationSelectionScope::Latest
         };
         let store_id = ExtensionId("kernel.store".into());
-        let page = match turn {
-            Some(TurnSelection {
-                turn_id,
-                worker_filter: Some(worker_id),
-            }) => store.query_worker_turn_observations(query, turn_id, worker_id),
-            Some(TurnSelection { turn_id, .. }) => store.query_turn_observations(query, turn_id),
-            None => store.query_observations(query),
+        let page = match (turn, worker_scope) {
+            (None, Some(worker_id)) => store.query_worker_observations(query, worker_id),
+            (
+                Some(TurnSelection {
+                    turn_id,
+                    worker_filter: Some(worker_id),
+                }),
+                None,
+            ) => store.query_worker_turn_observations(query, turn_id, worker_id),
+            (Some(TurnSelection { turn_id, .. }), None) => {
+                store.query_turn_observations(query, turn_id)
+            }
+            (Some(_), Some(_)) => {
+                Err("worker history cannot combine session and turn scopes".into())
+            }
+            (None, None) => store.query_observations(query),
         };
         match page {
             Ok(page) => {
@@ -1032,6 +1073,20 @@ impl Kernel {
                         &store_id,
                         ExtensionStage::AdmissionRead,
                         "observation store returned a row outside the requested turn",
+                    ));
+                    return selection_scope;
+                }
+                if let Some(worker_id) = worker_scope
+                    && page.observations.iter().any(|row| {
+                        query.harness_id.as_deref() != Some(row.harness_id.as_str())
+                            || query.session_id != row.identity.session_id
+                            || row.identity.worker_id.as_deref() != worker_id
+                    })
+                {
+                    snapshot.failures.push(failure(
+                        &store_id,
+                        ExtensionStage::AdmissionRead,
+                        "observation store returned a row outside the requested worker",
                     ));
                     return selection_scope;
                 }

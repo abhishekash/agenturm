@@ -2035,11 +2035,12 @@ fn workspace_response_with_sources(
             before,
             include_reviews,
         } => {
+            let selected_agent_scope = matches!(&selection, HistorySelection::Session(_, _));
             let mut page =
                 load_workspace_history(app, store, db, selection, before, include_reviews)?;
             page.history_identity = store.workspace_history_identity();
             page.private_telemetry_history = store.private_telemetry_history();
-            if store.session_title_store().is_some() {
+            if store.session_title_store().is_some() && !selected_agent_scope {
                 let configured;
                 let authority = if native_sources.is_some() {
                     native_sources
@@ -2729,6 +2730,7 @@ fn load_workspace_history(
                 SessionView::Overview => |ids| ids.overview,
                 SessionView::Details => |ids| ids.details,
                 SessionView::Activity => |ids| ids.activity,
+                SessionView::Mcp => |ids| ids.mcp,
                 SessionView::Review => |ids| ids.review,
                 SessionView::Metrics => |ids| ids.overview,
                 SessionView::Usage => |ids| ids.usage,
@@ -2756,10 +2758,14 @@ fn load_workspace_history(
                     return Ok(page);
                 }
             };
-            let (mut snapshot, continuation) = visible_workspace_history(
-                app.refresh_history_query(store, query),
-                include_reviews,
-            )?;
+            let history = match session.worker_id.as_deref() {
+                Some(worker_id) => {
+                    app.kernel
+                        .refresh_worker_history_with_store(store, query, Some(worker_id))
+                }
+                None => app.refresh_history_query(store, query),
+            };
+            let (mut snapshot, continuation) = visible_workspace_history(history, include_reviews)?;
             let mut panes = session_evidence::add_session_panes(&mut snapshot, &session);
             session_display::add_context(&mut snapshot, &panes.overview, &session);
             let mut page = inspector_activity::overview_page(snapshot);

@@ -1925,6 +1925,20 @@ impl Store {
         self.query_history(query, Some(turn_id), Some(worker_id), false, None)
     }
 
+    /// Reads one exact worker across all turns in a native session.
+    pub fn query_worker_observations(
+        &self,
+        query: &ObservationQuery,
+        worker_id: Option<&str>,
+    ) -> Result<ObservationPage> {
+        if query.harness_id.is_none() || query.session_id.is_none() {
+            return Err(StoreError::Invalid(
+                "worker history requires a source and session",
+            ));
+        }
+        self.query_history(query, None, Some(worker_id), false, None)
+    }
+
     /// Reads imported traces explicitly attached to the selected native
     /// source/session at the same history snapshot as the session evidence.
     pub fn query_linked_traces(&self, query: &ObservationQuery) -> Result<ObservationPage> {
@@ -2429,6 +2443,14 @@ impl ObservationStore for Store {
     ) -> std::result::Result<ObservationPage, String> {
         Store::query_worker_turn_observations(self, query, turn_id, worker_id)
             .map_err(|error| error.to_string())
+    }
+
+    fn query_worker_observations(
+        &self,
+        query: &ObservationQuery,
+        worker_id: Option<&str>,
+    ) -> std::result::Result<ObservationPage, String> {
+        Store::query_worker_observations(self, query, worker_id).map_err(|error| error.to_string())
     }
 
     fn commit(

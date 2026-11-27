@@ -151,6 +151,7 @@ pub enum SessionView {
     Overview,
     Details,
     Activity,
+    Mcp,
     Review,
     Metrics,
     Usage,
@@ -1391,6 +1392,34 @@ impl Workspace {
         self.prompt_nav = None;
         self.prompt_read_epoch = None;
         self.prompt_read_key = None;
+        let selected_agent = match self.history.last().map(|view| &view.selection) {
+            Some(HistorySelection::Session(session, _)) => Some(session.clone()),
+            Some(HistorySelection::ReviewEdits(session)) => Some(session.as_ref().clone()),
+            Some(HistorySelection::McpSearch {
+                scope: McpSearchScope::Session(session),
+                ..
+            }) => Some(session.as_ref().clone()),
+            Some(_) => None,
+            None => self.agents.session_scope.as_ref().and_then(|identity| {
+                self.agents.catalog.as_ref().and_then(|catalog| {
+                    catalog
+                        .sessions
+                        .iter()
+                        .find(|session| session_key(session) == *identity)
+                        .cloned()
+                })
+            }),
+        };
+        if let Some(session) = selected_agent
+            && let Some(mode) = match destination {
+                Destination::Activity => Some(SessionView::Activity),
+                Destination::Mcp => Some(SessionView::Mcp),
+                _ => None,
+            }
+        {
+            self.select_session_mode(sender, session, mode);
+            return;
+        }
         let view = match destination {
             Destination::Agents => {
                 self.history.clear();
@@ -1966,9 +1995,10 @@ impl Workspace {
         {
             let scope = match &view.selection {
                 HistorySelection::All(_) => Some(McpSearchScope::All),
-                HistorySelection::Session(row, _) => {
-                    Some(McpSearchScope::Session(Box::new(row.clone())))
-                }
+                HistorySelection::Session(row, _) => row
+                    .worker_id
+                    .is_none()
+                    .then(|| McpSearchScope::Session(Box::new(row.clone()))),
                 HistorySelection::Turn(row) => Some(McpSearchScope::Turn(Box::new(row.clone()))),
                 HistorySelection::TurnReview(row) => Some(McpSearchScope::Turn(row.clone())),
                 HistorySelection::McpSearch { scope, .. } => Some(scope.clone()),
@@ -4833,14 +4863,69 @@ fn draw_workspace_base(frame: &mut Frame, workspace: &mut Workspace) {
             .areas(area);
             let [brand, tabs] =
                 Layout::vertical([Constraint::Length(1), Constraint::Length(1)]).areas(nav);
-            frame.render_widget(
-                Paragraph::new(format!(
-                    " Agenturm   ·   {} observations",
-                    view.page.ui.observations
-                ))
-                .style(heading_style()),
-                brand,
-            );
+            let heading = match &view.selection {
+                HistorySelection::Session(session, SessionView::Mcp) => {
+                    let selected_name = session.display_name();
+                    let parent_name = session.parent_session_id.as_deref().map(|parent_id| {
+                        workspace
+                            .agents
+                            .catalog
+                            .as_ref()
+                            .and_then(|catalog| {
+                                catalog.sessions.iter().find(|candidate| {
+                                    candidate.harness_id == session.harness_id
+                                        && candidate.session_id == parent_id
+                                })
+                            })
+                            .map(RecordedSession::display_name)
+                            .map_or_else(|| parent_id.to_owned(), |name| name.into_owned())
+                    });
+                    let child_count = workspace.agents.catalog.as_ref().map_or(0, |catalog| {
+                        catalog
+                            .sessions
+                            .iter()
+                            .filter(|candidate| {
+                                candidate.harness_id == session.harness_id
+                                    && candidate.parent_session_id.as_deref()
+                                        == Some(session.session_id.as_str())
+                            })
+                            .count()
+                    });
+                    if area.width >= 96 {
+                        format!(
+                            " Agenturm · MCP · selected {}{} · {} visible children",
+                            visible_text(&selected_name),
+                            parent_name.map_or_else(String::new, |parent| {
+                                format!(" · parent {}", visible_text(&parent))
+                            }),
+                            child_count
+                        )
+                    } else {
+                        format!(
+                            " Agenturm · MCP · selected {}",
+                            visible_text(&selected_name)
+                        )
+                    }
+                }
+                HistorySelection::Session(session, mode) => {
+                    let view_name = match mode {
+                        SessionView::Overview => "session",
+                        SessionView::Details => "details",
+                        SessionView::Activity => "activity",
+                        SessionView::Review => "review",
+                        SessionView::Metrics => "metrics",
+                        SessionView::Usage => "usage",
+                        SessionView::Traces => "traces",
+                        SessionView::Mcp => unreachable!("MCP has its own scoped heading"),
+                    };
+                    format!(
+                        " Agenturm · {view_name} · selected {}",
+                        visible_text(&session.display_name())
+                    )
+                }
+                _ => format!(" Agenturm   ·   {} observations", view.page.ui.observations),
+            };
+            frame.render_widget(Paragraph::new(heading).style(heading_style()), brand);
             draw_view_bar(frame, &view.page.ui, tabs);
             table.draw(
                 frame,
@@ -5051,6 +5136,7 @@ mod tests {
         RecordedSession {
             harness_id: source.into(),
             session_id: id.into(),
+            worker_id: None,
             task_title: None,
             native_context: None,
             project_path: None,
@@ -5068,7 +5154,6 @@ mod tests {
             },
             reviewed: false,
             history_identity: None,
-            worker_id: None,
             pending_requests: Vec::new(),
         }
     }

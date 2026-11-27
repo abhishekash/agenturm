@@ -221,6 +221,9 @@ pub enum NativeSelection {
         turn_id: String,
         worker_id: Option<String>,
     },
+    WorkerScope {
+        worker_id: Option<String>,
+    },
     LinkedTraces,
     LinkedTurnTraces {
         turn_id: String,
@@ -280,6 +283,9 @@ impl NativeSelection {
             Self::AllWorkers { turn_id } => HistorySelection::AllWorkers { turn_id },
             Self::Worker { turn_id, worker_id } => HistorySelection::Turn {
                 turn_id,
+                worker_id: worker_id.as_deref(),
+            },
+            Self::WorkerScope { worker_id } => HistorySelection::Worker {
                 worker_id: worker_id.as_deref(),
             },
             Self::LinkedTraces => HistorySelection::LinkedTraces,
@@ -1965,6 +1971,20 @@ impl ObservationStore for NativeStore {
             query,
             NativeSelection::Worker {
                 turn_id: turn_id.into(),
+                worker_id: worker_id.map(str::to_owned),
+            },
+        )
+        .map_err(|error| error.to_string())
+    }
+
+    fn query_worker_observations(
+        &self,
+        query: &ObservationQuery,
+        worker_id: Option<&str>,
+    ) -> Result<ObservationPage, String> {
+        self.query(
+            query,
+            NativeSelection::WorkerScope {
                 worker_id: worker_id.map(str::to_owned),
             },
         )
