@@ -11,7 +11,7 @@ chmod 775 "$AGENTURM_BIN_DIR"
 printf '#!/bin/sh\nprintf "previous launcher\\n"\n' > "$AGENTURM_BIN_DIR/agenturm"
 chmod 755 "$AGENTURM_BIN_DIR/agenturm"
 bash "$script_dir/install-rust-bootstrap.sh"
-[[ $("$AGENTURM_BIN_DIR/agenturm" --version) == 'agenturm 0.3.12' ]]
+[[ $("$AGENTURM_BIN_DIR/agenturm" --version) == 'agenturm 0.3.14' ]]
 backup=("$AGENTURM_BIN_DIR"/agenturm.before-rust.*)
 [[ ${#backup[@]} -eq 1 && $("${backup[0]}") == 'previous launcher' ]]
 selected=$(readlink "$AGENTURM_BIN_DIR/agenturm")

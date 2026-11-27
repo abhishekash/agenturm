@@ -423,6 +423,15 @@ def inspector_owner(frame):
     return fields.get("Source"), fields.get("Session")
 
 
+def exact_inspector_owner(cockpit, phase):
+    # Human context leads Overview. Exact source/session identity is visible in
+    # Details; section cycling does not open the private prompt navigator.
+    cockpit.key(b"mm")
+    cockpit.markers(f"details for {phase}", "Session details")
+    cockpit.until(lambda frame: None not in inspector_owner(frame), f"exact owner for {phase}")
+    return inspector_owner(cockpit.screen.contents())
+
+
 def roster_selection(frame, query):
     if ("Agenturm command center" not in frame or roster_search(frame) != query
             or "Backspace edit" in frame or "Enter / Esc done" in frame):
@@ -485,7 +494,7 @@ def select_human_row(cockpit, row, max_matches):
     for _ in range(max_matches):
         cockpit.key(b"\r")
         cockpit.markers(f"inspector for named roster row {session}", "Session overview", "Recorded turns on page")
-        owner = inspector_owner(cockpit.screen.contents())
+        owner = exact_inspector_owner(cockpit, session)
         require(None not in owner, "Inspector omitted an exact source or session field")
         cockpit.key(b"\x1b")
         cockpit.until(lambda frame: roster_selection(frame, query) is not None,
@@ -505,7 +514,7 @@ def select_human_row(cockpit, row, max_matches):
             cockpit.until(expected_selection, f"current native status and context for {session}")
             cockpit.key(b"\r")
             cockpit.markers(f"reopen after Esc for {session}", "Session overview", "Recorded turns on page")
-            require(inspector_owner(cockpit.screen.contents()) == owner,
+            require(exact_inspector_owner(cockpit, session) == owner,
                     f"Esc changed the selected session {source} / {session}")
             cockpit.key(b"\x1b")
             cockpit.until(lambda frame: roster_selection(frame, query) is not None,
