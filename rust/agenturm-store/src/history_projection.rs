@@ -162,7 +162,14 @@ fn matches_projection(kind: &ObservationKind, projection: &HistoryProjection) ->
         (ObservationKind::TraceSpan(span), HistoryProjection::Traces { trace_id }) => {
             trace_id.as_ref().is_none_or(|id| id == &span.trace_id)
         }
-        (ObservationKind::TraceProgress(_), HistoryProjection::Traces { trace_id: None }) => true,
+        (ObservationKind::SpanTokenUsage(usage), HistoryProjection::Traces { trace_id }) => {
+            trace_id
+                .as_ref()
+                .is_none_or(|id| id == &usage.span.trace_id)
+        }
+        (ObservationKind::TraceProgress(progress), HistoryProjection::Traces { trace_id }) => {
+            trace_id.as_ref().is_none_or(|id| id == &progress.trace_id)
+        }
         (ObservationKind::TraceProgress(progress), HistoryProjection::Progress { trace_id }) => {
             trace_id.as_ref().is_none_or(|id| id == &progress.trace_id)
         }
@@ -214,7 +221,7 @@ fn matches_projection(kind: &ObservationKind, projection: &HistoryProjection) ->
 mod tests {
     use super::*;
     use agenturm_kernel::telemetry_summary::TraceSpanSummary;
-    use agenturm_kernel::{McpMethod, TraceSpan, TraceStatus};
+    use agenturm_kernel::{McpMethod, SpanTokenUsage, TraceSpan, TraceSpanIdentity, TraceStatus};
 
     fn commit(
         store: &mut Store,
@@ -366,6 +373,60 @@ mod tests {
         assert_eq!(parent.session_id, "fixture");
         assert!(parent.parent_session_id.is_none());
         assert!(parent.relationship_kind.is_none());
+    }
+
+    #[test]
+    fn trace_projection_includes_only_matching_spans_and_their_usage() {
+        let mut store = Store::open(":memory:").unwrap();
+        let source = ExtensionId::parse("otlp.fixture").unwrap();
+        let trace_id = "a".repeat(32);
+        let span_id = "1".repeat(16);
+        let mut rows = span(&source, &trace_id, &span_id, 10).to_vec();
+        rows.push(event(
+            &source,
+            &format!("otlp-usage:{trace_id}:{span_id}"),
+            10,
+            KernelObservationKind::SpanTokenUsage(SpanTokenUsage {
+                span: TraceSpanIdentity {
+                    trace_id: trace_id.clone(),
+                    span_id: span_id.clone(),
+                },
+                target_source_id: None,
+                input_tokens: Some(12),
+                output_tokens: Some(4),
+                cache_read_input_tokens: None,
+                cache_write_input_tokens: None,
+                reasoning_output_tokens: None,
+                total_tokens: Some(16),
+            }),
+        ));
+        rows.extend(span(&source, &"b".repeat(32), &"2".repeat(16), 20));
+        commit(&mut store, &source, &rows, None, "first");
+
+        let page = store
+            .query_projected_history(
+                &ObservationQuery {
+                    harness_id: Some(source.as_str().into()),
+                    ..ObservationQuery::latest(10)
+                },
+                &HistoryProjection::Traces {
+                    trace_id: Some(trace_id.clone()),
+                },
+                None,
+                None,
+                None,
+            )
+            .unwrap();
+        assert_eq!(page.observations.len(), 2);
+        assert!(page.observations.iter().any(|row| matches!(
+            &row.kind,
+            KernelObservationKind::TraceSpan(span) if span.trace_id == trace_id
+        )));
+        assert!(page.observations.iter().any(|row| matches!(
+            &row.kind,
+            KernelObservationKind::SpanTokenUsage(usage)
+                if usage.span.trace_id == trace_id && usage.input_tokens == Some(12)
+        )));
     }
 
     #[test]

@@ -91,6 +91,7 @@ pub use trace_receiver::{TraceReceiverOptions, execute_trace_receiver};
 pub use trace_run::{TraceRunOptions, execute_trace_run};
 
 use agenturm_kernel::ReadSnapshot;
+use agenturm_kernel::retained_history::HistoryProjection;
 use agenturm_kernel::{
     Capability, ExtensionId, ExtensionPlugin, Harness, Kernel, MAX_DURABLE_SNAPSHOT_OBSERVATIONS,
     MetricRow, Observation, ObservationExtension, ObservationKind, ObservationPosition,
@@ -2814,10 +2815,23 @@ fn load_workspace_history(
             Ok(page)
         }
         HistorySelection::All(view) => {
-            let (mut snapshot, continuation) = visible_workspace_history(
-                app.refresh_history_query(store, query),
-                include_reviews,
-            )?;
+            let history = if view == WorkspaceView::Traces {
+                let retained = store.query_projected_history(
+                    &query,
+                    &HistoryProjection::Traces { trace_id: None },
+                    None,
+                    None,
+                )?;
+                Snapshot {
+                    observations: retained.observations,
+                    observations_truncated: retained.has_more,
+                    history_snapshot_id: retained.snapshot_id,
+                    ..Snapshot::default()
+                }
+            } else {
+                app.refresh_history_query(store, query)
+            };
+            let (mut snapshot, continuation) = visible_workspace_history(history, include_reviews)?;
             let mut ids = session_evidence::add_workspace_panes(&mut snapshot);
             let host = store.local_host_data().then(|| {
                 let (id, evidence) = cockpit_host::add_host_pane(&mut snapshot);
@@ -4600,6 +4614,76 @@ pub fn render(command: Command) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn workspace_traces_loads_trace_evidence_before_the_general_history_page_limit() {
+        let mut store = Store::open(":memory:").unwrap();
+        let trace_source = ExtensionId::parse("otlp.fixture").unwrap();
+        let export = serde_json::json!({
+            "resourceSpans": [{
+                "scopeSpans": [{
+                    "spans": [{
+                        "traceId": "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa",
+                        "spanId": "1111111111111111",
+                        "startTimeUnixNano": "1",
+                        "endTimeUnixNano": "2",
+                        "attributes": [{
+                            "key": "session.id",
+                            "value": { "stringValue": "trace-session" }
+                        }]
+                    }]
+                }]
+            }]
+        });
+        let (traces, skipped, payloads) =
+            trace_import::decode_json(export.to_string().as_bytes(), &trace_source, None, None)
+                .unwrap();
+        assert_eq!(skipped, 0);
+        assert!(payloads.is_empty());
+        trace_import::commit_with_store(&mut store, &trace_source, &traces).unwrap();
+
+        let noisy_source = ExtensionId::parse("harness.fixture").unwrap();
+        let noise = (0..INSPECT_PAGE_SIZE + 1)
+            .map(|index| Observation {
+                harness_id: noisy_source.clone(),
+                event_id: format!("activity-{index:04}"),
+                revision: 0,
+                identity: agenturm_kernel::ObservationIdentity::session("busy-session"),
+                observed_at_unix_ns: 10 + index as u64,
+                kind: ObservationKind::Lifecycle {
+                    state: "running".into(),
+                    reason_code: None,
+                },
+            })
+            .collect::<Vec<_>>();
+        ObservationStore::commit(
+            &mut store,
+            noisy_source.as_str(),
+            None,
+            "noise-batch",
+            &noise,
+        )
+        .unwrap();
+
+        let mut app = AgenturmApp::empty_composition();
+        let page = load_workspace_history(
+            &mut app,
+            &store,
+            std::path::Path::new("unused.sqlite"),
+            HistorySelection::All(WorkspaceView::Traces),
+            None,
+            false,
+        )
+        .unwrap();
+        assert_eq!(page.snapshot.observations.len(), 1);
+        assert!(matches!(
+            &page.snapshot.observations[0].kind,
+            ObservationKind::TraceSpan(span) if span.trace_id == "aaaaaaaaaaaaaaaaaaaaaaaaaaaaaaaa"
+        ));
+        let pane = page.initial_pane.as_ref().unwrap();
+        assert_eq!(page.evidence_tables[pane].rows.len(), 1);
+        assert!(page.features.continuation.is_none());
+    }
 
     #[test]
     fn history_page_renders_worker_launch_without_resolution_wording() {

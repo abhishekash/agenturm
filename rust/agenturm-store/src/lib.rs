@@ -2137,10 +2137,13 @@ impl Store {
                           OR json_extract(observation.kind_json,'$.kind')<>'host_sample')))
                AND CASE ?16
                    WHEN 'activity' THEN json_extract(observation.kind_json,'$.kind') NOT IN ('trace_span_summary','metric_descriptor')
-                   WHEN 'traces' THEN (
-                       (json_extract(observation.kind_json,'$.kind')='trace_span'
-                           AND (?17 IS NULL OR json_extract(observation.kind_json,'$.trace_id')=?17))
-                       OR (?17 IS NULL AND json_extract(observation.kind_json,'$.kind')='trace_progress'))
+                    WHEN 'traces' THEN (
+                        (json_extract(observation.kind_json,'$.kind')='trace_span'
+                            AND (?17 IS NULL OR json_extract(observation.kind_json,'$.trace_id')=?17))
+                        OR (json_extract(observation.kind_json,'$.kind')='span_token_usage'
+                            AND (?17 IS NULL OR json_extract(observation.kind_json,'$.span.trace_id')=?17))
+                        OR (json_extract(observation.kind_json,'$.kind')='trace_progress'
+                            AND (?17 IS NULL OR json_extract(observation.kind_json,'$.trace_id')=?17)))
                    WHEN 'progress' THEN (json_extract(observation.kind_json,'$.kind')='trace_progress'
                        AND (?17 IS NULL OR json_extract(observation.kind_json,'$.trace_id')=?17))
                    WHEN 'mcp' THEN (json_extract(observation.kind_json,'$.kind')='mcp_call' AND (
