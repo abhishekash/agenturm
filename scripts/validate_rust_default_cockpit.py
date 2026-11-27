@@ -149,7 +149,7 @@ def selected_task(frame):
 
 
 def selected_title(frame):
-    match = re.match(r"^›\s+[▸▾!●○]\s+(.*)$", selected_task(frame))
+    match = re.match(r"^›\s+(?:[▸▾]\s+)?(.*)$", selected_task(frame))
     assert match, "the filtered roster has no selected task title"
     return match.group(1).strip()
 
