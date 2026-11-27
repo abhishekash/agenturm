@@ -4,6 +4,14 @@
 
 - Discover Kiro sessions from `$KIRO_HOME/sessions` (default `~/.kiro`): prompts, replies, shell commands with their recorded exit codes, file edits, MCP calls, turn outcomes and errors. Kiro tool approvals become waiting requests until answered. Delegated workers link to the session or worker that spawned them and take their outcome from it. List Kiro MCP servers from user and workspace `mcp.json`, and offer `kiro-cli chat --resume-id` for top-level sessions. Show Kiro-reported credits for each run, each session and all stored history, where other runtimes show tokens. List the tool-approval answers recorded in each Kiro session in the inspector, with rule-blocked calls, the standing user, workspace and agent rules that apply, and the folders trusted in Kiro.
 
+## Rust 0.3.11 — stable
+
+- Publish the native Rust app as a stable release for Apple Silicon macOS 13+ and Linux x86-64/ARM64.
+- Install the complete bundle as `agenturm` through the direct curl installer or Homebrew tap, without Python or a Rust toolchain.
+- Verify native installation, repeat installation, launcher replacement, and companion binaries on all three targets.
+
+[Rust 0.3.11 release notes](docs/releases/rust-0.3.11.md)
+
 ## Rust 0.3.10 prerelease
 
 - Improve task roster readability, responsive task details, and prompt empty states.

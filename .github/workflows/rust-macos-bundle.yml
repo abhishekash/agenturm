@@ -84,7 +84,7 @@ jobs:
           if ! gh release view "$GITHUB_REF_NAME" >/dev/null 2>&1; then
             gh release create "$GITHUB_REF_NAME" --verify-tag --draft --latest=false \
               --title "Agenturm Rust ${GITHUB_REF_NAME#rust-v}" \
-              --notes 'Qualified Linux and Apple Silicon archives. This prerelease includes Apple Silicon macOS 13+; Intel Macs are not supported.' \
+              --notes 'Native Linux and Apple Silicon archives. Apple Silicon requires macOS 13+; Intel Macs are not supported.' \
               || gh release view "$GITHUB_REF_NAME" >/dev/null
           fi
           for file in "$asset" "$asset.sha256"; do
