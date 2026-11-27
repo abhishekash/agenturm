@@ -1032,6 +1032,9 @@ impl Workspace {
         match (change, result) {
             (_, Err(error)) => {
                 self.prompt_receiver = None;
+                if let Some(nav) = &mut self.prompt_nav {
+                    nav.fail(error.clone());
+                }
                 if let Some(form) = &mut self.view_io.review_form {
                     form.message = Some(error.clone());
                 }
@@ -1717,6 +1720,17 @@ impl Workspace {
                 self.load_prompt_page(sender, true);
                 true
             }
+            prompt::PromptInput::EnableHistory(anchor) => {
+                if self.pending.is_none() {
+                    nav.begin_load();
+                    self.request(
+                        sender,
+                        WorkspaceRequest::Work(WorkCommand::EnablePromptHistory(anchor.clone())),
+                        Change::Work(Some(anchor)),
+                    );
+                }
+                true
+            }
             prompt::PromptInput::Retry => {
                 self.load_prompt_page(sender, false);
                 true
@@ -1802,6 +1816,7 @@ impl Workspace {
                 }
             }
             PromptAvailability::MissingIdentity => nav.missing_identity(),
+            PromptAvailability::ApprovalRequired(reason) => nav.approval_required(reason),
             PromptAvailability::Denied(reason) => nav.deny(reason),
             PromptAvailability::Unavailable(reason) => nav.unavailable(reason),
             PromptAvailability::Stale(reason) => nav.stale(reason),
@@ -3543,6 +3558,13 @@ impl Workspace {
                 .as_ref()
                 .is_none_or(|nav| !nav.retry_available())
                 .then_some("No failed prompt load to retry"),
+            keymap::id::PROMPT_ENABLE => self
+                .prompt_nav
+                .as_ref()
+                .is_none_or(|nav| {
+                    !matches!(nav.status(), prompt::PromptStatus::ApprovalRequired(_))
+                })
+                .then_some("Select a local source that needs prompt permission"),
             keymap::id::PROMPT_READ
             | keymap::id::PROMPT_OLDER
             | keymap::id::PROMPT_NEWER
@@ -3934,6 +3956,7 @@ impl Workspace {
             keymap::id::EVIDENCE_PAGE => {
                 return self.send_key(sender, plain_code(KeyCode::PageDown));
             }
+            keymap::id::PROMPT_ENABLE => return self.send_key(sender, plain_key('a')),
             keymap::id::PROMPT_READ => {
                 return self.send_key(sender, plain_code(KeyCode::Enter));
             }
@@ -8893,6 +8916,55 @@ mod tests {
             workspace.history.last().map(|view| &view.selection),
             Some(HistorySelection::Turn(turn)) if turn.turn_id == "turn-7"
         ));
+    }
+
+    #[test]
+    fn prompt_permission_action_keeps_the_exact_source_session_and_worker() {
+        let mut row = session("harness.codex.exact", "permission-session", "running", None);
+        row.worker_id = Some("worker-a".into());
+        let anchor = WorkAnchor::from(&row);
+        let mut workspace = Workspace::new();
+        workspace.history.push(HistoryView::new(
+            HistorySelection::Session(row, SessionView::Overview),
+            session_history_page(&["Session overview"]),
+        ));
+        let (sender, requests) = mpsc::channel();
+        press(&mut workspace, &sender, KeyCode::Char('P'));
+        let _ = requests.try_recv().unwrap();
+        let mut page = prompt_page(anchor.clone());
+        page.entries.clear();
+        page.availability = crate::workbench::PromptAvailability::ApprovalRequired(
+            "Current source needs approval".into(),
+        );
+        workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::PromptHistory(page))));
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let text = workspace_text(&mut workspace, width, height);
+            assert!(text.contains("Enable prompt history"), "{text}");
+            assert!(text.contains("a Enable this source"), "{text}");
+            assert!(!text.contains("Access denied"), "{text}");
+            assert!(!text.contains("Metadata only"), "{text}");
+        }
+        press(&mut workspace, &sender, KeyCode::Enter);
+        assert!(
+            requests.try_recv().is_err(),
+            "Reading never silently grants access"
+        );
+        press(&mut workspace, &sender, KeyCode::Char('a'));
+        assert!(
+            matches!(requests.try_recv(), Ok(WorkspaceRequest::Work(WorkCommand::EnablePromptHistory(owner))) if owner == anchor)
+        );
+        workspace.finish(Err("The source changed before approval".into()));
+        let text = workspace_text(&mut workspace, 80, 24);
+        assert!(
+            text.contains("The source changed before approval"),
+            "{text}"
+        );
+        assert!(!text.contains("Loading prompt history"), "{text}");
+        press(&mut workspace, &sender, KeyCode::Char('a'));
+        assert!(
+            requests.try_recv().is_err(),
+            "Only the approval-required state enables this action"
+        );
     }
 
     #[test]

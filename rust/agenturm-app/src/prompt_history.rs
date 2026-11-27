@@ -70,9 +70,10 @@ impl PromptPage {
 #[derive(Clone, Debug, Eq, PartialEq)]
 pub(crate) enum PromptHistoryError {
     MissingIdentity,
-    /// The adapter refused the listing: missing/revoked grant, changed source
-    /// or an unproven capture. The reason is shown verbatim.
+    /// The source changed or its capture could not be proven. The reason is
+    /// shown verbatim; a missing approval has its own recoverable state.
     Denied(String),
+    ApprovalRequired(String),
     /// The capability is not present in this build or mode.
     Unavailable(String),
 }
@@ -83,7 +84,7 @@ impl fmt::Display for PromptHistoryError {
             Self::MissingIdentity => {
                 formatter.write_str("Prompt history needs a session or agent ID")
             }
-            Self::Denied(reason) => formatter.write_str(reason),
+            Self::Denied(reason) | Self::ApprovalRequired(reason) => formatter.write_str(reason),
             Self::Unavailable(reason) => formatter.write_str(reason),
         }
     }
@@ -184,9 +185,16 @@ pub(crate) fn load_page(
     }
     #[cfg(target_os = "linux")]
     {
-        let references =
-            crate::content_preview::list_user_prompts(db, config, source, session, worker, writer)
-                .map_err(PromptHistoryError::Denied)?;
+        let references = match crate::content_preview::list_user_prompts_with_access(
+            db, config, source, session, worker, writer,
+        )
+        .map_err(PromptHistoryError::Denied)?
+        {
+            agenturm_content::PromptListing::Granted(references) => references,
+            agenturm_content::PromptListing::ApprovalRequired(reason) => {
+                return Err(PromptHistoryError::ApprovalRequired(reason));
+            }
+        };
         Ok(scoped_window(references, turn, before, page))
     }
     #[cfg(not(target_os = "linux"))]

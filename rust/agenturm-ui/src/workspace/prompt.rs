@@ -590,6 +590,7 @@ pub(crate) enum PromptStatus {
     },
     EmptyScope,
     CaptureDisabled,
+    ApprovalRequired(String),
     MissingIdentity,
     Denied(String),
     Revoked,
@@ -627,6 +628,7 @@ impl PromptStatus {
             Self::CaptureDisabled => "Content capture is disabled for this source.".into(),
             Self::MissingIdentity => "Prompt history needs a session or agent ID.".into(),
             Self::Denied(reason) => format!("Prompt access denied · {reason}"),
+            Self::ApprovalRequired(_) => "Prompt history needs your permission · a Enable this source".into(),
             Self::Revoked => "Prompt access was revoked · captured text cleared.".into(),
             Self::Expired => "The prompt grant expired · captured text cleared.".into(),
             Self::MissingCapture => {
@@ -681,6 +683,7 @@ pub(crate) enum PromptInput {
     ReaderClosed,
     MainSession(WorkAnchor),
     LoadEarlier,
+    EnableHistory(WorkAnchor),
     Retry,
     NoRequests,
 }
@@ -912,6 +915,11 @@ impl PromptNavigator {
         true
     }
 
+    pub(crate) fn approval_required(&mut self, reason: String) {
+        self.loading_older = false;
+        self.status = PromptStatus::ApprovalRequired(reason);
+    }
+
     pub(crate) fn deny(&mut self, reason: impl Into<String>) {
         self.loading_older = false;
         self.status = PromptStatus::Denied(reason.into());
@@ -1088,6 +1096,16 @@ impl PromptNavigator {
     /// The shell must not send this key to the history-page actions.
     pub(crate) fn key(&mut self, code: KeyCode) -> PromptInput {
         if self.focus != PromptFocus::Reader && !self.chooser.open {
+            if code == KeyCode::Char('a')
+                && matches!(self.status, PromptStatus::ApprovalRequired(_))
+            {
+                return PromptInput::EnableHistory(WorkAnchor {
+                    source: self.scope.source.clone(),
+                    session: self.scope.session.clone(),
+                    worker: self.scope.worker.clone(),
+                    turn: self.scope.turn.clone(),
+                });
+            }
             match code {
                 KeyCode::PageUp if self.earlier_available => return PromptInput::LoadEarlier,
                 KeyCode::Char('R') if self.retry_available() => return PromptInput::Retry,
@@ -1407,6 +1425,9 @@ impl PromptNavigator {
     }
 
     pub(crate) fn hints(&self) -> String {
+        if matches!(self.status, PromptStatus::ApprovalRequired(_)) {
+            return "a Enable this source · Esc Back".into();
+        }
         let mut hints = match self.focus {
             PromptFocus::Reader => {
                 "↑↓ / PgUp/PgDn Scroll · z Readable/Original · ← Prompts · Esc Back"
@@ -1425,6 +1446,9 @@ impl PromptNavigator {
     }
 
     pub(crate) fn hints_for(&self, width: u16) -> String {
+        if matches!(self.status, PromptStatus::ApprovalRequired(_)) {
+            return self.hints();
+        }
         if width >= 70 {
             return self.hints();
         }
@@ -1486,6 +1510,27 @@ impl PromptNavigator {
             PromptStatus::Loading { .. } => {
                 lines.push(Line::from(
                     "Requests will appear here when they are captured.",
+                ));
+            }
+            PromptStatus::ApprovalRequired(_) => {
+                lines.push(Line::from(
+                    "Allow Agenturm to read saved prompts from this local source.",
+                ));
+                lines.push(Line::styled(
+                    format!("Source: {}", visible_text(&self.scope.source)),
+                    theme::muted(),
+                ));
+                lines.push(Line::from(
+                    "Applies to user prompts from this source and its sessions.",
+                ));
+                lines.push(Line::styled(
+                    "Tool payload permissions stay separate.",
+                    theme::muted(),
+                ));
+                lines.push(Line::from(""));
+                lines.push(Line::styled(
+                    "a Enable this source · Esc Back",
+                    label_style(),
                 ));
             }
             PromptStatus::CaptureDisabled => {
@@ -1583,6 +1628,7 @@ impl PromptNavigator {
     fn empty_label(&self) -> String {
         match &self.status {
             PromptStatus::CaptureDisabled => "Capture disabled".into(),
+            PromptStatus::ApprovalRequired(_) => "Enable prompt history".into(),
             PromptStatus::MissingIdentity => "Needs a session or agent ID".into(),
             PromptStatus::EmptyScope => "No captured requests".into(),
             PromptStatus::Denied(_) => "Access denied".into(),

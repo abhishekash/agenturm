@@ -113,12 +113,17 @@ impl ActiveCollector {
                 while !worker_stop.load(Ordering::Relaxed) {
                     match work.recv_timeout(refresh.saturating_duration_since(Instant::now())) {
                         Ok(CollectorRequest::Prompt { command, reply }) => {
-                            let result = super::cockpit_workflows::execute_prompt_with_config(
-                                &collector.database,
-                                Some(&collector.store),
-                                *command,
-                                Some(&collector),
-                            );
+                            let result = match *command {
+                                WorkCommand::EnablePromptHistory(owner) => {
+                                    enable_prompt_history(&mut collector, owner)
+                                }
+                                command => super::cockpit_workflows::execute_prompt_with_config(
+                                    &collector.database,
+                                    Some(&collector.store),
+                                    command,
+                                    Some(&collector),
+                                ),
+                            };
                             let _ = reply.send(result);
                         }
                         Ok(CollectorRequest::Trace {
@@ -207,6 +212,32 @@ impl ActiveCollector {
             receiver_notice,
             authority,
         })
+    }
+}
+
+fn enable_prompt_history(
+    collector: &mut ConfiguredCollector,
+    owner: agenturm_ui::WorkAnchor,
+) -> Result<WorkResult, String> {
+    #[cfg(target_os = "linux")]
+    {
+        let scope =
+            super::content_preview::prompt_grant_scope(&collector.store, collector, &owner)?;
+        collector
+            .store
+            .grant_content(&scope)
+            .map_err(|error| error.to_string())?;
+        super::cockpit_workflows::execute_prompt_with_config(
+            &collector.database,
+            Some(&collector.store),
+            WorkCommand::Prompts(owner),
+            Some(collector),
+        )
+    }
+    #[cfg(not(target_os = "linux"))]
+    {
+        let _ = (collector, owner);
+        Err("Prompt history is available on Linux".into())
     }
 }
 
