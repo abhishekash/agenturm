@@ -4,20 +4,20 @@ set -euo pipefail
 umask 077
 
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
-version=0.3.14
+version=0.3.15
 case "$(uname -s):$(uname -m)" in
   Darwin:arm64)
     target=macos-aarch64
-    digest=557a7365e1d917f03bda6d78dbbe22e8bffce9f1f78a7791ec6cafc21a8d3481
+    digest=2b763273999765a6893a0779971d2601c98bd9855e22760fe075d36e7f7e7aed
     [[ $(sw_vers -productVersion | cut -d. -f1) -ge 13 ]] || fail 'macOS 13 or newer is required'
     ;;
   Linux:x86_64|Linux:amd64)
     target=linux-x86_64
-    digest=1d94facb081215d187f973f073a9760d36cadc4a73b1a6dbf13267c142b12288
+    digest=85c1cb64013425b8a44ad6d25b5974e50310f19051e31ce1bf2cfc3c8c22b6e3
     ;;
   Linux:aarch64|Linux:arm64)
     target=linux-aarch64
-    digest=4cfcc40beaabe2459551e2bdb0d65c44c51b59c7c96f4ceed4e32b456e6e853c
+    digest=231c2e89a406a56089ddeb56fa00d6f997d6cf7980a44d234a14cc7461ce8568
     ;;
   Darwin:*) fail 'Apple Silicon is required; Intel Macs and Rosetta are unsupported';;
   *) fail "unsupported platform: $(uname -s) $(uname -m)";;
