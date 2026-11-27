@@ -798,6 +798,7 @@ mod tests {
             )
             .unwrap();
         crate::content_grant::create_schema(&store.connection, 9).unwrap();
+        crate::history_read::drop_indexes(&store.connection);
         store
             .connection
             .execute(

@@ -645,6 +645,7 @@ mod tests {
         commit(&mut store, OPEN, None, "retained", vec![original.clone()]);
         let expected = [(OPEN.to_owned(), original)];
         assert_eq!(store.observations().unwrap(), expected);
+        crate::history_read::drop_indexes(&store.connection);
         store.connection.execute_batch(
             "DROP INDEX agenturm_metric_descriptions_by_series;
              ALTER TABLE agenturm_history_batches DROP COLUMN admitted_at_unix_ns;

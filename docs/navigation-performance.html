@@ -1,0 +1,47 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agenturm navigation performance</title>
+<style>
+:root{color-scheme:light dark;--bg:#f7f8fa;--fg:#18202a;--muted:#485564;--panel:#e9edf2;--accent:#5940aa}
+@media(prefers-color-scheme:dark){:root{--bg:#15141a;--fg:#eeeaf4;--muted:#b8afc9;--panel:#25212e;--accent:#c5adff}}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--fg);font:17px/1.65 system-ui,sans-serif}main{max-width:920px;margin:auto;padding:clamp(20px,5vw,64px)}h1{font-size:clamp(28px,5vw,44px);line-height:1.15}h2{margin-top:2em;line-height:1.25}p,li{overflow-wrap:anywhere}small{color:var(--muted)}pre{background:var(--panel);padding:18px;overflow:auto;border-radius:10px;font-size:14px}code{font-family:ui-monospace,monospace}a{color:var(--accent)}table{border-collapse:collapse;width:100%;font-size:15px}th,td{text-align:left;border-bottom:1px solid var(--muted);padding:10px 8px}.scroll{overflow:auto}
+</style>
+<main>
+<small>Agenturm · Engineering validation · 28 November 2026</small>
+<h1>Indexed history instead of full-store sorts</h1>
+<h2>Diagnosis</h2>
+<p>The running native 0.3.15 process showed about 170% CPU (100% is one logical core), while the host had approximately 9 GiB available memory and no swap use. A read-only investigation found about 1.7 million observations in a 1.3 GiB database. Selecting just 256 recent records took <strong>4.342 seconds</strong> in one diagnostic sample: SQLite scanned observations and built a temporary sort.</p>
+<p>Navigation, workflow notification checks, and background collection share this read path. A small result limit did not bound the database work. No personal observation content was exported; the live database was not modified.</p>
+<h2>Change</h2>
+<ul>
+<li>Schema 28 adds ordered time and source/time indexes.</li>
+<li>Direct session and cursor predicates allow indexed seeks; exact source/session reads use the existing session index instead of walking unrelated newer sessions.</li>
+<li>A sparse source/session/kind/time index finds lifecycle and relationship facts without searching every message or tool record when a relationship is absent.</li>
+<li>The writer upgrades recognized databases transactionally under its existing lease. Read-only archive inspection does not migrate.</li>
+</ul>
+<p>Observation identity, authorization, snapshots, correction revisions, cursor ordering, retention, and content grants preserve their existing semantics. Older read-only stores and grant-preserving migration are tested.</p>
+<h2>Reproduce</h2>
+<pre>cargo test -p agenturm-store --locked history_read::tests
+cargo test -p agenturm-store --release --locked \
+  history_read::tests::benchmark_history_pages -- --ignored --nocapture</pre>
+<p>Each invocation creates and removes a temporary database with one million synthetic metadata records. Set <code>AGENTURM_BENCH_ROWS</code> for another size. The process measures the same store without and then with indexes, warms the queries, takes 12 samples per 256- and 16,384-record page, and compares complete results. It reports index-build time and database growth. Bulk seeding does not measure ingestion. These are warm query samples, not production percentiles or cold-cache measurements.</p>
+<h2>Local measurement</h2>
+<p>Linux 7.0.0 x86-64, Intel i7-1165G7 (8 logical CPUs), 15.7 GiB RAM; Rust 1.100.0 release build and bundled SQLite. One million synthetic metadata records, 12 warm samples per case:</p>
+<div class="scroll"><table><thead><tr><th>Read</th><th>Without indexes: median (min–max)</th><th>Indexed: median (min–max)</th></tr></thead><tbody>
+<tr><td>256 records</td><td>6,606.544 ms (3,352.880–9,896.085)</td><td>2.012 ms (1.914–3.265)</td></tr>
+<tr><td>16,384 records</td><td>5,904.269 ms (3,522.262–10,368.278)</td><td>71.861 ms (69.016–129.634)</td></tr>
+</tbody></table></div>
+<p>The 256-record page fell from 999,999 full-scan steps, one sort, and 52,002,382 VM steps to 256 scan steps, no sort, and 12,404 VM steps. Index construction plus checkpoint took 3,192.5 ms. Database size grew from 208.61 to 295.44 MiB: 86.83 MiB extra.</p>
+<p>Other desktop processes and concurrent workspace/release compilation were active. The wide baseline range is <strong>not an isolated-machine latency result</strong>. Exact page equality and deterministic work reduction are stronger evidence than a speedup ratio. The timing command's peak RSS includes compilation; it is not Agenturm app memory.</p>
+<p>The full local workspace suite passed, including 183 UI and 158 Store tests (one opt-in benchmark excluded). Workspace/all-target Clippy passed with warnings denied. Some process-adapter integration tests need explicit binary paths; CI additionally exercises those configured paths.</p>
+<h2>Deterministic regressions</h2>
+<p>A 50,000-record fixture exercises recent, source-only, deep older-page, exact-session, and absent-session reads through the Store API. A 64-record page must perform no SQLite sort, at most 65 full-scan steps, and fewer than 50,000 VM steps. An absent relationship lookup must use the sparse fact index, perform no full scan or sort, and use fewer than 100 VM steps. These are work limits, not timing assertions.</p>
+<h2>Limits and upgrade</h2>
+<p>This removes a measured database bottleneck. It does not establish whole-app idle CPU, ingestion throughput, peak RSS, terminal rendering cost, or keypress-to-frame p95. Session-catalog aggregation still scans session evidence; sparse projections can examine many nonmatching records. Extra indexes consume disk and add write work. Their first build can delay startup on a large history.</p>
+<p><strong>Stop older Agenturm versions before upgrading a shared store.</strong> Schema 28 is not readable by 0.3.15. The published 0.3.15 installer does not contain this source fix.</p>
+<h2>Related materials</h2>
+<p>No capture, sharing, installation, or privacy claim changes are needed for this unreleased patch. A separate website checkout still advertises Python/PyPI installation in <code>src/pages/index.astro</code>; that pre-existing drift is outside this patch. The GitHub profile and visual assets were not reviewed.</p>
+</main>
+</html>
