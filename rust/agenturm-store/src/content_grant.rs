@@ -643,7 +643,7 @@ impl Store {
                 AND ((?7 AND proof.cursor GLOB 'oc4:*') OR (NOT ?7 AND proof.cursor GLOB 'v2:*'))
              WHERE o.source_id = ?1 AND (?2 IS NULL OR o.event_id = ?2) AND (?3 IS NULL OR o.revision = ?3)
                AND (?4 IS NULL OR o.session_id = ?4 OR (?5 IS NOT NULL AND o.session_id = ?5))
-               AND (?5 IS NULL OR o.worker_id = ?5)
+               AND ((?5 IS NULL AND o.worker_id IS NULL) OR o.worker_id = ?5)
                AND o.scope = 'session' AND o.turn_id IS NOT NULL AND o.operation_id IS NULL
                AND json_extract(o.kind_json, '$.kind') = 'message'
                AND json_extract(o.kind_json, '$.role') = 'user'
@@ -764,6 +764,26 @@ mod tests {
         assert_eq!(references.len(), 1);
         assert_eq!(references[0].0, "worker-a-message");
         assert_eq!(references[0].1.worker_id.as_deref(), Some("worker-a"));
+        let root_references = store
+            .with_user_content_fence(|store| {
+                store
+                    .current_user_text_references(&scope, &grant, "root-session", None)
+                    .unwrap()
+            })
+            .unwrap();
+        assert_eq!(root_references.len(), 1);
+        assert_eq!(root_references[0].0, "root-message");
+        assert_eq!(root_references[0].1.worker_id, None);
+        assert!(
+            store
+                .with_user_content_fence(|store| {
+                    store
+                        .current_user_text_evidence(&scope, &grant, "worker-a-message", 0, None)
+                        .unwrap()
+                })
+                .unwrap()
+                .is_none()
+        );
         assert!(
             store
                 .with_user_content_fence(|store| {
