@@ -183,6 +183,8 @@ pub(crate) enum NativeOperation {
         history_identity: String,
         source_id: ExtensionId,
         session_id: String,
+        #[serde(default, skip_serializing_if = "Option::is_none")]
+        worker_id: Option<String>,
     },
     RevealPrivate {
         history_identity: String,
@@ -827,10 +829,20 @@ pub(crate) fn dispatch(
             history_identity,
             source_id,
             session_id,
+            worker_id,
         } => {
             return NativeReply::PrivatePrompts(
                 authorize_private(store, allowed, role, &history_identity, &source_id).and_then(
-                    |()| native_content::list(store, private, allowed, &source_id, &session_id),
+                    |()| {
+                        native_content::list(
+                            store,
+                            private,
+                            allowed,
+                            &source_id,
+                            &session_id,
+                            worker_id.as_deref(),
+                        )
+                    },
                 ),
             );
         }
@@ -1353,6 +1365,15 @@ impl NativeStore {
         source: &ExtensionId,
         session_id: &str,
     ) -> Result<Vec<agenturm_content::PromptReference>, NativeClientError> {
+        self.list_private_prompts_for_worker(source, session_id, None)
+    }
+
+    pub fn list_private_prompts_for_worker(
+        &self,
+        source: &ExtensionId,
+        session_id: &str,
+        worker_id: Option<&str>,
+    ) -> Result<Vec<agenturm_content::PromptReference>, NativeClientError> {
         let history_identity = self
             .read_binding
             .clone()
@@ -1362,6 +1383,7 @@ impl NativeStore {
                 history_identity,
                 source_id: source.clone(),
                 session_id: session_id.into(),
+                worker_id: worker_id.map(str::to_owned),
             },
         )?
         .map_err(NativeClientError::Private)
@@ -1424,6 +1446,7 @@ impl NativeStore {
                 selection: PrivatePromptSelection {
                     source_id: source.clone(),
                     session_id: session_id.into(),
+                    worker_id: None,
                     event_id: event_id.into(),
                     revision,
                     snapshot_id,

@@ -800,7 +800,7 @@ fn broker_prompt_history(
             let source = ExtensionId::parse(&owner.source)
                 .map_err(|_| PromptHistoryError::MissingIdentity)?;
             let references = store
-                .list_private_prompts(&source, &owner.session)
+                .list_private_prompts_for_worker(&source, &owner.session, owner.worker.as_deref())
                 .map_err(|error| PromptHistoryError::Denied(error.to_string()))?;
             Ok(crate::prompt_history::scoped_window(
                 references,
@@ -830,6 +830,7 @@ fn execute_private_cockpit(
                 source_id: ExtensionId::parse(&prompt.anchor.source)
                     .map_err(|error| error.to_string())?,
                 session_id: prompt.anchor.session,
+                worker_id: prompt.anchor.worker,
                 event_id: prompt.event_id,
                 revision: prompt.revision,
                 kind: PrivateEvidenceKind::UserText {
@@ -914,6 +915,7 @@ fn execute_private_cockpit(
                 source_id: ExtensionId::parse(&operation.source_id)
                     .map_err(|error| error.to_string())?,
                 session_id: operation.session_id,
+                worker_id: None,
                 event_id: operation.event_id,
                 revision: operation.revision,
                 kind,
@@ -937,6 +939,7 @@ fn execute_private_cockpit(
                 source_id: ExtensionId::parse(&operation.source_id)
                     .map_err(|error| error.to_string())?,
                 session_id: operation.session_id,
+                worker_id: None,
                 event_id: operation.event_id,
                 revision: operation.revision,
                 kind: PrivateEvidenceKind::CodexEditDetail {

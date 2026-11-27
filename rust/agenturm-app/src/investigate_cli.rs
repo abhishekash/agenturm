@@ -487,6 +487,7 @@ mod linux {
                     let private = |kind| PrivateEvidenceSelection {
                         source_id: source.clone(),
                         session_id: session.clone(),
+                        worker_id: None,
                         event_id: event.clone(),
                         revision,
                         kind,

@@ -160,6 +160,7 @@ pub(crate) fn scoped_window(
 pub(crate) struct PromptReadScope<'a> {
     pub(crate) source: &'a ExtensionId,
     pub(crate) session: &'a str,
+    pub(crate) worker: Option<&'a str>,
     pub(crate) turn: Option<&'a str>,
 }
 
@@ -175,6 +176,7 @@ pub(crate) fn load_page(
     let PromptReadScope {
         source,
         session,
+        worker,
         turn,
     } = scope;
     if session.trim().is_empty() {
@@ -183,13 +185,15 @@ pub(crate) fn load_page(
     #[cfg(target_os = "linux")]
     {
         let references =
-            crate::content_preview::list_user_prompts(db, config, source, session, writer)
+            crate::content_preview::list_user_prompts(db, config, source, session, worker, writer)
                 .map_err(PromptHistoryError::Denied)?;
         Ok(scoped_window(references, turn, before, page))
     }
     #[cfg(not(target_os = "linux"))]
     {
-        let _ = (db, config, source, session, turn, before, page, writer);
+        let _ = (
+            db, config, source, session, worker, turn, before, page, writer,
+        );
         Err(PromptHistoryError::Unavailable(
             "Prompt history is available on Linux".into(),
         ))
@@ -313,6 +317,7 @@ mod tests {
             PromptReadScope {
                 source: &ExtensionId::parse("harness.fixture").unwrap(),
                 session: " ",
+                worker: None,
                 turn: None,
             },
             None,

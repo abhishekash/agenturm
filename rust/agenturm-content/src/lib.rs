@@ -59,6 +59,7 @@ pub struct PromptReference {
 
 pub struct PromptSelection<'a> {
     pub session_id: Option<&'a str>,
+    pub worker_id: Option<&'a str>,
     pub event_id: &'a str,
     pub revision: u32,
     pub snapshot_id: Option<ReadSnapshot>,
@@ -323,8 +324,21 @@ pub fn list(
     source_id: &ExtensionId,
     session_id: &str,
 ) -> Result<Vec<PromptReference>, String> {
+    list_for_worker(store, resolver, source_id, session_id, None)
+}
+
+pub fn list_for_worker(
+    store: &Store,
+    resolver: &SourceResolver<'_>,
+    source_id: &ExtensionId,
+    session_id: &str,
+    worker_id: Option<&str>,
+) -> Result<Vec<PromptReference>, String> {
     if !valid_id(session_id) {
         return Err("invalid selected session ID".into());
+    }
+    if worker_id.is_some_and(|id| !valid_id(id)) {
+        return Err("invalid selected worker ID".into());
     }
     store
         .with_user_content_fence(|store| {
@@ -334,7 +348,7 @@ pub fn list(
                 .map_err(|error| error.to_string())?
                 .ok_or_else(|| missing_approval(source.harness))?;
             let evidence = store
-                .current_user_text_references(&source.scope, &grant, session_id)
+                .current_user_text_references(&source.scope, &grant, session_id, worker_id)
                 .map_err(|error| error.to_string())?;
             let Some((_, first)) = evidence.first() else {
                 return Ok(Vec::new());
@@ -387,6 +401,7 @@ pub fn reveal_fenced(
         source_id,
         PromptSelection {
             session_id,
+            worker_id: None,
             event_id,
             revision,
             snapshot_id: None,
@@ -430,6 +445,7 @@ pub fn with_verified_prompt<T>(
         source_id,
         PromptSelection {
             session_id,
+            worker_id: None,
             event_id,
             revision,
             snapshot_id: None,
@@ -690,6 +706,7 @@ fn verified_prompt(
 ) -> Result<VerifiedPrompt, String> {
     let PromptSelection {
         session_id,
+        worker_id,
         event_id,
         revision,
         snapshot_id,
@@ -700,6 +717,9 @@ fn verified_prompt(
     }
     if session_id.is_some_and(|id| !valid_id(id)) {
         return Err("invalid selected session ID".into());
+    }
+    if worker_id.is_some_and(|id| !valid_id(id)) {
+        return Err("invalid selected worker ID".into());
     }
     let mut source = BoundSource::open(resolver, source_id)?;
     let grant = store
@@ -726,9 +746,14 @@ fn verified_prompt(
         _ => return Err("The selected prompt reference is incomplete".into()),
     }
     let evidence = store
-        .current_user_text_evidence(&source.scope, &grant, event_id, revision)
+        .current_user_text_evidence(&source.scope, &grant, event_id, revision, worker_id)
         .map_err(|error| error.to_string())?
-        .filter(|evidence| session_id.is_none_or(|session| evidence.session_id == session))
+        .filter(|evidence| {
+            session_id.is_none_or(|session| {
+                evidence.session_id == session
+                    || worker_id.is_some_and(|worker| evidence.worker_id.as_deref() == Some(worker))
+            })
+        })
         .ok_or(NO_EVIDENCE)?;
     let wanted = [(event_id.to_owned(), evidence.clone())];
     let text = source
@@ -737,7 +762,7 @@ fn verified_prompt(
         .ok_or(NO_EVIDENCE)?;
     let fresh = source.recheck(resolver, source_id)?;
     if store
-        .current_user_text_evidence(&fresh.scope, &grant, event_id, revision)
+        .current_user_text_evidence(&fresh.scope, &grant, event_id, revision, worker_id)
         .map_err(|error| error.to_string())?
         .as_ref()
         != Some(&evidence)
@@ -1130,23 +1155,37 @@ impl BoundSource {
             Harness::Codex => {
                 let header: CodexHeader =
                     serde_json::from_slice(header).map_err(|_| SOURCE_CHANGED)?;
-                if header.kind != "session_meta"
-                    || !valid_id(&header.payload.id)
-                    || header.payload.thread_source.as_deref() == Some("guardian_review")
-                    || header
-                        .payload
-                        .session_id
-                        .as_ref()
-                        .is_some_and(|root| root != &header.payload.id)
-                    || header
+                let root_id = header
+                    .payload
+                    .session_id
+                    .as_deref()
+                    .unwrap_or(&header.payload.id);
+                let worker_parent = header
+                    .payload
+                    .source
+                    .as_ref()
+                    .and_then(|source| source.pointer("/subagent/thread_spawn/parent_thread_id"))
+                    .and_then(serde_json::Value::as_str);
+                let is_root = root_id == header.payload.id
+                    && header
                         .payload
                         .source
                         .as_ref()
-                        .is_some_and(|source| source.get("subagent").is_some())
+                        .is_none_or(|source| source.get("subagent").is_none());
+                let is_linked_worker = root_id != header.payload.id
+                    && worker_parent == Some(root_id)
+                    && valid_id(root_id);
+                if header.kind != "session_meta"
+                    || !valid_id(&header.payload.id)
+                    || header.payload.thread_source.as_deref() == Some("guardian_review")
+                    || !(is_root || is_linked_worker)
                 {
                     return Err(SOURCE_CHANGED.into());
                 }
-                Header::Codex(header.payload.id)
+                Header::Codex {
+                    thread_id: header.payload.id.clone(),
+                    worker_id: is_linked_worker.then(|| header.payload.id.clone()),
+                }
             }
             Harness::Claude => {
                 let header: ClaudeHeader =
@@ -1219,7 +1258,7 @@ impl VerifiedPrefix {
         evidence: &CodexOperationEvidence,
     ) -> Result<OperationPayload, String> {
         match &self.header {
-            Header::Codex(_) => self.codex_operation_payload(operation, selection, evidence),
+            Header::Codex { .. } => self.codex_operation_payload(operation, selection, evidence),
             Header::Claude(_) if kind == OperationDetailKind::Mcp => {
                 self.claude_mcp_payload(operation, selection, evidence)
             }
@@ -1243,7 +1282,7 @@ impl VerifiedPrefix {
         evidence: &CodexOperationEvidence,
     ) -> Result<OperationPayload, String> {
         let unavailable = operation.unavailable;
-        if !matches!(&self.header, Header::Codex(thread) if thread == selection.session_id)
+        if !matches!(&self.header, Header::Codex { thread_id, worker_id: None } if thread_id == selection.session_id)
             || selection.revision != 0
         {
             return Err(unavailable.into());
@@ -1685,8 +1724,13 @@ impl VerifiedPrefix {
                 }
                 ("pi:", ":message")
             }
-            Header::Codex(thread_id) => {
-                if *thread_id != evidence.session_id || evidence.worker_id.is_some() {
+            Header::Codex {
+                thread_id,
+                worker_id,
+            } => {
+                if *thread_id != evidence.session_id
+                    || worker_id.as_deref() != evidence.worker_id.as_deref()
+                {
                     return Err(SOURCE_CHANGED.into());
                 }
                 ("codex:", ":message")
@@ -1716,7 +1760,7 @@ impl VerifiedPrefix {
             {
                 Ok(member.to_owned())
             }
-            Header::Codex(_)
+            Header::Codex { .. }
                 if evidence.revision == 0
                     && !member.is_empty()
                     && member.bytes().all(|byte| byte.is_ascii_digit()) =>
@@ -1735,7 +1779,7 @@ impl VerifiedPrefix {
         let mut matches = selected
             .map(|id| (id, RowMatch::Missing))
             .collect::<BTreeMap<_, _>>();
-        if matches!(self.header, Header::Codex(_) | Header::Claude(_)) {
+        if matches!(self.header, Header::Codex { .. } | Header::Claude(_)) {
             let minimum = if matches!(self.header, Header::Claude(_)) {
                 0
             } else {
@@ -1803,7 +1847,21 @@ impl VerifiedPrefix {
             }
             _ => return Err(NO_EVIDENCE.into()),
         };
-        if matches!(self.header, Header::Codex(_)) {
+        if matches!(self.header, Header::Codex { .. }) {
+            let response: Result<CodexResponseUserRow, _> = serde_json::from_slice(line);
+            if let Ok(row) = response
+                && row.kind == "response_item"
+                && row.payload.kind == "message"
+                && row.payload.role == "user"
+                && observed_timestamp(&row.timestamp) == Some(evidence.observed_at_unix_ns)
+            {
+                let synthetic_turn = format!("codex-user:{id}");
+                let turn_id = row.payload.turn_id.as_deref().unwrap_or(&synthetic_turn);
+                if turn_id != evidence.turn_id {
+                    return Err(NO_EVIDENCE.into());
+                }
+                return text_preview(row.payload.content);
+            }
             let row: CodexUserRow = serde_json::from_slice(line).map_err(|_| NO_EVIDENCE)?;
             if row.kind != "event_msg"
                 || row.payload.kind != "item_completed"
@@ -1871,7 +1929,10 @@ fn observed_timestamp(value: &str) -> Option<u64> {
 
 enum Header {
     Pi(PiHeader),
-    Codex(String),
+    Codex {
+        thread_id: String,
+        worker_id: Option<String>,
+    },
     Claude(String),
     Kiro(String),
 }
@@ -1889,6 +1950,23 @@ struct CodexHeaderPayload {
     session_id: Option<String>,
     thread_source: Option<String>,
     source: Option<serde_json::Value>,
+}
+
+#[derive(Deserialize)]
+struct CodexResponseUserRow {
+    #[serde(rename = "type")]
+    kind: String,
+    timestamp: String,
+    payload: CodexResponseUserPayload,
+}
+
+#[derive(Deserialize)]
+struct CodexResponseUserPayload {
+    #[serde(rename = "type")]
+    kind: String,
+    role: String,
+    turn_id: Option<String>,
+    content: UserContent,
 }
 
 #[derive(Deserialize)]
@@ -2627,19 +2705,23 @@ mod codex_guardian_tests {
     #[test]
     fn exact_open_inode_and_checkpoint_cannot_authorize_guardian_content() {
         static NEXT_FILE: AtomicUsize = AtomicUsize::new(0);
-        for (payload, permitted) in [
-            (r#"{"id":"same-thread","source":"cli"}"#, true),
+        for (payload, permitted_worker) in [
+            (r#"{"id":"same-thread","source":"cli"}"#, Some(None)),
             (
-                r#"{"id":"same-thread","thread_source":"guardian_review","source":"cli"}"#,
-                false,
+                r#"{"id":"worker-thread","session_id":"root-thread","source":{"subagent":{"thread_spawn":{"parent_thread_id":"root-thread"}}}}"#,
+                Some(Some("worker-thread")),
             ),
             (
-                r#"{"id":"same-thread","source":{"subagent":{"other":"guardian"}}}"#,
-                false,
+                r#"{"id":"same-thread","thread_source":"guardian_review","source":"cli"}"#,
+                None,
+            ),
+            (
+                r#"{"id":"worker-thread","session_id":"root-thread","source":{"subagent":{"thread_spawn":{"parent_thread_id":"different-root"}}}}"#,
+                None,
             ),
             (
                 r#"{"id":"same-thread","thread_source":"guardian_review","thread_source":"cli"}"#,
-                false,
+                None,
             ),
         ] {
             let header = format!("{{\"type\":\"session_meta\",\"payload\":{payload}}}\n");
@@ -2684,12 +2766,14 @@ mod codex_guardian_tests {
             };
             let result = source.verified_prefix(&cursor);
             std::fs::remove_file(path).unwrap();
-            if permitted {
-                assert!(
-                    matches!(result.unwrap().header, Header::Codex(session) if session == "same-thread")
-                );
-            } else {
-                assert!(matches!(result, Err(error) if error == SOURCE_CHANGED));
+            match permitted_worker {
+                Some(expected_worker) => assert!(matches!(
+                    result.unwrap().header,
+                    Header::Codex { thread_id, worker_id }
+                        if thread_id == if expected_worker.is_some() { "worker-thread" } else { "same-thread" }
+                            && worker_id.as_deref() == expected_worker
+                )),
+                None => assert!(matches!(result, Err(error) if error == SOURCE_CHANGED)),
             }
         }
     }

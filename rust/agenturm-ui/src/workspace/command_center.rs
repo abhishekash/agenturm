@@ -8,6 +8,8 @@ const FILTERS: [Filter; 5] = [
     Filter::Finished,
     Filter::Inactive,
 ];
+const COMMAND_CENTER_MIN_WIDTH: u16 = 60;
+const COMMAND_CENTER_MIN_HEIGHT: u16 = 18;
 
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum Grouping {
@@ -82,9 +84,12 @@ pub(super) fn name(row: &RecordedSession) -> std::borrow::Cow<'_, str> {
     } else {
         provider.trim()
     };
-    let mut label = if let Some(worker) = row.worker_id.as_deref().filter(|w| !w.trim().is_empty())
+    let mut label = if row
+        .worker_id
+        .as_deref()
+        .is_some_and(|worker| !worker.trim().is_empty())
     {
-        format!("{provider} worker {worker}")
+        format!("{provider} worker")
     } else {
         format!("{provider} session")
     };
@@ -92,7 +97,11 @@ pub(super) fn name(row: &RecordedSession) -> std::borrow::Cow<'_, str> {
         .native_context
         .as_deref()
         .and_then(|context| context.agent_role.as_deref())
-        .filter(|value| !value.trim().is_empty() && *value != provider)
+        .filter(|value| {
+            !value.trim().is_empty()
+                && *value != provider
+                && !(row.worker_id.is_some() && value.eq_ignore_ascii_case("worker"))
+        })
     {
         label.push_str(&format!(" · {role}"));
     }
@@ -110,40 +119,54 @@ pub(super) fn name(row: &RecordedSession) -> std::borrow::Cow<'_, str> {
 }
 
 fn supporting_context(row: &RecordedSession, grouping: Grouping, duplicate: bool) -> String {
-    if row
+    let has_specific_name = row
         .task_title
         .as_deref()
-        .is_none_or(|value| value.trim().is_empty())
-        && row
+        .is_some_and(|value| !value.trim().is_empty())
+        || row
             .native_context
             .as_deref()
             .and_then(|context| context.agent_name.as_deref())
-            .is_none_or(|value| value.trim().is_empty())
-    {
-        return String::new();
+            .is_some_and(|value| !value.trim().is_empty());
+    let mut parts = Vec::new();
+    if has_specific_name {
+        parts.push(provider(row).to_owned());
     }
-    let mut parts = vec![provider(row).to_owned()];
-    if let Some(value) = row
-        .native_context
-        .as_deref()
-        .and_then(|context| context.agent_name.as_deref())
-        .filter(|value| !value.is_empty())
+    if has_specific_name
+        && let Some(value) = row
+            .native_context
+            .as_deref()
+            .and_then(|context| context.agent_name.as_deref())
+            .filter(|value| !value.is_empty())
         && name(row).as_ref() != value
     {
         parts.push(visible_text(value));
     }
+    if row
+        .task_title
+        .as_deref()
+        .is_none_or(|value| value.trim().is_empty())
+        && let Some(activity) = row
+            .native_context
+            .as_deref()
+            .and_then(|context| context.last_activity.as_deref())
+            .filter(|value| !value.trim().is_empty())
+    {
+        parts.push(visible_text(activity));
+    }
     if duplicate {
         parts.push("Same name".into());
     }
-    if let Some(value) = row
-        .native_context
-        .as_deref()
-        .and_then(|context| context.agent_role.as_deref())
-        .filter(|value| !value.is_empty())
+    if has_specific_name
+        && let Some(value) = row
+            .native_context
+            .as_deref()
+            .and_then(|context| context.agent_role.as_deref())
+            .filter(|value| !value.is_empty())
     {
         parts.push(visible_text(value));
     }
-    if grouping != Grouping::Project && row.project_origin.is_some() {
+    if has_specific_name && grouping != Grouping::Project && row.project_origin.is_some() {
         let path = project(row);
         let short = std::path::Path::new(path)
             .file_name()
@@ -291,20 +314,24 @@ pub(super) fn draw(
     } else {
         full
     };
-    if area.width < MIN_WIDTH || area.height < MIN_HEIGHT {
+    if area.width < COMMAND_CENTER_MIN_WIDTH || area.height < COMMAND_CENTER_MIN_HEIGHT {
         frame.render_widget(
-            Paragraph::new("Terminal too small · widen the window"),
+            Paragraph::new("Terminal too small · need 60×18 or larger · q quit").centered(),
             area,
         );
         return;
     }
     let lines = filter_lines(agents, area.width);
+    // 120 columns is wide enough for the 64/36 master-detail split while
+    // preserving a useful task column. Keep the inspector out of short
+    // terminals, where it would compete with the roster for vertical space.
+    let show_task_detail = area.width >= 118 && area.height >= 24;
     let [brand, filters, navigation, body, footer] = Layout::vertical([
         Constraint::Length(1),
         Constraint::Length(lines.len() as u16),
         Constraint::Length(1),
         Constraint::Min(1),
-        Constraint::Length(4),
+        Constraint::Length(if show_task_detail { 3 } else { 4 }),
     ])
     .areas(area);
     let [identity, appearance] =
@@ -363,10 +390,18 @@ pub(super) fn draw(
         .catalog
         .as_ref()
         .map(|catalog| catalog.sessions.as_slice());
+    let (roster_area, detail_area) = if show_task_detail {
+        let [roster, detail] =
+            Layout::horizontal([Constraint::Percentage(64), Constraint::Percentage(36)])
+                .areas(body);
+        (roster, Some(detail))
+    } else {
+        (body, None)
+    };
     let mut rows = Vec::new();
     let mut selected_display = None;
     let mut previous_project = None;
-    let task_width = body.width.saturating_sub(26);
+    let task_width = roster_area.width.saturating_sub(26);
     for (position, item) in agents.visible.iter().enumerate() {
         let Some(row) = sessions.and_then(|rows| rows.get(item.index)) else {
             continue;
@@ -405,15 +440,15 @@ pub(super) fn draw(
             } else {
                 "▾"
             }
-        } else if Filter::Attention.accepts(row) {
-            "!"
-        } else if Filter::Active.accepts(row) {
-            "●"
         } else {
-            "○"
+            " "
         };
         let indent = "  ".repeat(item.depth.min(4));
-        let text = format!("{indent}{marker} {}", visible_text(&name(row)));
+        let text = if item.has_children {
+            format!("{indent}{marker} {}", visible_text(&name(row)))
+        } else {
+            format!("{indent}  {}", visible_text(&name(row)))
+        };
         let duplicate = row.task_title.as_ref().is_some_and(|title| {
             agents
                 .visible
@@ -474,32 +509,51 @@ pub(super) fn draw(
         .column_spacing(1)
         .highlight_symbol("› ")
         .row_highlight_style(selection_style()),
-        body,
+        roster_area,
         &mut selection,
     );
     agents.display_offset = selection.offset();
-    if agents.visible.is_empty() {
-        let empty = match sessions {
-            None if pending => "Loading session evidence…",
-            None => "Session history unavailable · R retry",
-            Some([]) => "No sessions collected yet · R refresh",
-            Some(_) if !agents.search.is_empty() => {
-                "No sessions match this search · Enter / Esc keeps it · a resets"
-            }
-            Some(_) if agents.errors_only => "No recorded failures on this page · E clears",
-            Some(_) if agents.time_scope == TimeScope::Today => {
-                "Nothing pending today · O History shows earlier work"
-            }
-            Some(_) => "No tasks match this filter · a reset",
-        };
+    let empty_state = agents.visible.is_empty().then(|| match sessions {
+        None if pending => "Loading session evidence…",
+        None => "Session history unavailable · R retry",
+        Some([]) => "No sessions collected yet · R refresh",
+        Some(_) if !agents.search.is_empty() => {
+            "No sessions match this search · Enter / Esc keeps it · a resets"
+        }
+        Some(_) if agents.errors_only => "No recorded failures on this page · E clears",
+        Some(_) if agents.time_scope == TimeScope::Today => {
+            "Nothing pending today · O History shows earlier work"
+        }
+        Some(_) => "No tasks match this filter · a reset",
+    });
+    if let Some(empty) = empty_state {
         frame.render_widget(
             Paragraph::new(empty).wrap(Wrap { trim: false }),
             Rect::new(
-                body.x + 1,
-                body.y + 1,
-                body.width.saturating_sub(2),
-                body.height.saturating_sub(1),
+                roster_area.x + 1,
+                roster_area.y + 1,
+                roster_area.width.saturating_sub(2),
+                roster_area.height.saturating_sub(1),
             ),
+        );
+    }
+    if let Some(detail_area) = detail_area {
+        let detail_session = (!agents.show_more_selected)
+            .then(|| agents.current())
+            .flatten();
+        let detail_empty = empty_state.map(|state| match sessions {
+            None if pending => "Session history is loading.",
+            None => "Session history is unavailable. Retry the history read.",
+            Some([]) => "No sessions have been collected yet.",
+            Some(_) if !agents.search.is_empty() => "No tasks match this search.",
+            Some(_) => state,
+        });
+        draw_task_detail(
+            frame,
+            detail_area,
+            detail_session,
+            detail_empty,
+            agents.show_more_selected,
         );
     }
     let identity = agents.current().map_or_else(
@@ -596,6 +650,9 @@ pub(super) fn draw(
         }
     }
     let detail = message.map(visible_text).unwrap_or_else(|| {
+        if show_task_detail {
+            return connection.into();
+        }
         agents
             .current()
             .filter(|row| row.project_origin.is_some() && row.project_path.is_some())
@@ -624,13 +681,114 @@ pub(super) fn draw(
     } else {
         "T Today · O History · E Errors · / search · Enter inspect"
     };
-    frame.render_widget(
-        Paragraph::new(vec![
+    let footer_lines = if show_task_detail {
+        vec![
+            Line::styled(roster_cell(&scope_line, area.width), theme::muted()),
+            Line::from(hints),
+            Line::from(detail),
+        ]
+    } else {
+        vec![
             Line::styled(roster_cell(&identity, area.width), label_style()),
             Line::styled(roster_cell(&scope_line, area.width), theme::muted()),
             Line::from(hints),
             Line::from(detail),
-        ]),
-        footer,
+        ]
+    };
+    frame.render_widget(Paragraph::new(footer_lines), footer);
+}
+
+fn draw_task_detail(
+    frame: &mut Frame,
+    area: Rect,
+    session: Option<&RecordedSession>,
+    empty_state: Option<&str>,
+    show_more: bool,
+) {
+    let Some(session) = session else {
+        let text = if show_more {
+            "Older sessions are available. Press Enter to load the next page."
+        } else {
+            empty_state.unwrap_or("Choose a task to see its details.")
+        };
+        frame.render_widget(
+            Paragraph::new(text)
+                .centered()
+                .wrap(Wrap { trim: false })
+                .block(panel(if show_more {
+                    "Older tasks"
+                } else {
+                    "Task details"
+                })),
+            area,
+        );
+        return;
+    };
+
+    let mut lines = vec![Line::styled(visible_text(&name(session)), heading_style())];
+    lines.push(Line::from(vec![
+        Span::styled(provider(session).to_owned(), label_style()),
+        Span::styled("  ·  ", theme::muted()),
+        Span::styled(status(session).to_owned(), theme::status(status(session))),
+    ]));
+    let project_origin = match session.project_origin {
+        Some(ProjectOrigin::OperatorTaskWorkspace) => "Operator task workspace",
+        Some(ProjectOrigin::NativeRecordedWorkspace) => "Native session workspace",
+        None => "Project unavailable",
+    };
+    lines.push(detail_pair(
+        "Project",
+        &format!("{project_origin} · {}", project(session)),
+    ));
+    if let Some(model) = session
+        .native_context
+        .as_deref()
+        .and_then(|context| context.model_provider.as_deref())
+        .filter(|model| !model.trim().is_empty())
+    {
+        lines.push(detail_pair("Model", model));
+    }
+    if let Some(activity) = session
+        .native_context
+        .as_deref()
+        .and_then(|context| context.last_activity.as_deref())
+        .filter(|activity| !activity.trim().is_empty())
+    {
+        lines.push(Line::from(""));
+        lines.push(Line::styled("Recent activity", label_style()));
+        lines.push(Line::from(visible_text(activity)));
+    }
+    if let Some(reason) = session
+        .reason
+        .as_deref()
+        .filter(|reason| !reason.trim().is_empty())
+    {
+        lines.push(Line::from(""));
+        lines.push(Line::styled("Reason", label_style()));
+        lines.push(Line::from(visible_text(reason)));
+    }
+    if !session.pending_requests.is_empty() {
+        lines.push(Line::from(""));
+        lines.push(Line::styled(
+            format!(
+                "{} request(s) need attention",
+                session.pending_requests.len()
+            ),
+            theme::foreground(theme::palette().primary),
+        ));
+    }
+    frame.render_widget(
+        Paragraph::new(lines)
+            .wrap(Wrap { trim: false })
+            .block(panel("Selected task")),
+        area,
     );
+}
+
+fn detail_pair(label: &str, value: &str) -> Line<'static> {
+    Line::from(vec![
+        Span::styled(label.to_owned(), label_style()),
+        Span::raw("  "),
+        Span::raw(visible_text(value)),
+    ])
 }
