@@ -142,14 +142,48 @@ def observed_usage(binary, environment, history, cockpit):
     raise AssertionError(f"both fixture usage records did not arrive: {problem}")
 
 
+def roster_content(line):
+    """Remove the roster contour without shifting its table columns.
+
+    Legacy rosters were unbordered. A bordered wide roster may also have a
+    preview after its closing edge; that preview is not part of the task row.
+    """
+    stripped = line.strip()
+    if stripped.startswith(("│", "|")):
+        return stripped[1:].split(stripped[0], 1)[0]
+    return line
+
+
+def selected_rows(frame):
+    return [
+        content.rstrip()
+        for line in frame.splitlines()
+        if (content := roster_content(line)).lstrip().startswith("› ")
+    ]
+
+
 def selected_task(frame):
-    return next(
-        line[:39].rstrip() for line in frame.splitlines() if line.startswith("› ")
-    )
+    rows = selected_rows(frame)
+    assert len(rows) == 1, "the filtered roster must have exactly one selected task"
+    return rows[0]
 
 
 def selected_title(frame):
-    match = re.match(r"^›\s+(?:[▸▾]\s+)?(.*)$", selected_task(frame))
+    header = next(
+        (
+            content for line in frame.splitlines()
+            if re.match(r"^\s*Tasks?\s+", content := roster_content(line))
+            and re.search(r"\bStatus\b", content)
+        ),
+        None,
+    )
+    assert header is not None, "the roster must expose its task/status columns"
+    # The Agent and Updated columns are responsive. Use the rendered header
+    # boundary instead of taking 39 characters from every terminal width.
+    boundary = min(
+        match.start() for match in re.finditer(r"\b(?:Agent|Status|Updated)\b", header)
+    )
+    match = re.match(r"^\s*›\s+(?:[▸▾]\s+)?(.*)$", selected_task(frame)[:boundary])
     assert match, "the filtered roster has no selected task title"
     return match.group(1).strip()
 
@@ -183,7 +217,39 @@ def inspector_matches_session(cells, title, provider):
 
 
 def roster_search(cells):
-    return next((line.strip()[2:] for line in cells.splitlines() if line.startswith(" / ")), "")
+    for line in cells.splitlines():
+        # Search now occupies the task panel's bottom contour. Only remove
+        # contour glyphs and padding; leave query punctuation and cursor intact
+        # so editing or an inexact query cannot satisfy a committed-filter gate.
+        content = line.strip()
+        if content.startswith("╰"):
+            content, closed, _ = content[1:].partition("╯")
+            if not closed:
+                continue
+            content = content.rstrip("─").strip()
+        if content.startswith("/ "):
+            return content[2:]
+    return ""
+
+
+def has_project_count(cells, count):
+    return any(
+        re.fullmatch(
+            rf"\s*(?:Project unavailable|No recorded project)\s+(?:·\s+)?{count}\s*",
+            roster_content(line),
+        )
+        for line in cells.splitlines()
+    )
+
+
+def confirmed_filter(cells, session):
+    return (
+        "Agenturm command center" in cells and roster_search(cells) == session
+        # Enter must have committed editing before it can inspect the row.
+        and ("Enter / Esc search" in cells or "Enter inspect" in cells)
+        and len(selected_rows(cells)) == 1
+        and has_project_count(cells, 1)
+    )
 
 def filter_roster(cockpit, session):
     cockpit.send(b"/")
@@ -191,16 +257,7 @@ def filter_roster(cockpit, session):
     cockpit.send(session.encode("ascii") + b"\r")
     return cockpit.frame(
         f"confirmed filter for {session}",
-        lambda cells: (
-            "Agenturm command center" in cells and roster_search(cells) == session
-            # A non-empty search replaces the ordinary inspect hint even
-            # after Enter has finished editing the filter. Enter still opens
-            # the selected row; check the filtered row and then verify that
-            # journey below.
-            and ("Enter / Esc search" in cells or "Enter inspect" in cells)
-            and sum(line.startswith("› ") for line in cells.splitlines()) == 1
-            and re.search(r"(?:Project unavailable|No recorded project)\s+1\b", cells)
-        ),
+        lambda cells: confirmed_filter(cells, session),
     )
 
 
@@ -217,7 +274,7 @@ def check_sessions(cockpit, sources):
                 "unfiltered command center on the same page",
                 lambda cells: (
                     "Agenturm command center" in cells and not roster_search(cells)
-                    and re.search(r"(?:Project unavailable|No recorded project)\s+2\b", cells)
+                    and has_project_count(cells, 2)
                 ),
             )
         roster = filter_roster(cockpit, session)
@@ -232,11 +289,7 @@ def check_sessions(cockpit, sources):
         cockpit.send(b"\x1b")
         returned = cockpit.frame(
             f"the same filtered roster after closing {session}",
-            lambda cells: (
-                "Agenturm command center" in cells and roster_search(cells) == session
-                and ("Enter / Esc search" in cells or "Enter inspect" in cells)
-                and "› " in cells
-            ),
+            lambda cells: confirmed_filter(cells, session),
         )
         assert selected_task(returned) == selected, "the selected task changed on return"
 

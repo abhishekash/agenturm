@@ -1,4 +1,4 @@
-# Agenturm Rust 0.3.13
+# Agenturm Rust 0.3.14
 
 This update reorganizes the task roster into distinct navigation, filter, task and preview regions, with quieter metadata and fewer repeated lines.
 
@@ -20,7 +20,7 @@ The roster continues to show recorded session states and counts for loaded histo
 
 ## Upgrade
 
-After the 0.3.13 installer pin is published, repeat:
+After the 0.3.14 installer pin is published, repeat:
 
 ```sh
 curl -fsSL https://www.agenturm.dev/install.sh | bash

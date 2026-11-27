@@ -90,7 +90,7 @@ with TemporaryDirectory(prefix="agenturm-metric-catalog-search-") as directory:
                                  and all(part not in cells for part in absent))
 
         try:
-            frame("ready roster", "Agenturm command center", "Loaded page")
+            frame("ready roster", "Agenturm command center", "All 0", "No sessions collected yet")
             cockpit.send(b"p")
             frame("paused roster", "Auto-refresh paused")
             cockpit.send(b"6")
