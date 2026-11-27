@@ -4320,6 +4320,55 @@ struct ValidatedCollectionConfig {
     host_capture: Option<host_cli::HostCaptureSchedule>,
 }
 
+impl ValidatedCollectionConfig {
+    #[cfg(target_os = "linux")]
+    fn content_source(
+        &self,
+        source_id: &ExtensionId,
+    ) -> Result<agenturm_content::ResolvedSource, String> {
+        if let Some(source) = self
+            .sources
+            .iter()
+            .find(|source| source.source_id == source_id.as_str())
+        {
+            return Ok(agenturm_content::ResolvedSource {
+                source_id: source.source_id.clone(),
+                plugin_id: source.plugin_id.clone(),
+                plugin_host: self.plugin_host.clone(),
+                adapter: source.adapter.clone(),
+                artifact_sha256: source.artifact_sha256.clone(),
+                features: source.features.clone(),
+                source_root: source.source_root.clone(),
+            });
+        }
+
+        let follow = self
+            .follow
+            .as_ref()
+            .ok_or("Content source is absent from the collection configuration")?;
+        let wanted = BTreeSet::from([source_id.as_str().to_owned()]);
+        let source = follow
+            .selection
+            .authorize_retained_sources(&wanted)?
+            .into_iter()
+            .find(|source| source.source_id == source_id.as_str())
+            .ok_or("Retained content source is not present under configured roots")?;
+        let adapter = follow
+            .catalog
+            .get(&source.plugin_id)
+            .ok_or("Retained content source has no pinned adapter")?;
+        Ok(agenturm_content::ResolvedSource {
+            source_id: source.source_id,
+            plugin_id: source.plugin_id,
+            plugin_host: self.plugin_host.clone(),
+            adapter: adapter.adapter.clone(),
+            artifact_sha256: Some(adapter.sha256.clone()),
+            features: Some(adapter.features.clone()),
+            source_root: source.source_root,
+        })
+    }
+}
+
 #[derive(Debug)]
 struct FollowSources {
     selection: discovery::FollowDiscovery,
@@ -5554,6 +5603,77 @@ mod tests {
         for suffix in ["", "-wal", "-shm"] {
             let _ = std::fs::remove_file(format!("{}{suffix}", path.display()));
         }
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn retained_content_source_resolves_only_configured_members_with_pinned_adapters() {
+        let root = std::env::temp_dir().join(format!(
+            "agenturm-retained-content-{}-{}",
+            std::process::id(),
+            std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos()
+        ));
+        let sessions = root.join("sessions");
+        std::fs::create_dir_all(&sessions).unwrap();
+        let transcript = sessions.join("retained.jsonl");
+        std::fs::write(
+            &transcript,
+            "{\"type\":\"session_meta\",\"payload\":{\"id\":\"retained\"}}\n",
+        )
+        .unwrap();
+        let selection: discovery::FollowDiscovery = serde_json::from_value(serde_json::json!({
+            "codex_root": sessions, "pi_root": root.join("missing-pi"), "sessions_per_harness": 1
+        }))
+        .unwrap();
+        let source = selection.sources().unwrap().into_iter().next().unwrap();
+        let id = ExtensionId::parse(&source.source_id).unwrap();
+        let plugin_id = source.plugin_id.clone();
+        let mut config = ValidatedCollectionConfig {
+            plugin_host: root.join("plugin-host"),
+            sources: Vec::new(),
+            host_capture: None,
+            follow: Some(FollowSources {
+                selection,
+                catalog: BTreeMap::from([(
+                    plugin_id.clone(),
+                    ValidatedAdapter {
+                        adapter: root.join("adapter"),
+                        sha256: "a".repeat(64),
+                        features: vec!["source-adapter/1".into()],
+                        observation_format: ObservationFormat::default(),
+                        discovery: None,
+                    },
+                )]),
+                base: root.clone(),
+                schedule: discovery::FollowSchedule::default(),
+                capacity: 1,
+                coverage: discovery::DiscoveryCoverage::default(),
+            }),
+        };
+        let resolved = config.content_source(&id).unwrap();
+        assert_eq!(resolved.source_root, transcript);
+        assert_eq!(resolved.plugin_id, plugin_id);
+        assert_eq!(
+            resolved.artifact_sha256.as_deref(),
+            Some("a".repeat(64).as_str())
+        );
+        assert!(
+            config
+                .content_source(&ExtensionId::parse("harness.codex.unconfigured").unwrap())
+                .is_err()
+        );
+        config.follow.as_mut().unwrap().catalog.clear();
+        assert!(
+            config
+                .content_source(&id)
+                .unwrap_err()
+                .contains("pinned adapter")
+        );
+        std::fs::remove_dir_all(root).unwrap();
+        assert!(config.content_source(&id).is_err());
     }
 
     #[test]

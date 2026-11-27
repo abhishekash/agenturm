@@ -1,16 +1,35 @@
 # Rust distribution and installation
 
-Use the published Rust 0.3.8 bundle on Linux x86-64 or ARM64. The opt-in
+Rust 0.3.9 is the current prerelease: Linux x86-64/ARM64 and an Apple Silicon
+macOS preview are available. Intel Macs are out of scope. The opt-in
 installer keeps the app, process host, five adapters, connector driver,
 storage service and pinned catalog together under **agenturm-rust**. The
 default Rust cutover remains gated.
 
-[Published Rust 0.3.8 release](https://github.com/abhishekash/agenturm/releases/tag/rust-v0.3.8)
+[Rust 0.3.9 release notes](../releases/rust-0.3.9.md)
 
 The qualified opt-in installer is available in
 [scripts/install-rust.sh](../../scripts/install-rust.sh). It does not publish
 a package, replace the existing installer, change the default command, or
 start a service. Its release-download path uses an exact Rust tag.
+
+## One-command installer
+
+[`scripts/install-rust-bootstrap.sh`](../../scripts/install-rust-bootstrap.sh)
+detects Linux x86-64 or ARM64, downloads the exact installer from the immutable
+`rust-v0.3.9` source tag, verifies its pinned SHA-256, and runs it with an
+independent per-architecture archive digest. It installs the opt-in
+`agenturm-rust` launcher and does not replace `agenturm`.
+
+Run the hosted bootstrap:
+
+~~~sh
+curl -fsSL https://www.agenturm.dev/install.sh | bash
+~~~
+
+It installs the opt-in `agenturm-rust` launcher. The bootstrap supports Linux
+x86-64 and ARM64 and Apple Silicon macOS 13 or newer. Intel Macs are rejected.
+The macOS bundle is unsigned and remains a preview; see the [release notes](../releases/rust-0.3.9.md).
 
 ## Choose the delivery path
 
@@ -170,9 +189,13 @@ installer should be pinned to a reviewed commit, with its digest available
 through release documentation. Signed release manifests or independently
 verifiable build attestations are follow-up work.
 
-## Ready now and publication gates
+## Current prerelease and qualification gates
 
-The versioned Linux release bundles are already public and qualified.
+The 0.3.8 Linux release and qualification below are retained as historical
+evidence. The 0.3.9 prerelease adds Apple Silicon macOS 13+ as a preview; its
+independent clean-host acceptance remains open. The macOS artifact is unsigned
+and not notarized. Intel Macs remain unsupported.
+
 The opt-in installer, offline verification mode and accompanying tests are
 implemented in the repository. Its exact 0.3.8 archive test installed into
 paths with spaces without a network transfer.
@@ -190,15 +213,9 @@ history preserved. The published assets match the verified SHA-256 digests
 listed above.
 [Native tag qualification](https://github.com/abhishekash/agenturm/actions/runs/45121070134)
 
-A hosted one-command bootstrap is a proposed next distribution step after
-the installer review and qualification. It should fetch this script at an
-immutable reviewed commit and invoke Bash with an explicit version. This
-change does not publish a mutable install endpoint, registry package, OS
-package, or new default installer.
-
-Before advertising the bootstrap, qualify its real HTTPS path on both
-architectures, including bad-checksum and interrupted-update cases. The
-native offline install and uninstall checks have passed. Before making
-agenturm select Rust by default, close the retained
-workflow and external qualification gates in the
+The one-command bootstrap source is implemented for the 0.3.9 prerelease. Its
+installed Linux and macOS flows still need independent qualification through
+the hosted HTTPS path, including checksum and interrupted-update cases. Before
+making agenturm select Rust by default, close the retained workflow and
+external qualification gates in the
 [execution plan](rust-only-execution-plan.md).

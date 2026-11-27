@@ -642,7 +642,11 @@ def wait_label(item):
 
 def task_preview(item):
     if item.get('_native_bootstrap'):
-        return (item.get('runtime')or 'Native')+' '+str(item.get('agent_id')or item['id'])[-8:]+' · session '+clean(str(item.get('session_id')or item['id']))[:16]
+        title=task_description(item.get('initial_task')or '')
+        if title:return clean(title)
+        runtime=clean(str(item.get('runtime')or 'Agent'))
+        role='worker'if item.get('native_worker_id')else 'session'
+        return f'{runtime} {role}'
     return clean(task_description(item.get('initial_task') or '') or task_description(item.get('task') or ''))
 
 

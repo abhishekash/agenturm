@@ -623,20 +623,7 @@ mod linux {
     ) -> impl Fn(&ExtensionId) -> Result<agenturm_content::ResolvedSource, String> + '_ {
         move |id| {
             let config = crate::load_collection_config(config)?;
-            let source = config
-                .sources
-                .iter()
-                .find(|source| source.source_id == id.as_str())
-                .ok_or("Content source is absent from the collection configuration")?;
-            Ok(agenturm_content::ResolvedSource {
-                source_id: source.source_id.clone(),
-                plugin_id: source.plugin_id.clone(),
-                plugin_host: config.plugin_host,
-                adapter: source.adapter.clone(),
-                artifact_sha256: source.artifact_sha256.clone(),
-                features: source.features.clone(),
-                source_root: source.source_root.clone(),
-            })
+            config.content_source(id)
         }
     }
     pub(super) fn list(

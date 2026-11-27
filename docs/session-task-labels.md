@@ -24,6 +24,19 @@ If the initial request falls outside these windows, has been deleted, or was nev
 
 After updating, restart Agenturm and any separately running receiver so that live native sessions are rediscovered with the new identity rules. Updating only the terminal while retaining an older receiver can improve the activity-window fallback, but cannot recover an original prompt the receiver does not provide.
 
+While the initial history index is still loading, the startup roster can show a
+bounded first-request label immediately when that exact session has
+`capture_content` enabled. The bootstrap includes only the normalized title,
+not the full request or project/path data. Metadata-only sessions keep a
+provider-and-role fallback; their session IDs remain available in details.
+
+The Rust task list uses a title recorded for that exact session when available,
+then falls back to its runtime nickname or provider/project context. It does
+not inherit a parent session's title for a worker. Prompt text is not used to
+fill a missing Rust title in metadata-only mode. Prompt history requires an
+exact session or worker scope and an applicable current text grant to open
+captured text.
+
 ## Summaries
 
 The existing **AI summary** action remains available in the inspector for a broader account of the recorded work. It uses the configured provider when explicitly requested. Ordinary agent labels remain local, immediate, and stable; no model request is made to populate or refresh the roster. See the [summary and privacy documentation](usage.md#optional-ai-summaries).

@@ -84,12 +84,23 @@ pub(super) fn configured_sources(history: &Path) -> Option<SourceAuthority> {
         std::path::PathBuf::from,
     );
     let config = super::load_collection_config(&path).ok()?;
-    let codex_home = config.follow.as_ref().and_then(|follow| {
-        let root = &follow.selection.codex_root;
-        (root.file_name()? == "sessions")
-            .then(|| root.parent().map(Path::to_owned))
-            .flatten()
-    });
+    let codex_home = config
+        .follow
+        .as_ref()
+        .and_then(|follow| codex_home_from_sessions_root(&follow.selection.codex_root))
+        .or_else(|| {
+            config
+                .sources
+                .iter()
+                .find(|source| source.plugin_id == agenturm_runtime::CODEX_PLUGIN_ID)
+                .and_then(|source| {
+                    source
+                        .source_root
+                        .ancestors()
+                        .find(|path| path.file_name().is_some_and(|name| name == "sessions"))
+                        .and_then(codex_home_from_sessions_root)
+                })
+        });
     Some(SourceAuthority {
         follow: config
             .follow
@@ -109,9 +120,33 @@ pub(super) fn configured_sources(history: &Path) -> Option<SourceAuthority> {
     })
 }
 
+fn codex_home_from_sessions_root(root: &Path) -> Option<PathBuf> {
+    (root.file_name()? == "sessions")
+        .then(|| root.parent().map(Path::to_owned))
+        .flatten()
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn explicit_codex_sources_find_only_a_sessions_ancestor() {
+        let home = Path::new("/configured/codex");
+        let source = home.join("sessions/2026/11/rollout.jsonl");
+        let inferred = source
+            .ancestors()
+            .find(|path| path.file_name().is_some_and(|name| name == "sessions"))
+            .and_then(codex_home_from_sessions_root);
+        assert_eq!(inferred, Some(home.to_owned()));
+        assert!(codex_home_from_sessions_root(Path::new("/configured/transcripts")).is_none());
+        assert!(
+            Path::new("/configured/other/rollout.jsonl")
+                .ancestors()
+                .find(|path| path.file_name().is_some_and(|name| name == "sessions"))
+                .is_none()
+        );
+    }
 
     #[test]
     fn startup_members_retain_rotated_bindings_and_clear_across_authority_changes() {
