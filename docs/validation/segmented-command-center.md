@@ -1,6 +1,6 @@
 # Segmented command center
 
-Design review for the Agenturm task roster, 2026-11-27. Implemented in Rust 0.3.13 and checked with public-metadata fixtures, isolated session histories, and the native terminal app.
+Design review for the Agenturm task roster, 2026-11-27. Checked with public-metadata fixtures, isolated session histories, and the native terminal app.
 
 ## Intended behavior
 
@@ -97,6 +97,7 @@ A status uses at most a word and one semantic color. Meaning does not depend on 
 | Prompt history, Activity, MCP and Tools terminal journey | Passed at 120×32, 80×24 and 60×18: grant, read, redaction and terminal restoration |
 | Terminal resize and restoration | Passed: 6 native terminal journeys covering resize, too-small recovery, help/palette, q and Ctrl+C restoration |
 | Application and UI Clippy | Passed: all targets with warnings denied |
+| Native bundle frame parsers | Passed: 7 parser regressions and both native default-cockpit PTY qualification modes |
 
 The checks use synthetic public metadata and isolated histories. No live user history database was used for layout qualification.
 
