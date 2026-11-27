@@ -1875,7 +1875,7 @@ mod tests {
 
         let mut empty = Snapshot::default();
         add_session_panes(&mut empty, &recorded_session("harness.codex", "session-a"));
-        assert_eq!(empty.panes.len(), 5);
+        assert_eq!(empty.panes.len(), 6);
         let overview = &pane(&empty, "overview").rows;
         assert!(
             overview

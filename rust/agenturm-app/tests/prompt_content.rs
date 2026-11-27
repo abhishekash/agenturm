@@ -629,7 +629,7 @@ fn preview_requires_a_current_grant_and_exact_committed_pi_bytes() {
 }
 
 #[test]
-fn codex_preview_reveals_only_exact_completed_native_user_items() {
+fn codex_preview_reveals_only_exact_native_user_items() {
     let (Some(plugin_host), Some(adapter)) = (
         std::env::var_os("AGENTURM_RUNTIME_PLUGIN_HOST"),
         std::env::var_os("AGENTURM_RUNTIME_CODEX_ADAPTER"),
@@ -705,10 +705,17 @@ fn codex_preview_reveals_only_exact_completed_native_user_items() {
     let references = checked(list());
     let references = serde_json::from_str::<Value>(&references).unwrap();
     let rows = references.as_array().unwrap();
-    assert_eq!(rows.len(), 1);
-    assert_eq!(rows[0]["turn_id"], "turn-1");
-    let event_id = rows[0]["event_id"].as_str().unwrap();
-    let preview = || {
+    assert_eq!(rows.len(), 2);
+    let event_id = rows.iter().find(|row| row["turn_id"] == "turn-1").unwrap()["event_id"]
+        .as_str()
+        .unwrap()
+        .to_owned();
+    let inherited_context_event_id =
+        rows.iter().find(|row| row["turn_id"] == "foreign").unwrap()["event_id"]
+            .as_str()
+            .unwrap()
+            .to_owned();
+    let preview = |event_id: &str| {
         content(
             "preview",
             &[
@@ -721,8 +728,14 @@ fn codex_preview_reveals_only_exact_completed_native_user_items() {
             ],
         )
     };
-    assert_eq!(checked(preview()), "\"review recorded output\"\n");
-    assert!(!checked(run(&["query", "--db", db_arg])).contains("review recorded output"));
+    assert_eq!(checked(preview(&event_id)), "\"review recorded output\"\n");
+    assert_eq!(
+        checked(preview(&inherited_context_event_id)),
+        "\"synthetic inherited context\"\n"
+    );
+    let query = checked(run(&["query", "--db", db_arg]));
+    assert!(!query.contains("review recorded output"));
+    assert!(!query.contains("synthetic inherited context"));
 
     let calls = concat!(
         r#"{"type":"event_msg","timestamp":"2026-11-20T12:00:03Z","payload":{"type":"item_completed","thread_id":"codex-fixture","turn_id":"turn-1","item":{"type":"McpToolCall","id":"operation-a","server":"fixture","tool":"alpha","status":"completed","arguments":{"query":"fixture first argument"},"result":{"content":"fixture first result"}}}}"#,
@@ -811,13 +824,16 @@ fn codex_preview_reveals_only_exact_completed_native_user_items() {
     );
     checked(content("revoke", &["--kind", "codex.mcp_payload"]));
     denied(mcp("alpha", "alpha", "codex-fixture"), "requires approval");
-    assert_eq!(checked(preview()), "\"review recorded output\"\n");
+    assert_eq!(checked(preview(&event_id)), "\"review recorded output\"\n");
     fs::write(
         &source,
         initial.replace("review recorded output", "edited recorded output"),
     )
     .unwrap();
-    denied(preview(), "no longer matches the committed checkpoint");
+    denied(
+        preview(&event_id),
+        "no longer matches the committed checkpoint",
+    );
     checked(content("revoke", &[]));
     denied(list(), "requires approval");
 }
