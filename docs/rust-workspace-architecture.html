@@ -1,0 +1,102 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <meta name="color-scheme" content="light dark">
+  <title>Rust workspace and plugin architecture · Agenturm</title>
+  <style>
+    :root {
+      color-scheme: light dark;
+      --bg: #f5f7f9; --surface: #fff; --text: #17212b; --muted: #566574;
+      --line: #d8e0e7; --accent: #146d75; --code: #edf2f5;
+    }
+    @media (prefers-color-scheme: dark) {
+      :root {
+        --bg: #111820; --surface: #18222c; --text: #e7edf2; --muted: #a8b5c1;
+        --line: #34414d; --accent: #6dd2c9; --code: #202c37;
+      }
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0; background: var(--bg); color: var(--text);
+      font: 16px/1.65 system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+    }
+    main { width: min(920px, calc(100% - 32px)); margin: 40px auto; }
+    article {
+      padding: clamp(22px, 5vw, 54px); background: var(--surface);
+      border: 1px solid var(--line); border-radius: 18px;
+    }
+    h1, h2 { line-height: 1.2; letter-spacing: -.025em; }
+    h1 { font-size: clamp(2rem, 5vw, 3rem); margin: 0 0 16px; }
+    h2 { font-size: 1.45rem; margin: 36px 0 12px; }
+    p, li { color: var(--muted); }
+    strong { color: var(--text); }
+    a { color: var(--accent); }
+    code, pre { font-family: ui-monospace, SFMono-Regular, Consolas, monospace; }
+    code { background: var(--code); padding: .12em .35em; border-radius: 5px; }
+    pre {
+      overflow-x: auto; padding: 18px; border: 1px solid var(--line);
+      border-radius: 12px; background: var(--code); color: var(--text);
+      font-size: .9rem; line-height: 1.5;
+    }
+    .callout { border-left: 3px solid var(--accent); padding: 10px 16px; }
+    @media (max-width: 560px) {
+      main { width: min(100% - 18px, 920px); margin: 9px auto; }
+      article { padding: 20px 16px; border-radius: 13px; }
+      pre { font-size: .78rem; }
+    }
+  </style>
+</head>
+<body>
+<main><article>
+  <h1>Rust workspace and plugin architecture</h1>
+  <p>Agenturm uses one root Cargo workspace. Crates live under <code>crates/</code>, grouped by architectural responsibility instead of collected in one flat directory. A crate represents a cohesive API or implementation boundary.</p>
+
+  <h2>Layout</h2>
+  <pre><code>crates/
+├── applications/   # CLI, terminal UI, OS service
+├── core/           # Kernel and wire contracts
+├── domain/         # Pure reducers and bounded queries
+├── plugins/
+│   ├── api/         # Extension-specific contracts
+│   ├── capabilities/# Capability providers
+│   ├── connectors/  # Connector implementations
+│   ├── fixtures/    # Executable protocol fixtures
+│   ├── harnesses/   # Provider-specific agent readers
+│   └── host/        # Discovery, supervision, source runtime, trust gates
+├── storage/         # Store and storage-service boundaries
+└── test-support/
+    ├── fixtures/   # Synthetic golden inputs
+    └── plugins/    # Test-only extension packages</code></pre>
+  <p>The root manifest discovers crates with family-specific workspace globs. Put new production crates in the relevant family rather than at repository top level. Standalone fixture workspaces are reserved for isolation tests.</p>
+
+  <h2>Dependency direction</h2>
+  <pre><code>applications ──compose──▶ plugin host ──uses──▶ providers
+      │                         │                  │
+      ├──▶ core contracts ◀─────┴──────────────────┘
+      ├──▶ domain
+      └──▶ storage ◀──────────── plugin host
+
+test-support ──supports tests only──▶ crates</code></pre>
+  <ul>
+    <li><strong>Core contracts</strong> (<code>agenturm-kernel</code>, <code>agenturm-protocol</code>) define host-owned facts, traits, and wire shapes. Provider parsing and policy do not belong there.</li>
+    <li><strong>Plugin host</strong> owns supervision, bounded source runtimes, and host-side trust/admission checks. It depends on contracts and host-owned storage packages, not every provider implementation.</li>
+    <li><strong>Providers</strong> are grouped by kind. Harnesses parse native formats; capability and connector crates implement their extension surfaces. They use shared contracts instead of adding provider-name branches to generic code.</li>
+    <li><strong>Applications, domain, and storage</strong> stay separate: applications compose providers, domain crates remain provider-independent, and storage owns durable state and admission boundaries.</li>
+    <li><strong>Test support</strong> holds synthetic fixtures and test-only extensions—never real sessions, credentials, or production state.</li>
+  </ul>
+  <p class="callout">The workspace contains trusted in-process contributions and explicitly configured child-process adapters. A crate under <code>plugins/</code> signals architectural role; it does not imply dynamic loading, sandboxing, or a stable third-party ABI. Follow the existing registry, manifest, and protocol for the extension type.</p>
+
+  <h2>Adding a provider</h2>
+  <ol>
+    <li>Choose <code>crates/plugins/harnesses/</code>, <code>capabilities/</code>, or <code>connectors/</code>. Shared machinery belongs in <code>plugins/host/</code>; provider parsing stays with its provider.</li>
+    <li>Depend on the narrowest kernel, protocol, or extension API. Keep storage authority and capture policy host-owned.</li>
+    <li>Use the existing in-process registry or the explicit process manifest/protocol. Do not add provider-specific branches to generic host code.</li>
+    <li>Add synthetic contract and lifecycle tests. Shared golden inputs go in <code>crates/test-support/fixtures/</code>.</li>
+    <li>Run <code>cargo fmt --all -- --check</code>, <code>cargo clippy --workspace --all-targets --locked -- -D warnings</code>, and <code>cargo test --workspace --locked</code> from the root.</li>
+  </ol>
+  <p>Workspace packages share Rust 2024, resolver 3, toolchain, and license metadata. Crate versions remain local because executable and internal contract release cycles can differ.</p>
+</article></main>
+</body>
+</html>

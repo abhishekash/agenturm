@@ -1,0 +1,20 @@
+[package]
+name = "agenturm-runtime"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+agenturm-connector-api = { path = "../../api/agenturm-connector-api" }
+rusqlite = { version = "0.37", features = ["bundled"] }
+agenturm-kernel = { path = "../../../core/agenturm-kernel" }
+agenturm-protocol = { path = "../../../core/agenturm-protocol" }
+libc = "0.2"
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"
+signal-hook = "0.3"
+
+agenturm-store = { path = "../../../storage/agenturm-store" }

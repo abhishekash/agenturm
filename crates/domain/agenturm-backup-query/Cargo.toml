@@ -1,0 +1,13 @@
+[package]
+name = "agenturm-backup-query"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+agenturm-domain-query = { path = "../agenturm-domain-query" }
+agenturm-storage-shadow = { path = "../../storage/agenturm-storage-shadow" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"

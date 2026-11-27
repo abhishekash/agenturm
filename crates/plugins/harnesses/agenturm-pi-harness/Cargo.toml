@@ -1,0 +1,18 @@
+[package]
+name = "agenturm-pi-harness"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+agenturm-directory-source = { path = "../../host/agenturm-directory-source" }
+agenturm-jsonl-source = { path = "../../host/agenturm-jsonl-source" }
+agenturm-protocol = { path = "../../../core/agenturm-protocol" }
+agenturm-source-process = { path = "../../host/agenturm-source-process" }
+serde_json = "1.0"
+serde = "1.0"
+sha2 = "0.10"
+libc = "0.2"
+time = { version = "0.3", features = ["parsing"] }

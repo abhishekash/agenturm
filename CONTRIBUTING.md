@@ -4,6 +4,10 @@ Agenturm is a Rust workspace. Install the pinned toolchain from
 [`rust-toolchain.toml`](rust-toolchain.toml), then validate changes from the
 repository root:
 
+Read the [workspace and plugin architecture guide](docs/rust-workspace-architecture.html)
+before adding a crate; it describes where host contracts, providers, storage,
+and test-only fixtures belong.
+
 ```sh
 cargo fmt --all -- --check
 cargo clippy --workspace --all-targets --locked -- -D warnings
