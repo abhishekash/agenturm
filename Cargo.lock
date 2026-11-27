@@ -4,7 +4,7 @@ version = 4
 
 [[package]]
 name = "agenturm-app"
-version = "0.3.10"
+version = "0.3.11"
 dependencies = [
  "agenturm-content",
  "agenturm-jsonl-source",
