@@ -16,6 +16,7 @@ pub(super) struct SessionPaneIds {
     pub(super) details: ExtensionId,
     pub(super) activity: ExtensionId,
     pub(super) mcp: ExtensionId,
+    pub(super) tools: ExtensionId,
     pub(super) tables: OperationTables,
     pub(super) evidence: EvidenceTables,
     pub(super) review: ExtensionId,
@@ -184,12 +185,13 @@ pub(super) fn add_session_panes(
     // back to workspace-wide evidence.
     let mcp = insert_pane(snapshot, "app.session-mcp", "MCP", mcp);
     tables.insert(mcp.clone(), calls);
-    if !operations.is_empty() {
-        tables.insert(
-            insert_pane(snapshot, "app.session-operations", "Operations", operations),
-            groups,
-        );
-    }
+    let tools = insert_pane(
+        snapshot,
+        "app.session-operations",
+        "Operations",
+        rows_or_empty(operations, "No recorded tool operations on this page"),
+    );
+    tables.insert(tools.clone(), groups);
     let activity = insert_pane(snapshot, "app.session-activity", "Activity", activity);
     let usage = insert_pane(snapshot, "app.session-usage", "Usage", usage);
     let mut evidence = EvidenceTables::from([
@@ -212,6 +214,7 @@ pub(super) fn add_session_panes(
         details: insert_pane(snapshot, "app.session-details", "Session details", details),
         activity,
         mcp,
+        tools,
         review: insert_pane(snapshot, "app.session-review", "Review", review),
         usage,
     }
@@ -1875,7 +1878,7 @@ mod tests {
 
         let mut empty = Snapshot::default();
         add_session_panes(&mut empty, &recorded_session("harness.codex", "session-a"));
-        assert_eq!(empty.panes.len(), 6);
+        assert_eq!(empty.panes.len(), 7);
         let overview = &pane(&empty, "overview").rows;
         assert!(
             overview

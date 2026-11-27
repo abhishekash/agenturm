@@ -10,6 +10,36 @@ use std::path::{Path, PathBuf};
 
 const USAGE: &str = "Usage: agenturm content binding|grant|revoke --kind pi.mcp_payload|codex.mcp_payload|claude.mcp_payload|...\n       agenturm content preview --kind pi.mcp_payload|codex.mcp_payload|claude.mcp_payload --db <path> --config <path> --source-id <id> --session-id <id> --turn-id <id> --operation-id <id> --event-id <id> --revision <revision>";
 
+/// The configuration that actually authorized collection. Default cockpit
+/// sessions use their live collector; explicit histories reload their file.
+pub trait ContentSourceConfig {
+    #[cfg(target_os = "linux")]
+    fn resolve_content_source(
+        &self,
+        id: &ExtensionId,
+    ) -> Result<agenturm_content::ResolvedSource, String>;
+}
+
+impl ContentSourceConfig for Path {
+    #[cfg(target_os = "linux")]
+    fn resolve_content_source(
+        &self,
+        id: &ExtensionId,
+    ) -> Result<agenturm_content::ResolvedSource, String> {
+        crate::load_collection_config(self)?.content_source(id)
+    }
+}
+
+impl ContentSourceConfig for PathBuf {
+    #[cfg(target_os = "linux")]
+    fn resolve_content_source(
+        &self,
+        id: &ExtensionId,
+    ) -> Result<agenturm_content::ResolvedSource, String> {
+        self.as_path().resolve_content_source(id)
+    }
+}
+
 /// Proof-eligible metadata for a single retained user prompt. The selection
 /// grants no authority and is checked anew before any text is delivered.
 #[cfg(target_os = "linux")]
@@ -181,7 +211,7 @@ pub(crate) fn parse(args: &[String]) -> Result<ContentOptions, String> {
 
 pub fn list_user_prompts(
     db: &Path,
-    config: &Path,
+    config: &(impl ContentSourceConfig + ?Sized),
     source_id: &ExtensionId,
     session_id: &str,
     worker_id: Option<&str>,
@@ -222,14 +252,14 @@ pub(super) struct PromptSelection<'a> {
 #[cfg(target_os = "linux")]
 pub(super) fn open_source_authority<'a>(
     db: &Path,
-    config: &'a Path,
+    config: &'a (impl ContentSourceConfig + ?Sized),
 ) -> Result<(Store, Box<agenturm_content::SourceResolver<'a>>), String> {
     Ok((linux::open_store(db)?, Box::new(linux::resolver(config))))
 }
 
 #[cfg(target_os = "linux")]
 pub(super) fn source_resolver(
-    config: &Path,
+    config: &(impl ContentSourceConfig + ?Sized),
 ) -> impl Fn(&ExtensionId) -> Result<agenturm_content::ResolvedSource, String> + '_ {
     linux::resolver(config)
 }
@@ -237,7 +267,7 @@ pub(super) fn source_resolver(
 #[cfg(target_os = "linux")]
 pub(super) fn with_verified_prompt<T>(
     db: &Path,
-    config: &Path,
+    config: &(impl ContentSourceConfig + ?Sized),
     source_id: &ExtensionId,
     selection: PromptSelection<'_>,
     consume: impl FnOnce(&agenturm_content::VerifiedPrompt) -> T,
@@ -261,7 +291,7 @@ pub(super) fn with_verified_prompt<T>(
 
 pub(super) fn reveal_user_prompt(
     db: &Path,
-    config: &Path,
+    config: &(impl ContentSourceConfig + ?Sized),
     source_id: &ExtensionId,
     selection: PromptSelection<'_>,
     output: &mut dyn Write,
@@ -300,7 +330,7 @@ pub(super) fn reveal_user_prompt(
 
 pub(super) fn reveal_operation_detail(
     db: &Path,
-    config: &Path,
+    config: &(impl ContentSourceConfig + ?Sized),
     source_id: &ExtensionId,
     kind: OperationDetailKind,
     selection: &agenturm_store::CodexOperationSelection<'_>,
@@ -332,7 +362,7 @@ pub(super) fn reveal_operation_detail(
 
 pub(super) fn reveal_review_edit(
     db: &Path,
-    config: &Path,
+    config: &(impl ContentSourceConfig + ?Sized),
     selected: &ReviewEditSelection,
     output: &mut dyn Write,
     writer: Option<&Store>,
@@ -619,16 +649,13 @@ mod linux {
         }
     }
     pub(super) fn resolver(
-        config: &Path,
+        config: &(impl ContentSourceConfig + ?Sized),
     ) -> impl Fn(&ExtensionId) -> Result<agenturm_content::ResolvedSource, String> + '_ {
-        move |id| {
-            let config = crate::load_collection_config(config)?;
-            config.content_source(id)
-        }
+        move |id| config.resolve_content_source(id)
     }
     pub(super) fn list(
         store: &Store,
-        config: &Path,
+        config: &(impl ContentSourceConfig + ?Sized),
         source: &ExtensionId,
         session: &str,
         worker: Option<&str>,
@@ -637,7 +664,7 @@ mod linux {
     }
     pub(super) fn reveal_fenced(
         store: &Store,
-        config: &Path,
+        config: &(impl ContentSourceConfig + ?Sized),
         source: &ExtensionId,
         session: Option<&str>,
         event: &str,
@@ -656,7 +683,7 @@ mod linux {
     }
     pub(super) fn reveal_operation_fenced(
         store: &Store,
-        config: &Path,
+        config: &(impl ContentSourceConfig + ?Sized),
         source: &ExtensionId,
         kind: OperationDetailKind,
         selection: &CodexOperationSelection<'_>,

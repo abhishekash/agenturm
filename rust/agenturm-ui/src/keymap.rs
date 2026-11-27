@@ -978,7 +978,7 @@ pub(crate) const ACTIONS: &[Action] = &[
         id::INSPECTOR_SECTIONS,
         "←/→ · Ctrl+←/→",
         "Choose inspector section",
-        "Move the tab strip between Overview, Prompts and Details; Ctrl works from content",
+        "Choose Overview, Prompts, Details, Activity, MCP or Tools; Ctrl works from content",
         Group::Review,
         &[Context::History],
     ),

@@ -122,10 +122,11 @@ pub(crate) struct PromptBody {
 
 impl PromptBody {
     fn new(presentation: PromptPresentation, kind: PromptKind) -> Self {
+        let original = kind != PromptKind::User || presentation.readable_text().is_none();
         Self {
             presentation,
             kind,
-            original: kind != PromptKind::User,
+            original,
             readable_row: 0,
             original_row: 0,
             column: 0,
@@ -537,6 +538,8 @@ impl PromptRequest {
 
 #[derive(Clone, Copy, Debug, Eq, PartialEq)]
 pub(crate) enum PromptCapture {
+    /// Availability has not established the source's capture policy.
+    Unknown,
     Enabled,
     Disabled,
     MetadataOnly,
@@ -1338,7 +1341,10 @@ impl PromptNavigator {
         }
         let hidden = presentation.hidden_context();
         let truncated = presentation.truncated();
-        let original = self.preferred_original(&key);
+        let original = self.preferred_original(&key) || presentation.readable_text().is_none();
+        if original {
+            self.original.insert(key.clone());
+        }
         let mut reader = PromptScreen::new_with_presentation(presentation, receiver, now);
         reader.set_original(original);
         let ordinal = self.selected + 1;
@@ -1503,13 +1509,13 @@ impl PromptNavigator {
                     "Return to the session list and select a recorded session.",
                 ));
             }
-            PromptStatus::Error(_) => {
-                lines.push(Line::from("Retry prompts from the shared action."));
-            }
-            PromptStatus::Unavailable(_) => {
-                lines.push(Line::from(
-                    "Retry prompts or inspect recorded metadata in Activity.",
-                ));
+            PromptStatus::Denied(reason)
+            | PromptStatus::Unavailable(reason)
+            | PromptStatus::Error(reason)
+            | PromptStatus::Stale(reason)
+            | PromptStatus::OutOfScope(reason) => {
+                lines.push(Line::from(visible_text(reason)));
+                lines.push(Line::styled("R Retry · Esc Back", theme::muted()));
             }
             _ => {
                 lines.push(Line::from("Prompt text is unavailable for this session."));
@@ -1581,6 +1587,9 @@ impl PromptNavigator {
             PromptStatus::EmptyScope => "No captured requests".into(),
             PromptStatus::Denied(_) => "Access denied".into(),
             PromptStatus::Loading { .. } => "Loading…".into(),
+            PromptStatus::Unavailable(_) => "Prompt history unavailable".into(),
+            PromptStatus::Error(_) => "Could not load prompts".into(),
+            PromptStatus::Stale(_) => "Prompt history changed".into(),
             _ => "No requests".into(),
         }
     }
@@ -1666,7 +1675,7 @@ impl PromptNavigator {
             lines.push(Line::styled(disclosure, theme::muted()));
         }
         match self.scope.capture {
-            PromptCapture::Disabled | PromptCapture::MetadataOnly => {}
+            PromptCapture::Unknown | PromptCapture::Disabled | PromptCapture::MetadataOnly => {}
             PromptCapture::Enabled => {
                 if matches!(self.status, PromptStatus::Denied(_)) {
                     lines.push(Line::styled(
@@ -2557,7 +2566,33 @@ mod tests {
     }
 
     #[test]
-    fn unnormalized_capture_labels_the_readable_form_unavailable() {
+    fn inline_original_fallback_keeps_the_mode_toggle_in_sync() {
+        let (mut navigator, _) = loaded(vec![request(1)]);
+        let PromptInput::Read { epoch, entry, .. } = navigator.key(KeyCode::Right) else {
+            panic!("read request");
+        };
+        let (_delivery, receiver) = prompt_channel(PromptKind::User);
+        assert_eq!(
+            navigator.accept_reader_presentation(
+                epoch,
+                (entry.event_id, entry.revision),
+                PromptPresentation::normalized("Captured request".into(), None, 0, false),
+                receiver,
+                Instant::now(),
+            ),
+            PromptAccepted::Accepted
+        );
+        assert!(draw(&mut navigator, 80, 24).contains("Captured request"));
+        navigator.key(KeyCode::Char('z'));
+        let rendered = draw(&mut navigator, 80, 24);
+        assert!(rendered.contains("Readable form unavailable"));
+        assert!(!rendered.contains("Captured request"));
+        navigator.key(KeyCode::Char('z'));
+        assert!(draw(&mut navigator, 80, 24).contains("Captured request"));
+    }
+
+    #[test]
+    fn unnormalized_capture_opens_the_available_original_text() {
         let presentation = PromptPresentation::normalized(
             "<environment_context>raw</environment_context>\nRequest".into(),
             None,
@@ -2569,12 +2604,12 @@ mod tests {
             PromptScreen::new_with_presentation(presentation, receiver, Instant::now());
         let mut terminal = Terminal::new(TestBackend::new(80, 24)).unwrap();
         let framed = draw_prompt(&mut terminal, &mut prompt);
-        assert!(framed.contains("Readable form unavailable"));
-        assert!(!framed.contains("raw"));
-        prompt.key(KeyCode::Char('z'));
-        let framed = draw_prompt(&mut terminal, &mut prompt);
         assert!(framed.contains("raw"));
         assert!(framed.contains("Reader limit") || prompt.truncated());
+        prompt.key(KeyCode::Char('z'));
+        let framed = draw_prompt(&mut terminal, &mut prompt);
+        assert!(framed.contains("Readable form unavailable"));
+        assert!(!framed.contains("raw"));
     }
 
     #[test]

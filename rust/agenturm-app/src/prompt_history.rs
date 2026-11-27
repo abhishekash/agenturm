@@ -167,7 +167,7 @@ pub(crate) struct PromptReadScope<'a> {
 /// Loads one prompt-history page under the current grant.
 pub(crate) fn load_page(
     db: &Path,
-    config: &Path,
+    config: &(impl crate::content_preview::ContentSourceConfig + ?Sized),
     scope: PromptReadScope<'_>,
     before: Option<&PromptCursor>,
     page: usize,

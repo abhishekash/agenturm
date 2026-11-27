@@ -1,4 +1,4 @@
-//! Session inspector sections: Overview, Prompts and Details.
+//! Session inspector sections and scoped evidence readers.
 //!
 //! The inspector is a shell for lane-owned models. This module owns only the
 //! section tab strip and the inspector frame: the Overview and Details content
@@ -17,7 +17,7 @@ use ratatui::style::{Modifier, Style};
 use ratatui::text::{Line, Span};
 use ratatui::widgets::{Block, Borders, Paragraph, Wrap};
 
-/// The three discoverable inspector sections. `Prompts` enters the shared
+/// The discoverable inspector sections. `Prompts` enters the shared
 /// prompt navigator rather than reimplementing a reader here.
 #[derive(Clone, Copy, Debug, Default, Eq, PartialEq)]
 pub(super) enum Tab {
@@ -25,16 +25,29 @@ pub(super) enum Tab {
     Overview,
     Prompts,
     Details,
+    Activity,
+    Mcp,
+    Tools,
 }
 
 impl Tab {
-    const ORDER: [Tab; 3] = [Tab::Overview, Tab::Prompts, Tab::Details];
+    const ORDER: [Tab; 6] = [
+        Tab::Overview,
+        Tab::Prompts,
+        Tab::Details,
+        Tab::Activity,
+        Tab::Mcp,
+        Tab::Tools,
+    ];
 
     pub(super) fn label(self) -> &'static str {
         match self {
             Self::Overview => "Overview",
             Self::Prompts => "Prompts",
             Self::Details => "Details",
+            Self::Activity => "Activity",
+            Self::Mcp => "MCP",
+            Self::Tools => "Tools",
         }
     }
 
@@ -42,6 +55,9 @@ impl Tab {
         match view {
             SessionView::Overview => Some(Self::Overview),
             SessionView::Details => Some(Self::Details),
+            SessionView::Activity => Some(Self::Activity),
+            SessionView::Mcp => Some(Self::Mcp),
+            SessionView::Tools => Some(Self::Tools),
             _ => None,
         }
     }
@@ -50,6 +66,9 @@ impl Tab {
         match self {
             Self::Overview => Some(SessionView::Overview),
             Self::Details => Some(SessionView::Details),
+            Self::Activity => Some(SessionView::Activity),
+            Self::Mcp => Some(SessionView::Mcp),
+            Self::Tools => Some(SessionView::Tools),
             Self::Prompts => None,
         }
     }
@@ -101,7 +120,7 @@ impl State {
 pub(super) fn draw(
     frame: &mut Frame,
     session: &RecordedSession,
-    ui: &crate::UiModel,
+    page: &mut super::PageView,
     state: State,
     has_newer_page: bool,
     pending: bool,
@@ -157,41 +176,24 @@ pub(super) fn draw(
         head,
     );
 
-    // One focus stop for the tab strip. The active section is always visible;
-    // the focused strip adds a marker so `Enter read` is not a guess.
-    let mut line = Vec::new();
-    for tab in Tab::ORDER {
-        let active = tab == state.tab;
-        let mut style = if active {
-            selection_style()
-        } else {
-            Style::default()
-        };
-        let marker = if active && state.tabs_focused {
-            "›"
-        } else {
-            " "
-        };
-        if active && !state.tabs_focused {
-            style = style.add_modifier(Modifier::UNDERLINED);
-        }
-        line.push(Span::styled(format!(" {marker}{} ", tab.label()), style));
-        if tab == Tab::Prompts {
-            line.push(Span::styled("▸request nav", theme::muted()));
-        }
-        line.push(Span::raw("  "));
-    }
-    line.push(Span::styled(
-        if state.tabs_focused {
-            "READ: Enter"
-        } else {
-            "READ: content"
-        },
-        theme::muted(),
-    ));
-    frame.render_widget(Paragraph::new(Line::from(line)), tabs);
+    draw_tabs(frame, tabs, state);
 
-    crate::render_selected_pane(frame, ui, body);
+    let ui = &page.ui;
+    let content_hint = if let Some(table) = page.operation_table.active(ui) {
+        table.draw(frame, body, ui.selected_title().unwrap_or("Tools"));
+        Some(table.key_hint().to_owned())
+    } else if let Some(table) = ui.selected_evidence() {
+        let visible = ui.evidence_visible();
+        if let Some(inspection) = &ui.evidence_inspection {
+            table.draw_expanded_filtered(frame, body, Some(&visible), ui.scroll, inspection);
+        } else {
+            table.draw_with_inspector_filtered(frame, body, Some(&visible), ui.scroll, true);
+        }
+        Some("↑↓ select · Enter inspect · / filter · Esc back".to_owned())
+    } else {
+        crate::render_selected_pane(frame, ui, body);
+        None
+    };
 
     let hints = if state.tabs_focused {
         format!(
@@ -219,6 +221,13 @@ pub(super) fn draw(
             ])
         )
     };
+    let hints = if !state.tabs_focused {
+        content_hint.map_or(hints.clone(), |content| {
+            format!("{content} · Ctrl+←/→ sections")
+        })
+    } else {
+        hints
+    };
     let mut footer_lines = Vec::new();
     if let Some(error) = message {
         footer_lines.push(Line::styled(visible_text(error), label_style()));
@@ -242,7 +251,7 @@ pub(super) fn draw(
     );
 }
 
-/// Renders the three-section tab strip with the UI-04 prompt navigator in the
+/// Renders the section tab strip with the UI-04 prompt navigator in the
 /// body. The navigator owns its own reader, chooser and status line.
 pub(super) fn draw_prompts(
     frame: &mut Frame,
@@ -288,37 +297,57 @@ pub(super) fn draw_prompts(
         .block(Block::default().borders(Borders::BOTTOM)),
         head,
     );
+    draw_tabs(frame, tabs, state);
+    navigator.set_layout(area.width);
+    navigator.draw(frame, body);
+    let mut lines = Vec::new();
+    if let Some(error) = message {
+        lines.push(Line::styled(visible_text(error), label_style()));
+    } else if pending
+        && matches!(
+            navigator.status(),
+            super::prompt::PromptStatus::Loading { .. }
+        )
+    {
+        lines.push(Line::styled("Loading this prompt page…", label_style()));
+    }
+    lines.push(Line::from(navigator.hints_for(area.width)));
+    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), footer);
+}
+
+fn draw_tabs(frame: &mut Frame, area: ratatui::layout::Rect, state: State) {
+    let active_index = Tab::ORDER
+        .iter()
+        .position(|tab| *tab == state.tab)
+        .unwrap_or(0);
     let mut line = Vec::new();
-    for tab in Tab::ORDER {
+    let mut used = 0;
+    for (index, tab) in Tab::ORDER.into_iter().enumerate() {
         let active = tab == state.tab;
         let mut style = if active {
             selection_style()
         } else {
             Style::default()
         };
-        let marker = if active { "›" } else { " " };
         if active && !state.tabs_focused {
             style = style.add_modifier(Modifier::UNDERLINED);
         }
-        line.push(Span::styled(format!(" {marker}{} ", tab.label()), style));
-        line.push(Span::raw("  "));
+        let marker = if active && state.tabs_focused {
+            "›"
+        } else {
+            " "
+        };
+        let span = Span::styled(format!("{marker}{}  ", tab.label()), style);
+        if index > active_index && used + span.width() > usize::from(area.width) {
+            break;
+        }
+        used += span.width();
+        line.push(span);
+        while used > usize::from(area.width) && line.len() > 1 {
+            used -= line.remove(0).width();
+        }
     }
-    line.push(Span::styled("READ: prompts", theme::muted()));
-    frame.render_widget(Paragraph::new(Line::from(line)), tabs);
-    navigator.set_layout(area.width);
-    navigator.draw(frame, body);
-    let mut lines = Vec::new();
-    if let Some(error) = message {
-        lines.push(Line::styled(visible_text(error), label_style()));
-    } else if pending {
-        lines.push(Line::styled("Loading this prompt page…", label_style()));
-    }
-    lines.push(Line::from(format!(
-        "{} · {}",
-        navigator.status_line(),
-        navigator.hints_for(area.width)
-    )));
-    frame.render_widget(Paragraph::new(lines).wrap(Wrap { trim: true }), footer);
+    frame.render_widget(Paragraph::new(Line::from(line)), area);
 }
 
 fn project_label(session: &RecordedSession) -> String {
@@ -332,4 +361,31 @@ fn project_label(session: &RecordedSession) -> String {
         .filter(|name| !name.is_empty())
         .unwrap_or(path)
         .to_owned()
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn active_inspector_section_stays_visible_at_the_minimum_width() {
+        for tab in Tab::ORDER {
+            let mut terminal = Terminal::new(TestBackend::new(MIN_WIDTH, 1)).unwrap();
+            terminal
+                .draw(|frame| {
+                    draw_tabs(
+                        frame,
+                        frame.area(),
+                        State {
+                            tab,
+                            tabs_focused: true,
+                        },
+                    )
+                })
+                .unwrap();
+            let text = terminal.backend().to_string();
+            assert!(text.contains(&format!("›{}", tab.label())), "{text}");
+        }
+    }
 }

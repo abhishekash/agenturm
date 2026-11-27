@@ -503,15 +503,15 @@ fn prompt_history_page(
     writer: Option<&Store>,
     owner: WorkAnchor,
     before: Option<agenturm_ui::PromptHistoryCursor>,
+    config: Result<&dyn super::content_preview::ContentSourceConfig, String>,
 ) -> Result<WorkResult, String> {
     Ok(prompt_history_with(owner, before, |owner, cursor| {
-        let config =
-            prompt_config(db).map_err(crate::prompt_history::PromptHistoryError::Unavailable)?;
+        let config = config.map_err(crate::prompt_history::PromptHistoryError::Unavailable)?;
         let source = ExtensionId::parse(&owner.source)
             .map_err(|_| crate::prompt_history::PromptHistoryError::MissingIdentity)?;
         crate::prompt_history::load_page(
             db,
-            &config,
+            config,
             crate::prompt_history::PromptReadScope {
                 source: &source,
                 session: &owner.session,
@@ -620,25 +620,46 @@ pub(super) fn execute_prompt(
     writer: Option<&Store>,
     command: WorkCommand,
 ) -> Result<WorkResult, String> {
+    execute_prompt_with_config(db, writer, command, None)
+}
+
+pub(super) fn execute_prompt_with_config(
+    db: &Path,
+    writer: Option<&Store>,
+    command: WorkCommand,
+    active: Option<&dyn super::content_preview::ContentSourceConfig>,
+) -> Result<WorkResult, String> {
+    let file = if active.is_none() {
+        prompt_config(db)
+    } else {
+        Ok(PathBuf::new())
+    };
+    let config = || match active {
+        Some(active) => Ok(active),
+        None => file
+            .as_ref()
+            .map(|path| path as &dyn super::content_preview::ContentSourceConfig)
+            .map_err(Clone::clone),
+    };
     match command {
         #[cfg(target_os = "linux")]
         command @ (WorkCommand::Investigate(_) | WorkCommand::RevealInvestigation { .. }) => {
-            crate::investigate_cli::cockpit::local(command, db, writer, &prompt_config(db)?)
+            crate::investigate_cli::cockpit::local(command, db, writer, config()?)
         }
         #[cfg(not(target_os = "linux"))]
         WorkCommand::Investigate(_) | WorkCommand::RevealInvestigation { .. } => {
             Err("Retained investigations require Linux".into())
         }
-        WorkCommand::Prompts(owner) => prompt_history_page(db, writer, owner, None),
+        WorkCommand::Prompts(owner) => prompt_history_page(db, writer, owner, None, config()),
         WorkCommand::PromptPage { anchor, before } => {
-            prompt_history_page(db, writer, anchor, before)
+            prompt_history_page(db, writer, anchor, before, config())
         }
         WorkCommand::RevealPrompt(prompt, mut delivery) => {
-            let config = prompt_config(db)?;
+            let config = config()?;
             let source = ExtensionId::parse(&prompt.anchor.source).map_err(string)?;
             super::content_preview::reveal_user_prompt(
                 db,
-                &config,
+                config,
                 &source,
                 super::content_preview::PromptSelection {
                     session_id: &prompt.anchor.session,
@@ -656,11 +677,11 @@ pub(super) fn execute_prompt(
             ))
         }
         WorkCommand::RevealOperation(operation, mut delivery) => {
-            let config = prompt_config(db)?;
+            let config = config()?;
             let source = ExtensionId::parse(&operation.source_id).map_err(string)?;
             super::content_preview::reveal_operation_detail(
                 db,
-                &config,
+                config,
                 &source,
                 operation.kind,
                 &agenturm_store::CodexOperationSelection {
@@ -678,7 +699,7 @@ pub(super) fn execute_prompt(
         WorkCommand::RevealReviewEdit(edit, mut delivery) => {
             super::content_preview::reveal_review_edit(
                 db,
-                &prompt_config(db)?,
+                config()?,
                 &edit,
                 &mut delivery,
                 writer,
@@ -1269,6 +1290,50 @@ mod tests {
         ));
         std::fs::create_dir(&directory).unwrap();
         directory
+    }
+
+    #[cfg(target_os = "linux")]
+    #[test]
+    fn active_prompt_authority_does_not_load_a_separate_config_file() {
+        struct Active(std::cell::Cell<usize>);
+        impl super::super::content_preview::ContentSourceConfig for Active {
+            fn resolve_content_source(
+                &self,
+                _: &ExtensionId,
+            ) -> Result<agenturm_content::ResolvedSource, String> {
+                self.0.set(self.0.get() + 1);
+                Err("Active source is unavailable".into())
+            }
+        }
+        let active = Active(std::cell::Cell::new(0));
+        let root =
+            std::env::temp_dir().join(format!("agenturm-active-authority-{}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let db = root.join("history.sqlite");
+        let store = Store::open_collector(&db).unwrap();
+        let result = execute_prompt_with_config(
+            &db,
+            Some(&store),
+            WorkCommand::Prompts(WorkAnchor {
+                source: "harness.codex.active".into(),
+                session: "active".into(),
+                worker: None,
+                turn: None,
+            }),
+            Some(&active),
+        )
+        .unwrap();
+        let WorkResult::PromptHistory(page) = result else {
+            panic!("prompt page")
+        };
+        assert_eq!(active.0.get(), 1);
+        assert_eq!(
+            page.availability,
+            agenturm_ui::PromptAvailability::Denied("Active source is unavailable".into())
+        );
+        assert!(!root.join("sources.json").exists());
+        drop(store);
+        std::fs::remove_dir_all(root).unwrap();
     }
 
     #[test]

@@ -152,6 +152,7 @@ pub enum SessionView {
     Details,
     Activity,
     Mcp,
+    Tools,
     Review,
     Metrics,
     Usage,
@@ -1309,12 +1310,7 @@ impl Workspace {
                 self.message = None;
             }
             (Change::Work(_), Ok(WorkspaceResponse::Work(WorkResult::PromptHistory(page)))) => {
-                let capture = if page.availability == crate::workbench::PromptAvailability::Granted
-                {
-                    prompt::PromptCapture::Enabled
-                } else {
-                    prompt::PromptCapture::MetadataOnly
-                };
+                let capture = prompt::PromptCapture::Unknown;
                 let mut nav = prompt::PromptNavigator::new(prompt::PromptScope::session(
                     &page.anchor,
                     capture,
@@ -1472,7 +1468,7 @@ impl Workspace {
     fn inspector_session(&self) -> Option<(RecordedSession, SessionView)> {
         match self.history.last().map(|view| &view.selection) {
             Some(HistorySelection::Session(row, view))
-                if matches!(view, SessionView::Overview | SessionView::Details) =>
+                if inspector::Tab::from_view(*view).is_some() =>
             {
                 Some((row.clone(), *view))
             }
@@ -1627,7 +1623,7 @@ impl Workspace {
             }
         } else {
             match code {
-                KeyCode::Char('m') => {
+                KeyCode::Char('m') if self.inspector.tab != inspector::Tab::Mcp => {
                     let forward = true;
                     self.move_inspector_tab(sender, forward, false);
                     return true;
@@ -3274,7 +3270,7 @@ impl Workspace {
                     visible_text(&session.session_id),
                     mode
                 ));
-                if matches!(mode, SessionView::Overview | SessionView::Details) {
+                if inspector::Tab::from_view(*mode).is_some() {
                     current.push(format!(
                         "Inspector section {} · ←/→ tabs · Enter/Down read · m next · Esc roster",
                         self.inspector.tab.label()
@@ -3402,14 +3398,10 @@ impl Workspace {
             keymap::id::SESSION_ERRORS => (!catalog_ready).then_some("No session page is loaded"),
             keymap::id::SESSION_SUBTREE => (self.agents.session_scope.is_none())
                 .then_some("Choose an exact agent session first"),
-            keymap::id::INSPECTOR_SECTIONS => (!matches!(
-                self.history.last().map(|view| &view.selection),
-                Some(HistorySelection::Session(
-                    _,
-                    SessionView::Overview | SessionView::Details
-                ))
-            ))
-            .then_some("Open the session inspector first"),
+            keymap::id::INSPECTOR_SECTIONS => self
+                .inspector_session()
+                .is_none()
+                .then_some("Open the session inspector first"),
             keymap::id::SCOPE_SELECTED => (!anchor).then_some("Select an exact session or turn"),
             keymap::id::SCOPE_ALL => (!history).then_some("Open a retained evidence view first"),
             keymap::id::LIVE_REFRESH | keymap::id::RETRY_CONNECTION => {
@@ -4819,7 +4811,7 @@ fn draw_workspace_base(frame: &mut Frame, workspace: &mut Workspace) {
             inspector::draw(
                 frame,
                 session,
-                &view.page.ui,
+                &mut view.page,
                 workspace.inspector,
                 !view.newer.is_empty(),
                 workspace.pending.is_some(),
@@ -4916,6 +4908,7 @@ fn draw_workspace_base(frame: &mut Frame, workspace: &mut Workspace) {
                         SessionView::Metrics => "metrics",
                         SessionView::Usage => "usage",
                         SessionView::Traces => "traces",
+                        SessionView::Tools => "tools",
                         SessionView::Mcp => unreachable!("MCP has its own scoped heading"),
                     };
                     format!(
@@ -6759,14 +6752,18 @@ mod tests {
         assert_eq!(workspace.inspector.tab, inspector::Tab::Details);
         workspace.finish(Ok(WorkspaceResponse::History(empty_history_page())));
         assert_eq!(workspace.history.len(), 1);
-        assert!(!press(&mut workspace, &sender, KeyCode::Char('m')));
-        assert!(matches!(
-            requests.try_recv(),
-            Ok(WorkspaceRequest::History {
-                selection: HistorySelection::Session(_, SessionView::Overview),
-                ..
-            })
-        ));
+        for mode in [
+            SessionView::Activity,
+            SessionView::Mcp,
+            SessionView::Tools,
+            SessionView::Overview,
+        ] {
+            assert!(!press(&mut workspace, &sender, KeyCode::Char('m')));
+            assert!(matches!(requests.try_recv(), Ok(WorkspaceRequest::History {
+                selection: HistorySelection::Session(row, selected), ..
+            }) if row.session_id == "selected" && selected == mode));
+            workspace.finish(Ok(WorkspaceResponse::History(empty_history_page())));
+        }
     }
 
     #[test]
@@ -8557,7 +8554,9 @@ mod tests {
             "Overview",
             "Prompts",
             "Details",
-            "READ: Enter",
+            "Activity",
+            "MCP",
+            "Tools",
             "Codex session",
         ] {
             assert!(text.contains(expected), "missing {expected}: {text}");
@@ -8607,17 +8606,22 @@ mod tests {
         assert!(!workspace.inspector.tabs_focused);
         // Ctrl+Left/Right switch sections from content without returning to the
         // tab strip or losing content focus.
-        assert!(!workspace.key(&sender, ctrl(KeyCode::Right)));
-        assert!(matches!(
-            requests.try_recv(),
-            Ok(WorkspaceRequest::History {
-                selection: HistorySelection::Session(_, SessionView::Overview),
-                ..
-            })
-        ));
-        workspace.finish(Ok(WorkspaceResponse::History(session_history_page(&[
-            "Session overview",
-        ]))));
+        for (mode, title) in [
+            (SessionView::Activity, "Activity"),
+            (SessionView::Mcp, "MCP"),
+            (SessionView::Tools, "Operations"),
+            (SessionView::Overview, "Session overview"),
+        ] {
+            assert!(!workspace.key(&sender, ctrl(KeyCode::Right)));
+            assert!(matches!(requests.try_recv(), Ok(WorkspaceRequest::History {
+                selection: HistorySelection::Session(row, selected), ..
+            }) if row.session_id == "selected" && selected == mode));
+            workspace.finish(Ok(WorkspaceResponse::History(session_history_page(&[
+                title,
+            ]))));
+            assert_eq!(workspace.history.len(), 1);
+            assert!(!workspace.inspector.tabs_focused);
+        }
         assert_eq!(workspace.inspector.tab, inspector::Tab::Overview);
         assert!(!workspace.inspector.tabs_focused);
         assert!(!press(&mut workspace, &sender, KeyCode::Esc));
@@ -8889,6 +8893,34 @@ mod tests {
             workspace.history.last().map(|view| &view.selection),
             Some(HistorySelection::Turn(turn)) if turn.turn_id == "turn-7"
         ));
+    }
+
+    #[test]
+    fn denied_prompt_page_shows_the_reason_without_inventing_capture_policy() {
+        let row = session("harness.codex", "denied-session", "running", None);
+        let anchor = WorkAnchor::from(&row);
+        let mut workspace = Workspace::new();
+        workspace.history.push(HistoryView::new(
+            HistorySelection::Session(row, SessionView::Overview),
+            session_history_page(&["Session overview"]),
+        ));
+        let (sender, requests) = mpsc::channel();
+        press(&mut workspace, &sender, KeyCode::Char('P'));
+        assert!(matches!(
+            requests.try_recv(),
+            Ok(WorkspaceRequest::Work(WorkCommand::Prompts(_)))
+        ));
+        let mut page = prompt_page(anchor);
+        page.entries.clear();
+        page.availability = crate::workbench::PromptAvailability::Denied(
+            "Approval required for this source".into(),
+        );
+        workspace.finish(Ok(WorkspaceResponse::Work(WorkResult::PromptHistory(page))));
+        for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+            let text = workspace_text(&mut workspace, width, height);
+            assert!(text.contains("Approval required for this source"), "{text}");
+            assert!(!text.contains("Metadata only"), "{text}");
+        }
     }
 
     #[test]

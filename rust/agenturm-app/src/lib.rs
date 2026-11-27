@@ -2731,6 +2731,7 @@ fn load_workspace_history(
                 SessionView::Details => |ids| ids.details,
                 SessionView::Activity => |ids| ids.activity,
                 SessionView::Mcp => |ids| ids.mcp,
+                SessionView::Tools => |ids| ids.tools,
                 SessionView::Review => |ids| ids.review,
                 SessionView::Metrics => |ids| ids.overview,
                 SessionView::Usage => |ids| ids.usage,
@@ -2758,12 +2759,29 @@ fn load_workspace_history(
                     return Ok(page);
                 }
             };
-            let history = match session.worker_id.as_deref() {
-                Some(worker_id) => {
-                    app.kernel
-                        .refresh_worker_history_with_store(store, query, Some(worker_id))
+            let history = if view == SessionView::Mcp {
+                // Apply the call projection before the page limit, otherwise a
+                // busy session can hide every MCP call behind newer events.
+                let retained = store.query_projected_history(
+                    &query,
+                    &agenturm_kernel::retained_history::HistoryProjection::Mcp { query: None },
+                    None,
+                    session.worker_id.as_deref().map(Some),
+                )?;
+                Snapshot {
+                    observations: retained.observations,
+                    observations_truncated: retained.has_more,
+                    history_snapshot_id: retained.snapshot_id,
+                    ..Snapshot::default()
                 }
-                None => app.refresh_history_query(store, query),
+            } else {
+                match session.worker_id.as_deref() {
+                    Some(worker_id) => {
+                        app.kernel
+                            .refresh_worker_history_with_store(store, query, Some(worker_id))
+                    }
+                    None => app.refresh_history_query(store, query),
+                }
             };
             let (mut snapshot, continuation) = visible_workspace_history(history, include_reviews)?;
             let mut panes = session_evidence::add_session_panes(&mut snapshot, &session);
@@ -3419,6 +3437,19 @@ pub struct ConfiguredCollector<S = Store> {
     local_maintenance: Option<CollectorMaintenance<S>>,
     next_maintenance: Instant,
     host_capture: Option<host_cli::HostCaptureSchedule>,
+}
+
+impl content_preview::ContentSourceConfig for ConfiguredCollector {
+    #[cfg(target_os = "linux")]
+    fn resolve_content_source(
+        &self,
+        id: &ExtensionId,
+    ) -> Result<agenturm_content::ResolvedSource, String> {
+        self.follow
+            .as_ref()
+            .ok_or("The active collector has no follow source configuration")?
+            .content_source(&self.plugin_host, id)
+    }
 }
 
 impl ConfiguredCollector {
@@ -4346,26 +4377,7 @@ impl ValidatedCollectionConfig {
             .follow
             .as_ref()
             .ok_or("Content source is absent from the collection configuration")?;
-        let wanted = BTreeSet::from([source_id.as_str().to_owned()]);
-        let source = follow
-            .selection
-            .authorize_retained_sources(&wanted)?
-            .into_iter()
-            .find(|source| source.source_id == source_id.as_str())
-            .ok_or("Retained content source is not present under configured roots")?;
-        let adapter = follow
-            .catalog
-            .get(&source.plugin_id)
-            .ok_or("Retained content source has no pinned adapter")?;
-        Ok(agenturm_content::ResolvedSource {
-            source_id: source.source_id,
-            plugin_id: source.plugin_id,
-            plugin_host: self.plugin_host.clone(),
-            adapter: adapter.adapter.clone(),
-            artifact_sha256: Some(adapter.sha256.clone()),
-            features: Some(adapter.features.clone()),
-            source_root: source.source_root,
-        })
+        follow.content_source(&self.plugin_host, source_id)
     }
 }
 
@@ -4380,6 +4392,34 @@ struct FollowSources {
 }
 
 impl FollowSources {
+    #[cfg(target_os = "linux")]
+    fn content_source(
+        &self,
+        plugin_host: &std::path::Path,
+        source_id: &ExtensionId,
+    ) -> Result<agenturm_content::ResolvedSource, String> {
+        let wanted = BTreeSet::from([source_id.as_str().to_owned()]);
+        let source = self
+            .selection
+            .authorize_retained_sources(&wanted)?
+            .into_iter()
+            .find(|source| source.source_id == source_id.as_str())
+            .ok_or("Retained content source is not present under configured roots")?;
+        let adapter = self
+            .catalog
+            .get(&source.plugin_id)
+            .ok_or("Retained content source has no pinned adapter")?;
+        Ok(agenturm_content::ResolvedSource {
+            source_id: source.source_id,
+            plugin_id: source.plugin_id,
+            plugin_host: plugin_host.to_owned(),
+            adapter: adapter.adapter.clone(),
+            artifact_sha256: Some(adapter.sha256.clone()),
+            features: Some(adapter.features.clone()),
+            source_root: source.source_root,
+        })
+    }
+
     fn resolve(&mut self) -> Result<Vec<ConfiguredSource>, String> {
         let (inputs, coverage) = self
             .selection
