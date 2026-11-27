@@ -5,6 +5,10 @@ Example (run color and monochrome in separate processes):
   NO_COLOR=1 AGENTURM_UI_CAPTURE_DIR=/tmp/agenturm-ui-frames cargo test -p agenturm-ui command_center_pinned_frames
   python3 scripts/render_rust_command_center.py /tmp/agenturm-ui-frames
 
+For a saved theme, point XDG_CONFIG_HOME at an isolated directory containing
+agenturm-rust/ui.json (for example {"theme":"Current"}), then set
+AGENTURM_UI_CAPTURE_THEME=Current and AGENTURM_UI_PREFERENCES=1 for that process.
+
 Requires Pillow. Generates PNGs and a self-contained, accessible HTML gallery;
 these are controlled metadata fixtures, not captures of a user's private data.
 """
@@ -51,6 +55,48 @@ def symbol_width(symbol):
     return max(1, sum(0 if unicodedata.combining(char) or char in "\ufe0e\ufe0f" else 2 if unicodedata.east_asian_width(char) in ("W", "F") else 1 for char in symbol))
 
 
+
+def draw_box_symbol(draw, symbol, x, y, width, height, fill):
+    """Join border strokes across complete terminal cells, including leading.
+
+    Font glyph metrics leave gaps when a preview has extra line spacing. Real
+    terminal border cells meet at their edges, so draw their cell geometry.
+    """
+    cx, cy = x + width // 2, y + height // 2
+    radius = max(1, min(width // 2, height // 2))
+    if symbol == "─":
+        draw.line((x, cy, x + width, cy), fill=fill)
+    elif symbol == "│":
+        draw.line((cx, y, cx, y + height), fill=fill)
+    elif symbol == "╭":
+        draw.line((cx, cy + radius, cx, y + height), fill=fill)
+        draw.line((cx + radius, cy, x + width, cy), fill=fill)
+        draw.arc((cx, cy, cx + 2 * radius, cy + 2 * radius), 180, 270, fill=fill)
+    elif symbol == "╮":
+        draw.line((cx, cy + radius, cx, y + height), fill=fill)
+        draw.line((x, cy, cx - radius, cy), fill=fill)
+        draw.arc((cx - 2 * radius, cy, cx, cy + 2 * radius), 270, 360, fill=fill)
+    elif symbol == "╰":
+        draw.line((cx, y, cx, cy - radius), fill=fill)
+        draw.line((cx + radius, cy, x + width, cy), fill=fill)
+        draw.arc((cx, cy - 2 * radius, cx + 2 * radius, cy), 90, 180, fill=fill)
+    elif symbol == "╯":
+        draw.line((cx, y, cx, cy - radius), fill=fill)
+        draw.line((x, cy, cx - radius, cy), fill=fill)
+        draw.arc((cx - 2 * radius, cy - 2 * radius, cx, cy), 0, 90, fill=fill)
+    else:
+        connections = {
+            "┌": "rd", "┐": "ld", "└": "ru", "┘": "lu",
+            "├": "urd", "┤": "uld", "┬": "lrd", "┴": "lru", "┼": "lrud",
+        }.get(symbol)
+        if connections is None:
+            return False
+        endpoints = {"l": (x, cy), "r": (x + width, cy), "u": (cx, y), "d": (cx, y + height)}
+        for connection in connections:
+            draw.line((cx, cy, *endpoints[connection]), fill=fill)
+    return True
+
+
 def render(path: Path, output: Path, font_path: Path, size: int):
     frame = json.loads(path.read_text())
     regular = ImageFont.truetype(str(font_path), size)
@@ -95,6 +141,8 @@ def render(path: Path, output: Path, font_path: Path, size: int):
         fg, bg = color(cell["fg"], default_fg), color(cell["bg"], default_bg)
         if cell["reverse"]:
             fg, bg = bg, fg
+        if draw_box_symbol(draw, symbol, x, y, cell_width, cell_height, fg):
+            continue
         wide = symbol_width(symbol) > 1
         if emoji and any(ord(char) >= 0x1F000 for char in symbol):
             glyph = Image.new("RGBA", (160, 140))

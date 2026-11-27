@@ -1,6 +1,6 @@
 # Segmented command center
 
-Design review for the Agenturm task roster, 2026-11-27. Implementation and verification are in progress; the validation entries below remain pending until the final build is checked.
+Design review for the Agenturm task roster, 2026-11-27. Implemented in Rust 0.3.13 and checked with public-metadata fixtures, isolated session histories, and the native terminal app.
 
 ## Intended behavior
 
@@ -52,6 +52,10 @@ Loaded-page scope / collection summary
 Enter inspect   / search   Tab filter   ? help
 ```
 
+## Rendered frames
+
+[Open the embedded wide, narrow and monochrome previews](segmented-command-center.html#rendered-frames). The previews render actual Ratatui cells from controlled fixtures.
+
 ## Clutter audit
 
 | Signal | Previous roster | Design change |
@@ -74,7 +78,7 @@ A status uses at most a word and one semantic color. Meaning does not depend on 
 |---|---|
 | 120+ columns, 24+ rows | Task list with selected-task preview. The preview pins primary actions and bounds optional activity. |
 | 80×24 | Full-width task list. Enter opens the inspector; Esc returns to the selected task. Secondary navigation is available through the command palette and help. |
-| 60×18 | Single task pane; active filter remains explicit; names truncate by terminal cell width. Primary shortcuts remain visible. |
+| 60×18 | Single task pane; mixed-provider lists fold the update column to preserve task names; active filter remains explicit; names truncate by terminal cell width. Primary shortcuts remain visible. |
 | Below 60 columns or 18 rows | An honest minimum-size notice replaces the roster. |
 | Loading / unavailable / empty | Distinct body messages with retry or refresh guidance. |
 | Search with no matches | Empty result message and reset guidance, without stale selected-task details. |
@@ -86,12 +90,24 @@ A status uses at most a word and one semantic color. Meaning does not depend on 
 
 | Check | Status |
 |---|---|
-| UI state and existing navigation tests | Pending final implementation |
-| Pinned wide, 80×24 and 60×18 rendered frames | Pending final implementation |
-| Monochrome and Unicode-width rendering | Pending final implementation |
-| Empty, loading, disconnected, partial and paged states | Pending final implementation |
-| Prompt history, Activity, MCP and Tools terminal journey | Pending final implementation |
-| Terminal resize and restoration | Pending final implementation |
-| Application and UI Clippy | Pending final implementation |
+| UI state and existing navigation tests | Passed: 469 app/UI unit and integration tests |
+| Pinned wide, 80×24 and 60×18 rendered frames | Passed: 160×40, 120×32, 120×24, 80×24 and 60×18; 63 exported frames across color, monochrome and Current theme |
+| Monochrome and Unicode-width rendering | Passed: reset colors, reversed selection, CJK, combining marks and ZWJ emoji |
+| Empty, loading, disconnected, partial and paged states | Passed: distinct states and full collection status in help |
+| Prompt history, Activity, MCP and Tools terminal journey | Passed at 120×32, 80×24 and 60×18: grant, read, redaction and terminal restoration |
+| Terminal resize and restoration | Passed: 6 native terminal journeys covering resize, too-small recovery, help/palette, q and Ctrl+C restoration |
+| Application and UI Clippy | Passed: all targets with warnings denied |
 
-The review does not certify a release or installed binary. Final verification must use the integrated implementation. No live user database needs to be modified for layout qualification.
+The checks use synthetic public metadata and isolated histories. No live user history database was used for layout qualification.
+
+## Reproduce
+
+```sh
+env -u NO_COLOR AGENTURM_UI_CAPTURE_DIR=/tmp/agenturm-ui-frames cargo test --offline -p agenturm-ui command_center_pinned_frames
+NO_COLOR=1 AGENTURM_UI_CAPTURE_DIR=/tmp/agenturm-ui-frames cargo test --offline -p agenturm-ui command_center_pinned_frames
+python3 scripts/render_rust_command_center.py /tmp/agenturm-ui-frames
+cargo test --offline -p agenturm-ui -p agenturm-app
+cargo clippy --offline -p agenturm-ui -p agenturm-app --all-targets -- -D warnings
+```
+
+Current-theme captures use the existing preferences loader with an isolated `XDG_CONFIG_HOME/agenturm-rust/ui.json` containing `{"theme":"Current"}`, plus `AGENTURM_UI_CAPTURE_THEME=Current AGENTURM_UI_PREFERENCES=1`. Each color profile runs in a fresh test process.
