@@ -9,7 +9,7 @@ dependencies = [
  "agenturm-content",
  "agenturm-jsonl-source",
  "agenturm-kernel",
- "agenturm-lifecycle-extension-example",
+ "agenturm-lifecycle-extension-fixture",
  "agenturm-opencode-harness",
  "agenturm-runtime",
  "agenturm-service",
@@ -165,7 +165,7 @@ dependencies = [
 ]
 
 [[package]]
-name = "agenturm-lifecycle-extension-example"
+name = "agenturm-lifecycle-extension-fixture"
 version = "0.1.0"
 dependencies = [
  "agenturm-kernel",
@@ -225,6 +225,18 @@ version = "0.1.0"
 dependencies = [
  "agenturm-protocol",
  "serde_json",
+]
+
+[[package]]
+name = "agenturm-prompt-signals-fixture"
+version = "0.1.0"
+dependencies = [
+ "agenturm-kernel",
+ "agenturm-protocol",
+ "agenturm-runtime",
+ "serde",
+ "serde_json",
+ "sha2",
 ]
 
 [[package]]
@@ -347,7 +359,7 @@ name = "agenturm-ui"
 version = "0.1.0"
 dependencies = [
  "agenturm-kernel",
- "agenturm-lifecycle-extension-example",
+ "agenturm-lifecycle-extension-fixture",
  "crossterm",
  "ratatui",
  "rustix",

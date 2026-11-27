@@ -1094,7 +1094,7 @@ mod tests {
 
     fn fixture() -> (Request, String) {
         let value: Value = serde_json::from_str(include_str!(
-            "../../../tests/fixtures/rust_storage_mutation_v2.json"
+            "../../../rust/agenturm-test-support/fixtures/rust_storage_mutation_v2.json"
         ))
         .unwrap();
         let request = Request::from_json(&serde_json::to_vec(&value["request"]).unwrap()).unwrap();
@@ -1375,7 +1375,7 @@ mod tests {
         let (request, _) = fixture();
         let original = request.replay_identity().unwrap();
         let reordered = serde_json::from_str::<Value>(include_str!(
-            "../../../tests/fixtures/rust_storage_mutation_v2.json"
+            "../../../rust/agenturm-test-support/fixtures/rust_storage_mutation_v2.json"
         ))
         .unwrap();
         let equivalent = Request::from_json(

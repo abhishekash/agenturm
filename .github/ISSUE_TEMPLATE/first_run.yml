@@ -23,4 +23,4 @@ body:
     id: environment
     attributes:
       label: Environment
-      placeholder: "OS, terminal, Python version, Goechala version, and install command."
+      placeholder: "OS, terminal, Agenturm version, and install command."

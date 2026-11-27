@@ -870,6 +870,24 @@ fn plain_code(code: KeyCode) -> event::KeyEvent {
 
 const CACHE_LIMIT: usize = 4;
 const REFRESH_INTERVAL: Duration = Duration::from_secs(3);
+const INITIAL_EMPTY_SESSIONS_RETRY: Duration = Duration::from_millis(1200);
+
+#[derive(Default)]
+struct InitialSessionsRefresh {
+    response_received: bool,
+}
+
+impl InitialSessionsRefresh {
+    fn interval_after_response(&mut self, sessions_empty: bool) -> Duration {
+        if !self.response_received {
+            self.response_received = true;
+            if sessions_empty {
+                return INITIAL_EMPTY_SESSIONS_RETRY;
+            }
+        }
+        REFRESH_INTERVAL
+    }
+}
 
 /// Deterministic Review control order for Tab / Shift+Tab and Enter/Space.
 const REVIEW_CONTROLS: &[(&str, char)] = &[
@@ -1003,6 +1021,7 @@ struct Workspace {
     deferred_request: Option<(WorkspaceRequest, Change)>,
     message: Option<String>,
     refresh_after: Instant,
+    initial_sessions_refresh: InitialSessionsRefresh,
     palette: palette::Palette,
     help: help::Help,
     inspector: inspector::State,
@@ -1038,6 +1057,7 @@ impl Workspace {
             deferred_request: None,
             message: None,
             refresh_after: Instant::now(),
+            initial_sessions_refresh: InitialSessionsRefresh::default(),
             palette: palette::Palette::default(),
             help: help::Help::default(),
             inspector: inspector::State::default(),
@@ -1127,6 +1147,10 @@ impl Workspace {
                 });
             }
             (Change::RefreshSessions, Ok(WorkspaceResponse::Sessions(catalog))) => {
+                self.refresh_after = Instant::now()
+                    + self
+                        .initial_sessions_refresh
+                        .interval_after_response(catalog.sessions.is_empty());
                 if self.agents.update(catalog) {
                     self.message = Some(
                         "The selected session left this page · kept the nearest recorded row"
@@ -5258,6 +5282,18 @@ fn draw_agents(frame: &mut Frame, agents: &mut AgentList, pending: bool, message
 mod tests {
     use super::*;
     use ratatui::{Terminal, backend::TestBackend};
+
+    #[test]
+    fn empty_initial_sessions_response_gets_only_one_fast_retry() {
+        let mut refresh = InitialSessionsRefresh::default();
+
+        assert_eq!(
+            refresh.interval_after_response(true),
+            INITIAL_EMPTY_SESSIONS_RETRY
+        );
+        assert_eq!(refresh.interval_after_response(true), REFRESH_INTERVAL);
+        assert_eq!(refresh.interval_after_response(true), REFRESH_INTERVAL);
+    }
 
     fn session(source: &str, id: &str, state: &str, parent: Option<&str>) -> RecordedSession {
         RecordedSession {

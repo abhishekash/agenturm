@@ -4,7 +4,7 @@ use agenturm_kernel::{
     ObservationExtensionInput, ObservationExtensionOutput, ObservationIdentity, ObservationKind,
     ObservationScope, RawObservation, RegistrationError,
 };
-use agenturm_lifecycle_extension_example::LifecycleExtensionPlugin;
+use agenturm_lifecycle_extension_fixture::LifecycleExtensionPlugin;
 use agenturm_ui::UiModel;
 
 struct InterruptedSession;

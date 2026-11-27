@@ -1,9 +1,0 @@
-# Plugin relationship projection checkpoint
-
-Recorded 20 November 2026. The process plugin inbox admits a strict metadata-only relationship record with a child session identity, parent session ID, and `delegated` or `review` kind. It rejects content, paths, unsupported kinds and malformed identities before writing a batch. The standalone Python sample adapter emits the same fact from append-only JSONL without importing Agenturm.
-
-The host reduces corrected event revisions inside the policy-current source snapshot. A parent link is confirmed only when the parent session was observed in that same source; missing parents are unresolved, equal-time conflicting links are conflicted, and self-links or cycles are invalid. The projection stores native parent identity and state. It publishes atomically with the source dirty sequence and policy epoch, and capture revocation erases both evidence and projection. The UI receives stable opaque agent IDs for both child and parent through the existing generic source projection; no central UI dispatch branch was added.
-
-Validation: `python3 -m unittest tests.test_plugin_admission tests.test_plugin_projection tests.test_plugin_runtime tests.test_plugin_supervisor tests.test_sample_harness_plugin tests.test_plugin_config tests.test_plugin_process tests.test_plugin_sdk tests.test_plugin_manifest tests.test_plugin_frames` — 82 tests passed. The focused cases cover migration of old projection tables, parent arrival, correction, cycle, conflict, revocation, a real child process and source preparation.
-
-This is relationship metadata only. Message, tool, check and review evidence are not admitted by this path. The trusted Python Store remains the sole database writer. The process protocol does not yet implement a general connector or capability host, and the 50,000-distinct-event cap still requires a finite-retention contract.

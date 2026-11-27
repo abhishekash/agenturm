@@ -1254,7 +1254,7 @@ mod tests {
         ExtensionId, Observation, ObservationIdentity, ObservationKind, ObservationScope,
         PaneModel, UiContribution,
     };
-    use agenturm_lifecycle_extension_example::LifecyclePane;
+    use agenturm_lifecycle_extension_fixture::LifecyclePane;
     use ratatui::Terminal;
     use ratatui::backend::TestBackend;
     use std::collections::BTreeMap;
