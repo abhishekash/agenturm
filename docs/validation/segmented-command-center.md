@@ -97,7 +97,10 @@ A status uses at most a word and one semantic color. Meaning does not depend on 
 | Prompt history, Activity, MCP and Tools terminal journey | Passed at 120×32, 80×24 and 60×18: grant, read, redaction and terminal restoration |
 | Terminal resize and restoration | Passed: 6 native terminal journeys covering resize, too-small recovery, help/palette, q and Ctrl+C restoration |
 | Application and UI Clippy | Passed: all targets with warnings denied |
-| Native bundle frame parsers | Passed: 7 parser regressions and both native default-cockpit PTY qualification modes |
+| Native bundle frame parsers | Passed: 13 parser and identity-witness regressions; both native default-cockpit PTY qualification modes |
+| Metric catalog and Log Findings readers | Passed: synthetic native PTY journeys at 120×32, 80×24 and 60×18, including body redaction and revoked permission |
+| Native roster mutation | Passed: synthetic rename, same native ID in two source files, distinct states, exact Details identity, reopen and restart |
+| Installed qualified Linux 0.3.14 | Passed: fresh-permission prompt/MCP read and redaction, Activity/Tools, navigation and terminal restoration at all three terminal sizes |
 
 The checks use synthetic public metadata and isolated histories. No live user history database was used for layout qualification.
 

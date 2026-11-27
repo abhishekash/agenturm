@@ -66,7 +66,7 @@ class RealRosterWitnessTests(unittest.TestCase):
     def test_supporting_context_is_optional_and_stays_inside_roster(self):
         selected, context = roster.roster_selection(frame(context="    Mira · reviewer"), "Release checks")
         self.assertEqual(context, "Mira · reviewer")
-        wide = frame().replace("Codex       Ready", "Codex       Ready")
+        wide = frame()
         wide = "\n".join(line + " │ › preview metadata │" if line.startswith("│") else line for line in wide.splitlines())
         self.assertIsNotNone(roster.roster_selection(wide, "Release checks"))
         self.assertEqual(roster.roster_selected_status(wide), "Ready")

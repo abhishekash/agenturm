@@ -1,6 +1,6 @@
 # Install Agenturm
 
-Agenturm 0.3.12 is a native Rust application. The installer detects your system,
+Agenturm 0.3.14 is a native Rust application. The installer detects your system,
 fetches the matching release, verifies its pinned SHA-256, and installs the
 `agenturm` command. Python and a Rust toolchain are not required.
 
@@ -44,4 +44,4 @@ walkthrough](https://www.agenturm.dev/#demo).
 
 Open an agent and choose Prompts (or press P from the agent list). If the local source has not been enabled, press a at “Enable prompt history”. Choose a request and press Enter or Right to read it. This enables saved user prompts for that source and its sessions; tool payload permissions remain separate.
 
-Close an older running Agenturm process before launching the updated command. Confirm the installed command with `agenturm --version`; this update reports `agenturm 0.3.12`.
+Close an older running Agenturm process before launching the updated command. Confirm the installed command with `agenturm --version`; this update reports `agenturm 0.3.14`.
