@@ -23,6 +23,7 @@ import time
 from uuid import UUID, uuid4
 
 from validate_rust_private_eval_details import TerminalCells
+from validate_rust_default_cockpit import roster_content, roster_search, selected_rows
 
 PROVIDERS = ("codex", "claude")
 IDS = re.compile(r"[A-Za-z0-9._:/-]{1,256}")
@@ -423,14 +424,47 @@ def inspector_owner(frame):
 
 
 def roster_selection(frame, query):
-    lines = frame.splitlines()
-    if ("Agenturm command center" not in frame or "Enter / Esc done" in frame
-            or not any(line.strip() == f"/ {query}" for line in lines)):
+    if ("Agenturm command center" not in frame or roster_search(frame) != query
+            or "Backspace edit" in frame or "Enter / Esc done" in frame):
         return None
-    for index, line in enumerate(lines):
-        if line.lstrip().startswith("› ") and index + 1 < len(lines):
-            return line, lines[index + 1]
+    rows = selected_rows(frame)
+    if len(rows) != 1:
+        return None
+    selected = rows[0]
+    # Context is optional: ordinary tasks now occupy one row. Never use the
+    # following task or the wide preview as this task's supporting context.
+    lines = [roster_content(line) for line in frame.splitlines()]
+    index = next((index for index, line in enumerate(lines) if line.rstrip() == selected), None)
+    context = ""
+    if index is not None and index + 1 < len(lines):
+        candidate = lines[index + 1]
+        boundary = roster_status_boundary(frame)
+        if boundary is not None and not candidate[boundary:].strip() and not candidate.lstrip().startswith("› "):
+            context = candidate[:boundary].strip()
+    return selected, context
+
+
+def roster_status_boundary(frame):
+    for line in frame.splitlines():
+        content = roster_content(line)
+        if re.match(r"^\s*Tasks?\s+", content) and (match := re.search(r"\bStatus\b", content)):
+            return match.start()
     return None
+
+
+def roster_selected_status(frame):
+    rows = selected_rows(frame)
+    start = roster_status_boundary(frame)
+    if len(rows) != 1 or start is None:
+        return None
+    # Updated folds away in narrow mixed-provider rosters. Derive the boundary
+    # from the actual header instead of assuming the last21 cells are fixed.
+    header = next(roster_content(line) for line in frame.splitlines()
+                  if re.match(r"^\s*Tasks?\s+", roster_content(line))
+                  and re.search(r"\bStatus\b", roster_content(line)))
+    updated = re.search(r"\bUpdated\b", header[start:])
+    end = start + updated.start() if updated else len(rows[0])
+    return rows[0][start:end].strip()
 
 
 def select_human_row(cockpit, row, max_matches):
@@ -465,10 +499,7 @@ def select_human_row(cockpit, row, max_matches):
                 if selection is None:
                     return False
                 selected, context = selection
-                # The fixed-width status and Updated columns occupy the final
-                # 21 cells, plus one outer margin on wide layouts.
-                end = len(selected) - (10 if cockpit.width >= 80 else 9) - 1
-                actual_status = selected[end - 11:end].strip()
+                actual_status = roster_selected_status(frame)
                 return (status is None or status == actual_status) and (agent is None or agent in selected or agent in context)
 
             cockpit.until(expected_selection, f"current native status and context for {session}")
@@ -639,7 +670,9 @@ def mutation(args, app, env, work):
         rows = [{**first, "title": "Alpha", "status": "Ready"},
                 {**second, "title": "Beta", "status": "Working"}]
         cockpit.key(b"a")
-        cockpit.markers("both source states in the command center", "Alpha", "Beta", "Working 1", "Ready 1")
+        cockpit.until(lambda frame: "Agenturm command center" in frame
+                      and re.search(r"\bAll 2\b", frame) and "Alpha" in frame and "Beta" in frame,
+                      "both exact-source tasks in the unfiltered command center")
         verify_roster(cockpit, rows, [], work / "mutation-narrow")
     with Cockpit(app, env, work, 80, 24) as cockpit:
         retained(cockpit, independent)

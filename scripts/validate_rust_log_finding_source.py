@@ -20,7 +20,7 @@ parser.add_argument("--checkout", type=Path, default=Path(__file__).resolve().pa
 parser.add_argument("--app", type=Path, required=True)
 args = parser.parse_args()
 sys.path.insert(0, str(args.checkout / "scripts"))
-from validate_rust_default_cockpit import Cockpit
+from validate_rust_default_cockpit import Cockpit, selected_rows
 
 APP = args.app.resolve(strict=True)
 SOURCE = "otlp.log-finding-fixture"
@@ -167,7 +167,9 @@ def main():
                                      and clean(text, allow=allowed_body))
 
             try:
-                frame("loaded command center", "Agenturm command center", "Loaded page", "› ")
+                cockpit.frame("loaded command center", lambda text:
+                    "Agenturm command center" in text and re.search(r"\bAll 1\b", text)
+                    and len(selected_rows(text)) == 1 and clean(text))
                 cockpit.send(b"p")
                 frame("pinned catalog after startup", "Auto-refresh paused")
                 cockpit.send(b"7")

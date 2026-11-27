@@ -23,7 +23,9 @@ jobs:
         with:
           persist-credentials: false
       - name: Verify native cockpit frame parsers
-        run: python3 -m unittest discover -s tests -p 'test_rust_default_cockpit_validation.py'
+        run: |
+          python3 -m unittest discover -s tests -p 'test_rust_default_cockpit_validation.py'
+          python3 -m unittest discover -s tests -p 'test_rust_roster_witness.py'
       - run: rustup toolchain install 1.100.0 --profile minimal
       - name: Build standalone Rust bundle
         run: |
@@ -117,7 +119,9 @@ jobs:
           path: prior-rust-release
           persist-credentials: false
       - name: Verify native cockpit frame parsers
-        run: python3 -m unittest discover -s tests -p 'test_rust_default_cockpit_validation.py'
+        run: |
+          python3 -m unittest discover -s tests -p 'test_rust_default_cockpit_validation.py'
+          python3 -m unittest discover -s tests -p 'test_rust_roster_witness.py'
       - run: rustup toolchain install 1.100.0 --profile minimal
       - name: Build native candidate and prior Rust baseline
         shell: bash
