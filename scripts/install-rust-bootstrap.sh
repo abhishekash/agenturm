@@ -6,7 +6,7 @@ umask 077
 fail() { printf 'error: %s\n' "$*" >&2; exit 1; }
 require() { command -v "$1" >/dev/null 2>&1 || fail "$1 is required"; }
 
-version=0.3.9
+version=0.3.10
 installer_tag="rust-v$version"
 linux_installer_sha256=14e852d4b435b00164193bdd30d23e9696b7bfcc6f4181f4bc31735e5a4b32f8
 macos_installer_sha256=f4e29bcd1bce821f8df0541cd894e3854a35f2d8370ab918bac202837aa552fb

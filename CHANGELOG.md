@@ -4,6 +4,15 @@
 
 - Discover Kiro sessions from `$KIRO_HOME/sessions` (default `~/.kiro`): prompts, replies, shell commands with their recorded exit codes, file edits, MCP calls, turn outcomes and errors. Kiro tool approvals become waiting requests until answered. Delegated workers link to the session or worker that spawned them and take their outcome from it. List Kiro MCP servers from user and workspace `mcp.json`, and offer `kiro-cli chat --resume-id` for top-level sessions. Show Kiro-reported credits for each run, each session and all stored history, where other runtimes show tokens. List the tool-approval answers recorded in each Kiro session in the inspector, with rule-blocked calls, the standing user, workspace and agent rules that apply, and the folders trusted in Kiro.
 
+## Rust 0.3.10 prerelease
+
+- Improve task roster readability, responsive task details, and prompt empty states.
+- Support exact worker-scoped prompt history with Codex worker evidence isolation; scope MCP and Activity to the selected agent.
+- Restore private prompt lookup for retained transcripts outside active polling slots and native Codex titles for explicitly configured sources.
+- Include catalog-driven harness discovery in Linux and Apple Silicon bundles; keep Python test suites excluded from CI.
+
+[Rust 0.3.10 prerelease notes](docs/releases/rust-0.3.10.md)
+
 ## Rust 0.3.9 prerelease
 
 - Add standalone Linux x86-64/ARM64 and Apple Silicon macOS 13+ bundles, with a pinned curl bootstrap and separate `agenturm-rust` launcher. Intel Macs and Rosetta remain unsupported; unsigned macOS builds are preview-only pending independent clean-host acceptance.

@@ -107,7 +107,7 @@ To upgrade, run `uv tool upgrade agenturm`, then restart Agenturm and any separa
 
 ## Standalone Rust preview (Linux and Apple Silicon Mac)
 
-The opt-in Rust 0.3.9 bundle runs without Python or a Rust toolchain. The
+The opt-in Rust 0.3.10 bundle runs without Python or a Rust toolchain. The
 installer detects Linux x86-64/ARM64 or Apple Silicon macOS 13 or newer; Intel
 Macs and Rosetta are unsupported. It installs the separate `agenturm-rust`
 command and does not replace `agenturm`.
@@ -121,7 +121,7 @@ The bootstrap pins the platform installer and downloads the exact Rust release
 assets over HTTPS. Apple Silicon is a preview pending independent clean-host
 acceptance. macOS builds are unsigned and not notarized; macOS may ask you to
 approve Agenturm in Privacy & Security on first launch. Keep Gatekeeper enabled.
-See the [Rust 0.3.9 prerelease notes](docs/releases/rust-0.3.9.md) and the
+See the [Rust 0.3.10 prerelease notes](docs/releases/rust-0.3.10.md) and the
 [Rust installation guide](docs/rfcs/rust-distribution-installation.md).
 
 ## From activity to understanding
