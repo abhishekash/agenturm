@@ -366,6 +366,35 @@ impl AgentList {
         let identity = self
             .current()
             .map(|row| (row.harness_id.clone(), row.session_id.clone()));
+        let previous_identities = self
+            .catalog
+            .as_ref()
+            .map(|catalog| {
+                catalog
+                    .sessions
+                    .iter()
+                    .map(session_key)
+                    .collect::<BTreeSet<_>>()
+            })
+            .unwrap_or_default();
+        // Delegated agents stay available in the tree but start folded. Existing
+        // explicit expansions/collapses survive refreshes by stable identity.
+        if !self.flat {
+            for row in &catalog.sessions {
+                let has_delegate = catalog.sessions.iter().any(|candidate| {
+                    candidate.parent_session_id.as_deref() == Some(row.session_id.as_str())
+                        && source_family(&candidate.harness_id) == source_family(&row.harness_id)
+                        && candidate.relationship_kind == Some(RelationshipKind::Delegated)
+                });
+                let key = session_key(row);
+                if has_delegate
+                    && !previous_identities.contains(&key)
+                    && !self.collapsed.contains(&key)
+                {
+                    self.collapsed.insert(key);
+                }
+            }
+        }
         self.catalog = Some(catalog);
         self.apply_filters(identity.as_ref());
         self.lost_selection
@@ -479,20 +508,45 @@ impl AgentList {
         });
         if let Some(catalog) = &self.catalog {
             let mut newest = std::collections::BTreeMap::<&str, u64>::new();
-            for item in &self.visible {
-                let row = &catalog.sessions[item.index];
+            let mut group_status = std::collections::BTreeMap::<&str, u8>::new();
+            for row in &catalog.sessions {
+                if !self.accepts_scope(row) || !self.filter.accepts(row) {
+                    continue;
+                }
+                let key = command_center::group(row, self.grouping);
                 newest
-                    .entry(command_center::group(row, self.grouping))
+                    .entry(key)
                     .and_modify(|time| *time = (*time).max(row.updated_at_unix_ns))
                     .or_insert(row.updated_at_unix_ns);
+                group_status
+                    .entry(key)
+                    .and_modify(|rank| *rank = (*rank).max(session_status_rank(row)))
+                    .or_insert_with(|| session_status_rank(row));
             }
             self.visible.sort_by(|a, b| {
                 let left = &catalog.sessions[a.index];
                 let right = &catalog.sessions[b.index];
                 let left_group = command_center::group(left, self.grouping);
                 let right_group = command_center::group(right, self.grouping);
-                newest[right_group]
-                    .cmp(&newest[left_group])
+                let left_rank = if self.grouping == command_center::Grouping::None {
+                    session_status_rank(left)
+                } else {
+                    group_status[left_group]
+                };
+                let right_rank = if self.grouping == command_center::Grouping::None {
+                    session_status_rank(right)
+                } else {
+                    group_status[right_group]
+                };
+                right_rank
+                    .cmp(&left_rank)
+                    .then_with(|| {
+                        if self.grouping == command_center::Grouping::None {
+                            right.updated_at_unix_ns.cmp(&left.updated_at_unix_ns)
+                        } else {
+                            newest[right_group].cmp(&newest[left_group])
+                        }
+                    })
                     .then_with(|| left_group.cmp(right_group))
                     .then_with(|| right.updated_at_unix_ns.cmp(&left.updated_at_unix_ns))
                     .then_with(|| a.depth.cmp(&b.depth))
@@ -619,6 +673,17 @@ impl AgentList {
             };
             self.selection.select(Some(next));
         }
+    }
+}
+
+fn session_status_rank(row: &RecordedSession) -> u8 {
+    if row.pending_requests.iter().any(|request| !request.seen) {
+        return 3;
+    }
+    match row.state.as_deref() {
+        Some("running" | "started" | "restored") => 2,
+        Some("waiting" | "blocked" | "interrupted" | "failed") => 1,
+        _ => 0,
     }
 }
 
@@ -7135,7 +7200,7 @@ mod tests {
     }
 
     #[test]
-    fn recency_orders_groups_and_rows_without_status_or_hierarchy_priority() {
+    fn working_status_precedes_recency_and_delegated_agents_start_collapsed() {
         let mut parent = session("harness.codex", "parent", "failed", None);
         parent.updated_at_unix_ns = 10;
         parent.project_path = Some("/work/older-name".into());
@@ -7163,15 +7228,22 @@ mod tests {
                 })
                 .collect::<Vec<_>>()
         };
-        assert_eq!(ids(&agents), ["child", "parent", "other"]);
-        let identity = session_key(&child);
+        // A collapsed working delegate promotes its project group.
+        assert_eq!(ids(&agents), ["parent", "other"]);
+        assert!(agents.collapsed.contains(&session_key(&parent)));
+        let identity = session_key(&other);
         agents.grouping = command_center::Grouping::None;
         agents.apply_filters(Some(&identity));
-        assert_eq!(ids(&agents), ["child", "other", "parent"]);
-        assert_eq!(agents.current().unwrap().session_id, "child");
-        agents.update(catalog(vec![other, child, parent]));
-        assert_eq!(ids(&agents), ["child", "other", "parent"]);
-        assert_eq!(agents.current().unwrap().session_id, "child");
+        assert_eq!(ids(&agents), ["parent", "other"]);
+        // Working status ranks ahead of recency inside an ungrouped view.
+        let mut active = session("harness.codex", "active", "running", None);
+        active.updated_at_unix_ns = 1;
+        let ready = session("harness.pi", "ready", "completed", None);
+        agents.update(catalog(vec![ready.clone(), active.clone()]));
+        assert_eq!(ids(&agents), ["active", "ready"]);
+        active.updated_at_unix_ns = 500;
+        agents.update(catalog(vec![ready, active]));
+        assert_eq!(ids(&agents), ["active", "ready"]);
     }
 
     #[test]
@@ -7497,6 +7569,16 @@ mod tests {
             session(&parent_source, "parent", "running", None),
             session("harness.pi", "parent", "failed", None),
         ]));
+        assert_eq!(
+            agents
+                .visible
+                .iter()
+                .map(|row| (row.index, row.depth))
+                .collect::<Vec<_>>(),
+            [(1, 0), (2, 0)],
+            "delegated child starts collapsed"
+        );
+        agents.expand(true);
         assert_eq!(
             agents
                 .visible
@@ -8464,6 +8546,29 @@ mod tests {
         );
         assert_eq!(workspace.agents.visible.len(), 1);
         workspace.run_action(&sender, keymap::id::SESSION_SUBTREE);
+        // Scoped subtree includes delegated evidence while its tree nodes begin
+        // folded; expanding each parent reveals every confirmed descendant.
+        let root_position = workspace
+            .agents
+            .visible
+            .iter()
+            .position(|item| {
+                workspace.agents.catalog.as_ref().unwrap().sessions[item.index].session_id == "root"
+            })
+            .unwrap();
+        workspace.agents.selection.select(Some(root_position));
+        workspace.agents.expand(true);
+        let child_position = workspace
+            .agents
+            .visible
+            .iter()
+            .position(|item| {
+                workspace.agents.catalog.as_ref().unwrap().sessions[item.index].session_id
+                    == "child"
+            })
+            .unwrap();
+        workspace.agents.selection.select(Some(child_position));
+        workspace.agents.expand(true);
         let visible = workspace
             .agents
             .visible

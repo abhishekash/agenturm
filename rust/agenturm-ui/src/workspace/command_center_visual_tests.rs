@@ -267,7 +267,6 @@ fn command_center_pinned_frames_keep_tasks_and_controls_readable() {
             "Workspace",
             "Tasks",
             "Implement agent tool",
-            "Needs you",
             "All 14",
             "Errors 1",
             "Enter inspect",
@@ -283,6 +282,7 @@ fn command_center_pinned_frames_keep_tasks_and_controls_readable() {
             identity,
             "resize preserves exact selection"
         );
+        assert!(!text.contains("Mira"), "delegated agents start collapsed");
         assert_eq!(
             text.contains("Selected task"),
             width >= 120,
