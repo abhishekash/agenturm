@@ -213,7 +213,7 @@ pub(crate) fn local(
     command: agenturm_ui::WorkCommand,
     db: &Path,
     writer: Option<&Store>,
-    config: &Path,
+    config: &(impl crate::content_preview::ContentSourceConfig + ?Sized),
 ) -> Result<WorkResult, String> {
     let resolver = crate::content_preview::source_resolver(config);
     let opened;

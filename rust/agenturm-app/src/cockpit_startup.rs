@@ -113,10 +113,11 @@ impl ActiveCollector {
                 while !worker_stop.load(Ordering::Relaxed) {
                     match work.recv_timeout(refresh.saturating_duration_since(Instant::now())) {
                         Ok(CollectorRequest::Prompt { command, reply }) => {
-                            let result = super::cockpit_workflows::execute_prompt(
+                            let result = super::cockpit_workflows::execute_prompt_with_config(
                                 &collector.database,
                                 Some(&collector.store),
                                 *command,
+                                Some(&collector),
                             );
                             let _ = reply.send(result);
                         }

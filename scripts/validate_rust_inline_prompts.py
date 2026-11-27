@@ -71,18 +71,17 @@ try:
             try:
                 frame('roster', lambda t:'Agenturm command center' in t and 'All 1' in t)
                 frame('prompt-navigator',lambda t:'3 loaded' in t or 'Request 3 of 3' in t,b'P')
-                frame('reader-unnormalized',lambda t:'Readable form unavailable' in t,b'\x1b[C',forbidden=('UIQ_LATEST_REQUEST_MARKER',))
-                frame('latest-original',lambda t:'UIQ_LATEST_REQUEST_MARKER' in t,b'z')
-                frame('older-read',lambda t:'Readable form unavailable' in t,b'[',forbidden=('UIQ_LATEST_REQUEST_MARKER',))
-                frame('older-original',lambda t:'UIQ_MIDDLE_REQUEST_MARKER' in t,b'z')
+                frame('reader-original',lambda t:'UIQ_LATEST_REQUEST_MARKER' in t,b'\x1b[C')
+                frame('readable-unavailable',lambda t:'Readable form unavailable' in t,b'z',forbidden=('UIQ_LATEST_REQUEST_MARKER',))
+                frame('older-original',lambda t:'UIQ_MIDDLE_REQUEST_MARKER' in t,b'[',forbidden=('UIQ_LATEST_REQUEST_MARKER',))
+                frame('older-readable-unavailable',lambda t:'Readable form unavailable' in t,b'z',forbidden=('UIQ_MIDDLE_REQUEST_MARKER','UIQ_LATEST_REQUEST_MARKER'))
                 frame('reader-cleared',lambda t:'Readable form unavailable' not in t and 'UIQ_MIDDLE_REQUEST_MARKER' not in t,b'\x1b',forbidden=('UIQ_MIDDLE_REQUEST_MARKER','UIQ_LATEST_REQUEST_MARKER'))
                 frame('prompt-help',lambda t:'Help' in t,b'\x1bOP')
                 frame('help-return',lambda t:'Help' not in t and ('Requests' in t or 'Request' in t),b'\x1b')
                 frame('roster-return',lambda t:'Agenturm command center' in t,b'\x1b',forbidden=('UIQ_MIDDLE_REQUEST_MARKER','UIQ_LATEST_REQUEST_MARKER'))
                 frame('inspector',lambda t:'Overview' in t and 'Details' in t and 'Agenturm command center' not in t,b'\r')
                 frame('inspector-prompts',lambda t:'Request 3 of 3' in t or '3 loaded' in t,b'P')
-                frame('inspector-reader',lambda t:'Readable form unavailable' in t,b'\x1b[C')
-                frame('inspector-original',lambda t:'UIQ_LATEST_REQUEST_MARKER' in t,b'z')
+                frame('inspector-original',lambda t:'UIQ_LATEST_REQUEST_MARKER' in t,b'\x1b[C')
                 deadline=time.monotonic()+28
                 while time.monotonic()<deadline:
                     cockpit.read(0.1)
