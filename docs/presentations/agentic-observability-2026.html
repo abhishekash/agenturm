@@ -1,0 +1,549 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width,initial-scale=1"><meta name="color-scheme" content="light dark"><meta name="description" content="A November 2026 research presentation on five agentic AI observability problems and Agenturm's source-verified capabilities, gaps and opportunities."><title>Agentic AI observability — five problems and Agenturm</title><style>
+:root{color-scheme:light dark;--bg:#100f16;--paper:#17151f;--panel:#211d2b;--text:#f4f1eb;--muted:#a6a0b2;--line:#40384e;--accent:#ffbd69;--mint:#c5adff;--shadow:#0005;--scale:1}
+@media(prefers-color-scheme:light){:root{--bg:#e8ebe4;--paper:#f7f6ed;--panel:#eaece3;--text:#192c28;--muted:#4e6159;--line:#b8c6ba;--accent:#845015;--mint:#21664e;--shadow:#243c2515}}
+:root[data-theme=dark]{color-scheme:dark;--bg:#100f16;--paper:#17151f;--panel:#211d2b;--text:#f4f1eb;--muted:#a6a0b2;--line:#40384e;--accent:#ffbd69;--mint:#c5adff;--shadow:#0005}
+:root[data-theme=light]{color-scheme:light;--bg:#e8ebe4;--paper:#f7f6ed;--panel:#eaece3;--text:#192c28;--muted:#4e6159;--line:#b8c6ba;--accent:#845015;--mint:#21664e;--shadow:#243c2515}
+*{box-sizing:border-box}body{margin:0;background:var(--bg);color:var(--text);font-family:Inter,ui-sans-serif,system-ui,-apple-system,BlinkMacSystemFont,"Segoe UI",sans-serif;line-height:1.45}a{color:var(--mint);text-underline-offset:.18em}a:hover{color:var(--accent)}button,select{font:inherit;color:var(--text);background:var(--panel);border:1px solid var(--line);border-radius:6px;padding:8px 12px;cursor:pointer}button:disabled{opacity:.4;cursor:default}button:hover:not(:disabled){border-color:var(--accent)}:focus-visible{outline:3px solid var(--accent);outline-offset:4px}.toolbar{padding:12px 24px;display:flex;gap:10px;align-items:center;justify-content:space-between;max-width:1540px;margin:auto;font-size:13px}.toolbar .actions{display:flex;gap:8px;align-items:center}.toolbar select{max-width:360px}.toolbar .brand{font-size:18px;font-weight:750;letter-spacing:-.8px}.toolbar .hint{color:var(--muted)}.progress{height:3px;background:var(--line)}.progress div{height:100%;background:var(--mint);width:5%}.frame{margin:16px auto;width:calc(1440px * var(--scale));height:calc(810px * var(--scale));position:relative}.slide{display:flex;flex-direction:column;position:relative;max-width:1440px;margin:20px auto;padding:52px 70px 32px;background:var(--paper);border:1px solid var(--line);min-height:680px;box-shadow:0 16px 60px var(--shadow);overflow-wrap:break-word}.js:not(.reading) .slide{position:absolute;inset:0;width:1440px;height:810px;min-height:0;margin:0;transform:scale(var(--scale));transform-origin:top left;display:none}.js:not(.reading) .slide.active{display:flex}.eyebrow{display:flex;justify-content:space-between;font-size:13px;letter-spacing:2px;color:var(--muted);margin-bottom:25px}.eyebrow span:first-child{color:var(--accent);font-weight:750}h2{font-size:45px;line-height:1.12;font-weight:720;letter-spacing:-1.6px;margin:0 0 24px;max-width:1200px}.content{font-size:23px}.content>p:first-child{font-size:25px;max-width:1200px;margin-top:0}.content p{margin:0 0 20px}.content strong{font-weight:680}.cards{display:grid;grid-template-columns:repeat(3,minmax(0,1fr));gap:18px;margin:25px 0}.card{background:var(--panel);border:1px solid var(--line);border-top:3px solid var(--mint);padding:24px;min-width:0}.card h3{color:var(--mint);font-size:23px;line-height:1.25;margin:0 0 20px;font-weight:650}.card p{font-size:22px;line-height:1.5;margin:0}.problem .card:nth-child(2){border-top-color:var(--accent)}.problem .card:nth-child(2) h3{color:var(--accent)}.problem .card{padding:22px}.problem .card p{font-size:22px}.content blockquote{margin:23px 0 0;border-left:3px solid var(--accent);padding:10px 0 10px 20px;color:var(--accent)}.content blockquote p{margin:0;font-size:23px;line-height:1.4}.content .citations{font-size:13px;color:var(--muted);margin:20px 0 0;line-height:1.4}.citations a{color:var(--muted)}footer{display:flex;justify-content:space-between;align-items:center;gap:20px;margin-top:auto;padding-top:18px;border-top:1px solid var(--line);font-size:13px;color:var(--muted)}footer .wordmark{font-size:23px;color:var(--text);font-weight:750;letter-spacing:-1px}.dot{color:var(--accent)}footer span:last-child{font-variant-numeric:tabular-nums;letter-spacing:1.8px}.table-wrap{width:100%;overflow:auto;margin:4px 0 20px}table{border-collapse:collapse;width:100%;font-size:21px;text-align:left;line-height:1.4}th{font-size:14px;letter-spacing:1.2px;text-transform:uppercase;color:var(--mint);padding:12px 14px;border-bottom:2px solid var(--line)}td{padding:17px 14px;border-bottom:1px solid var(--line);vertical-align:top}tr:nth-child(even) td{background:var(--panel)}td:first-child{font-weight:650;color:var(--accent)}.table .content>p{font-size:21px}.table td{padding:14px}.ranking td:first-child{font-size:29px;letter-spacing:-1px;width:10%}.ranking td{padding:14px}.ranking .content>p{font-size:20px;color:var(--muted)}.flow .cards{grid-template-columns:repeat(4,minmax(0,1fr));margin-top:30px}.flow .card{padding:24px 20px;min-height:270px}.flow .card p{font-size:22px}.flow .content blockquote{margin-top:34px}.scenario td{padding:16px 14px}.scenario .content>p{font-size:22px}.scenario .content>p:first-child{font-size:16px;color:var(--muted)}.hero{background:radial-gradient(ellipse at 95% 10%,var(--panel),transparent 65%),var(--paper)}.hero h2{font-size:76px;line-height:1.04;max-width:900px;margin-top:12px}.hero .content{max-width:980px}.hero .content>p:first-child{font-size:20px;letter-spacing:4px;text-transform:uppercase;color:var(--mint);margin:12px 0 14px}.hero .content>p:nth-child(2){font-size:32px;max-width:850px;line-height:1.25}.hero .content>p:nth-child(3){font-size:23px;color:var(--muted)}.hero .content>p:nth-child(4){font-size:16px;color:var(--muted)}.hero .content blockquote{max-width:1000px;margin-top:22px}.signal{display:flex;align-items:center;gap:15px;max-width:600px;margin:28px 0 32px;color:var(--mint);font-size:12px;letter-spacing:2px}.signal span{border:1px solid var(--line);padding:9px 16px}.signal i{flex:1;height:1px;background:var(--line);position:relative}.signal i:after{content:'';position:absolute;right:0;top:-3px;width:7px;height:7px;border-radius:50%;background:var(--mint)}.closing h2{color:var(--mint);font-size:21px;text-transform:uppercase;letter-spacing:3px;margin-top:16px}.closing .content>p:first-child{font-size:59px;line-height:1.12;letter-spacing:-2px;max-width:1050px;margin:22px 0 36px}.closing .content>p{font-size:26px;max-width:1130px;margin:24px 0}.closing .content blockquote{margin-top:32px}.sources .content{font-size:18px}.sources .content>p:first-child{font-size:18px}.sources ol{columns:2;column-gap:55px;margin:15px 0;padding-left:24px}.sources li{break-inside:avoid;margin:0 0 20px;padding-left:4px;line-height:1.5}.sources .content>p:last-child{font-size:17px;color:var(--muted)}code{font-family:ui-monospace,SFMono-Regular,Consolas,monospace;font-size:.87em}#notes{max-width:1100px;margin:20px auto 50px;padding:24px;background:var(--panel);border:1px solid var(--line);font-size:17px}#notes h3{margin-top:0;color:var(--mint)}[hidden]{display:none!important}.reading .frame{width:auto;height:auto;max-width:1280px;margin:20px auto}.reading .slide{width:100%;min-height:720px;scroll-margin-top:20px}.reading .content{margin-bottom:35px}.reading .toolbar{position:sticky;top:0;z-index:2;background:var(--bg)}.skip{position:absolute;left:-9999px}.skip:focus{left:12px;top:12px;z-index:20;background:var(--paper);padding:15px}.noscript{padding:15px;text-align:center;color:var(--accent)}
+.table table{font-size:20px;line-height:1.35}.table td{padding:12px 14px}.table .content>p.citations{font-size:13px;margin-top:16px}.table .table-wrap{margin-bottom:18px}
+@media(max-width:760px){.toolbar{padding:10px 12px;flex-wrap:wrap}.toolbar .hint,.toolbar .brand{display:none}.toolbar select{max-width:calc(100vw - 80px);width:100%}.toolbar .actions{flex-wrap:wrap}.frame,.js:not(.reading) .frame{width:auto;height:auto;margin:12px}.slide,.js:not(.reading) .slide{position:relative;display:flex;inset:auto;width:100%;height:auto;min-height:0;margin:0 0 18px;padding:25px 22px;transform:none}.eyebrow{font-size:10px;gap:15px;letter-spacing:1px}.eyebrow span:last-child{display:none}h2,.hero h2{font-size:34px;letter-spacing:-1px}.content,.content>p:first-child{font-size:19px}.cards,.flow .cards{grid-template-columns:1fr;gap:12px}.card,.problem .card{padding:20px}.card h3{font-size:21px;margin-bottom:12px}.card p,.problem .card p,.flow .card p{font-size:19px}.flow .card{min-height:0}.content blockquote p{font-size:19px}.content{margin-bottom:24px}table,.table table{min-width:620px;font-size:17px}.ranking table{min-width:570px}footer{font-size:11px;gap:12px}footer span:nth-child(2){display:none}.hero .content>p:nth-child(2){font-size:25px}.hero .content>p:first-child{font-size:15px}.signal{font-size:9px;gap:8px}.signal span{padding:7px}.closing .content>p:first-child{font-size:36px}.closing .content>p{font-size:21px}.sources ol{columns:1}.sources .content{font-size:17px}.sources code{overflow-wrap:anywhere}#notes{margin:12px}.reading .slide{min-height:0}}
+@media print{@page{size:16in 9in;margin:0}:root,:root[data-theme]{--paper:#fff;--panel:#f1f4ef;--text:#182e27;--muted:#526158;--line:#c5d0c6;--accent:#7c4d18;--mint:#1f644d}html,body{background:white;margin:0;padding:0;-webkit-print-color-adjust:exact;print-color-adjust:exact}.toolbar,.progress,#notes,.skip,.noscript{display:none!important}.frame,.js:not(.reading) .frame,.reading .frame{display:block;position:static;width:16in;height:auto;max-width:none;margin:0}.slide,.js:not(.reading) .slide,.reading .slide{display:flex!important;position:relative;inset:auto;width:16in;height:9in;min-height:0;max-width:none;margin:0;padding:55px 78px 35px;transform:none;border:none;box-shadow:none;break-after:page;page-break-after:always;break-inside:avoid}.slide:last-child{break-after:auto;page-break-after:auto}.content{margin-bottom:0}.table-wrap{overflow:visible}a{text-decoration:none}.content .citations a{text-decoration:underline}.hero{background:var(--paper)}.sources ol{columns:2}.sources code{font-size:.8em}}
+</style></head>
+<body>
+<!-- Generated from agentic-observability-2026.md; SHA-256 d4fde0f1d5d263bc4acee4b98fdd85a575b157ef88995811b3fa33436947f497. No external assets, telemetry, or network requests. -->
+<a class="skip" href="#slide-1">Skip to current slide</a>
+<nav class="toolbar" aria-label="Presentation controls"><span class="brand">agenturm<span class="dot">.</span></span><select id="slide-picker" aria-label="Choose slide"><option value="0">01 · From traces to trustworthy work</option><option value="1">02 · The category has moved beyond trace collection</option><option value="2">03 · Four overlapping layers define the market</option><option value="3">04 · The top five problems</option><option value="4">05 · 01 — Reconstruct the execution, not just the calls</option><option value="5">06 · 02 — “Completed” does not mean “correct”</option><option value="6">07 · 03 — Turn activity into the right intervention</option><option value="7">08 · 04 — Measure cost per verified outcome</option><option value="8">09 · 05 — Make evidence useful without overexposing it</option><option value="9">10 · Agenturm against all five problems</option><option value="10">11 · Where the alternatives are already strong</option><option value="11">12 · Agenturm’s operating model</option><option value="12">13 · The review moment that makes this concrete</option><option value="13">14 · A credible position — and its competitive risk</option><option value="14">15 · Recommended priorities</option><option value="15">16 · Test the product thesis with real operators</option><option value="16">17 · The recommendation</option><option value="17">18 · Method and confidence</option><option value="18">19 · Sources — market and research</option><option value="19">20 · Sources — Agenturm implementation</option></select><span class="hint">← → navigate · O overview · N notes</span><div class="actions"><button id="previous" aria-label="Previous slide">←</button><span id="position" aria-live="polite">1 / 20</span><button id="next" aria-label="Next slide">→</button><button id="overview" aria-pressed="false">Overview</button><button id="toggle-notes" aria-expanded="false" aria-controls="notes">Notes</button><button id="theme">Theme</button><button id="print">Print / PDF</button></div></nav>
+<div class="progress" aria-hidden="true"><div id="bar"></div></div>
+<noscript><p class="noscript">Reading view: all slides are available below. Printing works without JavaScript.</p></noscript>
+<main class="frame" aria-label="Presentation slides"><section class="slide hero" id="slide-1" aria-labelledby="title-1" tabindex="-1">
+<div class="eyebrow"><span>LANDSCAPE</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-1">From traces to trustworthy work</h2>
+<div class="content"><p>Agentic AI observability</p>
+<p><strong>The five hardest problems — and where Agenturm fits.</strong></p>
+<p>A current-state review for product and engineering leaders.</p>
+<p>27 November 2026 · Market research + source-level product assessment</p>
+<blockquote>
+<p>The opportunity: help engineers decide what needs attention, what actually happened, and what evidence supports “done.”</p>
+</blockquote>
+</div>
+<div class="signal" aria-hidden="true"><span>TRACE</span><i></i><span>EVIDENCE</span><i></i><span>DECISION</span></div>
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>01 / 20</span></footer>
+</section>
+<section class="slide cards" id="slide-2" aria-labelledby="title-2" tabindex="-1">
+<div class="eyebrow"><span>LANDSCAPE</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-2">The category has moved beyond trace collection</h2>
+<div class="content"><p><strong>Tracing is increasingly available. Trustworthy operational decisions remain difficult.</strong></p>
+<div class="cards"><div class="card"><h3>Capture is established</h3>
+<p>Framework instrumentation, model/tool spans, sessions, token usage and trace viewers are widely offered.</p>
+</div><div class="card"><h3>Interpretation is advancing</h3>
+<p>Platforms now combine traces with evaluations, feedback, production monitors and automated issue discovery.</p>
+</div><div class="card"><h3>Evidence still has gaps</h3>
+<p>Missing context, uncertain outcomes, incomplete permissions history and expensive capture limit what any dashboard can conclude.</p>
+</div></div><blockquote>
+<p>Agenturm’s best-supported position: a local, cross-runtime evidence cockpit for engineers supervising coding agents.</p>
+</blockquote>
+<p class="citations">Sources: <a href="https://github.com/open-telemetry/semantic-conventions-genai/blob/81b5d438519f868a186bff088d9de24aefdb2f6b/docs/gen-ai/gen-ai-agent-spans.md">S1</a> · <a href="https://partnershiponai.org/resource/the-observability-gap-in-ai-agents/">S2</a> · <a href="https://arize.com/ai-agents/agent-observability/">S3</a> · <a href="https://docs.langchain.com/langsmith/observability">S4</a> · <a href="https://langfuse.com/docs/observability/overview">S5</a> · <a href="https://docs.datadoghq.com/llm_observability/">S6</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/README.md">R1</a></p>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>02 / 20</span></footer>
+</section>
+<section class="slide table" id="slide-3" aria-labelledby="title-3" tabindex="-1">
+<div class="eyebrow"><span>LANDSCAPE</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-3">Four overlapping layers define the market</h2>
+<div class="content"><div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Layer</th>
+<th>Representative offerings</th>
+<th>What buyers get</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Instrumentation and conventions</td>
+<td>OpenTelemetry GenAI; OpenAI Agents SDK</td>
+<td>Structured events, spans, context and export hooks</td>
+</tr>
+<tr>
+<td>AI engineering workbenches</td>
+<td>LangSmith; Langfuse; Arize AX / Phoenix</td>
+<td>Trace inspection, evaluations, datasets, feedback and experiments</td>
+</tr>
+<tr>
+<td>Production operations</td>
+<td>Datadog Agent Observability; managed AI platforms</td>
+<td>Fleet-level monitoring, cost trends, alerts and issue investigation</td>
+</tr>
+<tr>
+<td>Local coding-agent supervision</td>
+<td>Agenturm; native agent interfaces</td>
+<td>Session attention, recorded work, run review and task continuity</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>These are overlapping jobs, not exclusive product categories.</strong> Phoenix can run locally; Langfuse can be self-hosted; LangSmith offers cloud, hybrid and self-hosted deployment.</p>
+<p class="citations">Sources: <a href="https://github.com/open-telemetry/semantic-conventions-genai/blob/81b5d438519f868a186bff088d9de24aefdb2f6b/docs/gen-ai/gen-ai-agent-spans.md">S1</a> · <a href="https://arize.com/ai-agents/agent-observability/">S3</a> · <a href="https://docs.langchain.com/langsmith/observability">S4</a> · <a href="https://langfuse.com/docs/observability/overview">S5</a> · <a href="https://docs.datadoghq.com/llm_observability/">S6</a> · <a href="https://openai.github.io/openai-agents-python/tracing/">S7</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/README.md">R1</a></p>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>03 / 20</span></footer>
+</section>
+<section class="slide ranking" id="slide-4" aria-labelledby="title-4" tabindex="-1">
+<div class="eyebrow"><span>LANDSCAPE</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-4">The top five problems</h2>
+<div class="content"><div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Priority</th>
+<th>Problem</th>
+<th>The decision it blocks</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>01</td>
+<td>Fragmented execution and ownership</td>
+<td>Which agent, tool or handoff caused this?</td>
+</tr>
+<tr>
+<td>02</td>
+<td>Success without trustworthy verification</td>
+<td>Did the task succeed, or merely finish?</td>
+</tr>
+<tr>
+<td>03</td>
+<td>Activity without actionable supervision</td>
+<td>Should I wait, investigate or respond?</td>
+</tr>
+<tr>
+<td>04</td>
+<td>Spend without outcome economics</td>
+<td>What did a successful task really cost?</td>
+</tr>
+<tr>
+<td>05</td>
+<td>Evidence without safe, accountable capture</td>
+<td>What may we retain, share and prove?</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Ranking method:</strong> prioritize dependency on reliable evidence, consequence of a wrong decision, and relevance across agent workflows. This ordering is editorial synthesis, not measured industry prevalence.</p>
+<p class="citations">Sources: <a href="https://github.com/open-telemetry/semantic-conventions-genai/blob/81b5d438519f868a186bff088d9de24aefdb2f6b/docs/gen-ai/gen-ai-agent-spans.md">S1</a> · <a href="https://partnershiponai.org/resource/the-observability-gap-in-ai-agents/">S2</a> · <a href="https://arize.com/ai-agents/agent-observability/">S3</a> · <a href="https://huggingface.co/blog/agentic-evals">S8</a></p>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>04 / 20</span></footer>
+</section>
+<section class="slide problem" id="slide-5" aria-labelledby="title-5" tabindex="-1">
+<div class="eyebrow"><span>FIVE PROBLEMS</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-5">01 — Reconstruct the execution, not just the calls</h2>
+<div class="content"><p><strong>An agent task can cross turns, workers, tools, processes and memory stores. Those boundaries lose context.</strong></p>
+<div class="cards"><div class="card"><h3>Why this stays hard</h3>
+<p>Trace IDs, session IDs and worker IDs serve different purposes. A nested span does not by itself establish delegation. A missing event may mean missing capture.</p>
+</div><div class="card"><h3>Agenturm today · direct local fit</h3>
+<p>Native readers and OTLP bring records together. Reviews retain source, session, turn/trace and worker scope. Discovery explicitly reports partial scans and queued sources.</p>
+</div><div class="card"><h3>Remaining gap</h3>
+<p>Source-dependent coverage is not a complete distributed causal graph. Enterprise identity, memory-change provenance and every external side effect need additional producer evidence.</p>
+</div></div><blockquote>
+<p>Measure: correct owner identification, reconstruction time, and the share of runs with disclosed capture gaps.</p>
+</blockquote>
+<p class="citations">Sources: <a href="https://github.com/open-telemetry/semantic-conventions-genai/blob/81b5d438519f868a186bff088d9de24aefdb2f6b/docs/gen-ai/gen-ai-agent-spans.md">S1</a> · <a href="https://partnershiponai.org/resource/the-observability-gap-in-ai-agents/">S2</a> · <a href="https://arize.com/ai-agents/agent-observability/">S3</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/discovery.rs">R2</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/review_receipt.rs">R3</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/tests/review_receipt.rs">R3T</a></p>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>05 / 20</span></footer>
+</section>
+<section class="slide problem" id="slide-6" aria-labelledby="title-6" tabindex="-1">
+<div class="eyebrow"><span>FIVE PROBLEMS</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-6">02 — “Completed” does not mean “correct”</h2>
+<div class="content"><p><strong>A successful API call, an agent’s completion message and a verified task outcome are different facts.</strong></p>
+<div class="cards"><div class="card"><h3>Why this stays hard</h3>
+<p>Correctness depends on the final artifact or downstream state. Judges and test suites can be wrong; retries can hide inconsistent performance.</p>
+</div><div class="card"><h3>Agenturm today · partial solution</h3>
+<p>Review separates recorded checks, edits, errors and agent updates. Existing evaluation-result imports attach pass/fail and scores to retained traces, with result history.</p>
+</div><div class="card"><h3>Remaining gap</h3>
+<p>Agenturm does not independently rerun checks or certify current files. Imported evaluations are external judgments, not an in-product evaluation runner or proof of grader validity.</p>
+</div></div><blockquote>
+<p>Measure: false acceptance of “done,” artifact-linked verification coverage, and consistency across repeated tasks.</p>
+</blockquote>
+<p class="citations">Sources: <a href="https://arize.com/ai-agents/agent-observability/">S3</a> · <a href="https://huggingface.co/blog/agentic-evals">S8</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/README.md">R1</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/review_receipt.rs">R3</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/eval_import.rs">R4</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/tests/eval_import.rs">R4T</a></p>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>06 / 20</span></footer>
+</section>
+<section class="slide problem" id="slide-7" aria-labelledby="title-7" tabindex="-1">
+<div class="eyebrow"><span>FIVE PROBLEMS</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-7">03 — Turn activity into the right intervention</h2>
+<div class="content"><p><strong>The operator needs a reason and an owner, not another stream of events.</strong></p>
+<div class="cards"><div class="card"><h3>Why this stays hard</h3>
+<p>Silence can mean thinking, a long tool call, a hidden request or a broken collector. Repetition can be useful recovery or a loop. Bad alerts interrupt healthy work.</p>
+</div><div class="card"><h3>Agenturm today · direct local fit</h3>
+<p>Workflow attention retains exact request ownership and delivery state. Failure, interruption, completion, token, USD and elapsed-time incidents have evidence and coverage fields.</p>
+</div><div class="card"><h3>Remaining gap</h3>
+<p>Thresholds are not semantic loop detection. Response and approval stay in the native agent. Verified terminal routing depends on the environment; live routing is Linux-specific in the reviewed code.</p>
+</div></div><blockquote>
+<p>Measure: actionable-alert precision, missed waits, response time and successful return to the correct session.</p>
+</blockquote>
+<p class="citations">Sources: <a href="https://partnershiponai.org/resource/the-observability-gap-in-ai-agents/">S2</a> · <a href="https://arize.com/ai-agents/agent-observability/">S3</a> · <a href="https://docs.langchain.com/langsmith/observability">S4</a> · <a href="https://docs.datadoghq.com/llm_observability/">S6</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/workflow_alerts.rs">R5</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/attention/status.rs">R5S</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/workflow_route.rs">R10</a></p>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>07 / 20</span></footer>
+</section>
+<section class="slide problem" id="slide-8" aria-labelledby="title-8" tabindex="-1">
+<div class="eyebrow"><span>FIVE PROBLEMS</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-8">04 — Measure cost per verified outcome</h2>
+<div class="content"><p><strong>Token totals explain consumption. They do not establish return on effort.</strong></p>
+<div class="cards"><div class="card"><h3>Why this stays hard</h3>
+<p>Retries, caches, worker fan-out, tools, evaluators and human review all affect economics. Incomplete usage and mixed units make precise-looking totals misleading.</p>
+</div><div class="card"><h3>Agenturm today · partial solution</h3>
+<p>Usage history retains reported tokens and costs with missing-cost coverage. Workflow supports token/USD/elapsed thresholds; USD alerts exclude native estimates.</p>
+</div><div class="card"><h3>Remaining gap</h3>
+<p>No end-to-end business-cost model was established in this review. Human effort, infrastructure, tool charges and verified success must be joined to compute fully loaded economics.</p>
+</div></div><blockquote>
+<p>Proposed metric: total cost of all attempts ÷ number of independently accepted outcomes, for the same task cohort. Report unknown coverage separately.</p>
+</blockquote>
+<p class="citations">Sources: <a href="https://github.com/open-telemetry/semantic-conventions-genai/blob/81b5d438519f868a186bff088d9de24aefdb2f6b/docs/gen-ai/gen-ai-agent-spans.md">S1</a> · <a href="https://arize.com/ai-agents/agent-observability/">S3</a> · <a href="https://langfuse.com/docs/observability/overview">S5</a> · <a href="https://docs.datadoghq.com/llm_observability/">S6</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/workflow_alerts.rs">R5</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/storage/agenturm-store/src/usage_history.rs">R8</a></p>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>08 / 20</span></footer>
+</section>
+<section class="slide problem" id="slide-9" aria-labelledby="title-9" tabindex="-1">
+<div class="eyebrow"><span>FIVE PROBLEMS</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-9">05 — Make evidence useful without overexposing it</h2>
+<div class="content"><p><strong>Debugging wants more context. Privacy and accountable action require deliberate limits.</strong></p>
+<div class="cards"><div class="card"><h3>Why this stays hard</h3>
+<p>Prompts and tool results can contain secrets. Run IDs do not prove authority. An approval needs the decision, reviewer and governing context to be auditable.</p>
+</div><div class="card"><h3>Agenturm today · local privacy fit</h3>
+<p>Local SQLite, loopback defaults, source-bound content grants and private receipt exports provide concrete boundaries. Native content tests check grants against exact committed source bytes.</p>
+</div><div class="card"><h3>Remaining gap</h3>
+<p>Local storage still holds sensitive evidence. The receiver explicitly lacks multiuser authorization. Tamper-evident enterprise audit, IAM-linked authority and universal safe redaction are not established.</p>
+</div></div><blockquote>
+<p>Measure: unauthorized-content exposure, export-review completion and the fraction of consequential actions with attributable approval evidence.</p>
+</blockquote>
+<p class="citations">Sources: <a href="https://github.com/open-telemetry/semantic-conventions-genai/blob/81b5d438519f868a186bff088d9de24aefdb2f6b/docs/gen-ai/gen-ai-agent-spans.md">S1</a> · <a href="https://partnershiponai.org/resource/the-observability-gap-in-ai-agents/">S2</a> · <a href="https://openai.github.io/openai-agents-python/tracing/">S7</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/tests/prompt_content.rs">R6</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/docs/receiver.md">R7</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/tests/review_receipt.rs">R3T</a></p>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>09 / 20</span></footer>
+</section>
+<section class="slide table" id="slide-10" aria-labelledby="title-10" tabindex="-1">
+<div class="eyebrow"><span>AGENTURM COMPARED</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-10">Agenturm against all five problems</h2>
+<div class="content"><div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Problem</th>
+<th>Current fit</th>
+<th>Implemented evidence</th>
+<th>Boundary</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>Execution ownership</td>
+<td>Direct, local</td>
+<td>Scoped reviews; native discovery; worker relationships</td>
+<td>Not universal distributed lineage</td>
+</tr>
+<tr>
+<td>Verified outcomes</td>
+<td>Partial</td>
+<td>Checks and edits; external eval imports and history</td>
+<td>No independent correctness attestation</td>
+</tr>
+<tr>
+<td>Supervision</td>
+<td>Direct, local</td>
+<td>Requests; thresholds; delivery receipts; routing</td>
+<td>No control or semantic loop detection</td>
+</tr>
+<tr>
+<td>Outcome economics</td>
+<td>Partial</td>
+<td>Usage/cost history; missing coverage; thresholds</td>
+<td>No established fully loaded cost per success</td>
+</tr>
+<tr>
+<td>Privacy / authority</td>
+<td>Split</td>
+<td>Local storage; content grants; private exports</td>
+<td>Enterprise authorization/audit gap</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>“Direct” describes workflow fit, not a measured score. All five remain dependent on source coverage.</strong></p>
+<p class="citations">Sources: <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/README.md">R1</a>–<a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/workflow_route.rs">R10</a> · evidence index in appendix</p>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>10 / 20</span></footer>
+</section>
+<section class="slide table" id="slide-11" aria-labelledby="title-11" tabindex="-1">
+<div class="eyebrow"><span>AGENTURM COMPARED</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-11">Where the alternatives are already strong</h2>
+<div class="content"><div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Offering</th>
+<th>Documented strength</th>
+<th>Agenturm’s more focused job</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>LangSmith</td>
+<td>Traces, online evals, feedback, monitors, automated issue diagnosis</td>
+<td>Inspect supported local coding sessions across runtimes</td>
+</tr>
+<tr>
+<td>Langfuse</td>
+<td>OSS/self-hosting, tracing, scores, experiments, cost dashboards and alerts</td>
+<td>A keyboard-first attention and run-review workflow</td>
+</tr>
+<tr>
+<td>Arize AX / Phoenix</td>
+<td>Tracing, trajectory/session analysis, evals; local Phoenix option</td>
+<td>Keep native session ownership and captured work close to the operator</td>
+</tr>
+<tr>
+<td>Datadog</td>
+<td>Production traces, operational cost trends, evaluations and Insights</td>
+<td>Local engineer supervision alongside production monitoring</td>
+</tr>
+<tr>
+<td>OpenAI Agents SDK</td>
+<td>Built-in model/tool/handoff/guardrail tracing; custom processors</td>
+<td>Observe supported existing coding-agent records without modifying their application code</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Selection lens:</strong> choose for the workflow. This is not a feature-absence checklist or a vendor ranking.</p>
+<p class="citations">Sources: <a href="https://arize.com/ai-agents/agent-observability/">S3</a> · <a href="https://docs.langchain.com/langsmith/observability">S4</a> · <a href="https://langfuse.com/docs/observability/overview">S5</a> · <a href="https://docs.datadoghq.com/llm_observability/">S6</a> · <a href="https://openai.github.io/openai-agents-python/tracing/">S7</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/README.md">R1</a></p>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>11 / 20</span></footer>
+</section>
+<section class="slide flow" id="slide-12" aria-labelledby="title-12" tabindex="-1">
+<div class="eyebrow"><span>AGENTURM COMPARED</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-12">Agenturm’s operating model</h2>
+<div class="content"><div class="cards"><div class="card"><h3>1. Observe</h3>
+<p>Read supported native records; receive OTLP from already-instrumented processes.</p>
+</div><div class="card"><h3>2. Preserve</h3>
+<p>Retain source and execution identities, bounded history and content-access rules in local storage.</p>
+</div><div class="card"><h3>3. Inspect</h3>
+<p>Navigate sessions, requests, tools, checks, usage, traces and imported evaluation results.</p>
+</div><div class="card"><h3>4. Continue</h3>
+<p>Review the evidence, return to the native agent, or save a brief, decision and handoff.</p>
+</div></div><blockquote>
+<p>The core promise is evidence continuity across an engineer’s work. <code>agenturm run</code> configures telemetry for a process; it does not inject instrumentation or steer the agent.</p>
+</blockquote>
+<p class="citations">Sources: <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/README.md">R1</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/discovery.rs">R2</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/review_receipt.rs">R3</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/eval_import.rs">R4</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/docs/receiver.md">R7</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/task_cli.rs">R9</a></p>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>12 / 20</span></footer>
+</section>
+<section class="slide scenario" id="slide-13" aria-labelledby="title-13" tabindex="-1">
+<div class="eyebrow"><span>AGENTURM COMPARED</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-13">The review moment that makes this concrete</h2>
+<div class="content"><p><strong>Illustrative scenario · invented events, not a captured run or product benchmark.</strong></p>
+<div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Time</th>
+<th>Recorded event</th>
+<th>What an engineer can conclude</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>10:02</td>
+<td>Worker B requests approval</td>
+<td>A particular worker needs a response</td>
+</tr>
+<tr>
+<td>10:06</td>
+<td>A recognized test command reports success</td>
+<td>That recorded check passed in that scope</td>
+</tr>
+<tr>
+<td>10:08</td>
+<td>A subsequent file edit is recorded</td>
+<td>The prior check alone cannot verify the later state</td>
+</tr>
+<tr>
+<td>10:09</td>
+<td>Parent A reports “done”</td>
+<td>The parent claims completion; inspect its own evidence</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Agenturm’s role:</strong> preserve ownership and expose available work records. <strong>Engineer’s action:</strong> inspect the edit and verify the current artifact before acceptance.</p>
+<p class="citations">Sources for capability boundaries: <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/README.md">R1</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/review_receipt.rs">R3</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/tests/review_receipt.rs">R3T</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/attention/status.rs">R5S</a></p>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>13 / 20</span></footer>
+</section>
+<section class="slide cards" id="slide-14" aria-labelledby="title-14" tabindex="-1">
+<div class="eyebrow"><span>AGENTURM COMPARED</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-14">A credible position — and its competitive risk</h2>
+<div class="content"><div class="cards"><div class="card"><h3>Lead with this</h3>
+<p>“Inspect your agents’ work, run by run.” Multi-runtime local attention, precise ownership, evidence review and deliberate handoff.</p>
+</div><div class="card"><h3>Prove this next</h3>
+<p>Less time reconstructing work. Fewer mistaken acceptance decisions. More requests answered in the correct session. Repeat voluntary use.</p>
+</div><div class="card"><h3>Expect this pressure</h3>
+<p>Native agent interfaces can absorb local supervision. Established platforms already add AI diagnosis. Adapter maintenance and capture gaps can erode trust.</p>
+</div></div><blockquote>
+<p>The defensible asset would be reliable cross-runtime evidence and an effective operator workflow. A terminal UI or local deployment alone is easy to match.</p>
+</blockquote>
+<p class="citations">Sources: <a href="https://arize.com/ai-agents/agent-observability/">S3</a> · <a href="https://docs.langchain.com/langsmith/observability">S4</a> · <a href="https://langfuse.com/docs/observability/overview">S5</a> · <a href="https://docs.datadoghq.com/llm_observability/">S6</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/README.md">R1</a> · <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/discovery.rs">R2</a></p>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>14 / 20</span></footer>
+</section>
+<section class="slide table" id="slide-15" aria-labelledby="title-15" tabindex="-1">
+<div class="eyebrow"><span>PRODUCT DIRECTION</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-15">Recommended priorities</h2>
+<div class="content"><div class="table-wrap"><table>
+<thead>
+<tr>
+<th>Order</th>
+<th>Investment</th>
+<th>Acceptance evidence</th>
+</tr>
+</thead>
+<tbody>
+<tr>
+<td>P0</td>
+<td>Publish a current adapter/release capability matrix</td>
+<td>Versioned live-capture cases; explicit unsupported and partial states</td>
+</tr>
+<tr>
+<td>P1</td>
+<td>Tighten the native verification workflow</td>
+<td>Exact artifact/revision linkage; clearly disclosed stale or missing checks</td>
+</tr>
+<tr>
+<td>P1</td>
+<td>Validate attention and return-to-session reliability</td>
+<td>Missed-request rate, false alerts and verified routing success</td>
+</tr>
+<tr>
+<td>P2</td>
+<td>Build on evaluation imports and reported usage</td>
+<td>Join accepted outcomes with attempts; disclose missing costs and overlapping scope</td>
+</tr>
+<tr>
+<td>P2</td>
+<td>Make receipts easier to reuse in existing team tools</td>
+<td>Reviewed portable exports with provenance and clear retention limits</td>
+</tr>
+</tbody>
+</table></div>
+<p><strong>Strategy:</strong> deepen the local coding workflow first; integrate with production evaluation and monitoring systems as demand is demonstrated.</p>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>15 / 20</span></footer>
+</section>
+<section class="slide cards" id="slide-16" aria-labelledby="title-16" tabindex="-1">
+<div class="eyebrow"><span>PRODUCT DIRECTION</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-16">Test the product thesis with real operators</h2>
+<div class="content"><p><strong>Proposed pilot, not completed research. Compare Agenturm with each participant’s normal native-terminal workflow.</strong></p>
+<div class="cards"><div class="card"><h3>Ownership and attention</h3>
+<p>Find a blocked worker among concurrent sessions. Measure correct owner, missed requests and time to the right terminal.</p>
+</div><div class="card"><h3>Evidence and acceptance</h3>
+<p>Review a completed task containing a failed check or later edit. Measure false acceptance and time to the relevant evidence.</p>
+</div><div class="card"><h3>Continuity and economics</h3>
+<p>Resume interrupted work with a saved brief. Measure reconstruction time, task success, voluntary return use and reported-cost coverage.</p>
+</div></div><blockquote>
+<p>Use matched tasks and counterbalanced order. Record experience and runtime versions. Report failures, sample size and uncertainty alongside any improvement.</p>
+</blockquote>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>16 / 20</span></footer>
+</section>
+<section class="slide closing" id="slide-17" aria-labelledby="title-17" tabindex="-1">
+<div class="eyebrow"><span>PRODUCT DIRECTION</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-17">The recommendation</h2>
+<div class="content"><p><strong>Own the moment between an agent’s claim and an engineer’s decision.</strong></p>
+<p>Agenturm has a credible foundation for local supervision: scoped evidence, recorded requests, checks, usage, evaluation imports and task continuity.</p>
+<p>Its next milestone should be demonstrated operator value: <strong>faster reconstruction, more accurate review and reliable intervention.</strong></p>
+<blockquote>
+<p>Position it as a focused companion to the wider AI observability stack. Earn broader claims with measured outcomes.</p>
+</blockquote>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>17 / 20</span></footer>
+</section>
+<section class="slide cards" id="slide-18" aria-labelledby="title-18" tabindex="-1">
+<div class="eyebrow"><span>EVIDENCE & SOURCES</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-18">Method and confidence</h2>
+<div class="content"><div class="cards"><div class="card"><h3>Market evidence</h3>
+<p>Official standards and product docs; PAI’s October framework assessment; Hugging Face’s November evaluation guide. Accessed 27 November 2026.</p>
+</div><div class="card"><h3>Product evidence</h3>
+<p>Rust-only upstream <code>6803e2a</code>: implementation and regression cases reviewed. Latest release observed: <code>rust-v0.3.15</code>. Source capabilities do not establish release parity.</p>
+</div><div class="card"><h3>Interpretation limits</h3>
+<p>No vendor benchmark or participant study. Fit ratings are qualitative. Implementation, effectiveness and proposed improvements are distinguished throughout.</p>
+<p><strong>Documentation drift:</strong> some docs describe legacy behavior. This review prioritizes native Rust evidence and excludes historical performance claims.</p>
+</div></div></div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>18 / 20</span></footer>
+</section>
+<section class="slide sources" id="slide-19" aria-labelledby="title-19" tabindex="-1">
+<div class="eyebrow"><span>EVIDENCE & SOURCES</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-19">Sources — market and research</h2>
+<div class="content"><ol>
+<li><strong><a href="https://github.com/open-telemetry/semantic-conventions-genai/blob/81b5d438519f868a186bff088d9de24aefdb2f6b/docs/gen-ai/gen-ai-agent-spans.md">S1 · OpenTelemetry GenAI agent conventions</a></strong> — Development status; agent, workflow and plan spans; context, usage and sensitive-content semantics. Pinned revision <code>81b5d438</code>.</li>
+<li><strong><a href="https://partnershiponai.org/resource/the-observability-gap-in-ai-agents/">S2 · Partnership on AI</a></strong> — <em>The Observability Gap in AI Agents</em>, 7 Oct 2026. Four-framework assessment; identity, permissions, memory and human-intervention gaps.</li>
+<li><strong><a href="https://arize.com/ai-agents/agent-observability/">S3 · Arize agent observability guide</a></strong> — Updated 27 Oct 2026. Outcome verification, context propagation, sessions, evaluation and cost per successful task.</li>
+<li><strong><a href="https://docs.langchain.com/langsmith/observability">S4 · LangSmith Observability</a></strong> — Traces, integrations, feedback, monitors, online evaluations, Engine and deployment options.</li>
+<li><strong><a href="https://langfuse.com/docs/observability/overview">S5 · Langfuse Observability</a></strong> — Tracing, cost tracking, scores, experiments, alerts and self-hosting.</li>
+<li><strong><a href="https://docs.datadoghq.com/llm_observability/">S6 · Datadog Agent Observability</a></strong> — Production operations, evaluations, sensitive-data controls, Insights and span-based pricing.</li>
+<li><strong><a href="https://openai.github.io/openai-agents-python/tracing/">S7 · OpenAI Agents SDK tracing</a></strong> — Built-in events, custom processors, sensitive-data defaults and hosted-tracing ZDR limitation.</li>
+<li><strong><a href="https://huggingface.co/blog/agentic-evals">S8 · Hugging Face agentic evaluation guide</a></strong> — 23 Nov 2026. Artifact verification, grader validation, reproducibility and repeated-run reliability.</li>
+</ol>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>19 / 20</span></footer>
+</section>
+<section class="slide sources" id="slide-20" aria-labelledby="title-20" tabindex="-1">
+<div class="eyebrow"><span>EVIDENCE & SOURCES</span><span>RESEARCH BRIEF / NOV 2026</span></div>
+<h2 id="title-20">Sources — Agenturm implementation</h2>
+<div class="content"><p>All repository links are pinned to <strong><code>6803e2ad8ffccb12c925cdb8e25f4ab34fee8215</code></strong>.</p>
+<ol>
+<li><strong><a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/README.md">R1 · README</a> / <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/discovery.rs">R2 · Discovery</a></strong> — Product scope, local runtimes, OTLP prerequisites and bounded coverage reporting.</li>
+<li><strong><a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/review_receipt.rs">R3 · Review receipts</a> / <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/tests/review_receipt.rs">scope tests</a></strong> — Checks, edits, errors, provenance, explicit worker scope and private exports.</li>
+<li><strong><a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/eval_import.rs">R4 · Evaluation import</a> / <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/tests/eval_import.rs">import tests</a></strong> — External scores attached to existing traces; history and execution status kept distinct.</li>
+<li><strong><a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/workflow_alerts.rs">R5 · Workflow alerts</a> / <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/attention/status.rs">attention status</a></strong> — Source-bound incidents, thresholds, coverage and notification delivery state.</li>
+<li><strong><a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/tests/prompt_content.rs">R6 · Native content tests</a> / <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/docs/receiver.md">R7 · Receiver contract</a></strong> — Grants and source-byte verification; loopback/authentication and multiuser limits.</li>
+<li><strong><a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/storage/agenturm-store/src/usage_history.rs">R8 · Usage history</a></strong> — Reported-cost coverage and currency-aware aggregation.</li>
+<li><strong><a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/task_cli.rs">R9 · Saved tasks</a> / <a href="https://github.com/abhishekash/agenturm/blob/6803e2ad8ffccb12c925cdb8e25f4ab34fee8215/crates/applications/agenturm-app/src/workflow_route.rs">R10 · Terminal routing</a></strong> — Briefs, decisions, handoffs and conditional verified native-terminal lookup.</li>
+</ol>
+<p><strong>Read code + tests as capability evidence. Treat effectiveness and broad runtime parity as hypotheses requiring validation.</strong></p>
+</div>
+
+<footer><span class="wordmark">agenturm<span class="dot">.</span></span><span>Agentic AI observability · 27 November 2026</span><span>20 / 20</span></footer>
+</section></main>
+<aside id="notes" hidden aria-labelledby="note-title"><h3 id="note-title">Speaker notes</h3><div id="note-body"></div></aside>
+<script>
+const slides=Array.from(document.querySelectorAll('.slide'));
+const notesData=[{"title":"From traces to trustworthy work","html":"\u003cp>This is a strategic synthesis, not a market-share report or a measured vendor benchmark. Agenturm is assessed at upstream main commit 6803e2ad8ffccb12c925cdb8e25f4ab34fee8215. The latest published release observed was rust-v0.3.15; source-level capabilities are not a certification of every packaged release or platform.\u003c/p>\n"},{"title":"The category has moved beyond trace collection","html":"\u003cp>“Established” describes documented availability, not universal adoption or interoperability. LangSmith documents online evaluation and Engine issue detection; Datadog documents Insights with recurring cost and reliability findings. It would be inaccurate to portray the market as only passive trace storage. The opportunity for Agenturm is the particular operator workflow and evidence semantics.\u003c/p>\n"},{"title":"Four overlapping layers define the market","html":"\u003cp>The sample is deliberately representative rather than exhaustive. OpenTelemetry is an instrumentation standard, not a complete monitoring product. OpenAI Agents SDK tracing supports custom exporters and non-OpenAI model integrations. Local deployment and open source alone do not make Agenturm unique.\u003c/p>\n"},{"title":"The top five problems","html":"\u003cp>Problem 1 supplies the evidence foundation for the others. Problem 2 connects observations to value. Problem 3 closes the human response loop. Problems 4 and 5 constrain whether that loop is affordable and acceptable. In regulated deployments, governance may reasonably rank first; for a high-volume agent service, cost may move higher.\u003c/p>\n"},{"title":"01 — Reconstruct the execution, not just the calls","html":"\u003cp>Current OTel agent conventions are still Development and now include a plan span. Do not repeat older claims that planning has no representation. The remaining issue is whether producers emit compatible and sufficient records. PAI’s October study assessed four frameworks, not the whole market, and distinguishes execution identifiers from verifiable enterprise identity. Agenturm's exact local identities help attribution but do not establish IAM authorization.\u003c/p>\n"},{"title":"02 — “Completed” does not mean “correct”","html":"\u003cp>Hugging Face’s November 23 guide explicitly recommends grading produced artifacts rather than completion claims and testing the verifier with no-op and shortcut solutions. Agenturm's Rust receipt is metadata-oriented: it exposes source references and classifications; it does not reconstruct uncaptured prompt text. Review code and tests establish implementation structure, not a measured reduction in engineering mistakes. No native automatic later-edit invalidation is assumed here.\u003c/p>\n"},{"title":"03 — Turn activity into the right intervention","html":"\u003cp>Agenturm already has bounded workflow alerts and notification machinery: “no alerting” would be an inaccurate comparison. Its state and delivery evidence should be evaluated against observable requests, not against a silence timer. A seen request is not an approval. Market alternatives already provide production alerts and automated issue discovery; Agenturm's distinction is local coding-session supervision and routing.\u003c/p>\n"},{"title":"04 — Measure cost per verified outcome","html":"\u003cp>The denominator includes accepted outcomes only; the numerator includes failed attempts. If no outcomes succeed, report the metric as undefined rather than zero. The same tokens can appear at more than one span level; OTel explicitly warns about aggregation. Agenturm's workflow alert projection excludes native cost estimates and labels exact facts versus reported lower bounds. Those are useful distinctions, not evidence of complete invoice reconciliation or cheaper operations than another product.\u003c/p>\n"},{"title":"05 — Make evidence useful without overexposing it","html":"\u003cp>Privacy controls and enterprise governance are separate capabilities. OpenAI's SDK documents that sensitive tracing data is enabled by default, provides controls, and says hosted tracing is unavailable under Zero Data Retention. That illustrates a capture-policy tradeoff, not a universal vendor weakness. PAI identifies human authority and permission history gaps. Do not treat visible reasoning summaries as faithful access to a model's hidden decision process.\u003c/p>\n"},{"title":"Agenturm against all five problems","html":"\u003cp>The key distinction is direct local fit versus complete resolution of the industry-wide problem. There is no numeric competitive score because there was no common workload, deployment, independent quality benchmark or user study. The comparison uses the inspected implementation and its explicit contracts.\u003c/p>\n"},{"title":"Where the alternatives are already strong","html":"\u003cp>The right-hand column describes Agenturm's chosen focus; it does not claim competitors cannot support those jobs or integrate with coding tools. Arize explicitly documents coding-assistant access to traces. None of the reviewed products was installed and benchmarked for this presentation. Product availability and packaging can vary by deployment and plan.\u003c/p>\n"},{"title":"Agenturm’s operating model","html":"\u003cp>The Rust workspace separates applications, core contracts, domain logic, plugin readers and storage. Supported readers in discovery include Codex, Claude Code, OpenCode, Pi and Kiro. The README's source table names the first four, while usage and discovery include Kiro; broad feature parity across adapters and release artifacts is not assumed. Task continuity is user-authored engineering context, not a claim that Agenturm records all agent memory changes.\u003c/p>\n"},{"title":"The review moment that makes this concrete","html":"\u003cp>This is a conceptual walkthrough, not a screenshot, live demo or promise that every adapter captures all four events. In the Rust receipt reviewed here, checks and edits are classified separately. Chronological invalidation is the engineer's conclusion in this scenario; an automatic native later-edit warning was not established. Legacy compatibility code contains richer later-edit projection, which is not treated as proof of native parity.\u003c/p>\n"},{"title":"A credible position — and its competitive risk","html":"\u003cp>This slide is analysis, not a claim of a proven moat or competitive exclusivity. Do not market full autonomous governance, universal compatibility, independently verified correctness or measured productivity gains based on this review. Those require separate evidence. The current implementation already supports many useful primitives; the product question is whether engineers consistently use them to make better decisions.\u003c/p>\n"},{"title":"Recommended priorities","html":"\u003cp>These are proposed priorities, not shipped features or delivery commitments. Existing eval import, content grants, usage charts, alerts and handoff exports are starting points; the recommendation is not to rebuild them. Artifact/revision-linked verification would need careful design because recorded command success alone cannot attest the current worktree. Enterprise control-plane expansion should follow validated customer demand.\u003c/p>\n"},{"title":"Test the product thesis with real operators","html":"\u003cp>Recruit engineers who actually supervise concurrent coding agents. Include both healthy and problematic runs so the product cannot win by simply flagging everything. Use independently reviewed expected outcomes and avoid reusing the exact same task in both conditions for one participant. Measure CPU, memory and startup on the same machines if resource overhead becomes part of the product claim. Do not invent a target lift or conclude causality from a few enthusiastic anecdotes.\u003c/p>\n"},{"title":"The recommendation","html":"\u003cp>The answer to “does Agenturm solve the top five?” is nuanced: it directly addresses local attribution and attention, partially addresses verified outcomes and economics, and offers useful local privacy boundaries without establishing enterprise governance. That is a meaningful, focused position. It is not yet evidence that it should replace a production AI engineering platform.\u003c/p>\n"},{"title":"Method and confidence","html":"\u003cp>The original local checkout had divergent commits and older documentation. Research was anchored to the fetched upstream main in a separate worktree. This presentation does not inspect private agent databases or use real session content. Existing tests were read as evidence of intended contracts; their existence is distinct from independently qualifying every supported runtime version. Market sources are living documents unless pinned below. The five-problem ranking is a synthesis, not PAI's six-gap taxonomy reproduced under another name.\u003c/p>\n"},{"title":"Sources — market and research","html":"\u003cp>Vendor documentation is evidence that a capability is documented, not independent proof of comparative effectiveness. PAI’s conclusions are scoped to the frameworks and methodology it assessed. Hugging Face’s empirical examples are not generalized into Agenturm performance claims. External links require connectivity; the presentation itself does not.\u003c/p>\n"},{"title":"Sources — Agenturm implementation","html":"\u003cp>The strongest source anchors are ReviewScope and render/classify in review_receipt.rs; Action::Import and execute_evals in eval_import.rs; ExactTurn::usd and scope-bound projection in workflow_alerts.rs; WorkflowStatus in attention/status.rs; preview_requires_a_current_grant_and_exact_committed_pi_bytes in prompt_content.rs; and the explicit limitations at the top of workflow_route.rs. The receipt scope test demonstrates exclusion of a sibling worker, session, turn and source.\u003c/p>\n"}];
+const picker=document.querySelector('#slide-picker');
+const notes=document.querySelector('#notes');
+const root=document.documentElement;
+let index=0;
+const mobile=()=>window.matchMedia('(max-width:760px)').matches;
+const reading=()=>document.body.classList.contains('reading');
+function resize(){root.style.setProperty('--scale',Math.max(.1,Math.min((innerWidth-32)/1440,(innerHeight-100)/810)));}
+function show(n,scroll=false){index=Math.max(0,Math.min(slides.length-1,n));slides.forEach((s,i)=>s.classList.toggle('active',i===index));picker.value=String(index);document.querySelector('#previous').disabled=index===0;document.querySelector('#next').disabled=index===slides.length-1;document.querySelector('#bar').style.width=((index+1)/slides.length*100)+'%';document.querySelector('#position').textContent=(index+1)+' / '+slides.length;document.querySelector('#note-body').innerHTML=notesData[index].html;document.querySelector('#note-title').textContent='Speaker notes · '+(index+1)+' · '+notesData[index].title;history.replaceState(null,'','#slide-'+(index+1));if(scroll&&(mobile()||reading()))slides[index].scrollIntoView({behavior:'instant',block:'start'});}
+function overview(){document.body.classList.toggle('reading');document.querySelector('#overview').setAttribute('aria-pressed',String(reading()));if(reading())slides[index].scrollIntoView({behavior:'instant',block:'start'});else window.scrollTo(0,0);}
+function toggleNotes(){notes.hidden=!notes.hidden;document.querySelector('#toggle-notes').setAttribute('aria-expanded',String(!notes.hidden));if(!notes.hidden)notes.scrollIntoView({behavior:'instant',block:'nearest'});}
+document.body.classList.add('js');
+document.querySelector('#previous').addEventListener('click',()=>show(index-1,true));
+document.querySelector('#next').addEventListener('click',()=>show(index+1,true));
+picker.addEventListener('change',()=>show(Number(picker.value),true));
+document.querySelector('#overview').addEventListener('click',overview);
+document.querySelector('#toggle-notes').addEventListener('click',toggleNotes);
+document.querySelector('#theme').addEventListener('click',()=>{const dark=root.dataset.theme?root.dataset.theme==='dark':matchMedia('(prefers-color-scheme:dark)').matches;root.dataset.theme=dark?'light':'dark';document.querySelector('#theme').textContent=dark?'Dark theme':'Light theme';});
+document.querySelector('#print').addEventListener('click',()=>window.print());
+document.querySelector('.skip').addEventListener('click',e=>{e.preventDefault();slides[index].focus();});
+document.addEventListener('keydown',e=>{if(e.altKey||e.ctrlKey||e.metaKey||/INPUT|SELECT|TEXTAREA|BUTTON|A/.test(e.target.tagName))return;switch(e.key){case 'ArrowRight':case 'PageDown':e.preventDefault();show(index+1,true);break;case 'ArrowLeft':case 'PageUp':e.preventDefault();show(index-1,true);break;case 'Home':e.preventDefault();show(0,true);break;case 'End':e.preventDefault();show(slides.length-1,true);break;case 'o':case 'O':overview();break;case 'n':case 'N':toggleNotes();break;}});
+window.addEventListener('resize',resize);
+window.addEventListener('hashchange',()=>{const m=location.hash.match(/^#slide-(\d+)$/);if(m)show(Number(m[1])-1,true);});
+resize();const start=location.hash.match(/^#slide-(\d+)$/);show(start?Number(start[1])-1:0);
+document.querySelector('#theme').textContent=matchMedia('(prefers-color-scheme:dark)').matches?'Light theme':'Dark theme';
+</script></body></html>
