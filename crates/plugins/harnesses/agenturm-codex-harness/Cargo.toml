@@ -1,0 +1,18 @@
+[package]
+name = "agenturm-codex-harness"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+agenturm-jsonl-source = { path = "../../host/agenturm-jsonl-source" }
+agenturm-directory-source = { path = "../../host/agenturm-directory-source" }
+agenturm-protocol = { path = "../../../core/agenturm-protocol" }
+agenturm-source-process = { path = "../../host/agenturm-source-process" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = { version = "1.0", features = ["raw_value"] }
+sha2 = "0.10"
+shlex = "2.0"
+time = { version = "0.3", features = ["parsing"] }

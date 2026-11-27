@@ -1,0 +1,13 @@
+[package]
+name = "agenturm-sample-harness"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+agenturm-protocol = { path = "../../../core/agenturm-protocol" }
+serde = { version = "1.0", features = ["derive"] }
+serde_json = "1.0"
+sha2 = "0.10"

@@ -1,0 +1,10 @@
+[package]
+name = "agenturm-lifecycle-extension-fixture"
+version = "0.1.0"
+edition.workspace = true
+rust-version.workspace = true
+publish.workspace = true
+license.workspace = true
+
+[dependencies]
+agenturm-kernel = { path = "../../../core/agenturm-kernel" }
