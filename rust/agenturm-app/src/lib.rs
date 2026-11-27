@@ -3426,7 +3426,9 @@ pub struct ConfiguredCollector<S = Store> {
     source_ids: Vec<ExtensionId>,
     startup_failures: BTreeMap<ExtensionId, String>,
     pending_sources: BTreeMap<ExtensionId, (ProcessConfig, Instant)>,
+    starting_sources: BTreeSet<ExtensionId>,
     stop_flag: Option<Arc<AtomicBool>>,
+    defer_source_start: bool,
     plugin_host: PathBuf,
     follow: Option<FollowSources>,
     authorized_sources: Vec<discovery::AuthorizedSource>,
@@ -3490,6 +3492,24 @@ impl ConfiguredCollector {
         });
         Ok(collector)
     }
+
+    fn with_local_store_deferred(
+        config: ValidatedCollectionConfig,
+        database: PathBuf,
+        store: Store,
+        stop: Option<&Arc<AtomicBool>>,
+    ) -> Result<Self, String> {
+        let mut collector = Self::with_store_mode(config, database, store, stop, true)?;
+        collector.local_maintenance = Some(|store| {
+            store
+                .apply_current_automatic_retention()
+                .map(|_| ())
+                .map_err(|_| {
+                    "Automatic retention could not run; retained history is still available".into()
+                })
+        });
+        Ok(collector)
+    }
 }
 
 impl<S: ObservationStore> ConfiguredCollector<S> {
@@ -3499,13 +3519,25 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
         store: S,
         stop: Option<&Arc<AtomicBool>>,
     ) -> Result<Self, String> {
+        Self::with_store_mode(config, database, store, stop, false)
+    }
+
+    fn with_store_mode(
+        config: ValidatedCollectionConfig,
+        database: PathBuf,
+        store: S,
+        stop: Option<&Arc<AtomicBool>>,
+        defer_source_start: bool,
+    ) -> Result<Self, String> {
         let mut collector = Self {
             kernel: Kernel::new(),
             store,
             source_ids: Vec::with_capacity(config.sources.len()),
             startup_failures: BTreeMap::new(),
             pending_sources: BTreeMap::new(),
+            starting_sources: BTreeSet::new(),
             stop_flag: stop.cloned(),
+            defer_source_start,
             plugin_host: config.plugin_host,
             follow: config.follow,
             authorized_sources: Vec::new(),
@@ -3518,18 +3550,16 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
             host_capture: config.host_capture,
         };
         for source in config.sources {
-            collector
-                .authorized_sources
-                .push(authorized_source(&source));
-            collector.add_source(source)?;
+            collector.add_source(source, defer_source_start)?;
         }
         Ok(collector)
     }
 
-    fn add_source(&mut self, source: ConfiguredSource) -> Result<(), String> {
+    fn add_source(&mut self, source: ConfiguredSource, defer_start: bool) -> Result<(), String> {
         let source_id = ExtensionId::parse(source.source_id.clone())
             .map_err(|error| format!("invalid source ID: {error}"))?;
         self.source_ids.push(source_id.clone());
+        self.authorized_sources.push(authorized_source(&source));
         if self
             .stop_flag
             .as_ref()
@@ -3557,6 +3587,11 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
         }
         if let Some(stop) = &self.stop_flag {
             config = config.with_stop_flag(Arc::clone(stop));
+        }
+        if defer_start {
+            self.pending_sources
+                .insert(source_id, (config, Instant::now()));
+            return Ok(());
         }
         match ProcessSource::spawn(config.clone()) {
             Ok(adapter) => {
@@ -3609,7 +3644,7 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
         });
         for source in selected {
             if !old_ids.contains(&source.source_id) {
-                self.add_source(source)?;
+                self.add_source(source, self.defer_source_start)?;
             }
         }
         self.authorized_sources = authorized;
@@ -3635,7 +3670,9 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
         } else {
             None
         };
-        self.retry_pending_sources();
+        if !self.defer_source_start {
+            self.retry_pending_sources();
+        }
         let snapshot = self.kernel.refresh_with_store(&mut self.store);
         let shutdown_requested = self
             .stop_flag
@@ -3727,6 +3764,74 @@ impl<S: ObservationStore> ConfiguredCollector<S> {
                     }
                     self.startup_failures.insert(id, error.to_string());
                 }
+            }
+        }
+    }
+
+    pub(crate) fn take_pending_source_starts(&mut self) -> Vec<(ExtensionId, ProcessConfig)> {
+        if !self.defer_source_start
+            || self
+                .stop_flag
+                .as_ref()
+                .is_none_or(|stop| stop.load(Ordering::Relaxed))
+        {
+            return Vec::new();
+        }
+        let now = Instant::now();
+        let due = self
+            .pending_sources
+            .iter()
+            .filter(|(id, (_, retry_at))| *retry_at <= now && !self.starting_sources.contains(*id))
+            .map(|(id, _)| id.clone())
+            .collect::<Vec<_>>();
+        due.into_iter()
+            .filter_map(|id| {
+                let (config, _) = self.pending_sources.get(&id)?.clone();
+                self.starting_sources.insert(id.clone());
+                Some((id, config))
+            })
+            .collect()
+    }
+
+    pub(crate) fn source_start_in_flight(&self) -> bool {
+        !self.starting_sources.is_empty()
+    }
+
+    pub(crate) fn complete_pending_source_start(
+        &mut self,
+        id: ExtensionId,
+        config: ProcessConfig,
+        result: Result<ProcessSource, String>,
+    ) {
+        self.starting_sources.remove(&id);
+        if !self.pending_sources.contains_key(&id) {
+            return;
+        }
+        if self
+            .stop_flag
+            .as_ref()
+            .is_some_and(|stop| stop.load(Ordering::Relaxed))
+        {
+            self.pending_sources.remove(&id);
+            return;
+        }
+        match result {
+            Ok(adapter) => match self.kernel.register_source_adapter(id.clone(), adapter) {
+                Ok(()) => {
+                    self.pending_sources.remove(&id);
+                    self.startup_failures.remove(&id);
+                }
+                Err(error) => {
+                    self.pending_sources.remove(&id);
+                    self.startup_failures.insert(id, error.to_string());
+                }
+            },
+            Err(error) => {
+                if let Some((pending_config, retry_at)) = self.pending_sources.get_mut(&id) {
+                    *pending_config = config;
+                    *retry_at = Instant::now() + Duration::from_secs(1);
+                }
+                self.startup_failures.insert(id, error);
             }
         }
     }
@@ -4600,6 +4705,58 @@ pub fn render(command: Command) -> String {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    #[test]
+    fn cockpit_collector_queues_adapter_start_and_keeps_startup_failure_retryable() {
+        let nonce = std::time::SystemTime::now()
+            .duration_since(std::time::UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let root = std::env::temp_dir().join(format!(
+            "agenturm-deferred-collector-{}-{nonce}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let database = root.join("history.sqlite");
+        let source = ConfiguredSource {
+            plugin_id: "example.rust-pi-harness".into(),
+            adapter: root.join("adapter"),
+            source_root: root.join("sessions"),
+            source_id: "harness.pi".into(),
+            artifact_sha256: None,
+            features: None,
+            observation_format: ObservationFormat::default(),
+        };
+        let config = ValidatedCollectionConfig {
+            plugin_host: root.join("plugin-host"),
+            sources: vec![source],
+            host_capture: None,
+            follow: None,
+        };
+        let stop = Arc::new(AtomicBool::new(false));
+        let store = Store::open_collector(&database).unwrap();
+        let mut collector =
+            ConfiguredCollector::with_local_store_deferred(config, database, store, Some(&stop))
+                .unwrap();
+
+        assert_eq!(collector.source_ids.len(), 1);
+        assert_eq!(collector.pending_sources.len(), 1);
+        assert!(collector.startup_failures.is_empty());
+        let mut pending = collector.take_pending_source_starts();
+        assert_eq!(pending.len(), 1);
+        assert_eq!(pending[0].0.as_str(), "harness.pi");
+        assert!(collector.source_start_in_flight());
+        assert!(collector.take_pending_source_starts().is_empty());
+
+        let (source, config) = pending.pop().unwrap();
+        collector.complete_pending_source_start(source.clone(), config, Err("delayed".into()));
+        assert!(!collector.source_start_in_flight());
+        assert_eq!(collector.startup_failures.get(&source).unwrap(), "delayed");
+        assert!(collector.take_pending_source_starts().is_empty());
+
+        drop(collector);
+        std::fs::remove_dir_all(root).unwrap();
+    }
 
     #[test]
     fn history_page_renders_worker_launch_without_resolution_wording() {
