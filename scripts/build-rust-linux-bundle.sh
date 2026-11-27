@@ -38,8 +38,7 @@ for binary in "${binaries[@]}"; do
     install -m 0755 -- "$target_dir/release/$binary" "$bundle/bin/$binary"
 done
 install -m 0644 -- LICENSE "$bundle/LICENSE"
-install -m 0644 -- docs/rfcs/rust-linux-bundle.md "$bundle/README.md"
-install -m 0644 -- docs/rfcs/rust-linux-bundle.html "$bundle/README.html"
+install -m 0644 -- docs/install.md "$bundle/INSTALL.md"
 
 {
     printf '{"version":1,"plugins":[\n'

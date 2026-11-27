@@ -1,6 +1,6 @@
 use agenturm_app::{AgenturmApp, execute_inspect};
-use agenturm_kernel::{ExtensionId, ObservationQuery};
-use agenturm_lifecycle_extension_example::LifecycleExtensionPlugin;
+use agenturm_kernel::ObservationQuery;
+use agenturm_lifecycle_extension_fixture::LifecycleExtensionPlugin;
 use agenturm_store::Store;
 use agenturm_ui::UiModel;
 use std::fs;
@@ -333,17 +333,20 @@ fn version_two_catalog_runs_a_pinned_real_pi_process() {
     let projected = app.refresh_history_query(&store, ObservationQuery::latest(32));
     assert!(projected.failures.is_empty());
     assert_eq!(
-        projected.metrics[&ExtensionId::parse("capability.example.lifecycle").unwrap()][1].value,
+        projected.metrics
+            [&agenturm_kernel::ExtensionId::parse("capability.example.lifecycle").unwrap()][1]
+            .value,
         "1"
     );
-    let pane = &projected.panes[&ExtensionId::parse("pane.example.lifecycle").unwrap()];
+    let pane =
+        &projected.panes[&agenturm_kernel::ExtensionId::parse("pane.example.lifecycle").unwrap()];
     assert_eq!(pane.title, "Lifecycle by source");
     assert_eq!(pane.rows[0].label, "harness.pi");
     assert_eq!(pane.rows[0].value, "2 total · 1 interrupted");
     assert!(
         projected
             .panes
-            .contains_key(&ExtensionId::parse("pane.overview").unwrap())
+            .contains_key(&agenturm_kernel::ExtensionId::parse("pane.overview").unwrap())
     );
     let model = UiModel::from_snapshot(projected);
     assert_eq!(model.selected_title(), Some("Lifecycle by source"));

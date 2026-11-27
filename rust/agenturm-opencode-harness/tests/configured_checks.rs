@@ -214,7 +214,7 @@ fn collect_lifecycle(
 
 fn make_native_fixture(path: &Path) {
     let fixture: Value = serde_json::from_str(include_str!(
-        "../../../tests/fixtures/native_review/opencode-2.2.5.synthetic.json"
+        "../../../rust/agenturm-test-support/fixtures/native_review/opencode-2.2.5.synthetic.json"
     ))
     .unwrap();
     let db = Connection::open(path).unwrap();

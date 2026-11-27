@@ -37,8 +37,7 @@ jobs:
           cargo fmt -- --check
           cargo build --locked
       - name: Verify the independent process capability and pane
-        working-directory: examples/rust_prompt_signals_extension
-        run: cargo test --locked
+        run: cargo test --locked --manifest-path rust/agenturm-test-support/prompt-signals-extension/Cargo.toml
       - name: Verify real Codex ingestion through Rust process host
         run: cargo test --locked -p agenturm-runtime --test codex_process -- --exact codex_process_commits_metadata_usage_then_acknowledges
         env:
@@ -84,19 +83,3 @@ jobs:
       - run: cargo build --locked --bin agenturm-count-observations
       - run: cargo build --locked --bin agenturm-loopback-inbound-connector
       - run: cargo build --locked -p agenturm-storage-service-contract --example v2_client
-
-  # Python-powered package and compatibility tests are intentionally omitted from CI.
-
-  javascript:
-    name: Node.js ${{ matrix.node-version }}
-    runs-on: ubuntu-24.04
-    strategy:
-      fail-fast: false
-      matrix:
-        node-version: ["22", "24"]
-    steps:
-      - uses: actions/checkout@3d3c42e5aac5ba805825da76410c181273ba90b1 # v7.0.1
-      - uses: actions/setup-node@949feb2413d6458794dcd2491c4babbbce0c15c1 # v7.1.0
-        with:
-          node-version: ${{ matrix.node-version }}
-      - run: node --check clients/javascript/index.mjs

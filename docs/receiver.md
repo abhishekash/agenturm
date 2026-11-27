@@ -24,7 +24,7 @@ The terminal cockpit starts a receiver if needed, and can also attach to an exis
 agenturm cockpit --endpoint http://127.0.0.1:14318
 ```
 
-CLI receivers authenticate by default. A generated owner-only `receiver-PORT.token` lives beside the managed database. The cockpit, Python launcher/SDK and Node client discover it for local endpoints. `OBSERVATORY_TOKEN` or an explicit SDK token overrides discovery. Generic OTLP exporters must send `Authorization: Bearer VALUE`; they do not automatically read Agenturm's token file. `serve --no-auth` explicitly disables bearer authentication while retaining Host/Origin validation.
+CLI receivers authenticate by default. A generated owner-only `receiver-PORT.token` lives beside the managed database. The Rust launcher supplies it to the selected process for local endpoints. Generic OTLP exporters must send `Authorization: Bearer VALUE`; they do not automatically read Agenturm's token file. `serve --no-auth` explicitly disables bearer authentication while retaining Host/Origin validation.
 
 Requests require a loopback Host or an explicitly configured `--allowed-host`; browser Origins must match that authority. Receiver clients refuse redirects. For remote access, configure an explicit token, `--allowed-host exact.hostname`, TLS and a trusted reverse proxy. The token does not isolate other programs running as the same OS user, and the receiver does not provide multiuser authorization.
 
@@ -62,8 +62,7 @@ agenturm serve --retention-days 30
 agenturm prune --older-than-days 30
 ```
 
-For complete OTLP field mappings, APIs, collector configuration, and examples, see the [full guide](usage.md).
-For framework-specific connection examples, see [Connect agent frameworks](frameworks.md).
+For the process-launcher workflow, see the [usage guide](usage.md).
 
 Retention deletes whole inactive traces according to their latest recorded activity and older unlinked telemetry. It is an age policy, not a hard byte cap or secure erasure. SQLite can retain allocated free pages after deletion; it does not automatically compact an existing database. Saved tasks and workflow receipts have separate storage/retention.
 

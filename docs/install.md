@@ -2,7 +2,7 @@
 
 Agenturm 0.3.15 is a native Rust application. The installer detects your system,
 fetches the matching release, verifies its pinned SHA-256, and installs the
-`agenturm` command. Python and a Rust toolchain are not required.
+`agenturm` command. No compiler or runtime is required.
 
 ## Supported systems
 
@@ -14,7 +14,7 @@ Intel Macs and Rosetta are not supported.
 ## Install with curl
 
 ```sh
-curl -fsSL https://www.agenturm.dev/install.sh | bash
+curl -fsSL https://raw.githubusercontent.com/abhishekash/agenturm/rust-v0.3.15/scripts/install-rust-bootstrap.sh | bash
 agenturm
 ```
 
@@ -37,8 +37,7 @@ Update with `brew upgrade agenturm`.
 
 Keep your coding agents open and run `agenturm` in another terminal. It
 discovers supported local Codex, Claude Code, OpenCode, Pi, and Kiro records.
-See the [usage guide](usage.md), [privacy notes](privacy.md), or [interactive
-walkthrough](https://www.agenturm.dev/#demo).
+See the [usage guide](usage.md) or [privacy notes](privacy.md).
 
 ## Prompt history on Linux
 

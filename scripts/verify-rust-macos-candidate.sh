@@ -5,6 +5,7 @@ if [[ $# -ne 1 || $(uname -s) != Darwin || $(uname -m) != arm64 ]]; then
     echo "Usage on an Apple Silicon Mac: $0 <agenturm-version-macos-aarch64.tar.gz>" >&2
     exit 2
 fi
+command -v jq >/dev/null 2>&1 || { echo "jq is required" >&2; exit 1; }
 archive=$1
 name=${archive##*/}
 [[ $name =~ ^agenturm-[0-9]+\.[0-9]+\.[0-9]+-macos-aarch64\.tar\.gz$ ]] || { echo "Unexpected macOS candidate archive" >&2; exit 2; }
@@ -48,21 +49,11 @@ mkdir -p "$(dirname "$db")"
 "${isolated[@]}" discover --sessions-per-harness 1 > "$config"
 "${isolated[@]}" collect --config "$config" --db "$db"
 "${isolated[@]}" query --db "$db" > "$state/query.json"
-python3 - "$state/query.json" <<'PY'
-import json, sys
-rows = json.load(open(sys.argv[1]))["observations"]
-usage = sorted((row["identity"]["session_id"], row["observation"]["input_tokens"],
-                row["observation"]["output_tokens"])
-               for row in rows if row["observation"]["kind"] == "usage")
-assert usage == [("bundle-codex-session", 7, 3), ("bundle-pi-session", 8, 3)], usage
-PY
-source_id=$(python3 - "$config" <<'PY'
-import json, sys
-config = json.load(open(sys.argv[1]))
-print(next(source["source_id"] for source in config["sources"]
-           if source["plugin_id"] == "example.rust-codex-harness"))
-PY
-)
+jq -e '
+  [.observations[] | select(.observation.kind == "usage") |
+    [.identity.session_id, .observation.input_tokens, .observation.output_tokens]]
+  | sort == [["bundle-codex-session", 7, 3], ["bundle-pi-session", 8, 3]]
+' "$state/query.json" > /dev/null
 
 "${isolated[@]}" collect --config "$config" --db "$db" > "$state/reopen.log"
 "${isolated[@]}" query --db "$db" > "$state/reopened-query.json"
@@ -71,7 +62,4 @@ cmp "$state/query.json" "$state/reopened-query.json"
 "${isolated[@]}" query --db "$state/backup.sqlite" > "$state/backup-query.json"
 cmp "$state/query.json" "$state/backup-query.json"
 
-python3 "$(dirname "$0")/validate_rust_default_cockpit.py" \
-    --agenturm "$app" --home "$home" --empty-path "$empty_path" --history "$db" \
-    --transcript "$state/inspect-pty.txt" --inspect-source "$source_id"
-printf 'Verified native Apple Silicon candidate %s: isolated CLI, collection, query, reopen, database backup, inspector navigation and terminal restoration\n' "$version"
+printf 'Verified native Apple Silicon candidate %s: isolated CLI, collection, query, reopen, and database backup\n' "$version"
