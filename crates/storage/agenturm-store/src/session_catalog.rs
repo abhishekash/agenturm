@@ -12,6 +12,16 @@ use std::collections::BTreeSet;
 
 pub const MAX_SESSION_PAGE_SIZE: usize = 256;
 
+pub(super) const LATEST_FACT_SQL: &str =
+    "SELECT o.kind_json, o.observed_at_unix_ns, o.worker_id, o.turn_id
+     FROM agenturm_observations AS o
+     JOIN agenturm_history_batches AS h ON h.request_id = o.request_id
+     WHERE o.session_id = ?1 AND o.source_id = ?2 AND h.sequence <= ?3
+       AND json_extract(o.kind_json, '$.kind') IN ('lifecycle', 'relationship')
+       AND json_extract(o.kind_json, '$.kind') = ?4
+     ORDER BY o.observed_at_unix_ns DESC, o.event_id DESC, o.revision DESC
+     LIMIT 1";
+
 #[derive(Clone, Debug, Deserialize, Eq, PartialEq, Serialize)]
 #[serde(deny_unknown_fields)]
 pub struct SessionQuery {
@@ -168,15 +178,7 @@ impl Store {
 
         // Load lifecycle and relationship facts only for these summaries.
         // The session/time index can walk backward to a matching occurrence.
-        let mut latest_fact = transaction.prepare_cached(
-            "SELECT o.kind_json, o.observed_at_unix_ns, o.worker_id, o.turn_id
-             FROM agenturm_observations AS o
-             JOIN agenturm_history_batches AS h ON h.request_id = o.request_id
-             WHERE o.session_id = ?1 AND o.source_id = ?2 AND h.sequence <= ?3
-               AND json_extract(o.kind_json, '$.kind') = ?4
-             ORDER BY o.observed_at_unix_ns DESC, o.event_id DESC, o.revision DESC
-             LIMIT 1",
-        )?;
+        let mut latest_fact = transaction.prepare_cached(LATEST_FACT_SQL)?;
         let mut sessions = Vec::<SessionSummary>::with_capacity(query.limit);
         for packed in rows.by_ref().take(query.limit) {
             let (harness_id, session_id, observed_at_unix_ns, review_version) = packed?;

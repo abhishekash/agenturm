@@ -18,6 +18,7 @@ mod eval_detail;
 mod eval_inventory;
 mod eval_outcome;
 mod history_projection;
+mod history_read;
 mod host_inventory;
 mod linked_trace;
 pub mod metric_history;
@@ -102,7 +103,7 @@ use std::error::Error;
 use std::fmt::{self, Display, Formatter};
 use std::path::Path;
 
-const SCHEMA_VERSION: i64 = 27;
+const SCHEMA_VERSION: i64 = 28;
 pub const MAX_HOST_HISTORY_PAGE: usize = 64;
 const MAX_BATCH_EVENTS: usize = 2_048;
 pub const MAX_OTLP_BATCH_SPANS: usize = 1_024;
@@ -129,7 +130,8 @@ const STORE_MARKER_V23: &str = "agenturm.observation-store.v23";
 const STORE_MARKER_V24: &str = "agenturm.observation-store.v24";
 const STORE_MARKER_V25: &str = "agenturm.observation-store.v25";
 const STORE_MARKER_V26: &str = "agenturm.observation-store.v26";
-const STORE_MARKER: &str = "agenturm.observation-store.v27";
+const STORE_MARKER_V27: &str = "agenturm.observation-store.v27";
+const STORE_MARKER: &str = "agenturm.observation-store.v28";
 const STORE_MARKER_V9: &str = "agenturm.observation-store.v9";
 const STORE_MARKER_V8: &str = "agenturm.observation-store.v8";
 const STORE_MARKER_V7: &str = "agenturm.observation-store.v7";
@@ -646,6 +648,12 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         ));
         metric_history::validate_descriptor_index(connection)?;
     }
+    if version >= 28 {
+        for name in history_read::INDEX_NAMES {
+            expected.push(("index".into(), (*name).into()));
+        }
+        history_read::validate_indexes(connection)?;
+    }
     expected.sort();
     if objects != expected {
         return Err(StoreError::UnrecognizedDatabase);
@@ -683,7 +691,8 @@ fn validate_marked_shape(connection: &Connection, version: i64) -> Result<()> {
         24 => STORE_MARKER_V24,
         25 => STORE_MARKER_V25,
         26 => STORE_MARKER_V26,
-        27..=SCHEMA_VERSION => STORE_MARKER,
+        27 => STORE_MARKER_V27,
+        28..=SCHEMA_VERSION => STORE_MARKER,
         _ => return Err(StoreError::UnrecognizedDatabase),
     };
     if marker.as_deref() != Some(expected_marker) {
@@ -1167,6 +1176,7 @@ impl Store {
             metric_history::create_descriptor_index(&transaction)?;
             usage_history::create_index(&transaction)?;
             native_attention::create_schema(&transaction)?;
+            history_read::create_indexes(&transaction)?;
             initialize_history_identity(&transaction)?;
             transaction.commit()?;
         } else if schema_version == 2 {
@@ -1539,11 +1549,23 @@ impl Store {
             content_grant::migrate_grant_schema(&transaction, 27)?;
             transaction.execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
+                [STORE_MARKER_V27],
+            )?;
+            transaction.pragma_update(None, "user_version", 27)?;
+            transaction.commit()?;
+            validate_marked_shape(&connection, 27)?;
+        }
+        if (2..28).contains(&schema_version) {
+            let transaction =
+                connection.transaction_with_behavior(TransactionBehavior::Immediate)?;
+            history_read::create_indexes(&transaction)?;
+            transaction.execute(
+                "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
                 [STORE_MARKER],
             )?;
             transaction.pragma_update(None, "user_version", SCHEMA_VERSION)?;
+            validate_marked_shape(&transaction, SCHEMA_VERSION)?;
             transaction.commit()?;
-            validate_marked_shape(&connection, SCHEMA_VERSION)?;
         }
         connection.pragma_update(None, "journal_mode", "WAL")?;
         connection.pragma_update(None, "synchronous", "FULL")?;
@@ -2096,23 +2118,51 @@ impl Store {
         } else {
             "1"
         };
+        // Keep exact scopes and keyset boundaries visible to SQLite's planner.
+        // Nullable-parameter ORs prevent an indexed session seek and make an
+        // older page walk all newer rows before reaching its cursor.
+        let session_filter = if query.session_id.is_some() {
+            "observation.session_id=?3"
+        } else {
+            "?3 IS NULL"
+        };
+        let source_filter = if linked_traces {
+            "substr(observation.source_id,1,5)='otlp.'
+             AND json_extract(observation.kind_json,'$.kind') IN ('trace_span','trace_progress')
+             AND json_extract(observation.kind_json,'$.target_source_id')=?2"
+        } else if query.harness_id.is_some() {
+            "observation.source_id=?2"
+        } else {
+            "?2 IS NULL"
+        };
+        let cursor_filter = if query.before.is_some() {
+            "(observation.observed_at_unix_ns,observation.source_id,
+              observation.event_id,observation.revision) < (?4,?5,?6,?7)"
+        } else {
+            "?4 IS NULL"
+        };
+        // Without ANALYZE, SQLite can prefer the source/time index and walk
+        // every newer session in that source. An exact session has its own
+        // ordered index in every supported schema; use that bounded seek.
+        let scope_index =
+            if !linked_traces && query.harness_id.is_some() && query.session_id.is_some() {
+                "INDEXED BY agenturm_observations_by_session"
+            } else {
+                ""
+            };
         let observation_sql = format!(
             "SELECT observation.source_id, observation.event_id, observation.revision,
                     observation.scope, observation.session_id, observation.worker_id, observation.turn_id,
                     observation.operation_id, observation.observed_at_unix_ns,
                     observation.kind_json
-             FROM agenturm_observations AS observation
+             FROM agenturm_observations AS observation {scope_index}
              JOIN agenturm_ingest_receipts AS receipt
                ON receipt.request_id=observation.request_id
              JOIN agenturm_history_batches AS history_batch
                ON history_batch.request_id=receipt.request_id
              WHERE history_batch.sequence <= ?1
-               AND ((?12 = 0 AND (?2 IS NULL OR observation.source_id=?2))
-                    OR (?12 = 1
-                        AND substr(observation.source_id,1,5)='otlp.'
-                        AND json_extract(observation.kind_json,'$.kind') IN ('trace_span','trace_progress')
-                        AND json_extract(observation.kind_json,'$.target_source_id')=?2))
-               AND (?3 IS NULL OR observation.session_id=?3)
+               AND ({source_filter})
+               AND {session_filter}
                AND (?12 = 0 OR EXISTS (
                     SELECT 1
                     FROM agenturm_observations AS anchor
@@ -2158,10 +2208,7 @@ impl Store {
                    WHEN 'workflow_alerts' THEN ({workflow_filter})
                    ELSE ?16 IS NULL
                END
-               AND (?4 IS NULL OR
-                    (observation.observed_at_unix_ns,observation.source_id,
-                     observation.event_id,observation.revision) <
-                    (?4,?5,?6,?7))
+               AND {cursor_filter}
              ORDER BY observation.observed_at_unix_ns DESC, observation.source_id DESC,
                       observation.event_id DESC, observation.revision DESC
              LIMIT ?8",
@@ -2241,6 +2288,8 @@ impl Store {
             },
         )?;
         let mut rows = rows.collect::<std::result::Result<Vec<_>, _>>()?;
+        #[cfg(test)]
+        history_read::record_work(&statement);
         let has_more = rows.len() > query.limit;
         rows.truncate(query.limit);
         rows.reverse();
@@ -3049,6 +3098,7 @@ mod tests {
     }
 
     fn downgrade_fixture_to_v14(connection: &Connection) {
+        history_read::drop_indexes(connection);
         connection.execute_batch(
             "DROP TABLE agenturm_native_attention_events; DROP TABLE agenturm_native_attention_senders;
              DROP INDEX agenturm_metric_descriptions_by_series;
@@ -3100,6 +3150,7 @@ mod tests {
                 .unwrap()
         };
         let original = receipt(&store);
+        history_read::drop_indexes(&store.connection);
         store.connection.execute_batch(
             "DROP INDEX agenturm_metric_descriptions_by_series;
              ALTER TABLE agenturm_history_batches DROP COLUMN admitted_at_unix_ns;
@@ -3140,6 +3191,7 @@ mod tests {
         );
         let mut store = Store::open(&db.0).unwrap();
         let grant = store.grant_content(&codex).unwrap();
+        history_read::drop_indexes(&store.connection);
         // Rebuild the exact v22 grant table so a pre-upgrade database again
         // rejects claude.edit_detail under its narrower CHECK rule.
         store
@@ -3195,6 +3247,7 @@ mod tests {
         );
         let mut store = Store::open(&db.0).unwrap();
         let grant = store.grant_content(&claude).unwrap();
+        history_read::drop_indexes(&store.connection);
         // Rebuild the exact v23 grant table so a pre-upgrade database again
         // rejects opencode.edit_detail under its narrower CHECK rule.
         store
@@ -3345,6 +3398,7 @@ mod tests {
         // v24 -> v25 -> v26 -> v27 upgrade path.
         let transaction = store.connection.transaction().unwrap();
         content_grant::migrate_grant_schema(&transaction, 24).unwrap();
+        history_read::drop_indexes(&transaction);
         transaction
             .execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
@@ -3361,7 +3415,7 @@ mod tests {
                 .connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            27
+            SCHEMA_VERSION
         );
         store
             .verify_content_grant(&codex_mcp, &prior_codex_mcp)
@@ -3557,6 +3611,7 @@ mod tests {
 
         let transaction = store.connection.transaction().unwrap();
         content_grant::migrate_grant_schema(&transaction, 26).unwrap();
+        history_read::drop_indexes(&transaction);
         transaction
             .execute(
                 "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
@@ -3573,7 +3628,7 @@ mod tests {
                 .connection
                 .pragma_query_value(None, "user_version", |row| row.get::<_, i64>(0))
                 .unwrap(),
-            27
+            SCHEMA_VERSION
         );
         upgraded
             .verify_content_grant(&codex_mcp, &codex_grant)
@@ -3655,6 +3710,7 @@ mod tests {
         let query = ObservationQuery::latest(1);
         let snapshot = store.query_observations(&query).unwrap().snapshot_id;
         let tx = store.connection.transaction().unwrap();
+        history_read::drop_indexes(&tx);
         tx.execute_batch(
             "DROP TABLE agenturm_native_attention_events; DROP TABLE agenturm_native_attention_senders;
              DROP INDEX agenturm_metric_descriptions_by_series;
@@ -3716,6 +3772,9 @@ mod tests {
         let snapshot = store.query_observations(&query).unwrap().snapshot_id;
         let identity = store.history_identity().unwrap();
         store.connection.execute_batch("DROP TABLE agenturm_native_attention_events; DROP TABLE agenturm_native_attention_senders;
+             DROP INDEX agenturm_observations_by_time;
+             DROP INDEX agenturm_observations_by_source_time;
+             DROP INDEX agenturm_session_facts_by_kind;
              DROP INDEX agenturm_metric_descriptions_by_series;
              ALTER TABLE agenturm_history_batches DROP COLUMN admitted_at_unix_ns;
              DROP INDEX agenturm_metric_series_points; DROP INDEX agenturm_usage_history_by_time;").unwrap();
@@ -4507,6 +4566,7 @@ mod tests {
         let original = batch("original", vec![discovery("unknown", 0)]);
         store.commit_batch(&original).unwrap();
         let page = store.observation_page(10).unwrap();
+        history_read::drop_indexes(&store.connection);
         store.connection.execute_batch(
             "ALTER TABLE agenturm_history_batches DROP COLUMN admitted_at_unix_ns;
              UPDATE agenturm_store_meta SET value='agenturm.observation-store.v21' WHERE key='format';

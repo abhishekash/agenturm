@@ -591,6 +591,7 @@ mod tests {
         };
         let tx = store.connection.transaction().unwrap();
         crate::content_grant::migrate_grant_schema(&tx, 19).unwrap();
+        crate::history_read::drop_indexes(&tx);
         tx.execute(
             "UPDATE agenturm_store_meta SET value=?1 WHERE key='format'",
             [crate::STORE_MARKER_V19],
