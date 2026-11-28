@@ -3457,6 +3457,11 @@ pub struct ConfiguredCollector<S = Store> {
 
 impl content_preview::ContentSourceConfig for ConfiguredCollector {
     #[cfg(target_os = "linux")]
+    fn default_prompt_history(&self) -> bool {
+        true
+    }
+
+    #[cfg(target_os = "linux")]
     fn resolve_content_source(
         &self,
         id: &ExtensionId,

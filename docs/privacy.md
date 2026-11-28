@@ -26,6 +26,28 @@ agenturm serve --metadata-only
 
 This does not erase content already stored. To stop native session discovery, use `--no-local-agents`.
 
+## Native prompt history
+
+On Linux, opening Prompts in the live local cockpit enables user-text access
+for a previously unconfigured source. This is a durable, source-bound grant,
+not an additional copy of the transcript: text is read from the existing native
+source when requested. Prompts may contain private project data or secrets;
+credential-like text filtering is best-effort, not a guarantee.
+
+Explicit revocations (including those made before first access), disabled grants
+in backups, and changed bindings are never automatically overwritten. To opt
+out for a source, stop its collector and run `agenturm content revoke --db
+<history.sqlite> --source-id <source-id>`. This revokes all private-content kinds
+for that source, not just prompts. Re-enabling requires an explicit approval.
+It does not erase native logs or stored history.
+
+Tool payloads, commands, edits, telemetry and evaluations keep their separate
+permissions. Saved-history views, CLI content previews, and remote readers do
+not create default grants. Exact session/worker, committed-checkpoint, snapshot,
+history-identity and fenced-delivery checks still apply. There is no new network
+transfer, AI-provider call or automatic export. See the
+[full prompt access boundary](default-prompt-history.html).
+
 ## Local UI preferences and exports
 
 The cockpit saves only theme, active view, and non-sensitive filter flags in its

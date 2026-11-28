@@ -1,5 +1,8 @@
 //! Host verification for explicit private previews from installed harnesses.
 
+#[cfg(all(test, target_os = "linux"))]
+mod tests;
+
 use agenturm_kernel::{ExtensionId, ReadSnapshot};
 use agenturm_store::Store;
 use agenturm_ui::{OperationDetailKind, ReviewEditSelection};
@@ -13,6 +16,13 @@ const USAGE: &str = "Usage: agenturm content binding|grant|revoke --kind pi.mcp_
 /// The configuration that actually authorized collection. Default cockpit
 /// sessions use their live collector; explicit histories reload their file.
 pub trait ContentSourceConfig {
+    /// Only the live local collector opts into default prompt authorization.
+    /// File-backed histories, CLI previews and remote readers stay explicit.
+    #[cfg(target_os = "linux")]
+    fn default_prompt_history(&self) -> bool {
+        false
+    }
+
     #[cfg(target_os = "linux")]
     fn resolve_content_source(
         &self,
@@ -225,6 +235,12 @@ pub(crate) fn list_user_prompts_with_access(
         opened = linux::open_store(db)?;
         &opened
     };
+    if writer.is_some() && config.default_prompt_history() {
+        let bound = agenturm_content::bind(&linux::resolver(config), source, None)?;
+        store
+            .ensure_default_user_text_grant(bound.scope())
+            .map_err(|error| error.to_string())?;
+    }
     agenturm_content::list_for_worker_with_access(
         store,
         &linux::resolver(config),

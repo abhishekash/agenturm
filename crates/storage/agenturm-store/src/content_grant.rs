@@ -2,7 +2,7 @@
 
 use crate::{Result, SCHEMA_VERSION, Store, StoreError};
 use agenturm_kernel::{ExtensionId, ReadSnapshot};
-use rusqlite::{Connection, OptionalExtension, TransactionBehavior, params};
+use rusqlite::{Connection, OptionalExtension, Transaction, TransactionBehavior, params};
 use serde::{Deserialize, Serialize};
 use sha2::{Digest, Sha256};
 use std::fmt;
@@ -48,6 +48,17 @@ pub enum ContentKind {
 }
 
 impl ContentKind {
+    fn is_user_text(self) -> bool {
+        matches!(
+            self,
+            Self::PiUserText
+                | Self::CodexUserText
+                | Self::ClaudeUserText
+                | Self::KiroUserText
+                | Self::OpenCodeUserText
+        )
+    }
+
     fn as_str(self) -> &'static str {
         match self {
             Self::PiUserText => "pi.user_text",
@@ -348,7 +359,55 @@ fn has_grant_schema(connection: &Connection) -> Result<bool> {
     }
 }
 
+// A missing permission is eligible for the local default. Keep an explicit
+// denial even when it precedes the first listing; never replace another binding.
+fn remember_user_text_denial(
+    connection: &Connection,
+    source_id: &ExtensionId,
+    kind: ContentKind,
+    fingerprint: [u8; 32],
+) -> Result<()> {
+    if kind.is_user_text() {
+        connection.execute(
+            "INSERT INTO agenturm_content_grants
+                (source_id, kind, source_fingerprint, epoch, nonce, enabled)
+             VALUES (?1, ?2, ?3, 1, randomblob(16), 0)
+             ON CONFLICT(source_id, kind) DO NOTHING",
+            params![source_id.as_str(), kind.as_str(), fingerprint],
+        )?;
+    }
+    Ok(())
+}
+
 impl Store {
+    /// Enables local prompt inspection only when this source/kind has never
+    /// been configured. Revoked, restored and differently bound rows are never
+    /// overwritten. Call outside a content-delivery fence, then use the normal
+    /// source-proof and grant checks before disclosing anything.
+    pub fn ensure_default_user_text_grant(&self, scope: &ContentGrantScope) -> Result<()> {
+        self.verify_content_writer()?;
+        if !scope.kind.is_user_text() {
+            return Err(StoreError::Invalid(
+                "default prompt access requires a user-text kind",
+            ));
+        }
+        let transaction =
+            Transaction::new_unchecked(&self.connection, TransactionBehavior::Immediate)?;
+        transaction.execute(
+            "INSERT INTO agenturm_content_grants
+                (source_id, kind, source_fingerprint, epoch, nonce, enabled)
+             VALUES (?1, ?2, ?3, 1, randomblob(16), 1)
+             ON CONFLICT(source_id, kind) DO NOTHING",
+            params![
+                scope.source_id.as_str(),
+                scope.kind.as_str(),
+                scope.source_fingerprint
+            ],
+        )?;
+        transaction.commit()?;
+        Ok(())
+    }
+
     /// Authorizes an exact host scope. Repeating the same active approval is
     /// idempotent. Re-approval or a changed fingerprint creates a fresh epoch.
     pub fn grant_content(&mut self, scope: &ContentGrantScope) -> Result<ContentGrant> {
@@ -385,13 +444,19 @@ impl Store {
 
     /// Revokes the source and kind across all bindings. Returns whether an
     /// active approval changed. The epoch is retained for future re-approval.
+    /// User-text denials persist even before the first approval.
     pub fn revoke_content(&mut self, source_id: &ExtensionId, kind: ContentKind) -> Result<bool> {
         self.verify_write_admission()?;
-        let changed = self.connection.execute(
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "UPDATE agenturm_content_grants SET enabled = 0
              WHERE source_id = ?1 AND kind = ?2 AND enabled = 1",
             params![source_id.as_str(), kind.as_str()],
         )?;
+        remember_user_text_denial(&transaction, source_id, kind, [0; 32])?;
+        transaction.commit()?;
         Ok(changed != 0)
     }
 
@@ -399,7 +464,10 @@ impl Store {
     /// a replaced source cannot revoke its replacement approval.
     pub fn revoke_bound_content(&mut self, scope: &ContentGrantScope) -> Result<bool> {
         self.verify_write_admission()?;
-        let changed = self.connection.execute(
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "UPDATE agenturm_content_grants SET enabled = 0
              WHERE source_id = ?1 AND kind = ?2 AND source_fingerprint = ?3 AND enabled = 1",
             params![
@@ -408,16 +476,36 @@ impl Store {
                 scope.source_fingerprint
             ],
         )?;
+        remember_user_text_denial(
+            &transaction,
+            &scope.source_id,
+            scope.kind,
+            scope.source_fingerprint,
+        )?;
+        transaction.commit()?;
         Ok(changed != 0)
     }
 
     /// Revokes every kind associated with this configured source ID.
     pub fn revoke_source_content(&mut self, source_id: &ExtensionId) -> Result<bool> {
         self.verify_write_admission()?;
-        let changed = self.connection.execute(
+        let transaction = self
+            .connection
+            .transaction_with_behavior(TransactionBehavior::Immediate)?;
+        let changed = transaction.execute(
             "UPDATE agenturm_content_grants SET enabled = 0 WHERE source_id = ?1 AND enabled = 1",
             [source_id.as_str()],
         )?;
+        for kind in [
+            ContentKind::PiUserText,
+            ContentKind::CodexUserText,
+            ContentKind::ClaudeUserText,
+            ContentKind::KiroUserText,
+            ContentKind::OpenCodeUserText,
+        ] {
+            remember_user_text_denial(&transaction, source_id, kind, [0; 32])?;
+        }
+        transaction.commit()?;
         Ok(changed != 0)
     }
 
@@ -702,6 +790,162 @@ mod tests {
     use super::*;
     use std::fs;
     use std::time::{Duration, SystemTime, UNIX_EPOCH};
+
+    fn with_default_grant_store(test: impl FnOnce(&mut Store, &std::path::Path)) {
+        let unique = SystemTime::now()
+            .duration_since(UNIX_EPOCH)
+            .unwrap()
+            .as_nanos();
+        let directory = std::env::temp_dir().join(format!(
+            "agenturm-default-prompt-{}-{unique}",
+            std::process::id()
+        ));
+        fs::create_dir(&directory).unwrap();
+        let mut store = Store::open_collector(directory.join("history.sqlite")).unwrap();
+        test(&mut store, &directory);
+        drop(store);
+        fs::remove_dir_all(directory).unwrap();
+    }
+
+    #[test]
+    fn default_prompt_grants_are_idempotent_exact_and_user_text_only() {
+        with_default_grant_store(|store, _| {
+            let source = ExtensionId::parse("harness.fixture").unwrap();
+            for kind in [
+                ContentKind::PiUserText,
+                ContentKind::CodexUserText,
+                ContentKind::ClaudeUserText,
+                ContentKind::KiroUserText,
+                ContentKind::OpenCodeUserText,
+            ] {
+                let scope = ContentGrantScope::new(source.clone(), kind, [1; 32]);
+                assert!(store.current_content_grant(&scope).unwrap().is_none());
+                store.ensure_default_user_text_grant(&scope).unwrap();
+                let grant = store.current_content_grant(&scope).unwrap().unwrap();
+                store.ensure_default_user_text_grant(&scope).unwrap();
+                assert_eq!(
+                    store.current_content_grant(&scope).unwrap(),
+                    Some(grant.clone())
+                );
+                let changed = ContentGrantScope::new(source.clone(), kind, [2; 32]);
+                store.ensure_default_user_text_grant(&changed).unwrap();
+                assert!(store.current_content_grant(&changed).unwrap().is_none());
+                assert_eq!(store.current_content_grant(&scope).unwrap(), Some(grant));
+                let sibling = ContentGrantScope::new(
+                    ExtensionId::parse("harness.sibling").unwrap(),
+                    kind,
+                    [1; 32],
+                );
+                assert!(store.current_content_grant(&sibling).unwrap().is_none());
+            }
+            for kind in [
+                ContentKind::PiEditDetail,
+                ContentKind::PiMcpDetail,
+                ContentKind::CodexMcpPayload,
+                ContentKind::ClaudeMcpPayload,
+                ContentKind::CodexEditDetail,
+                ContentKind::ClaudeEditDetail,
+                ContentKind::OpenCodeEditDetail,
+                ContentKind::CodexCommandDetail,
+                ContentKind::TelemetrySpanPayload,
+                ContentKind::TelemetryLogText,
+                ContentKind::EvalResultDetail,
+            ] {
+                let scope = ContentGrantScope::new(source.clone(), kind, [1; 32]);
+                assert!(store.ensure_default_user_text_grant(&scope).is_err());
+                assert!(store.current_content_grant(&scope).unwrap().is_none());
+            }
+        });
+    }
+
+    #[test]
+    fn prompt_default_never_undoes_revocation_before_or_after_first_access() {
+        with_default_grant_store(|store, directory| {
+            for (index, before) in [true, false].into_iter().enumerate() {
+                let source = ExtensionId::parse(format!("harness.fixture{index}")).unwrap();
+                let scope =
+                    ContentGrantScope::new(source.clone(), ContentKind::PiUserText, [3; 32]);
+                if !before {
+                    store.ensure_default_user_text_grant(&scope).unwrap();
+                }
+                assert_eq!(
+                    store.revoke_content(&source, scope.kind()).unwrap(),
+                    !before
+                );
+                store.ensure_default_user_text_grant(&scope).unwrap();
+                assert!(store.current_content_grant(&scope).unwrap().is_none());
+                let reopened = Store::open_collector(directory.join("history.sqlite")).unwrap();
+                reopened.ensure_default_user_text_grant(&scope).unwrap();
+                assert!(reopened.current_content_grant(&scope).unwrap().is_none());
+                drop(reopened);
+                let explicit = store.grant_content(&scope).unwrap();
+                assert_eq!(store.current_content_grant(&scope).unwrap(), Some(explicit));
+            }
+            let source = ExtensionId::parse("harness.bound").unwrap();
+            let scope = ContentGrantScope::new(source, ContentKind::CodexUserText, [4; 32]);
+            assert!(!store.revoke_bound_content(&scope).unwrap());
+            store.ensure_default_user_text_grant(&scope).unwrap();
+            assert!(store.current_content_grant(&scope).unwrap().is_none());
+            let replacement =
+                ContentGrantScope::new(scope.source_id().clone(), scope.kind(), [5; 32]);
+            let explicit = store.grant_content(&replacement).unwrap();
+            assert!(!store.revoke_bound_content(&scope).unwrap());
+            assert_eq!(
+                store.current_content_grant(&replacement).unwrap(),
+                Some(explicit)
+            );
+        });
+    }
+
+    #[test]
+    fn source_revocation_before_first_access_blocks_all_prompt_defaults_only_for_that_source() {
+        with_default_grant_store(|store, _| {
+            let source = ExtensionId::parse("harness.revoked").unwrap();
+            assert!(!store.revoke_source_content(&source).unwrap());
+            for kind in [
+                ContentKind::PiUserText,
+                ContentKind::CodexUserText,
+                ContentKind::ClaudeUserText,
+                ContentKind::KiroUserText,
+                ContentKind::OpenCodeUserText,
+            ] {
+                let scope = ContentGrantScope::new(source.clone(), kind, [6; 32]);
+                store.ensure_default_user_text_grant(&scope).unwrap();
+                assert!(store.current_content_grant(&scope).unwrap().is_none());
+                let other = ContentGrantScope::new(
+                    ExtensionId::parse("harness.other").unwrap(),
+                    kind,
+                    [6; 32],
+                );
+                store.ensure_default_user_text_grant(&other).unwrap();
+                assert!(store.current_content_grant(&other).unwrap().is_some());
+            }
+        });
+    }
+
+    #[test]
+    fn prompt_defaults_cannot_write_through_readers_or_reauthorize_backup_grants() {
+        with_default_grant_store(|store, directory| {
+            let scope = ContentGrantScope::new(
+                ExtensionId::parse("harness.pi").unwrap(),
+                ContentKind::PiUserText,
+                [7; 32],
+            );
+            let reader = Store::open_read_only(directory.join("history.sqlite")).unwrap();
+            assert!(reader.ensure_default_user_text_grant(&scope).is_err());
+            assert!(store.current_content_grant(&scope).unwrap().is_none());
+            drop(reader);
+            store.ensure_default_user_text_grant(&scope).unwrap();
+            let original = store.current_content_grant(&scope).unwrap().unwrap();
+            let backup = directory.join("backup.sqlite");
+            store.backup_to(&backup).unwrap();
+            let mut restored = Store::open_collector(&backup).unwrap();
+            restored.ensure_default_user_text_grant(&scope).unwrap();
+            assert!(restored.current_content_grant(&scope).unwrap().is_none());
+            assert!(restored.verify_content_grant(&scope, &original).is_err());
+            assert!(restored.grant_content(&scope).is_ok());
+        });
+    }
 
     #[test]
     fn worker_prompt_candidates_exclude_siblings_and_root_messages() {
