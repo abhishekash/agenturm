@@ -41,7 +41,7 @@ See the [usage guide](usage.md) or [privacy notes](privacy.md).
 
 ## Prompt history on Linux
 
-Open an agent and choose Prompts (or press P from the agent list). If the local source has not been enabled, press a at “Enable prompt history”. Choose a request and press Enter or Right to read it. This enables saved user prompts for that source and its sessions; tool payload permissions remain separate.
+Open an agent and choose Prompts (or press P from the agent list). In the live local monitor, prompt history is enabled by default for previously unconfigured sources. Choose a request and press Enter or Right to read it. Explicitly revoked, restored-disabled, or changed source permissions still show “Enable prompt history”; press a to re-enable them deliberately. Tool payload permissions remain separate. Saved-history views and CLI previews still require explicit approval. See [prompt access boundaries and opting out](default-prompt-history.html).
 
 Close an older running Agenturm process before launching the updated command. Confirm the installed command with `agenturm --version`; this update reports `agenturm 0.3.16`.
 

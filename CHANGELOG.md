@@ -2,6 +2,8 @@
 
 ## Unreleased
 
+- Enable Linux prompt history by default in the live local cockpit for previously unconfigured sources. Preserve explicit opt-outs, disabled backup grants, changed source bindings and all existing proof checks; tool payloads and remote/CLI authorization remain separate. [Access and opt-out](docs/default-prompt-history.html).
+
 - Discover Kiro sessions from `$KIRO_HOME/sessions` (default `~/.kiro`): prompts, replies, shell commands with their recorded exit codes, file edits, MCP calls, turn outcomes and errors. Kiro tool approvals become waiting requests until answered. Delegated workers link to the session or worker that spawned them and take their outcome from it. List Kiro MCP servers from user and workspace `mcp.json`, and offer `kiro-cli chat --resume-id` for top-level sessions. Show Kiro-reported credits for each run, each session and all stored history, where other runtimes show tokens. List the tool-approval answers recorded in each Kiro session in the inspector, with rule-blocked calls, the standing user, workspace and agent rules that apply, and the folders trusted in Kiro.
 
 ## Rust 0.3.16 — navigation performance

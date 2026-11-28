@@ -107,6 +107,7 @@ Session records and telemetry can contain prompts, commands, file paths, tool in
 
 - The normal workflow stores data in local SQLite; the receiver binds to loopback by default.
 - Local inspection does not require an Agenturm account or API key.
+- Linux live prompt history is enabled by default for unconfigured sources; explicit revocations are respected and tool payload permissions stay separate. [Access and opt-out](docs/default-prompt-history.html).
 - Content access and exports have explicit boundaries. Retention is logical deletion, not secure erasure.
 
 Read [privacy and capture boundaries](docs/privacy.md) before sharing a database or review export. For network access, follow the receiver guide’s authentication and TLS requirements rather than exposing the local receiver directly.

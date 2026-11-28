@@ -1314,6 +1314,10 @@ mod tests {
     fn active_prompt_authority_does_not_load_a_separate_config_file() {
         struct Active(std::cell::Cell<usize>);
         impl super::super::content_preview::ContentSourceConfig for Active {
+            fn default_prompt_history(&self) -> bool {
+                true
+            }
+
             fn resolve_content_source(
                 &self,
                 _: &ExtensionId,

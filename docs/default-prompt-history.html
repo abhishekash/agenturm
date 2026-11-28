@@ -1,0 +1,32 @@
+<!doctype html>
+<html lang="en">
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Agenturm — default local prompt history</title>
+<style>
+:root{color-scheme:light dark;font:17px/1.65 system-ui,sans-serif}body{max-width:52rem;margin:auto;padding:clamp(20px,5vw,64px)}h1,h2{line-height:1.25}h2{margin-top:2em}pre{padding:1rem;background:light-dark(#eeeaf5,#25212e);border-radius:8px;overflow:auto}a{color:light-dark(#5940aa,#c5adff)}li,p{overflow-wrap:anywhere}
+</style>
+<main>
+<h1>Default local prompt history</h1>
+<p>In the Linux live local cockpit, open <strong>Prompts</strong> (or press <strong>P</strong> from the agent list), select a request, then press <strong>Enter</strong> or <strong>Right</strong>. A previously unconfigured source receives a durable user-text-only grant when Prompts opens. It covers that source's sessions, not other sources. Session and worker filters still limit the selected history. Native prompt reading remains Linux-only.</p>
+<h2>What stays explicit</h2>
+<ul>
+<li>Revoked grants stay off, even when revocation preceded first access.</li>
+<li>Changed source bindings require explicit reapproval. Replacing the source file or changing pinned adapter configuration does not inherit approval.</li>
+<li>Disabled backup grants stay disabled when reopened.</li>
+<li>Saved-history views, CLI content previews and remote readers do not create default grants. An already enabled grant still follows its existing rules.</li>
+<li>Tool inputs/results, commands, edits, telemetry and evaluations retain independent permissions.</li>
+</ul>
+<p>Where permission was withheld or invalidated, the UI still offers <strong>Enable prompt history</strong> (<strong>a</strong>) for deliberate reapproval.</p>
+<h2>Opt out for a source</h2>
+<p>Stop the collector using that history so the command can acquire its writer lease, then use the exact database path and source ID:</p>
+<pre>agenturm content revoke --db &lt;history.sqlite&gt; --source-id &lt;source-id&gt;</pre>
+<p>This revokes <strong>all private-content kinds for that source</strong>, not only prompts. Restarting or opening Prompts does not undo it. Reapproval must be explicit. It changes access, not retention; it erases neither history nor native logs.</p>
+<p>Older versions did not retain revocations made before any grant existed. Such opt-outs cannot be recovered; run the command again with this version to record them.</p>
+<h2>Privacy boundary</h2>
+<p>This change stores authorization state, not another transcript copy. Text is read from the existing native source on request and may contain project data or secrets. Recognizable-credential filtering is best-effort.</p>
+<p>Source/checkpoint proofs, exact session/worker scope, snapshot and history identity, source-replacement checks and revocation-fenced delivery still govern listing and disclosure. There is no new network transfer, provider call or automatic export.</p>
+<p>Protect native logs, the local database and backups as sensitive files. Retention is logical deletion, not secure erasure.</p>
+<p><a href="default-prompt-history.md">Markdown version</a> · <a href="privacy.md">Privacy guide</a></p>
+</main>
+</html>

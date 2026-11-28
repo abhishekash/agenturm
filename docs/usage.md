@@ -15,6 +15,18 @@ The monitor discovers supported local Codex, Claude Code, OpenCode, Pi, and
 Kiro sessions. It reads their existing records; it does not launch or control
 those agents. Press **F1** in the monitor for keyboard help.
 
+## Prompt history
+
+On Linux, press **P** from the agent list or choose **Prompts** in the inspector.
+The live local monitor enables user-prompt history by default for previously
+unconfigured sources. Explicit revocations and changed source bindings are not
+silently re-enabled. Choose a request and press **Enter** or **Right** to read it.
+Tool payloads remain separately permissioned; saved-history views, CLI previews,
+and remote readers do not acquire default grants.
+
+See [access boundaries and opting out](default-prompt-history.html). Native
+prompt reading remains unavailable on macOS.
+
 ## Collect OpenTelemetry from a process
 
 `agenturm run` starts a local receiver, configures standard OTLP/HTTP
