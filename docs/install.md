@@ -1,6 +1,6 @@
 # Install Agenturm
 
-Agenturm 0.3.15 is a native Rust application. The installer detects your system,
+Agenturm 0.3.16 is a native Rust application. The installer detects your system,
 fetches the matching release, verifies its pinned SHA-256, and installs the
 `agenturm` command. No compiler or runtime is required.
 
@@ -14,7 +14,7 @@ Intel Macs and Rosetta are not supported.
 ## Install with curl
 
 ```sh
-curl -fsSL https://raw.githubusercontent.com/abhishekash/agenturm/rust-v0.3.15/scripts/install-rust-bootstrap.sh | bash
+curl -fsSL https://raw.githubusercontent.com/abhishekash/agenturm/main/scripts/install-rust-bootstrap.sh | bash
 agenturm
 ```
 
@@ -43,4 +43,8 @@ See the [usage guide](usage.md) or [privacy notes](privacy.md).
 
 Open an agent and choose Prompts (or press P from the agent list). If the local source has not been enabled, press a at “Enable prompt history”. Choose a request and press Enter or Right to read it. This enables saved user prompts for that source and its sessions; tool payload permissions remain separate.
 
-Close an older running Agenturm process before launching the updated command. Confirm the installed command with `agenturm --version`; this update reports `agenturm 0.3.15`.
+Close an older running Agenturm process before launching the updated command. Confirm the installed command with `agenturm --version`; this update reports `agenturm 0.3.16`.
+
+Version 0.3.16 upgrades native history to schema 28 on the first writer open.
+Index construction can take longer on a large history. Older Agenturm versions
+cannot read the upgraded store; do not keep an older collector running against it.

@@ -93,10 +93,10 @@ session evidence, and sparse projections may examine many nonmatching rows.
 The additional indexes consume disk space and add write work. The first writer
 open must build them and can take longer on a large store. Stop older Agenturm
 versions before upgrading a shared store: schema 28 is not readable by 0.3.15.
-The currently published 0.3.15 installer does not contain this source fix.
+This fix ships in 0.3.16; 0.3.15 does not contain it.
 
 The patch changes no capture or sharing boundary. App README installation and
-privacy claims require no change for this unreleased storage fix. A separate
+privacy claims require no change for this storage fix. A separate
 website checkout still advertises Python/PyPI installation in
 `src/pages/index.astro`; that pre-existing drift is outside this patch. The
 GitHub profile and visual assets were not reviewed.
