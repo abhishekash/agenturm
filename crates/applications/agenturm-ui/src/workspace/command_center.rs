@@ -345,7 +345,7 @@ pub(super) fn draw(
     let show_task_detail = area.width >= 118 && area.height >= 24;
     let [brand, navigation, filters, body, footer] = Layout::vertical([
         Constraint::Length(1),
-        Constraint::Length(3),
+        Constraint::Length(1),
         Constraint::Length(lines.len() as u16),
         Constraint::Min(1),
         Constraint::Length(2),
@@ -373,7 +373,7 @@ pub(super) fn draw(
         Paragraph::new(lines).style(surface(theme::palette().surface)),
         filters,
     );
-    let mut navigation_spans = Vec::new();
+    let mut navigation_spans = vec![Span::styled(" Views ", theme::muted())];
     let shown = if area.width >= 100 { 7 } else { 3 };
     for (index, (key, _, label)) in keymap::NAVIGATION[..shown].iter().enumerate() {
         if index == 3 {
@@ -395,12 +395,9 @@ pub(super) fn draw(
         ));
     }
     if shown < 7 {
-        navigation_spans.push(Span::styled("   : More views", theme::muted()));
+        navigation_spans.push(Span::styled("  : More views", theme::muted()));
     }
-    frame.render_widget(
-        Paragraph::new(Line::from(navigation_spans)).block(contour(" Workspace ")),
-        navigation,
-    );
+    frame.render_widget(Paragraph::new(Line::from(navigation_spans)), navigation);
     if agents.help {
         // The shell owns the scrollable reference (`F1` / `?`). A direct render
         // of the command center keeps one deterministic pointer instead of a
