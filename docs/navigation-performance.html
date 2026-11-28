@@ -40,8 +40,8 @@ cargo test -p agenturm-store --release --locked \
 <p>A 50,000-record fixture exercises recent, source-only, deep older-page, exact-session, and absent-session reads through the Store API. A 64-record page must perform no SQLite sort, at most 65 full-scan steps, and fewer than 50,000 VM steps. An absent relationship lookup must use the sparse fact index, perform no full scan or sort, and use fewer than 100 VM steps. These are work limits, not timing assertions.</p>
 <h2>Limits and upgrade</h2>
 <p>This removes a measured database bottleneck. It does not establish whole-app idle CPU, ingestion throughput, peak RSS, terminal rendering cost, or keypress-to-frame p95. Session-catalog aggregation still scans session evidence; sparse projections can examine many nonmatching records. Extra indexes consume disk and add write work. Their first build can delay startup on a large history.</p>
-<p><strong>Stop older Agenturm versions before upgrading a shared store.</strong> Schema 28 is not readable by 0.3.15. The published 0.3.15 installer does not contain this source fix.</p>
+<p><strong>Stop older Agenturm versions before upgrading a shared store.</strong> Schema 28 is not readable by 0.3.15. This fix ships in 0.3.16; 0.3.15 does not contain it.</p>
 <h2>Related materials</h2>
-<p>No capture, sharing, installation, or privacy claim changes are needed for this unreleased patch. A separate website checkout still advertises Python/PyPI installation in <code>src/pages/index.astro</code>; that pre-existing drift is outside this patch. The GitHub profile and visual assets were not reviewed.</p>
+<p>No capture or sharing boundary changes are needed for this patch. A separate website checkout still advertises Python/PyPI installation in <code>src/pages/index.astro</code>; that pre-existing drift is outside this patch. The GitHub profile and visual assets were not reviewed.</p>
 </main>
 </html>

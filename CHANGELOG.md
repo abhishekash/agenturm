@@ -2,9 +2,15 @@
 
 ## Unreleased
 
-- Index recent history, source-scoped pages, and roster lifecycle/relationship facts to avoid full-store sorts during navigation and collection. Seek directly to exact sessions and older-page cursors. Writer startup upgrades to schema 28; stop older versions before opening the upgraded store. [Performance scope and validation](docs/navigation-performance.html).
-
 - Discover Kiro sessions from `$KIRO_HOME/sessions` (default `~/.kiro`): prompts, replies, shell commands with their recorded exit codes, file edits, MCP calls, turn outcomes and errors. Kiro tool approvals become waiting requests until answered. Delegated workers link to the session or worker that spawned them and take their outcome from it. List Kiro MCP servers from user and workspace `mcp.json`, and offer `kiro-cli chat --resume-id` for top-level sessions. Show Kiro-reported credits for each run, each session and all stored history, where other runtimes show tokens. List the tool-approval answers recorded in each Kiro session in the inspector, with rule-blocked calls, the standing user, workspace and agent rules that apply, and the folders trusted in Kiro.
+
+## Rust 0.3.16 — navigation performance
+
+- Index recent history, source-scoped pages, and roster lifecycle/relationship facts to avoid full-store sorts during navigation and collection. Seek directly to exact sessions and older-page cursors. Writer startup upgrades to schema 28; stop older versions before opening the upgraded store. [Performance scope and validation](docs/navigation-performance.html).
+- Load workspace Traces before paging, preserving exact snapshot-bound continuation.
+- Reduce cockpit startup latency and prioritize interactive work while sources start.
+
+[Rust 0.3.16 release notes](docs/releases/rust-0.3.16.html)
 
 ## Rust 0.3.12 — prompt history
 
