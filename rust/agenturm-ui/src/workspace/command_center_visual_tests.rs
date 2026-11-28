@@ -264,7 +264,8 @@ fn command_center_pinned_frames_keep_tasks_and_controls_readable() {
         let rendered = lines(&buffer);
         let text = rendered.join("\n");
         for expected in [
-            "Workspace",
+            "Views",
+            "1 Agents",
             "Tasks",
             "Implement agent tool",
             "All 14",
@@ -331,6 +332,54 @@ fn command_center_pinned_frames_keep_tasks_and_controls_readable() {
             );
         }
         capture("tasks", &buffer);
+    }
+}
+
+#[test]
+fn command_center_navigation_is_one_row_and_preserves_task_screen_budget() {
+    for (width, height) in [(120, 32), (80, 24), (60, 18)] {
+        let mut agents = fixture();
+        let rendered = lines(&render(&mut agents, width, height, false, None));
+        let navigation = &rendered[1];
+        assert!(
+            navigation.contains("Views"),
+            "{width}×{height}: {navigation}"
+        );
+        assert!(
+            navigation.contains("[1 Agents]")
+                && navigation.contains("2 Activity")
+                && navigation.contains("3 MCP"),
+            "primary navigation remains discoverable at {width}×{height}: {navigation}"
+        );
+        if width < 100 {
+            assert!(navigation.contains(": More views"), "{navigation}");
+        } else {
+            assert!(navigation.contains("7 Findings"), "{navigation}");
+        }
+        assert!(
+            !navigation.contains("╭") && !navigation.contains("╰"),
+            "navigation is a single flat row, not a nested panel"
+        );
+        assert!(
+            rendered[4].contains("Tasks"),
+            "task list begins at row 5 after the one-row navigation: {width}×{height}\n{}",
+            rendered.join("\n")
+        );
+    }
+
+    let mut agents = fixture();
+    let rendered = lines(&render(&mut agents, 80, 24, false, None)).join("\n");
+    for task in [
+        "Implement agent tool hierarchy",
+        "Repair prompt history",
+        "Publish native bundle",
+        "Investigate timeout regression",
+        "Prepare API integration",
+    ] {
+        assert!(
+            rendered.contains(task),
+            "compact task list lost {task}:\n{rendered}"
+        );
     }
 }
 
